@@ -1,0 +1,1881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMQ-07 · Streams: The Log Comes to RabbitMQ — RabbitMQ Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#ff9f43; --pg-dim:rgba(255,159,67,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa; --amber:#ffd166;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(255,159,67,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(255,159,67,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(255,159,67,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(255,159,67,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(255,159,67,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(255,159,67,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* process tree in sim */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+  .strunk{width:2px;height:14px;background:var(--border-hi);margin:0 auto}
+  .saux{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0 10px}
+  .snode.aux{font-size:9.5px;padding:5px 8px;color:var(--muted);cursor:default}
+  .snode.aux.off{opacity:.25}
+  .snode.aux.busy{border-color:var(--warn);color:var(--warn)}
+  .sbe-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:8px 0 6px;text-align:center}
+  .sbe{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;min-height:64px;align-content:flex-start}
+  .snode.be{animation:framein .25s}
+  .snode.be.idle{color:var(--muted)}
+  .snode.be.active{border-color:var(--ok);color:var(--ok)}
+  .snode.be.long{border-color:var(--warn);color:var(--warn)}
+  .snode.be.startup{border-color:var(--purple);color:var(--purple)}
+  .snode.be.crash{border-color:var(--bad);background:rgba(242,92,84,.15);color:var(--bad);animation:shake .35s}
+  .snode.be.sigq{border-color:var(--warn);opacity:.5}
+  .snode.be.sel{box-shadow:0 0 0 2px var(--pg)}
+  .sim-shm{margin:12px auto 0;max-width:430px}
+  .sim-shm .shm{text-align:center}
+  .waitq{font-family:var(--mono);font-size:10px;color:var(--warn);text-align:center;margin-top:8px;min-height:14px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-rabbitmq.html">← RabbitMQ Internals</a>
+  <span class="crumb">RABBITMQ INTERNALS · <b>CH 07 / 12</b> · STREAMS</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: An Immutable Log</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 07</div>
+  <h1>Streams:<br><span class="grad">The Log Comes to RabbitMQ</span></h1>
+  <p class="lead">Every queue type this course has covered so far — classic queues (ch. 4), quorum queues (ch. 6) —
+  shares one assumption baked into the word "queue": consuming a message removes it. That assumption is exactly
+  right for task distribution and RPC-shaped work, and it makes three specific workloads either impossible or
+  ruinously expensive: a new consumer replaying history that already happened, fan-out to many independent readers
+  without paying to store N copies, and sustained throughput past what one Erlang process serializing one queue's
+  operations can push. RabbitMQ 3.9 answers all three at once with an idea borrowed openly from Kafka — an
+  immutable, append-only log where consumers hold their own position and reading never mutates storage — built as
+  a new queue type, backed by a standalone library called <b>osiris</b>, and reachable through both the AMQP path
+  you already know and a dedicated binary protocol built for nothing but throughput.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Name the three workloads destructive consumption makes impossible or ruinously expensive, with the arithmetic behind each.</div>
+    <div class="obj"><b>You will understand</b>The segment-plus-index file layout osiris uses on disk, and precisely how stream replication differs from the Raft/<code>ra</code> machinery quorum queues run (ch. 6).</div>
+    <div class="obj"><b>You will predict</b>When to reach for a stream instead of a quorum queue, and when the AMQP 0-9-1 access path's translation tax means you should use the dedicated Stream Protocol instead.</div>
+    <div class="obj"><b>You will simulate</b>Identical publish load driven into a quorum queue and a stream side by side — watch storage cost diverge as consumers multiply, then prove replay works from any offset.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A buffer that destroys what it delivers cannot replay, fan out cheaply, or outrun one process</h2>
+  <p class="lead">Classic queues (ch. 4) and quorum queues (ch. 6) are both, at bottom, <b>destructive, single-pass
+  buffers</b>: a message sits in the queue until some consumer acknowledges it, and once acknowledged it is gone —
+  not archived, not rewindable, gone. That single property, harmless for the task-queue and RPC workloads this
+  course has focused on, quietly rules out three workload shapes that show up constantly in event-driven systems:</p>
+  <ul class="plain">
+    <li><b>Replay.</b> A brand-new consumer — a service that just deployed, an analytics job backfilling a report,
+      a bug fix that needs to reprocess yesterday's events — has nothing to read from a destructive queue except
+      whatever hasn't been consumed yet. There is no operation in AMQP 0-9-1's model that says "give me everything
+      published in the last hour, again." The message is either still sitting there unacked, or it is permanently
+      gone.</li>
+    <li><b>Large fan-out.</b> AMQP's routing model (ch. 3) makes fan-out trivial to <i>declare</i>: bind N queues to
+      one fanout exchange and each gets a full copy of every message. But each of those N queues is its own
+      Erlang process (ch. 4) with its own message-store references and its own queue-index entries — so both
+      storage <i>and</i> the per-publish routing cost (ch. 3's exchange dispatch loop has to reach all N queue
+      processes, not one) scale as <b>O(N)</b>. A consumer group of 50 independent readers means 50 fully
+      replicated copies of every message on disk, each governed by whatever durability policy you set on that
+      queue individually.</li>
+    <li><b>Very high throughput with many independent consumers.</b> Ch. 4 established the ceiling: one queue is
+      one Erlang process serializing every enqueue, dequeue, and ack through its own mailbox. Ch. 6's quorum
+      queues raise that ceiling with batched Raft log appends, but a quorum queue's log still has exactly one
+      leader process appending entries in order — the ceiling moves, it doesn't disappear. Workloads like
+      clickstream ingestion, IoT telemetry, or log aggregation want sustained throughput in the hundreds of
+      thousands of messages per second, read simultaneously by more independent consumers than an O(N)-copies
+      fan-out design could ever afford to keep provisioned.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE ARITHMETIC THAT MOTIVATES THIS CHAPTER</div>
+    <p>Take a modest fan-out: 50 independent consumer groups, 1&nbsp;KB average message size, 10,000 messages/sec
+    sustained. Via N dedicated queues, total write amplification is <b>50 × 1&nbsp;KB × 10,000/s ≈ 500&nbsp;MB/s</b>
+    of duplicated storage traffic before replication factors in — fifty copies of the same bytes, fifty queue
+    indexes to maintain, fifty sets of HA settings to keep consistent. A single shared log storing <i>one</i> copy
+    of the same stream needs only the <b>10&nbsp;MB/s</b> the data actually requires; every consumer reads it at
+    its own pace without adding a byte of write traffic. §15's simulator makes this divergence live and clickable.</p>
+  </div>
+  <p>Kafka's answer to exactly this shape of problem, since its 2011 open-sourcing at LinkedIn, was to stop
+  modeling storage as "destroyed on read": treat a topic-partition as an immutable, append-only log, let consumers
+  track their own read position (an <b>offset</b>) independently of the broker's storage lifecycle, and never
+  mutate the log to serve a read. RabbitMQ 3.9 imports that exact model — same offset semantics, same
+  non-destructive read — as a new native queue type, so it sits behind the AMQP routing topology you already
+  understand instead of requiring a second system next to your broker.</p>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From LinkedIn's activity log to a native RabbitMQ queue type</h2>
+  <p>Streams did not appear in a vacuum — they arrive at the exact moment two separate threads converge: RabbitMQ
+  finally has a real consensus library (<code>ra</code>, ch. 6) to build serious replicated storage on, and the
+  industry has spent a decade proving that an immutable log, not a destructive queue, is the right storage
+  primitive for replay-and-fan-out workloads. Click through; several of these events explain design choices
+  §6–§8 return to.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the log model arrives at RabbitMQ</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY ONE RELEASE SHIPPED BOTH STREAMS AND A DEPRECATION NOTICE</div>
+    <p>RabbitMQ 3.9 shipped streams <i>and</i> deprecated mirrored classic queues in the same release — not a
+    scheduling coincidence. Both changes are the same underlying project: give operators a storage model with a
+    real, principled replication story. Quorum queues (3.8, ch. 6) fixed replicated <i>destructive</i> queues by
+    replacing ad hoc mirroring with Raft consensus. Streams fix the workloads destructive queues were never suited
+    to at all, by replacing the destructive-buffer abstraction itself with a log — and, as §6 makes precise,
+    deliberately choosing <i>not</i> to route that log's data path through the same Raft machinery, because a
+    general-purpose consensus protocol is the wrong tool for "just append these bytes, in order, as fast as the
+    disk allows."</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: one dedicated queue per consumer group, provisioned by hand</h2>
+  <p>This is genuinely where every RabbitMQ-literate team starts, because it uses only mechanisms already covered
+  in this course: a fanout (or topic) exchange in front, and one queue per independent readership. When a new
+  consumer group needs "all of it," an operator declares a new queue and binds it. When someone needs history,
+  the workaround is a dedicated, long-retention "audit" queue with a large <code>x-max-length-bytes</code> that
+  gets drained and manually re-published into a fresh queue whenever a new consumer needs to catch up.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>queue_per_group.py — the strawman, annotated</span></div>
+    <pre><span class="k">class</span> <span class="t">OperatorRunbook</span>:
+    <span class="c"># Every time a new team needs "all trade-settlement events," by hand:</span>
+    <span class="k">def</span> <span class="f">onboard_new_consumer_group</span>(self, group_name):
+        queue = declare_queue(f<span class="s">"settlement.{group_name}"</span>, durable=<span class="k">True</span>)
+        bind(queue, exchange=<span class="s">"settlement.fanout"</span>, routing_key=<span class="s">"#"</span>)
+        <span class="c"># starts EMPTY. Anything published before this line is already gone</span>
+        <span class="c"># from the group's point of view -- there is nothing to backfill from</span>
+        <span class="c"># except the separate audit queue, if it still has it, if it hasn't</span>
+        <span class="c"># rolled off its own x-max-length-bytes window.</span>
+        <span class="k">return</span> queue
+
+    <span class="c"># "Replay" is a manual, best-effort drain-and-republish against a queue</span>
+    <span class="c"># that was never designed to be read twice:</span>
+    <span class="k">def</span> <span class="f">best_effort_replay</span>(self, new_queue):
+        <span class="k">for</span> msg <span class="k">in</span> peek_without_ack(<span class="s">"settlement.audit"</span>):  <span class="c"># fragile: peeking, not consuming</span>
+            republish(new_queue, msg)
+        <span class="c"># works only for whatever's still inside the audit queue's retention</span>
+        <span class="c"># window -- silently incomplete once anything has rolled off</span></pre>
+  </div>
+
+  <p>This isn't a strawman built to be knocked down for sport: for two or three long-lived consumer groups that
+  never need history, it is a perfectly reasonable, boring architecture using nothing this course hasn't already
+  justified. The deck below plays it forward as consumer groups and replay requests accumulate.</p>
+
+  <div class="widget deck" id="deckDup">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Queue-per-group fan-out as readership grows</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The math: storage scales as O(N groups), and replay is a lie unless the audit queue happens to still have it</h2>
+  <p>Formalize what the deck just showed. With <b>N</b> independent consumer groups fanned out from one exchange,
+  each needing the full stream of events, this design requires <b>N</b> fully durable, fully replicated queues —
+  and every one of them is provisioned by a human runbook, not derived automatically from the fact that a new
+  reader showed up.</p>
+  <ul class="plain">
+    <li><b>Storage grows as O(N), not O(1).</b> 50 consumer groups reading the same logical event stream means 50
+      independent copies of every message, each with its own queue index (ch. 4) and its own message-store
+      references, each replicated (quorum queue, ch. 6) according to whatever settings that queue was given.
+      Doubling the number of downstream teams doubles broker storage and doubles the exchange's per-publish
+      routing fan-out cost — with zero increase in the amount of information actually being communicated.</li>
+    <li><b>Replay only ever works by accident.</b> The audit-queue workaround only helps if the specific messages
+      a new consumer needs are still inside that one queue's retention window at the moment someone remembers to
+      drain it. There is no principled "read from offset X" operation anywhere in this design — only "whatever
+      hasn't been consumed or aged out of one specific queue yet," which is not the same guarantee and fails
+      silently the moment retention rolls past what's needed.</li>
+    <li><b>Onboarding a consumer group is an operational event, not a subscribe call.</b> Every new team needs an
+      operator to declare a queue, bind it, and pick durability/retention settings <i>correctly</i> — get the
+      binding pattern wrong, or forget to make the queue durable, or set <code>x-max-length</code> too small, and
+      the failure is silent until someone notices missing data.</li>
+    <li><b>The one-process-per-queue throughput ceiling (ch. 4, ch. 6) is completely unaddressed.</b> This design
+      doesn't touch the underlying problem of a single queue process serializing all operations — it just adds
+      more queue processes, which fixes fan-out cost but does nothing for a workload that needs one logical
+      stream to sustain far higher throughput than any single queue (classic or quorum) can push.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS, MADE CONCRETE</div>
+    <p>At 10,000 messages/sec average size 1&nbsp;KB, one queue-per-group design serving 50 groups writes roughly
+    <b>500&nbsp;MB/s</b> of broker-side storage traffic for data that, deduplicated, is 10&nbsp;MB/s. Add
+    replication factor 3 (quorum queues, ch. 6) per group and the true disk write rate is <b>1.5&nbsp;GB/s</b> for
+    one logical stream of events. None of that multiplier buys anything except "N teams get a queue" — it buys
+    zero replay capability and zero throughput headroom on the underlying stream itself.</p>
+  </div>
+  <p>So the fix needs two properties simultaneously, and it's worth separating them the way §1 separated its
+  three failures: <b>(a)</b> storage must stop being duplicated per reader — one physical copy, many independent
+  readers — and <b>(b)</b> reading must stop being destructive, so a reader's position is something it tracks
+  itself, not something the storage layer erases on its behalf. §5 derives exactly that structure.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Fixing the abstraction, not adding more queues</h2>
+
+  <h3>Candidate A: automate queue-per-group provisioning</h3>
+  <p>Script the runbook from §3 — auto-create a queue and binding the moment a new consumer group registers.
+  Genuine operational improvement, and worth doing regardless. But it doesn't touch either failure from §4: total
+  storage still scales O(N), replay is still "whatever's left in the audit queue," and the underlying
+  one-process-per-queue throughput ceiling is untouched. <b>Rejected: automates the toil, leaves the physics
+  unchanged.</b></p>
+
+  <h3>Candidate B: run Kafka next to RabbitMQ, bridge the two with a connector</h3>
+  <p>Kafka already solved replay, cheap fan-out, and extreme sustained throughput a decade ago — genuinely the
+  most mature implementation of the log model in the industry, and often the <i>correct</i> operational answer
+  for a green-field, replay-heavy pipeline. But bolting it onto an existing RabbitMQ deployment means running,
+  monitoring, and securing a second distributed system, building and maintaining a bridge/connector process that
+  is itself a new failure point and a new place for messages to be lost or duplicated, and — the part specific to
+  this course — losing AMQP's exchange/binding routing intelligence (ch. 3) in front of the log entirely; Kafka
+  topics don't have topic-exchange-style pattern matching or headers-exchange predicate routing. <b>Rejected as
+  the default answer for teams already standardized on RabbitMQ's routing model — accepted as a real, common
+  choice when a team's needs are Kafka-shaped from day one (§9 returns to this honestly).</b></p>
+
+  <h3>Candidate C: make the queue itself non-destructive — an immutable log, inside the broker you already run ✓</h3>
+  <p>Instead of treating "consumed" as "deleted," treat a message as permanently appended once written, and let
+  each consumer track its own read position independently. Nothing about a message changes when it's read; the
+  storage layer for a stream is <i>oblivious</i> to how many consumers exist or where each one currently is. This
+  is precisely Kafka's insight, imported as a queue type behind RabbitMQ's existing exchange/binding routing — so
+  a topic exchange can still filter which events reach which stream, but the stream itself never mutates on read.</p>
+
+  <div class="widget deck" id="deckLog">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Deriving the stream model from one requirement</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE KAFKA DEBT, STATED PLAINLY</div>
+    <p>There is no point pretending streams are an original idea RabbitMQ invented in isolation — the RabbitMQ
+    team has been explicit that streams are a deliberate import of Kafka's log-and-offset model, built natively
+    into the broker so it can sit behind AMQP 0-9-1 routing instead of requiring a second system. §9 is the honest
+    accounting of what that gets you over actually running Kafka, and what it still doesn't.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The bill for a log wearing a queue's clothing</h2>
+  <p>Making the storage model non-destructive doesn't make it free, and three costs are specific enough to shape
+  how you actually use streams in production:</p>
+  <ul class="plain">
+    <li><b>The AMQP 0-9-1 access path pays a real translation tax.</b> A stream, viewed through
+      <code>x-queue-type=stream</code> from an ordinary AMQP client, is made to <i>look like</i> a queue — but
+      underneath, "consume" now means "read forward from an offset," not "pop and delete." The client must set
+      <code>basic.qos</code> prefetch explicitly (an offset-based reader has no natural backpressure signal the
+      way a destructive queue's empty buffer does), and every AMQP frame the client speaks gets translated into
+      the stream's actual offset-read operations by <code>rabbit_stream_queue</code> — CPU and latency spent
+      exclusively on making a log look like a queue for compatibility's sake (§7, §8).</li>
+    <li><b>A stream is bounded storage, never an infinite archive.</b> Retention is enforced by <code>max-age</code>
+      and/or <code>max-length-bytes</code>, truncated at whole-segment granularity (§8). "Replay from the
+      beginning" only works within whatever window retention has kept — this is not Kafka's occasionally
+      near-infinite tiered storage; it is a broker-local disk budget you set explicitly, and it should be sized
+      the way you'd size any other bounded resource, not treated as a free permanent record.</li>
+    <li><b>Replication is deliberately simpler than Ra/Raft — and simpler means different guarantees, not just
+      less code.</b> Quorum queues (ch. 6) run every state transition through <code>rabbit_fifo</code> atop the
+      <code>ra</code> Raft library: a write is committed only once a majority of replicas persist it via a full
+      consensus round, with automatic, leaderless-until-elected failover. Streams use their own, much lighter
+      replication protocol — a single writer process appends locally and forwards to followers, acknowledged by a
+      configurable number of replicas, with failover promoting whichever replica has the most complete log — <i>
+      not</i> a general Raft state machine. That's faster for a workload that is 100% sequential appends, but it
+      means the consistency envelope on leader failure is genuinely different from a quorum queue's, and you need
+      to know which one you're relying on (§8 derives exactly why, §9 quantifies the difference).</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE HONEST TRADE</div>
+    <p>None of this argues against streams — it's the actual price of making "consume" non-destructive without
+    giving up AMQP routing in front of it. A single stream replacing fifty duplicated queues is a dramatic win
+    even paying the AMQP translation tax; for the workloads that need to avoid that tax entirely, RabbitMQ ships
+    a second access path built for nothing else (§7's Stream Protocol). The final architecture, then, needs: a
+    log storage engine that is fast enough to be worth building at all, a queue-type façade so it composes with
+    everything else in this course, and — because "fast enough" here means genuinely fast — its own dedicated
+    binary protocol for clients that don't want AMQP's overhead at all.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">A stream, end to end — click any component</h2>
+  <p>A stream is not one Erlang process the way a classic queue is (ch. 4) — it's a small constellation: a queue
+  type façade for AMQP compatibility, a standalone log library (<b>osiris</b>) that does the actual writing and
+  replication, a cluster-wide coordinator that decides which node is currently allowed to write, and two entirely
+  separate client access paths into the same underlying bytes. Click through each piece.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">CLIENT ACCESS PATHS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="amqp">AMQP 0-9-1 client</div>
+          <div class="acard" data-p="streamproto">Stream Protocol client (port 5552)</div>
+        </div>
+        <div class="arch-row-label">BROKER-SIDE FAÇADE (this course's usual layer)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="squeue">rabbit_stream_queue</div>
+          <div class="acard" data-p="coordinator">rabbit_stream_coordinator</div>
+        </div>
+        <div class="arch-row-label">OSIRIS — THE LOG ENGINE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="writer">osiris writer (leader)</div>
+          <div class="acard" data-p="replica">osiris replica (follower)</div>
+          <div class="acard" data-p="offsettrack">server-side offset tracking</div>
+        </div>
+        <div class="arch-row-label">ON DISK</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="segment">segment file (.log)</div>
+          <div class="acard" data-p="index">index file (.index)</div>
+        </div>
+        <div class="arch-row-label">SCALING OUT</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="superstream">super stream — a partitioned collection of ordinary streams, keyed by a partitioning function</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · TWO WAYS IN, ONE LOG</div>
+    <p>Both access paths ultimately read and write the exact same segment and index files on disk — the
+    difference is entirely in the framing and semantics on the wire. AMQP 0-9-1 clients get compatibility (same
+    channel model, same client libraries, same routing topology as every other queue type in this course) at the
+    cost of per-message protocol translation. Stream Protocol clients get a purpose-built binary frame format —
+    subscribe-with-offset, publish-with-broker-assigned-publishing-id for deduplication, credit-based flow control
+    tuned for a log rather than a destructive buffer — and pay no AMQP tax at all. §9 and §10 quantify the
+    difference; production guidance in §11 gives you the rule of thumb for which to reach for.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Segments, offsets, and a replication protocol that is deliberately not Raft</h2>
+
+  <h3>(a) Storage: segment files plus a sparse index</h3>
+  <p>A stream's on-disk representation is a directory of two file kinds per segment: a <b>segment file</b>
+  (<code>00000000000000000000.log</code>-style, named by its first offset) holding the actual message records
+  back to back — each record a small header (offset, timestamp, entry type, CRC, body length) followed by the
+  body — and a matching <b>index file</b> that does <i>not</i> record every offset's byte position, only a
+  checkpoint every N entries or K bytes. This is the exact same trade Kafka's segment format makes: an
+  exhaustive index would cost nearly as much space as the log itself; a sparse index costs a fraction of that and
+  turns "seek to offset O" into a cheap jump to the nearest checkpoint below O followed by a short linear scan
+  forward — O(log segments) to find the right segment, then O(1) index lookup, then a small bounded scan.</p>
+
+  <h3>(b) Replication: one writer, several replicas, no Raft log for the data path</h3>
+  <p>Each stream has exactly one <b>osiris writer</b> process (the current leader) accepting publishes, appending
+  them to its own local segment file, and forwarding the same bytes to every <b>osiris replica</b> process on
+  other nodes, which append locally and acknowledge. A publish is confirmed back to the producer once the
+  configured number of replicas have durably appended it — a majority-style acknowledgement discipline, but
+  <i>not</i> a Raft consensus round: there is no leader-election vote, no replicated log of arbitrary state
+  -machine commands, just "write these bytes, in this order, to N places, and tell me when enough of them have
+  it." <b>Who is currently the writer</b> for a given stream is a separate decision, made by
+  <code>rabbit_stream_coordinator</code> — itself a Raft state machine running on <code>ra</code>, the same
+  library quorum queues use — because deciding "which node is leader" cluster-wide is exactly the kind of rare,
+  strongly-consistent decision Raft is built for. The high-volume message data path deliberately never touches
+  that Raft log at all.</p>
+
+  <div class="widget deck" id="deckPublish">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">One publish, end to end</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">THE CONSISTENCY DIFFERENCE, STATED PRECISELY</div>
+    <p>Because the data path isn't a Raft-replicated log, a writer failure can, in a narrow window, lose the
+    handful of most-recently-appended records that hadn't yet reached the acknowledgement threshold when it died
+    — failover promotes whichever surviving replica has the longest complete log, and any replica with a
+    divergent uncommitted tail truncates to match. Quorum queues, by contrast, only ever expose a write once
+    Raft's own majority-commit rule is satisfied, with a formally specified linearizability guarantee. Streams
+    trade a slice of that guarantee for a replication path fast enough to be worth building — pick the queue type
+    per §9/§11's guidance based on which guarantee your workload actually needs.</p>
+  </div>
+
+  <h3>(c) The offset model</h3>
+  <p>A consumer attaches to a stream at one of five positions: <code>first</code> (oldest offset retention still
+  has), <code>last</code> (the start of the most recently sealed segment — a fast approximate "near the end"),
+  <code>next</code> (only messages published after this subscribe), a specific numeric <b>offset</b>, or a
+  <b>timestamp</b> (the index is walked to find the nearest offset at-or-after that time). None of these mutate
+  anything — attaching a hundred consumers at <code>first</code> costs nothing extra beyond a hundred independent
+  read cursors over the same bytes.</p>
+
+  <h3>(d) Server-side offset tracking — without a second topic</h3>
+  <p>Kafka tracks consumer group progress in a dedicated internal <code>__consumer_offsets</code> topic — a
+  second piece of storage, replicated and compacted independently of the data it describes. RabbitMQ's stream
+  protocol instead lets a consumer periodically store its last-processed offset <i>under a name</i>
+  (a "reference"), persisted alongside the stream itself rather than in a separate system, and query it back on
+  reconnect (<code>store_offset</code> / <code>query_offset</code>). Smaller surface area, one less moving part
+  to keep consistent with the stream it describes — the cost is that this tracking lives inside the Stream
+  Protocol rather than being available identically to AMQP 0-9-1 clients, which must track their own offsets
+  application-side if they need resumability across reconnects.</p>
+
+  <h3>(e) Retention: bounded storage by construction</h3>
+  <p>Retention is governed by <code>max-age</code> (wall-clock) and/or <code>max-length-bytes</code> (total
+  stored bytes), plus <code>stream-max-segment-size-bytes</code> controlling how large a single segment grows
+  before it's sealed and a new one opened. A background reclaim pass deletes the <i>oldest whole segment</i> once
+  the policy is exceeded — truncation never happens mid-segment, only at segment boundaries, which is exactly why
+  segment size is itself a tuning knob: smaller segments mean finer-grained, more frequent reclaim; larger
+  segments mean coarser but cheaper bookkeeping. Play with the sliders below.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Segment rollover &amp; retention — live model</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>segment size threshold</label><input type="range" id="seg-size" min="0" max="4" value="1" step="1"><span class="val" id="seg-size-val">1 MB</span></div>
+      <div class="slider-row"><label>max-length-bytes (retention)</label><input type="range" id="seg-maxlen" min="0" max="4" value="2" step="1"><span class="val" id="seg-maxlen-val">6 MB</span></div>
+      <div class="slider-row"><label>publish volume so far</label><input type="range" id="seg-published" min="0" max="100" value="30" step="1"><span class="val" id="seg-published-val">3 MB written</span></div>
+      <div class="memlegend" id="seg-legend"></div>
+      <div class="memmap" id="segmap"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="seg-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The log model, priced against every serious alternative</h2>
+  <p>Streams don't compete only with Kafka — they compete with every other queue type in this course, and with
+  every other system that has answered "replay plus fan-out" differently:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>STORAGE MODEL</th><th>WHAT IT BUYS</th><th>WHAT IT COSTS</th></tr>
+    <tr><td>RabbitMQ stream</td><td>Append-only log (osiris), consumer-held offsets, non-Raft replication</td>
+      <td><span class="pill g">replay + cheap fan-out inside a broker you already run</span> <span class="pill g">AMQP routing in front</span></td>
+      <td><span class="pill b">AMQP-path protocol translation tax</span> <span class="pill y">weaker failover guarantee than quorum queues</span></td></tr>
+    <tr><td>RabbitMQ quorum queue (ch. 6)</td><td>Raft-replicated destructive FIFO (rabbit_fifo/ra)</td>
+      <td><span class="pill g">linearizable, majority-committed writes</span> <span class="pill g">strong per-message ack semantics</span></td>
+      <td><span class="pill b">no replay</span> <span class="pill b">O(N) storage under fan-out</span></td></tr>
+    <tr><td>Apache Kafka</td><td>Append-only log, partitioned topics, separate __consumer_offsets topic</td>
+      <td><span class="pill g">mature tiered storage &amp; ecosystem</span> <span class="pill g">very high scale ceilings</span></td>
+      <td><span class="pill b">a second system to run</span> <span class="pill y">no broker-side content routing</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>Log segments on a separate storage tier (BookKeeper), stateless brokers</td>
+      <td><span class="pill g">independent broker/storage scaling</span> <span class="pill g">tiered/infinite retention</span></td>
+      <td><span class="pill y">extra hop to BookKeeper</span> <span class="pill b">two systems, more operational surface</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Log-backed streams bolted onto NATS subjects, Raft-replicated (its own consensus, not ra)</td>
+      <td><span class="pill g">very low base latency</span> <span class="pill g">simple mental model</span></td>
+      <td><span class="pill y">smaller ecosystem/tooling than Kafka</span></td></tr>
+    <tr><td>Amazon SQS / Kinesis</td><td>SQS: destructive, ephemeral. Kinesis: log-shaped, sharded, managed retention</td>
+      <td><span class="pill g">zero operational burden (managed)</span></td>
+      <td><span class="pill b">SQS has no replay; Kinesis has its own sharding/cost model to learn</span></td></tr>
+    <tr><td>ActiveMQ / Artemis</td><td>Destructive queues/topics; no native long-retention log abstraction</td>
+      <td><span class="pill g">JMS familiarity, multi-protocol</span></td>
+      <td><span class="pill b">no built-in replay-from-offset primitive comparable to a stream</span></td></tr>
+    <tr><td>Redis Streams</td><td>In-memory (optionally persisted) log with consumer groups and IDs</td>
+      <td><span class="pill g">extremely low latency</span> <span class="pill g">simple ops if Redis is already in the stack</span></td>
+      <td><span class="pill b">retention and durability weaker than a disk-first log by default</span> <span class="pill y">scale ceiling well below Kafka/streams</span></td></tr>
+  </table>
+  <p>Read this the way §9 tables have read all course: <b>no system gets replay, cheap fan-out, broker-side
+  routing, and Raft-grade consistency all at once for free.</b> RabbitMQ streams occupy a specific, useful point
+  in that space — replay and fan-out <i>inside</i> the broker you already operate, with AMQP routing intact, at
+  the cost of a slightly weaker failover guarantee than quorum queues and a translation tax on the AMQP path.
+  Teams that need Kafka's ecosystem, its tiered storage, or its scale ceiling should still reach for Kafka; teams
+  who need replay and fan-out <i>without adding a system</i> now have a real native answer.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Numbers you can predict from the storage model alone</h2>
+  <p>Every property below follows directly from "sequential append, sparse index, consumer-held offsets" —
+  nothing here needs a benchmark to predict the <i>shape</i> of, only the constants:</p>
+  <ul class="plain">
+    <li><b>Append is O(1) amortized</b> — a write is a sequential append to the currently-open segment file plus
+      an occasional index checkpoint, the cheapest possible disk access pattern, versus a classic queue's message
+      store plus queue-index bookkeeping (ch. 4) or a quorum queue's per-entry Raft log append (ch. 6).</li>
+    <li><b>Offset lookup is O(log segments) + O(1) + a small bounded scan</b> — find the right segment by its
+      starting offset (binary search over an ordered, typically small list), consult that segment's sparse index
+      for the nearest checkpoint at or before the target offset, then scan forward a bounded number of records.
+      This is why a stream can serve "subscribe from offset 4,000,000" about as cheaply as "subscribe from the
+      end," a property no destructive queue has any equivalent of.</li>
+    <li><b>Reads don't compete with writes for the same process's attention the way a classic queue's does.</b>
+      Replica processes serve local reads from their own on-disk copy; a busy consumer group reading from a
+      follower doesn't add load to the writer's mailbox the way registering another consumer on a classic queue
+      process adds work to that one process (ch. 4, ch. 5's credit-flow chapter).</li>
+    <li><b>Fan-out cost is O(1) in consumer count, not O(N).</b> Storage is written once regardless of how many
+      consumers exist; §1's 50×-duplication math simply doesn't apply once storage is shared rather than
+      per-reader.</li>
+    <li><b>The Stream Protocol path removes AMQP's per-message framing and channel bookkeeping entirely</b> —
+      RabbitMQ's own published benchmarks put a single stream, driven over the dedicated protocol on suitable
+      multi-core hardware, comfortably an order of magnitude above what a single classic or quorum queue sustains,
+      specifically because there is no channel-level protocol translation left to pay for on that path (§7).</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sustained read throughput vs number of independent consumers</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>independent consumer groups</label><input type="range" id="perf-consumers" min="1" max="200" value="10" step="1"><span class="val" id="perf-consumers-val">10</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:#f25c54">━</span> queue-per-group storage write rate</span>
+        <span><span style="color:var(--pg)">━</span> stream storage write rate (one copy)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch of §1's arithmetic, not a benchmark result: queue-per-group write traffic
+    scales linearly with consumer-group count because each group is an independent, fully-written copy; stream
+    write traffic is flat because storage is written exactly once regardless of how many independent readers
+    attach. Real hardware adds constants (disk throughput ceilings, network replication bandwidth, page-cache
+    behavior) this model doesn't capture — but the <i>shape</i>, linear-in-N versus flat, is exactly what §1's
+    math predicts and what §15's simulator lets you drive yourself.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three shapes of story: the benchmark claim, the retention postmortem, the migration</h2>
+
+  <h3>Story 1: the throughput claim streams were built to justify</h3>
+  <p>The RabbitMQ core team has published benchmark results, using the dedicated Stream Protocol against
+  multi-core hardware, showing a single stream sustaining throughput well beyond what a single classic or quorum
+  queue can push — the entire architectural point of §7's second access path. The number that matters for
+  operators isn't the specific benchmark figure (hardware-dependent and always worth re-measuring on your own
+  boxes) but the <i>reason</i>: removing AMQP's per-message channel-level framing and flow control from the hot
+  path, and replacing one queue process's serialized mailbox with sequential-append-plus-replicated-forwarding,
+  changes the shape of the ceiling, not just its height.</p>
+
+  <h3>Story 2: the retention-misconfiguration postmortem shape</h3>
+  <p>A recurring operational failure mode with streams mirrors one this course already covered for quorum queues
+  (ch. 10 goes deeper on disk alarms generally): an operator sets <code>max-age</code> or
+  <code>max-length-bytes</code> generously — "we might need a week of history" — without accounting for actual
+  publish volume, and disk usage on the stream's nodes grows until <code>disk_free_limit</code> trips a
+  memory/disk alarm that throttles publishers cluster-wide, not just on the stream in question. The fix is
+  boring and specific to this chapter's mechanics: retention is a capacity-planning number, not an
+  aspiration — size <code>max-length-bytes</code> against measured bytes/sec × desired retention window, the same
+  arithmetic §8's segment-and-retention widget lets you play with directly.</p>
+
+  <h3>Story 3: the fan-out migration this chapter's math predicts</h3>
+  <p>Teams running the queue-per-consumer-group pattern from §3 at real scale — one classic or quorum queue per
+  downstream team off a shared fanout exchange — report exactly the storage and provisioning-toil problem §4
+  quantified: adding the twentieth or thirtieth consumer group means another fully-replicated queue, another set
+  of durability settings to get right, and still no way to give a new team history that predates their queue's
+  creation. Migrating that fan-out point to a single stream, with each downstream team subscribing at whatever
+  offset (often <code>first</code>, to backfill, then continuing forward) it needs, replaces N duplicated,
+  hand-provisioned queues with one bounded-storage log and a subscribe call — the migration this chapter's
+  arithmetic in §1 and §4 was built to make legible before you attempt it.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend "why not just add more queues" at a whiteboard?</h2>
+  <p>Think before revealing — Staff/Principal depth, and the kind of question that separates "has read the docs"
+  from "understands the tradeoff."</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: the queue-type façade, the coordinator, and osiris itself</h2>
+  <p>Streams are deliberately split across two codebases: RabbitMQ core owns the queue-type façade and the
+  cluster-wide coordinator; <b>osiris</b> is its own standalone Erlang library, versioned and testable
+  independently of the broker. Files marked <span style="color:var(--warn)">●</span> are this chapter's core
+  reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">deps/rabbit/src/</span></div>
+<div>├── <span class="fhl">● rabbit_stream_queue.erl</span> <span class="fnote">— queue-type callback module; makes a stream look like a queue to AMQP 0-9-1 clients</span></div>
+<div>└── <span class="fhl">● rabbit_stream_coordinator.erl</span> <span class="fnote">— cluster-wide, ra/Raft-backed: decides writer/replica placement and drives failover</span></div>
+<div><span class="dir">deps/rabbitmq_stream/src/</span> <span class="fnote">— the plugin implementing the dedicated wire protocol</span></div>
+<div>├── <span class="fhl">● rabbit_stream_reader.erl</span> <span class="fnote">— per-connection process for the Stream Protocol (port 5552); distinct from AMQP's rabbit_reader (ch. 2)</span></div>
+<div>└── rabbit_stream_manager.erl <span class="fnote">— protocol-level create/delete/subscribe handling</span></div>
+<div><span class="dir">deps/osiris/src/</span> <span class="fnote">— the standalone log library, usable outside RabbitMQ entirely</span></div>
+<div>├── osiris.erl <span class="fnote">— top-level API: create a stream, append, read from an offset</span></div>
+<div>├── <span class="fhl">● osiris_writer.erl</span> <span class="fnote">— the leader process: local append + forward to replicas + track ack thresholds</span></div>
+<div>├── <span class="fhl">● osiris_replica.erl</span> <span class="fnote">— the follower process: receive replicated frames, append locally, serve local reads</span></div>
+<div>└── <span class="fhl">● osiris_log.erl</span> <span class="fnote">— the segment + sparse-index file format: append, seek-by-offset, seek-by-timestamp</span></div>
+  </div></div>
+
+  <p>Simplified but structurally faithful Erlang. First, the segment writer — the piece that turns "append this
+  record" into bytes on disk plus an occasional index checkpoint:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>osiris_log.erl — append/2, simplified</span></div>
+    <pre><span class="f">append</span>(Log = #{cur_seg := Seg, cur_offset := Offset, bytes_since_ck := B}, Body) -&gt;
+    <span class="c">%% Record layout: [offset:8][timestamp:8][type:1][crc:4][size:4][body]</span>
+    Record = encode_record(Offset, now_ms(), <span class="n">?TYPE_SIMPLE</span>, Body),
+    :ok = file:write(Seg#seg.fd, Record),
+
+    <span class="c">%% Sparse index: only checkpoint every ?INDEX_INTERVAL bytes, not every</span>
+    <span class="c">%% offset -- this is the whole reason seeks stay cheap without an</span>
+    <span class="c">%% index nearly as large as the log itself.</span>
+    B1 = B + byte_size(Record),
+    Log1 = <span class="k">if</span>
+        B1 &gt;= <span class="n">?INDEX_INTERVAL</span> -&gt;
+            write_index_entry(Log, Offset, file_position(Seg)),
+            Log#{bytes_since_ck =&gt; <span class="n">0</span>};
+        <span class="k">true</span> -&gt;
+            Log#{bytes_since_ck =&gt; B1}
+    <span class="k">end</span>,
+    maybe_roll_segment(Log1#{cur_offset =&gt; Offset + <span class="n">1</span>}).</pre>
+  </div>
+
+  <p>Second, the writer process replicating a batch to followers and only confirming once enough of them ack —
+  the piece that is deliberately <i>not</i> a Raft commit round:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>osiris_writer.erl — handle_cast for a publish batch, simplified</span></div>
+    <pre><span class="f">handle_cast</span>({publish, Batch, From}, State = #wr{replicas = Reps, acks = AckN}) -&gt;
+    <span class="c">%% Append locally first -- the writer's own copy is authoritative</span>
+    <span class="c">%% for "did this happen at all," independent of replica speed.</span>
+    {ok, State1} = osiris_log:append(State#wr.log, Batch),
+
+    <span class="c">%% Forward the SAME bytes to every replica -- no Raft log entry,</span>
+    <span class="c">%% no leader-election vote, just log shipping over an ordinary</span>
+    <span class="c">%% Erlang message / TCP frame per replica.</span>
+    [ osiris_replica:replicate(R, Batch) || R &lt;- Reps ],
+
+    <span class="c">%% Confirm to the producer once AckN replicas (a configured</span>
+    <span class="c">%% threshold, not necessarily a Raft-style strict majority vote)</span>
+    <span class="c">%% have durably appended -- track pending confirms by offset.</span>
+    State2 = track_pending_confirm(State1, From, AckN),
+    {noreply, State2}.</pre>
+  </div>
+
+  <p>Third, a consumer subscribing at an arbitrary offset — the operation that has no equivalent at all in a
+  destructive queue:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>osiris_log.erl — init_reader/2 (seek to an offset), simplified</span></div>
+    <pre><span class="f">init_reader</span>(Log, {offset, TargetOffset}) -&gt;
+    <span class="c">%% 1. Find the segment whose [first_offset, next_offset) range</span>
+    <span class="c">%%    contains TargetOffset -- binary search over an ordered,</span>
+    <span class="c">%%    typically-small list of open segment files.</span>
+    Seg = find_segment_for_offset(Log, TargetOffset),
+
+    <span class="c">%% 2. Consult that segment's sparse index for the checkpoint at or</span>
+    <span class="c">%%    just before TargetOffset -- O(1) once the segment is known.</span>
+    {CkOffset, FilePos} = index_lookup_floor(Seg, TargetOffset),
+
+    <span class="c">%% 3. Scan forward from FilePos, a bounded number of records,</span>
+    <span class="c">%%    until reaching TargetOffset exactly.</span>
+    scan_forward_to(Seg, FilePos, CkOffset, TargetOffset).</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Pull the log engine out into its own library.</b> Osiris has no RabbitMQ-specific dependency in its
+    core append/read path — it can be (and is) tested, versioned, and reasoned about as "a log," independent of
+    queue-type plumbing, exchanges, or AMQP at all. That separation is what let the team optimize the hot path
+    purely for sequential I/O without AMQP compatibility concerns leaking into it. <b>2. Keep the data path off
+    the Raft log entirely.</b> Quorum queues need Raft because every operation (enqueue, ack, requeue) is a state
+    transition that must be linearizably ordered and agreed on. A stream's data path is <i>one</i> operation,
+    forever: append. Routing that through a general consensus protocol would spend cycles proving something
+    already true by construction — bytes appended in the order they were sent — so osiris uses the lighter
+    writer/replica log-shipping protocol instead, and reserves Raft (via the coordinator) for the genuinely rare,
+    strongly-consistent decision of who gets to be writer. <b>3. Make the index sparse on purpose.</b> An
+    exhaustive per-offset index would nearly double storage cost for no benefit past "seek is O(1) instead of
+    O(1)-plus-a-short-scan." Checkpointing every N bytes trades a small, bounded linear scan for a dramatically
+    smaller index file — the same instinct behind B-tree fan-out choices and Kafka's own segment index design.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> — read them, they encode the
+  chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — the log model's arrival, in order</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click these events in chronological order, then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Stream vs quorum queue: identical publish load, side by side</h2>
+  <p>Drive the same publish workload into both storage models at once. On the left, every new consumer group
+  needs its own dedicated queue — watch storage duplicate and watch a freshly-created group start from zero,
+  unable to see anything published before it existed. On the right, attach any number of independent stream
+  consumers at <code>first</code>, <code>last</code>, <code>next</code>, a numeric offset, or a timestamp, and
+  watch them read the <i>same</i> underlying bytes without adding a single byte of storage — including a
+  brand-new consumer replaying from offset zero.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">rabbit@node1 — queue fan-out vs stream, live</span><span class="w-sub" id="sim-clock">TICK 0</span></div>
+    <div class="w-body">
+      <div class="sim-ctl" style="border-bottom:1px solid var(--border);border-radius:0">
+        <div class="ctl-t">SHARED PUBLISH WORKLOAD</div>
+        <div class="btns">
+          <button class="btn primary" id="sim-publish">publish batch (+20 msgs)</button>
+          <button class="btn" id="sim-burst">⚡ burst ×5</button>
+          <button class="chip" id="sim-auto">auto-publish: OFF</button>
+          <button class="btn" id="sim-reset">↺ reset simulator</button>
+        </div>
+        <div class="sim-counters" style="margin-top:10px">
+          <div class="scounter"><div class="cv" id="cnt-published">0</div><div class="cl">msgs published</div></div>
+          <div class="scounter"><div class="cv" id="cnt-qgroups">1</div><div class="cl">queue groups</div></div>
+          <div class="scounter"><div class="cv" id="cnt-sconsumers">0</div><div class="cl">stream consumers</div></div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0" id="streamcmp">
+        <!-- QUEUE MODEL -->
+        <div style="padding:16px;border-right:1px solid var(--border)">
+          <div class="ctl-t" style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px">QUEUE FAN-OUT MODEL — ONE DEDICATED QUEUE PER CONSUMER GROUP</div>
+          <button class="btn good" id="q-addgroup" style="margin-bottom:10px">+ new consumer group (new queue)</button>
+          <div id="q-groups"></div>
+          <div class="meter" style="margin-top:14px">
+            <div class="m-l"><span>TOTAL QUEUE STORAGE (all groups)</span><span id="q-bytes-v">0 KB</span></div>
+            <div class="m-bar"><div class="m-fill" id="q-bytes-fill" style="background:#f25c54"></div></div>
+          </div>
+        </div>
+
+        <!-- STREAM MODEL -->
+        <div style="padding:16px">
+          <div class="ctl-t" style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px">STREAM MODEL — ONE LOG, MANY INDEPENDENT OFFSETS</div>
+          <div class="toggle-row" style="margin:0 0 8px">
+            <button class="chip on" id="s-spec-first">first</button>
+            <button class="chip" id="s-spec-last">last</button>
+            <button class="chip" id="s-spec-next">next</button>
+            <button class="chip" id="s-spec-offset">offset</button>
+            <button class="chip" id="s-spec-ts">timestamp</button>
+          </div>
+          <div class="slider-row" id="s-offset-num-row" style="display:none">
+            <label>numeric offset</label><input type="range" id="s-offset-num" min="0" max="100" value="0" step="1"><span class="val" id="s-offset-num-val">0</span>
+          </div>
+          <div class="slider-row" id="s-offset-ts-row" style="display:none">
+            <label>timestamp (tick)</label><input type="range" id="s-offset-ts" min="0" max="100" value="0" step="1"><span class="val" id="s-offset-ts-val">tick 0</span>
+          </div>
+          <button class="btn good" id="s-attach" style="margin-bottom:10px">+ attach consumer</button>
+          <div class="sbe-label" style="text-align:left;margin:0 0 6px">SEGMENTS (oldest → newest)</div>
+          <div id="s-segments" style="display:flex;gap:5px;flex-wrap:wrap;min-height:40px;margin-bottom:10px"></div>
+          <div id="s-consumers"></div>
+          <div class="meter" style="margin-top:10px">
+            <div class="m-l"><span>TOTAL STREAM STORAGE (retained)</span><span id="s-bytes-v">0 KB</span></div>
+            <div class="m-bar"><div class="m-fill" id="s-bytes-fill"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sim-ctl" style="border-top:1px solid var(--border)">
+        <div class="ctl-t">STREAM RETENTION &amp; SEGMENT SIZE</div>
+        <div class="slider-row"><label>segment size threshold</label><input type="range" id="s-segsize" min="0" max="3" value="1" step="1"><span class="val" id="s-segsize-val">2 KB</span></div>
+        <div class="slider-row"><label>max-length-bytes (retention)</label><input type="range" id="s-maxlen" min="0" max="4" value="2" step="1"><span class="val" id="s-maxlen-val">10 KB</span></div>
+      </div>
+
+      <div class="callout ok" style="margin:16px" id="divergence-note"></div>
+
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Publish a few batches, then click "+ new consumer group" on the queue side — notice it starts at
+    zero and cannot see anything published before it existed. <b>2.</b> On the stream side, set the offset spec
+    to <code>first</code> and attach a consumer after publishing plenty of history — it starts reading from
+    offset zero (or the oldest retained offset, if retention has already truncated some) and can walk the entire
+    backlog: replay, proven live. <b>3.</b> Keep adding queue consumer groups and watch the red total climb
+    linearly while the orange stream total stays flat — that's §1's O(N) vs O(1) arithmetic, rendered. <b>4.</b>
+    Drag <code>max-length-bytes</code> down until it's smaller than what's been published — watch whole segments
+    get truncated from the oldest end, and notice any consumer whose offset falls inside a truncated segment gets
+    flagged as having fallen behind retention.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 8: three questions, no options</h2>
+  <p>No multiple choice here. Form a full answer in your head, then reveal. If a reveal surprises you, re-run the
+  relevant simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 07 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now name the three workloads destructive queue
+    semantics rule out, trace the segment-plus-sparse-index storage model osiris uses, explain precisely why
+    stream replication is deliberately not Ra/Raft, and choose between a stream, a quorum queue, and the AMQP vs
+    Stream Protocol access paths with real justification. Chapter 8 turns to a different kind of message
+    lifecycle entirely — dead lettering, TTL, and priority queues — the mechanisms that decide what happens to a
+    message a consumer <i>can't</i> or won't process, rather than one it hasn't read yet.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="rmq-08.html" style="text-decoration:none;display:inline-flex;align-items:center">RMQ-08: Dead Lettering, TTL &amp; Priority Queues →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2003–08", l:"the baseline", d:"<b>AMQP 0-9-1 and RabbitMQ's routing model are already in place</b> (ch. 1–3) — every queue type this course covers, including streams, still sits behind exchanges and bindings. Streams don't replace AMQP routing; they replace the destructive-buffer storage model behind one queue type." },
+  { yr:"2011", l:"Kafka open-sourced", d:"<b>LinkedIn open-sources Kafka</b>, built for its own activity-tracking pipeline: an immutable, append-only log per partition, consumers tracking their own offsets, no per-message broker-side routing logic at all. This is the storage model streams later import wholesale — RabbitMQ's team has been explicit that streams are a deliberate homage, not an independent invention." },
+  { yr:"2014", l:"the GitHub partition (ch. 1, ch. 6)", d:"<b>GitHub's public postmortem</b> on a RabbitMQ cluster partition exposes mirrored classic queues' lack of a real consensus protocol — the incident that eventually motivates both quorum queues (3.8) and, indirectly, the case for building any new replicated storage type on top of real consensus machinery rather than ad hoc mirroring." },
+  { yr:"2019 (3.8)", l:"quorum queues ship", d:"<b>RabbitMQ 3.8</b> ships quorum queues on the new <code>ra</code> Raft library (ch. 6) — the first RabbitMQ storage type with genuine, provable consensus. This is the precondition for streams: once the cluster has a real Raft library and a track record of using it for storage-type placement decisions, building a coordinator for a different, log-shaped storage type on the same foundation becomes tractable." },
+  { yr:"2020–21", l:"osiris is built", d:"<b>Osiris</b> — a standalone Erlang log-storage library, developed inside the RabbitMQ core team and open-sourced independently of the broker itself — implements the segment-file-plus-sparse-index format and the writer/replica log-shipping protocol this chapter derives in §8. Building it as its own library, not RabbitMQ-internal code, is a deliberate choice: it can be tested and optimized purely as \"a log,\" with no AMQP compatibility concerns in its core path." },
+  { yr:"2021 (3.9)", l:"streams ship, mirrored queues deprecated", d:"<b>RabbitMQ 3.9</b> ships <b>streams</b> as a new queue type (<code>x-queue-type=stream</code>) backed by osiris, reachable through the existing AMQP path — and in the very same release, formally <b>deprecates mirrored classic queues</b> (removed in 4.0, ch. 1). Same release, same underlying project: give operators real, principled replicated storage options instead of ad hoc mirroring." },
+  { yr:"2021 (3.9)", l:"the Stream Protocol", d:"<b>A dedicated binary Stream Protocol</b> ships alongside, on port 5552 — its own frame format, its own client libraries (Java, Go, .NET, and others), purpose-built for max-throughput publish/subscribe against a stream without paying AMQP 0-9-1's per-message channel-level overhead (§7)." },
+  { yr:"2022 (3.11)", l:"super streams &amp; single active consumer", d:"<b>Super streams</b> — a partitioned collection of ordinary streams behind a partitioning key, for horizontal scale past what one stream's single writer can sustain — and <b>single active consumer for streams</b>, guaranteeing only one consumer in a named group processes messages at a time (ordered fan-out within a group), both ship in this era, closing gaps a single stream and independent AMQP consumers couldn't cover alone." },
+  { yr:"2024 (4.0)", l:"mirrored queues gone, Khepri arrives", d:"<b>RabbitMQ 4.0</b> removes mirrored classic queues entirely (ch. 1) — quorum queues and streams are now RabbitMQ's two real replicated storage models, one Raft-consensus-driven and destructive, one log-shaped and replicated by osiris's own lighter protocol, each suited to a different half of this chapter's §1 problem statement." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===4 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[4].d;
+
+/* ============================================================
+   2. DECK: queue-per-group duplication (§3) — canvas graph sim
+   ============================================================ */
+(function(){
+  let cfg = { groups: 2 };
+  const steps = [
+    { stage:`<canvas id="dup-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>Two consumer groups, two dedicated queues.</b> A shared fanout exchange, each queue a full independent copy. Manageable, and correct for this scale.`,
+      onshow:()=>{ cfg.groups=2; } },
+    { stage:`<canvas id="dup-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>A third team asks for the same event stream.</b> An operator declares queue #3, binds it — and it starts empty. Anything published before this moment is invisible to it unless the audit-queue workaround happens to still have it.`,
+      onshow:()=>{ cfg.groups=3; } },
+    { stage:`<canvas id="dup-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>A year later: 8 consumer groups.</b> Eight fully durable, fully replicated copies of every message. Storage cost is now 8× the information actually being communicated, and every group's durability settings are a separate thing to get right.`,
+      onshow:()=>{ cfg.groups=8; } },
+    { stage:`<canvas id="dup-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>Verdict.</b> Storage and per-publish routing cost grew as O(N groups), not O(1). Every organizational change to "who needs this stream" was an operator provisioning a new queue. Replay never became a real operation anywhere in this design. §5 fixes the abstraction itself.`,
+      onshow:()=>{ cfg.groups=8; } }
+  ];
+  stepper("deckDup", steps);
+
+  let t = 0;
+  function loop(){
+    const c = document.getElementById("dup-c");
+    if (c){
+      t += 0.016;
+      const ctx = c.getContext("2d");
+      const W = c.width, H = c.height;
+      ctx.clearRect(0,0,W,H);
+      const G = cfg.groups;
+      const px = 90, cx = W-150;
+      const gys = Array.from({length:G}, (_,i)=> 30 + i*(H-60)/Math.max(1,G-1||1));
+      for (let j=0;j<G;j++){
+        const gy = G===1? H/2 : gys[j];
+        const pulse = (Math.sin(t*2.2 + j*0.9)+1)/2;
+        ctx.strokeStyle = `rgba(255,159,67,${0.12+pulse*0.2})`;
+        ctx.lineWidth = 1.3;
+        ctx.beginPath(); ctx.moveTo(px, H/2); ctx.lineTo(cx, gy); ctx.stroke();
+        ctx.fillStyle = "#f25c54"; ctx.beginPath(); ctx.roundRect ? null : null;
+        ctx.fillRect(cx, gy-11, 118, 22);
+        ctx.fillStyle = "#0a0d13"; ctx.font="10.5px monospace"; ctx.textAlign="left";
+        ctx.fillText("queue #"+(j+1)+" (full copy)", cx+6, gy+4);
+      }
+      ctx.fillStyle = "#60a5fa"; ctx.beginPath(); ctx.arc(px, H/2, 11, 0, 7); ctx.fill();
+      ctx.fillStyle = "#8b94a7"; ctx.font="11px monospace"; ctx.textAlign="right";
+      ctx.fillText("fanout exchange", px-18, H/2+4);
+      ctx.fillStyle = "#5b6475"; ctx.textAlign="left"; ctx.font="11px monospace";
+      ctx.fillText(`storage multiplier: ${G}× one logical stream`, 15, H-10);
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+
+/* ============================================================
+   3. DECK: deriving the stream model (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckLog", [
+    { stage: wrap(box("REQUIREMENT", cell("a new reader must be able to start at offset 0 with zero coordination with any existing reader or the producer","#ff9f43","rgba(255,159,67,.08)"))),
+      cap:`<b>Start from §4's sharpest failure.</b> If a brand-new consumer must be able to read history without anyone pre-provisioning anything for it, "consumed" cannot mean "deleted" — storage has to outlive any one reader's progress through it.` },
+    { stage: wrap(box("STORAGE BECOMES", cell("an immutable, append-only log — write once, never mutate","#60a5fa")), box("NOT", cell("a destructive buffer that empties as it's read","#5b6475"))),
+      cap:`<b>Flip the storage model.</b> A message, once appended, never changes and is never removed except by explicit, bulk retention policy (§8) — reading it is a pure function of "give me the bytes at offset O," with no side effect on the log itself.` },
+    { stage: wrap(box("READERS TRACK THEIR OWN POSITION", cell("consumer A: offset 4,102","#4ade80") + cell("consumer B: offset 88,900","#4ade80") + cell("consumer C (brand new): offset 0","#4ade80"))),
+      cap:`<b>Move position-tracking to the reader.</b> The log itself has no idea how many consumers exist or where any of them are — each consumer holds its own offset, so adding the hundredth consumer costs the log nothing at all.` },
+    { stage: wrap(box("RESULT", cell("storage: written once, read any number of times","#4ade80") + cell("replay: subscribe at offset 0, or any offset, at any time","#4ade80") + cell("fan-out cost: O(1) in consumer count, not O(N)","#ff9f43"))),
+      cap:`<b>All three of §1's failures dissolve at once.</b> Replay is just "subscribe at an earlier offset." Fan-out is free because storage isn't duplicated per reader. Throughput stops being bounded by one destructive queue's serialized mailbox, because appending is the only write operation left to make fast (§8 does exactly that).` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  amqp:{ n:"AMQP 0-9-1 client", f:"any language implementing AMQP 0-9-1 (ch. 2)", r:"Sees a stream as a queue with x-queue-type=stream. Must set basic.qos prefetch explicitly — an offset-based reader has no natural 'empty buffer' backpressure signal. Every consume is translated into an offset read by rabbit_stream_queue.", l:"Lives as long as its channel/connection, exactly like any other AMQP consumer in this course.", d:"Disconnecting mid-read simply drops that AMQP consumer registration; the stream itself is completely unaffected and any other reader's offset is untouched." },
+  streamproto:{ n:"Stream Protocol client (port 5552)", f:"deps/rabbitmq_stream (plugin) — dedicated client libraries, not AMQP", r:"Speaks a purpose-built binary protocol: subscribe-with-offset-spec, publish with broker-assigned publishing IDs for producer deduplication, credit-based flow control tuned for a log. Pays none of the AMQP channel-level translation cost.", l:"One TCP connection per client, handled by rabbit_stream_reader — a separate connection process from AMQP's rabbit_reader.", d:"A dropped Stream Protocol connection loses only that client's in-flight credit state; offsets it explicitly stored server-side (§8d) are recoverable on reconnect via query_offset." },
+  squeue:{ n:"rabbit_stream_queue", f:"deps/rabbit/src/rabbit_stream_queue.erl", r:"The queue-type callback module: the piece of RabbitMQ core that makes a stream declarable, bindable, and consumable through the exact same AMQP machinery as classic and quorum queues (ch. 3, ch. 4, ch. 6).", l:"Exists for the lifetime of the stream's declaration; stateless with respect to the log's actual bytes — a façade, not a copy of the data.", d:"Has nothing of its own to crash independently of the underlying osiris writer/replica processes — it's a thin translation layer, not a stateful process holding message data." },
+  coordinator:{ n:"rabbit_stream_coordinator", f:"deps/rabbit/src/rabbit_stream_coordinator.erl — itself a Raft state machine on ra", r:"Cluster-wide decision-maker: which node is the writer (leader) for each stream, how followers are placed, and how failover is driven when a writer node dies. Uses the same ra library quorum queues do (ch. 6) — but only for this rare, strongly-consistent decision, never for the message data path itself.", l:"One coordinator state machine per cluster (conceptually), replicated via Raft across cluster nodes for its own high availability.", d:"If the coordinator's current Raft leader dies, Raft elects a new one exactly as ch. 6 describes for quorum queues — a separate, smaller-scoped failover from any individual stream's writer failover." },
+  writer:{ n:"osiris writer (leader)", f:"deps/osiris/src/osiris_writer.erl", r:"The one process per stream currently accepting publishes: appends locally, forwards the same bytes to every replica, and confirms a publish once a configured number of replicas have durably appended it (§8b) — not a Raft commit round.", l:"Chosen and placed by rabbit_stream_coordinator; can migrate to a different node on failover.", d:"If the writer's node dies, the coordinator promotes whichever surviving replica has the most complete log to become the new writer; any divergent, unacknowledged tail on the old writer is lost (§8b's honest consistency callout)." },
+  replica:{ n:"osiris replica (follower)", f:"deps/osiris/src/osiris_replica.erl", r:"Receives replicated frames from the writer, appends them to its own local segment/index files, and serves local reads for consumers attached to that node — offloading read load away from the writer entirely.", l:"One process per replica per stream, on whichever nodes the coordinator placed a copy.", d:"A replica crash is a one_for_one restart (ch. 1's supervision model) — it resyncs from the writer (or from a nearer replica) on restart; other replicas and the writer are unaffected." },
+  offsettrack:{ n:"server-side offset tracking", f:"Stream Protocol's store_offset / query_offset, persisted alongside the stream (not a separate topic)", r:"Lets a Stream Protocol consumer periodically persist its last-processed offset under a name (a 'reference'), and query it back after a reconnect — resumability without the consumer's own application code tracking position.", l:"Lives as long as the stream itself; one stored offset per reference name.", d:"Not a separate replicated system the way Kafka's __consumer_offsets topic is — one less moving part, at the cost of this feature being Stream-Protocol-specific rather than uniformly available to AMQP 0-9-1 clients." },
+  segment:{ n:"segment file (.log)", f:"on-disk, one directory per stream, named by first offset", r:"The actual message bytes: a sequence of records (offset, timestamp, type, CRC, size, body) written strictly in append order. This is the only place message bodies physically live.", l:"Sealed once it hits the configured segment-size threshold; a new segment then opens (§8e).", d:"Never modified once sealed — retention deletes whole sealed segment files, never edits inside one (§8e)." },
+  index:{ n:"index file (.index)", f:"on-disk, one per segment, sparse by design", r:"A checkpoint every N bytes or entries mapping offset → file position, letting a seek to an arbitrary offset resolve in O(log segments) + O(1) + a short bounded scan, instead of a full linear scan of the segment (§8a, §10).", l:"Written incrementally alongside its segment; sealed and immutable once the segment seals.", d:"Deleted together with its segment when retention reclaims that segment — index and data always travel together." },
+  superstream:{ n:"super stream", f:"a coordinated collection of ordinary streams (partitions) plus a partitioning function", r:"Horizontal scale-out past a single stream's one-writer throughput ceiling: messages are routed to one of several underlying streams by a partition key, the same way Kafka partitions a topic. Single active consumer (per §2's timeline) can additionally guarantee ordered, one-at-a-time processing within a consumer group across the whole super stream.", l:"Declared as a group of individually-ordinary streams; each partition has its own writer, replicas, segments, and index, entirely independent of its siblings.", d:"Losing one partition's writer only affects that partition's failover (§8b) — the super stream as a whole degrades gracefully, partition by partition." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON FAILURE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("writer");
+
+/* ============================================================
+   5. DECK: one publish, end to end (§8b)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckPublish", [
+    { stage: wrap(box("1 · PRODUCER PUBLISHES", cell("batch of records → osiris_writer","#60a5fa"))),
+      cap:`<b>A publish arrives at the writer</b> — the one process currently holding leadership for this stream, placed there by rabbit_stream_coordinator.` },
+    { stage: wrap(box("2 · LOCAL APPEND FIRST", cell("osiris_log:append/2 — sequential write to the open segment file","#4ade80") + cell("sparse index checkpoint every N bytes","#4ade80"))),
+      cap:`<b>The writer appends to its own local segment file first.</b> Its own copy is authoritative for "did this happen at all" — a cheap, purely sequential disk write, with an index checkpoint only occasionally, not per record (§8a).` },
+    { stage: wrap(box("3 · FORWARD TO REPLICAS", cell("same bytes shipped to every osiris_replica — no Raft log entry, no election vote","#ff9f43"))),
+      cap:`<b>The same bytes are forwarded to every replica</b> over an ordinary message/TCP path — this is the step that is deliberately not a Raft consensus round (§6, §8b).` },
+    { stage: wrap(box("4 · REPLICAS APPEND LOCALLY", cell("each replica appends to ITS OWN local segment + index, then acks","#4ade80"))),
+      cap:`<b>Each replica does its own local append</b> (same segment-plus-sparse-index format) and sends an acknowledgement back to the writer once durable.` },
+    { stage: wrap(box("5 · CONFIRM ONCE THRESHOLD MET", cell("writer confirms the publish to the producer once N replicas have acked","#ff9f43","rgba(255,159,67,.08)")), box("FAILOVER, IF THE WRITER DIES HERE", cell("promote whichever replica has the most complete log — any divergent uncommitted tail is truncated","#f25c54"))),
+      cap:`<b>The publish is confirmed once the configured acknowledgement threshold is met</b> — not a strict Raft majority-commit guarantee. If the writer dies before that threshold is reached, those last few records can be lost on failover; this is the exact, honest cost §6's consistency callout names.` }
+  ]);
+})();
+
+/* ============================================================
+   6. SEGMENT ROLLOVER & RETENTION WIDGET (§8e)
+   ============================================================ */
+(function(){
+  const SEGSIZES = [256, 512, 1024, 2048, 4096]; // KB
+  const MAXLENS  = [1024, 3072, 6144, 10240, 20480]; // KB
+  const fmtKB = kb => kb >= 1024 ? (kb/1024).toFixed(1)+" MB" : kb.toFixed(0)+" KB";
+  function render(){
+    const segKB = SEGSIZES[+el("seg-size").value];
+    const maxlenKB = MAXLENS[+el("seg-maxlen").value];
+    const publishedKB = (+el("seg-published").value / 100) * (maxlenKB * 2.2 + 2000);
+    el("seg-size-val").textContent = fmtKB(segKB);
+    el("seg-maxlen-val").textContent = fmtKB(maxlenKB);
+    el("seg-published-val").textContent = fmtKB(publishedKB) + " written";
+
+    const nSegs = Math.max(1, Math.ceil(publishedKB / segKB));
+    const retainedKB = Math.min(publishedKB, maxlenKB);
+    const truncatedKB = Math.max(0, publishedKB - maxlenKB);
+    const retainedSegs = Math.max(1, Math.ceil(retainedKB / segKB));
+    const truncatedSegs = Math.max(0, nSegs - retainedSegs);
+
+    const segs = [
+      ["truncated (reclaimed by retention)", truncatedKB, "#3a3f4d"],
+      ["retained on disk", retainedKB, "#ff9f43"],
+    ];
+    const wsum = segs.reduce((s,x)=>s+Math.pow(x[1]||1,0.5),0);
+    el("segmap").innerHTML = segs.map(([lbl,v,c])=>
+      `<div class="seg" style="background:${c};width:${(Math.pow(v||1,0.5)/wsum*100).toFixed(2)}%" title="${lbl}: ${fmtKB(v)}">${v>0?fmtKB(v):""}</div>`).join("");
+    el("seg-legend").innerHTML = segs.map(([lbl,v,c])=>`<span><span class="sw" style="background:${c}"></span>${lbl}</span>`).join("");
+
+    el("seg-note").innerHTML = truncatedKB > 0
+      ? `At <b style="color:var(--pg)">${fmtKB(publishedKB)}</b> published, split across roughly <b>${nSegs}</b> segments of ${fmtKB(segKB)} each: retention (<code>max-length-bytes=${fmtKB(maxlenKB)}</code>) has reclaimed the oldest <b style="color:var(--bad)">${truncatedSegs}</b> whole segment(s) — <b style="color:var(--bad)">${fmtKB(truncatedKB)}</b> of history is gone, only at segment boundaries, never mid-segment. Any consumer still pointing at an offset inside a truncated segment has fallen behind retention and must resubscribe at the new oldest available offset.`
+      : `At <b style="color:var(--pg)">${fmtKB(publishedKB)}</b> published, split across roughly <b>${nSegs}</b> segments of ${fmtKB(segKB)} each: everything published so far still fits inside <code>max-length-bytes=${fmtKB(maxlenKB)}</code>, so nothing has been reclaimed yet — the full history is still replayable from offset zero.`;
+  }
+  el("seg-size").oninput = render;
+  el("seg-maxlen").oninput = render;
+  el("seg-published").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. PERF CHART: read throughput vs consumer count (§10)
+   ============================================================ */
+(function(){
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function render(){
+    const N = +el("perf-consumers").value;
+    el("perf-consumers-val").textContent = N;
+    const W = cv.width, H = cv.height, PAD = 42;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=1;x<=200;x+=2) xs.push(x);
+    const queueMBs = x => x * 0.2;           // MB/s — linear in consumer-group count
+    const streamMBs = x => 2 + x*0.0;        // MB/s — flat, one copy regardless of readers
+    const maxY = Math.max(...xs.map(queueMBs), ...xs.map(streamMBs)) * 1.05;
+    const X = v => PAD + (v/200)*(W-PAD-14);
+    const Y = v => H-26 - (v/maxY)*(H-46);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [1,50,100,150,200].forEach(v=>{ ctx.beginPath(); ctx.moveTo(X(v),10); ctx.lineTo(X(v),H-22); ctx.stroke(); ctx.fillText(v+"", X(v)-6, H-6); });
+    function curve(fn, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const y = Y(fn(x)); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+      ctx.stroke();
+    }
+    curve(queueMBs, "#f25c54");
+    curve(streamMBs, "#ff9f43");
+    ctx.setLineDash([4,4]); ctx.strokeStyle = "#ffd166";
+    ctx.beginPath(); ctx.moveTo(X(N),10); ctx.lineTo(X(N),H-22); ctx.stroke(); ctx.setLineDash([]);
+    const qHere = queueMBs(N), sHere = streamMBs(N);
+    el("perf-note").innerHTML = `At <b style="color:var(--pg)">${N}</b> independent consumer groups: queue-per-group storage write rate ≈ <b style="color:#f25c54">${qHere.toFixed(1)} MB/s</b> (model units) versus a stream's <b style="color:var(--pg)">${sHere.toFixed(1)} MB/s</b> — flat, because the log is written exactly once no matter how many independent readers attach. The gap at ${N} readers is roughly <b>${(qHere/sHere).toFixed(1)}×</b>.`;
+  }
+  el("perf-consumers").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Name the three workloads that a destructive queue (classic or quorum) cannot serve well, and explain the common root cause.", hint:"what does 'consumed' mean in both models?",
+    a:"Replay (a new or rewound consumer has nothing to read once a message is acked/consumed), large fan-out (N independent consumer groups need N fully-duplicated queues, so storage and per-publish routing cost scale O(N)), and very high throughput with many consumers (bounded by one Erlang process per queue serializing every operation, ch. 4/ch. 6). All three trace to the same root cause: both queue types model 'consumed' as 'deleted from storage,' which is exactly right for task-distribution workloads and wrong for anything that needs to read the same data more than once or from more than one independent position." },
+  { lvl:"SENIOR", q:"A team adds a new consumer group to an existing fanout exchange by declaring queue #9. Why can't that new queue see anything published before it was declared, and why is that not a bug?", hint:"what does a queue actually store, and since when?",
+    a:"A queue only stores messages routed to it after it exists — there is no retroactive channel by which a newly-declared queue could receive copies of messages that were already routed (and possibly already consumed and deleted) before its binding existed. This isn't a bug; it's the direct consequence of AMQP's routing model only ever acting on messages as they're published (ch. 3) combined with destructive consumption meaning earlier messages may already be gone entirely. It's exactly the gap streams close by letting a new reader attach at offset zero and read history that's still within retention, with zero coordination from anyone." },
+  { lvl:"STAFF", q:"Explain, mechanism by mechanism, why streams don't route their message data path through Ra/Raft the way quorum queues do.", hint:"what is Raft actually proving, and does a pure append need that proof?",
+    a:"Quorum queues need Raft because every operation on the queue — enqueue, ack, requeue, dead-letter — is a distinct state transition that must be linearizably ordered and agreed on by a majority of replicas (ch. 6's rabbit_fifo state machine). A stream's data path has exactly one operation, forever: append, in order. Routing every single append through a general-purpose consensus protocol would spend real CPU and latency proving something already guaranteed by construction — bytes appended in the order the writer sent them. So osiris uses a lighter writer/replica log-shipping protocol for the high-volume data path, and reserves Raft (via rabbit_stream_coordinator) for the one decision that genuinely needs strong, cluster-wide consistency: which node currently holds writer/leader status for a given stream." },
+  { lvl:"STAFF", q:"What consistency guarantee does a quorum queue give you on writer/leader failure that a stream does not, and why does that difference exist?", hint:"what happens to unacknowledged records at the moment a writer dies?",
+    a:"A quorum queue only ever exposes a write once Raft's majority-commit rule is satisfied, with a formally specified linearizability guarantee — there is no window in which a committed write can later disappear. A stream's writer, by contrast, can die after appending locally but before the configured number of replicas have acknowledged; failover promotes whichever surviving replica has the most complete log, and any divergent uncommitted tail (including on the old writer, once it rejoins) is truncated to match. This difference exists because streams deliberately use a lighter, non-Raft replication protocol for throughput (previous question) — the price of that speed is a narrower, 'best-effort-with-a-configurable-ack-threshold' guarantee rather than Raft's provable one." },
+  { lvl:"STAFF", q:"An AMQP 0-9-1 client subscribes to a stream and never sets basic.qos. Why is this a real problem specific to streams, when it would just be inefficient on a classic queue?", hint:"where does backpressure normally come from?",
+    a:"On a classic or quorum queue, an unbounded prefetch mostly just means the client might get flooded with messages faster than it can process them — inefficient, but the queue's own empty-buffer state still gives a rough natural signal. A stream has no such notion: reading never empties anything, so without an explicit prefetch/credit limit, the AMQP translation layer (rabbit_stream_queue) has no reason to hold back and can push far more in-flight, unacknowledged data at the client than a naive integration expects — precisely because the underlying storage's 'let the reader hold its own position' model has no analogue to a shrinking buffer. Explicit basic.qos is not optional tuning for streams; it's the only backpressure signal the AMQP path has." },
+  { lvl:"PRINCIPAL", q:"Steelman running Kafka instead of RabbitMQ streams for a new, replay-heavy pipeline, then steelman streams. Which wins, and for what shape of team?", hint:"what does a team already have running, and what do they actually need routing-wise?",
+    a:"Kafka steelman: a decade of production maturity, a large ecosystem (Kafka Streams, ksqlDB, Connect, schema registries), tiered/near-infinite retention options, and higher published scale ceilings than a single stream or even a super stream typically reaches. Streams steelman: zero new systems to operate if RabbitMQ is already the team's broker, AMQP routing (topic/header exchanges, ch. 3) sitting in front of the log for free, and a single operational model (one broker, one set of monitoring, one security surface) instead of two. For a team building a green-field, replay-and-analytics-heavy platform from scratch with no existing broker, Kafka's ecosystem usually wins. For a team already running RabbitMQ that needs replay or cheap fan-out for a subset of workloads without taking on a second distributed system, streams win decisively — this is precisely the audience the feature was built for, not a Kafka replacement in general." },
+  { lvl:"PRINCIPAL", q:"Super streams and single active consumer both ship after the base stream feature. Explain what specific limitation of a single, unpartitioned stream each one addresses.", hint:"one is about write throughput, one is about read ordering",
+    a:"A single stream has exactly one writer process (§8b) — its append throughput ceiling is bounded by what one process, one disk, and one replication fan-out can sustain, no matter how many replicas or readers exist. Super streams address this by horizontally partitioning: multiple ordinary streams behind a partitioning key, each with its own independent writer, so aggregate write throughput scales with partition count the way Kafka's partitioned topics do. Single active consumer addresses a completely different limitation: because any number of independent readers can attach to a stream at any offset, nothing by default guarantees only one consumer in a logical group is 'the' active processor at a time — which matters when downstream processing must be strictly ordered per key. Single active consumer layers a leader-election-for-consumers mechanism on top of the stream's inherently multi-reader model, giving you Kafka-consumer-group-style ordered processing without giving up the ability for other readers to attach independently for other purposes." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why can't a brand-new consumer replay history from a classic or quorum queue the way it can from a stream?",
+    opts:[ "Classic and quorum queues are too slow to support a replay operation",
+           "Consuming (and acking) a message removes it from the queue's storage entirely — there is no 'read again from an earlier point' operation in that model",
+           "Replay requires a second RabbitMQ cluster",
+           "AMQP 0-9-1 does not support consumers connecting after a queue is declared" ],
+    a:1,
+    why:"Both classic and quorum queues are destructive buffers: once a message is consumed (and acked), it's gone — there's no notion of a read position a new consumer could rewind to, because nothing about the storage model preserves history past the point of consumption. Streams fix exactly this by never deleting on read and letting each consumer track its own offset. Option A is false (throughput isn't the limiter here); C and D describe unrelated, nonexistent constraints." },
+  { q:"With N independent consumer groups fanned out from one exchange to N dedicated queues, how does total storage cost scale?",
+    opts:[ "O(1) — RabbitMQ deduplicates identical messages across queues automatically",
+           "O(log N) — queue indexes share underlying pages",
+           "O(N) — each queue holds its own full, independent copy of every routed message",
+           "O(N²) — because every queue must also communicate with every other queue" ],
+    a:2,
+    why:"Each queue is an independent process with its own message-store references and queue index (ch. 4); routing a message to N queues means N independent, fully durable copies get written, so total storage (and the exchange's per-publish routing cost) scales linearly with the number of dedicated queues. There is no cross-queue deduplication in this model, no shared-page trick, and no O(N²) queue-to-queue communication at all — queues don't talk to each other." },
+  { q:"What is the sparse index in a stream's segment format actually for?",
+    opts:[ "It's a full mapping from every offset to its exact byte position, guaranteeing O(1) seeks with no scanning at all",
+           "It stores a checkpoint only every N bytes or entries, so seeking to an arbitrary offset means jumping to the nearest checkpoint and scanning a small, bounded distance forward",
+           "It's a Bloom filter used only to check whether a given message body exists anywhere in the stream",
+           "It replaces the segment file entirely once the stream is sealed" ],
+    a:1,
+    why:"An exhaustive per-offset index would cost nearly as much space as the log itself for little added benefit. The sparse index checkpoints periodically, so seeking to offset O means: find the segment containing O, jump to the nearest checkpoint at or before O, then scan forward a small, bounded number of records — O(log segments) + O(1) + a short scan, not a full linear scan of the segment, and not a literal O(1) exhaustive lookup either." },
+  { q:"Why don't streams route their message data path through Ra/Raft the way quorum queues do?",
+    opts:[ "Raft cannot be used for anything except leader election",
+           "Streams don't replicate at all, so there's no consensus needed",
+           "A pure sequential append doesn't need a general consensus protocol to prove ordering that's already guaranteed by construction — so osiris uses a lighter writer/replica log-shipping protocol for the data path, reserving Raft (via rabbit_stream_coordinator) only for deciding which node is writer",
+           "Ra/Raft was deprecated in RabbitMQ 3.9 when streams shipped" ],
+    a:2,
+    why:"Quorum queues need Raft because their operations are varied state transitions (enqueue, ack, requeue, dead-letter) that must be linearizably agreed on. A stream's data path is just 'append, in order' — routing that through a full consensus round would cost throughput to prove something already true. Streams instead use osiris's own writer/replica replication for data, while still using Raft (via the coordinator) for the separate, rare, strongly-consistent decision of writer placement. Ra/Raft is very much still used elsewhere in RabbitMQ, including by quorum queues and the stream coordinator itself." },
+  { q:"A stream's writer node dies with a few records appended locally but not yet acknowledged by the configured replica threshold. What happens on failover?",
+    opts:[ "Those records are guaranteed to be recovered because streams use the same linearizable guarantee as quorum queues",
+           "The whole stream is deleted and must be recreated",
+           "The surviving replica with the most complete log is promoted to writer; any divergent, unacknowledged tail (including on the old writer once it rejoins) is truncated to match",
+           "RabbitMQ pauses the entire cluster until the original writer node comes back online" ],
+    a:2,
+    why:"This is the concrete, honest cost of streams' lighter (non-Raft) replication protocol: failover promotes the most-complete surviving replica, and any records that hadn't reached the acknowledgement threshold before the writer died can be lost, with a divergent tail truncated to keep replicas consistent. Quorum queues, running full Raft consensus, don't have this gap — a committed write there is guaranteed durable across leader failure. Streams trade that guarantee for a much faster data path." },
+  { q:"What does RabbitMQ's server-side offset tracking for streams do differently from Kafka's __consumer_offsets topic?",
+    opts:[ "It stores consumer offsets in a separate replicated topic identical in design to Kafka's",
+           "It doesn't exist — AMQP and Stream Protocol clients must always track their own offsets in application code",
+           "It lets a Stream Protocol consumer store its last-processed offset under a name, persisted alongside the stream itself rather than in a separate system, queryable on reconnect",
+           "It only works for super streams, never for a single ordinary stream" ],
+    a:2,
+    why:"RabbitMQ's approach (store_offset / query_offset in the Stream Protocol) keeps offset bookkeeping alongside the stream it describes instead of standing up a second, independently-replicated storage system the way Kafka's __consumer_offsets topic does — smaller surface area, one less moving part. The tradeoff is that this convenience is specific to the Stream Protocol path; AMQP 0-9-1 clients consuming a stream must track their own resume position application-side." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could draft the osiris design doc.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5's and §8's decks, then try the simulator — the offset model clicks fast once you replay something yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Kafka is open-sourced at LinkedIn — the immutable append-only log with consumer-held offsets",
+    "GitHub's public postmortem exposes mirrored classic queues' lack of real consensus",
+    "RabbitMQ 3.8 ships quorum queues on the new ra Raft library",
+    "Osiris is built as a standalone Erlang log-storage library",
+    "RabbitMQ 3.9 ships streams (backed by osiris) and deprecates mirrored classic queues",
+    "The dedicated Stream Protocol ships on port 5552 alongside streams",
+    "RabbitMQ 3.11 ships super streams and single active consumer for streams",
+    "RabbitMQ 4.0 removes mirrored classic queues entirely and introduces Khepri"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real timeline</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 8 covers dead lettering, TTL, and priority queues — mechanisms that decide what happens to a message a consumer can't or won't process. Predict: does a stream have any equivalent of a dead-letter exchange, and if not, why might that be a deliberate omission rather than a missing feature?",
+    a:"A stream has no per-message dead-lettering, because dead-lettering is fundamentally a statement about one consumer's failure to process one specific message — a concept that only makes sense against a destructive, single-logical-owner buffer where 'this message failed and needs special handling' is a meaningful, one-time event. A stream is read independently by any number of consumers at their own offsets; there is no single canonical 'this consumer's attempt' whose failure the log itself could react to, and the log has no idea how many readers exist or how they're each doing. If a stream consumer can't process a record, that's application-level logic (skip, alert, retry from the same offset) layered on top of the stream, not a broker-level mechanism the way ch. 8 will describe for destructive queues." },
+  { lvl:"THINK", q:"A stream's retention is bounded by max-age and max-length-bytes, truncated only at whole-segment granularity. Given what you now know about the segment file format, predict what happens to a consumer's stored offset (§8d) if retention truncates past it before that consumer reconnects.",
+    a:"The consumer's stored offset still exists as a number, but the segment containing that offset no longer exists on disk — querying it back and attempting to resume from it will find nothing there; the correct behavior is to detect that the stored offset now falls before the stream's current oldest available offset and fall back to subscribing at 'first' (whatever's now oldest) instead, accepting a gap. This is exactly the retention/consumer-lag interaction §15's simulator lets you trigger directly by shrinking max-length-bytes below what an attached consumer has read up to." },
+  { lvl:"THINK", q:"Design exercise: using only this chapter's mechanics, sketch why a super stream's per-partition writer failure is 'contained' the same way a single classic queue process crashing is contained in ch. 1 and ch. 4 — and where the analogy breaks down.", 
+    a:"Each partition of a super stream is an ordinary, independent stream with its own writer, replicas, segments, and coordinator-driven failover (§7's superstream card) — exactly the same 'independent process, independent supervision, one_for_one-style isolation' pattern ch. 1 established for queues: one partition's writer dying triggers that partition's own failover (§8b) without touching any sibling partition's writer, replicas, or consumers. The analogy breaks down in the consistency envelope, not the isolation: a crashed classic queue process recovers durable state cleanly on restart (ch. 4), while a stream partition's writer failure can lose the last few unacknowledged records (§8b) — the isolation is structurally the same shape, but the guarantee on what survives the crash is weaker, precisely because streams chose speed over full Raft consensus on the data path." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15) — queue fan-out vs stream, side by side
+   ============================================================ */
+(function(){
+  const MSG_KB = 0.1;                 // 100 bytes/message, for byte accounting
+  const BATCH = 20;                   // messages per publish click
+  const SEGSIZES = [0.5, 1, 2, 4];    // KB
+  const MAXLENS  = [2, 5, 10, 20, 40]; // KB
+
+  const S = {
+    tick: 0, published: 0, auto: false, nextGroupId: 2, nextConsumerId: 1,
+    qGroups: [ { id:1, name:"group-1", count:0, createdAt:0 } ],
+    segSizeKB: SEGSIZES[1], maxLenKB: MAXLENS[2],
+    segs: [],                          // sealed segments: {id, startOffset, endOffset, kb}
+    curSeg: { startOffset:0, kb:0 },
+    nextOffset: 0, firstOffset: 0,
+    consumers: [],                     // {id, name, offset, spec, rate, fellBehind}
+    spec: "first"
+  };
+
+  const logEl = el("sim-log");
+  function log(msg, cls){
+    const d = document.createElement("div");
+    d.className = cls || "lv-LOG";
+    d.textContent = msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  const fmtKB = kb => kb >= 1024 ? (kb/1024).toFixed(2)+" MB" : kb.toFixed(1)+" KB";
+
+  function segRetentionCheck(){
+    let total = S.segs.reduce((s,x)=>s+x.kb,0) + S.curSeg.kb;
+    while (total > S.maxLenKB && S.segs.length > 0){
+      const dead = S.segs.shift();
+      S.firstOffset = dead.endOffset;
+      total -= dead.kb;
+      log(`retention: reclaimed segment [${dead.startOffset}..${dead.endOffset}) — ${fmtKB(dead.kb)} truncated (max-length-bytes exceeded)`, "lv-WARN");
+      S.consumers.forEach(c=>{ if (c.offset < S.firstOffset) c.fellBehind = true; });
+    }
+  }
+
+  function publish(batch){
+    batch = batch || BATCH;
+    S.tick++; S.published += batch;
+    // queue side: every EXISTING group gets a full copy
+    S.qGroups.forEach(g=> g.count += batch);
+    // stream side: one copy, append to current segment
+    S.nextOffset += batch;
+    S.curSeg.kb += batch * MSG_KB;
+    if (S.curSeg.kb >= S.segSizeKB){
+      S.segs.push({ id:S.tick, startOffset:S.curSeg.startOffset, endOffset:S.nextOffset, kb:S.curSeg.kb });
+      S.curSeg = { startOffset:S.nextOffset, kb:0 };
+    }
+    segRetentionCheck();
+    // consumers auto-advance toward the tail at their own rate
+    S.consumers.forEach(c=>{
+      if (c.fellBehind) return;
+      c.offset = Math.min(S.nextOffset, c.offset + c.rate);
+    });
+    log(`publish +${batch} msgs → all ${S.qGroups.length} queue group(s) get a copy; stream offset now ${S.nextOffset}`);
+    render();
+  }
+
+  function addGroup(){
+    const g = { id:S.nextGroupId++, name:"", count:0, createdAt:S.published };
+    S.qGroups.push(g);
+    g.name = "group-"+S.qGroups.length;
+    log(`+ new consumer group "${g.name}": declares a brand-new dedicated queue, bound fresh — starts at 0, cannot see the ${S.published} messages already published`, "lv-WARN");
+    render();
+  }
+  function consumeGroup(id){
+    const g = S.qGroups.find(x=>x.id===id);
+    if (!g) return;
+    const n = Math.min(15, g.count);
+    g.count -= n;
+    log(`${g.name}: consumed+acked ${n} msg(s) — gone from this queue's storage permanently`);
+    render();
+  }
+
+  function specOffset(){
+    if (S.spec === "first") return S.firstOffset;
+    if (S.spec === "last") return Math.max(S.firstOffset, S.curSeg.startOffset);
+    if (S.spec === "next") return S.nextOffset;
+    if (S.spec === "offset") return Math.max(S.firstOffset, Math.min(S.nextOffset, +el("s-offset-num").value));
+    if (S.spec === "timestamp"){
+      const p = +el("s-offset-ts").value / 100;
+      return Math.round(S.firstOffset + p*(S.nextOffset - S.firstOffset));
+    }
+    return S.firstOffset;
+  }
+  function attachConsumer(){
+    const off = specOffset();
+    const c = { id:S.nextConsumerId++, name:"consumer-"+S.nextConsumerId, offset: off, spec:S.spec, rate: 8 + Math.round(Math.random()*17), fellBehind:false };
+    S.consumers.push(c);
+    log(`+ attach ${c.name} at offset ${off} (spec: ${S.spec}) — reading the SAME bytes every other consumer reads, zero extra storage`, "lv-OK");
+    if (S.spec === "first" && off < S.nextOffset) log(`${c.name}: replay proven — starts before the current tail (${S.nextOffset}) with no coordination from any producer or existing consumer`, "lv-OK");
+    render();
+  }
+  function resubscribe(id){
+    const c = S.consumers.find(x=>x.id===id);
+    if (!c) return;
+    c.offset = S.firstOffset; c.fellBehind = false;
+    log(`${c.name}: resubscribed at first available offset (${S.firstOffset}) after falling behind retention`, "lv-WARN");
+    render();
+  }
+
+  function setSpec(spec){
+    S.spec = spec;
+    ["first","last","next","offset","ts"].forEach(k=> el("s-spec-"+k).classList.toggle("on", k===spec || (k==="ts"&&spec==="timestamp")));
+    el("s-offset-num-row").style.display = spec==="offset" ? "flex" : "none";
+    el("s-offset-ts-row").style.display = spec==="timestamp" ? "flex" : "none";
+  }
+
+  function render(){
+    el("sim-clock").textContent = "TICK " + S.tick;
+    el("cnt-published").textContent = S.published;
+    el("cnt-qgroups").textContent = S.qGroups.length;
+    el("cnt-sconsumers").textContent = S.consumers.length;
+
+    // queue side
+    const qBytes = S.qGroups.reduce((s,g)=>s+g.count*MSG_KB,0);
+    el("q-bytes-v").textContent = fmtKB(qBytes);
+    el("q-bytes-fill").style.width = Math.min(100, qBytes / 60 * 100) + "%";
+
+    el("q-groups").innerHTML = S.qGroups.map(g=>
+      `<div style="border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 11px;margin-bottom:6px;font-family:var(--mono);font-size:11px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span>${g.name} <span style="color:var(--dim)">· created @offset ${g.createdAt}</span></span>
+          <span style="color:#f25c54">${g.count} msgs</span>
+          <button class="btn" style="padding:3px 8px;font-size:10.5px" data-gid="${g.id}">consume −15</button>
+        </div>
+      </div>`).join("");
+    el("q-groups").querySelectorAll("button[data-gid]").forEach(b=>{
+      b.onclick = ()=> consumeGroup(+b.dataset.gid);
+    });
+
+    // stream side segments
+    const allSegs = S.segs.concat([{ id:"open", startOffset:S.curSeg.startOffset, endOffset:S.nextOffset, kb:S.curSeg.kb, open:true }]);
+    el("s-segments").innerHTML = allSegs.map(s=>
+      `<div style="border:1px solid ${s.open?'var(--pg)':'var(--border-hi)'};background:${s.open?'var(--pg-dim)':'var(--panel-2)'};border-radius:8px;padding:6px 9px;font-family:var(--mono);font-size:10px;color:${s.open?'var(--pg)':'#c6cddb'};min-width:70px;text-align:center">
+        [${s.startOffset}..${s.endOffset}${s.open?')':')'}]<br>${fmtKB(s.kb)}${s.open?' <b>· open</b>':''}
+      </div>`).join("");
+
+    el("s-consumers").innerHTML = S.consumers.map(c=>{
+      const lag = S.nextOffset - c.offset;
+      return `<div style="border:1px solid ${c.fellBehind?'var(--bad)':'var(--border-hi)'};background:${c.fellBehind?'rgba(242,92,84,.08)':'var(--panel-2)'};border-radius:9px;padding:7px 11px;margin-bottom:6px;font-family:var(--mono);font-size:11px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span>${c.name} <span style="color:var(--dim)">(${c.spec})</span></span>
+          <span style="color:${c.fellBehind?'var(--bad)':'var(--pg)'}">offset ${c.offset} ${c.fellBehind?'· FELL BEHIND RETENTION':'· lag '+lag}</span>
+          ${c.fellBehind?`<button class="btn danger" style="padding:3px 8px;font-size:10.5px" data-rsub="${c.id}">resubscribe</button>`:""}
+        </div>
+      </div>`;
+    }).join("") || `<div style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">no stream consumers attached yet</div>`;
+    el("s-consumers").querySelectorAll("button[data-rsub]").forEach(b=>{
+      b.onclick = ()=> resubscribe(+b.dataset.rsub);
+    });
+
+    const sBytes = S.segs.reduce((s,x)=>s+x.kb,0) + S.curSeg.kb;
+    el("s-bytes-v").textContent = fmtKB(sBytes);
+    el("s-bytes-fill").style.width = Math.min(100, sBytes / (S.maxLenKB*1.1) * 100) + "%";
+
+    el("divergence-note").innerHTML = qBytes > 0 || sBytes > 0
+      ? `<div class="co-t">LIVE DIVERGENCE</div><p>Queue-fan-out total: <b style="color:#f25c54">${fmtKB(qBytes)}</b> across <b>${S.qGroups.length}</b> group(s). Stream total (bounded by retention): <b style="color:var(--pg)">${fmtKB(sBytes)}</b>, read independently by <b>${S.consumers.length}</b> consumer(s) at zero extra storage cost. ${S.qGroups.length>1 ? `Ratio: <b>${(qBytes/Math.max(0.01,sBytes)).toFixed(1)}×</b> — and it keeps climbing with every new consumer group.` : "Add another consumer group above and watch the ratio start climbing."}</p>`
+      : `<div class="co-t">LIVE DIVERGENCE</div><p>Publish a batch to see storage start accumulating on both sides.</p>`;
+  }
+
+  el("sim-publish").onclick = ()=> publish(BATCH);
+  el("sim-burst").onclick = ()=>{
+    let i=0; const iv = setInterval(()=>{ publish(BATCH); if(++i>=5) clearInterval(iv); }, 140);
+  };
+  el("sim-auto").onclick = ()=>{
+    S.auto = !S.auto;
+    el("sim-auto").textContent = "auto-publish: " + (S.auto?"ON":"OFF");
+    el("sim-auto").classList.toggle("on", S.auto);
+  };
+  el("sim-reset").onclick = ()=>{
+    S.tick=0; S.published=0; S.auto=false; S.nextGroupId=2; S.nextConsumerId=1;
+    S.qGroups=[{id:1,name:"group-1",count:0,createdAt:0}];
+    S.segs=[]; S.curSeg={startOffset:0,kb:0}; S.nextOffset=0; S.firstOffset=0; S.consumers=[];
+    el("sim-auto").textContent="auto-publish: OFF"; el("sim-auto").classList.remove("on");
+    logEl.innerHTML = "";
+    log("simulator reset", "lv-OK");
+    render();
+  };
+  el("q-addgroup").onclick = addGroup;
+  el("s-attach").onclick = attachConsumer;
+  el("s-spec-first").onclick = ()=> setSpec("first");
+  el("s-spec-last").onclick = ()=> setSpec("last");
+  el("s-spec-next").onclick = ()=> setSpec("next");
+  el("s-spec-offset").onclick = ()=> setSpec("offset");
+  el("s-spec-ts").onclick = ()=> setSpec("timestamp");
+  el("s-offset-num").oninput = e=>{ el("s-offset-num-val").textContent = e.target.value; };
+  el("s-offset-ts").oninput = e=>{ el("s-offset-ts-val").textContent = "tick " + e.target.value; };
+  el("s-segsize").oninput = e=>{ S.segSizeKB = SEGSIZES[+e.target.value]; el("s-segsize-val").textContent = fmtKB(S.segSizeKB); render(); };
+  el("s-maxlen").oninput = e=>{ S.maxLenKB = MAXLENS[+e.target.value]; el("s-maxlen-val").textContent = fmtKB(S.maxLenKB); segRetentionCheck(); render(); };
+
+  setInterval(()=>{ if (S.auto) publish(BATCH); }, 750);
+
+  el("s-segsize-val").textContent = fmtKB(S.segSizeKB);
+  el("s-maxlen-val").textContent = fmtKB(S.maxLenKB);
+  log("simulator ready — publish a batch, then try adding a queue consumer group and a stream consumer", "lv-OK");
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["rmq-07"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#ff9f43"><a class="cn-btn" href="rmq-06.html"><span>←</span><span><span class="cn-lbl">PREV · CH 06</span><span class="cn-ttl">Quorum Queues: Raft Inside the Broker</span></span></a><div class="cn-mid"><a class="cn-home" href="course-rabbitmq.html">☰ RabbitMQ Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="rmq-01.html">CH 01 · Genesis: AMQP & Why Erlang</option><option value="rmq-02.html">CH 02 · Connections, Channels & the Frame Protocol</option><option value="rmq-03.html">CH 03 · Exchanges, Bindings & Routing Algorithms</option><option value="rmq-04.html">CH 04 · Classic Queues: The Queue Process Internals</option><option value="rmq-05.html">CH 05 · Delivery: ACK, NACK, Confirms & Prefetch</option><option value="rmq-06.html">CH 06 · Quorum Queues: Raft Inside the Broker</option><option value="rmq-07.html" selected>CH 07 · Streams: The Log Comes to RabbitMQ</option><option value="rmq-08.html">CH 08 · Dead Lettering, TTL & Priority Queues</option><option value="rmq-09.html">CH 09 · Flow Control & Memory Management</option><option value="rmq-10.html">CH 10 · Clustering, Federation & Shovel</option><option value="rmq-11.html">CH 11 · Persistence, Disk Layout & Recovery</option><option value="rmq-12.html">CH 12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</option></select><span class="cn-prog">07 / 12</span></div><a class="cn-btn" href="rmq-08.html"><span><span class="cn-lbl">NEXT · CH 08</span><span class="cn-ttl">Dead Lettering, TTL & Priority Queues</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

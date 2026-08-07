@@ -1,0 +1,1912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAFKA-04 · Producer Internals: Batching, Compression & Idempotence — Apache Kafka Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#f25c54; --pg-dim:rgba(242,92,84,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(242,92,84,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(242,92,84,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(242,92,84,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(242,92,84,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(242,92,84,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(242,92,84,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(242,92,84,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,#f25c54,#ff9f43);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- PRODUCER-SPECIFIC WIDGETS (kafka-04) ---------- */
+  .partitions{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+  .partition{flex:1;min-width:150px;border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px}
+  .partition .p-label{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.06em;margin-bottom:6px;display:flex;justify-content:space-between}
+  .p-deque{display:flex;flex-direction:column-reverse;gap:4px;min-height:96px}
+  .pbatch{border:1px solid var(--border-hi);border-radius:6px;padding:4px 7px;font-family:var(--mono);font-size:9.5px;
+    color:#c6cddb;background:var(--bg-2);cursor:pointer;position:relative;overflow:hidden;transition:border-color .2s}
+  .pbatch .pbfill{position:absolute;left:0;top:0;bottom:0;background:rgba(242,92,84,.22);z-index:0}
+  .pbatch span.pblabel{position:relative;z-index:1}
+  .pbatch.ready{border-color:var(--warn)}
+  .pbatch.sending{border-color:var(--pg);box-shadow:0 0 10px rgba(242,92,84,.3)}
+  .pbatch.sel{box-shadow:0 0 0 2px var(--pg)}
+  .brokers{display:flex;gap:10px;margin-top:6px}
+  .broker{flex:1;border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px}
+  .broker .b-label{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.06em;margin-bottom:6px}
+  .inflight-slots{display:flex;gap:4px;flex-wrap:wrap;min-height:30px}
+  .islot{width:28px;height:28px;border:1px dashed var(--border-hi);border-radius:6px;display:flex;align-items:center;
+    justify-content:center;font-family:var(--mono);font-size:8.5px;color:var(--dim);cursor:default;text-align:center;line-height:1.1}
+  .islot.busy{border-style:solid;border-color:var(--pg);color:var(--pg);background:var(--pg-dim);cursor:pointer}
+  .islot.sel{box-shadow:0 0 0 2px var(--pg)}
+  .blocked-thread{border:1px dashed var(--bad);color:var(--bad);border-radius:9px;padding:8px 11px;
+    font-family:var(--mono);font-size:10.5px;text-align:center;margin-top:8px;animation:framein .3s}
+  .prod-readouts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-kafka.html">← Apache Kafka Internals</a>
+  <span class="crumb">APACHE KAFKA INTERNALS · <b>CH 04 / 15</b> · PRODUCER INTERNALS</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Async Batching</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">APACHE KAFKA INTERNALS · CHAPTER 04</div>
+  <h1>Producer Internals: Batching,<br><span class="grad">Compression & Idempotence</span></h1>
+  <p class="lead">Every <code>producer.send(record)</code> you have ever called returns almost instantly — not
+  because the record reached a broker, but because a background thread you never see took over. This chapter
+  opens <code>KafkaProducer</code> from the inside: the <code>RecordAccumulator</code> that buffers your records
+  into per-partition batches, the <code>BufferPool</code> that recycles memory instead of feeding the GC, the
+  <code>Sender</code> thread that drains and ships those batches, and the sequence-number machinery (KIP-98) that
+  makes retrying a batch after a network failure safe instead of a duplicate.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Trace a record from the calling thread's <code>send()</code> to a broker's acknowledgment through real classes and files.</div>
+    <div class="obj"><b>You will understand</b>Why <code>linger.ms=0</code> still produces large batches under load, and why that has nothing to do with the linger timer.</div>
+    <div class="obj"><b>You will predict</b>Exactly when <code>BufferPool</code> exhaustion will block your application threads, and for how long.</div>
+    <div class="obj"><b>You will simulate</b>Per-partition batching, in-flight request limits, and idempotent duplicate detection in a live producer lab.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">One record, one round trip, is a throughput crime</h2>
+  <p class="lead">Picture the most naive possible producer: your application calls <code>send()</code>, and that
+  call opens a socket to the partition's leader broker, writes exactly one record, blocks until the broker replies,
+  and only then returns. It is easy to write, easy to reason about — and it caps your entire producer's throughput
+  at the network's round-trip time, no matter how fast your disks, your NIC, or your broker's CPU are. That is the
+  problem this chapter exists to solve: <b>how do you make record production a network-bandwidth-bound operation
+  instead of a network-latency-bound one</b>, without losing the guarantees an application actually needs?</p>
+  <p>Unpack "without losing the guarantees" and you get a short but demanding list, in tension with each other:</p>
+  <ul class="plain">
+    <li><b>The calling thread must never block on the network for long.</b> A web request handler, a stream
+      processor's poll loop, an ETL job — none of them can afford to stall on a broker round trip for every
+      record. <code>send()</code> has to return almost immediately, handing back a <code>Future</code>.</li>
+    <li><b>Eventual delivery must still be guaranteed.</b> The record has to actually reach the broker's log,
+      surviving transient network failures, a leader election, or a broker restart, via retries.</li>
+    <li><b>Per-partition ordering must survive those retries.</b> If batch 2 for partition P is retried and lands
+      before a not-yet-retried batch 1, every consumer of P now sees out-of-order data — silently.</li>
+    <li><b>Exactly-once semantics must be achievable</b> for the applications that need it (financial ledgers,
+      exactly-once stream topologies) despite the same unreliable network that makes retries necessary in the
+      first place — a retry that actually succeeded server-side must not become a duplicate.</li>
+  </ul>
+  <p>Batching, background threading, and idempotence are not three unrelated Kafka features. They are one
+  coherent answer to one problem: decouple <i>the application's</i> timeline from <i>the network's</i> timeline,
+  while keeping delivery and ordering guarantees intact across that decoupling. The rest of this chapter derives
+  that answer from first principles, then reads the real Java client that implements it.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE REST OF THE COURSE</div>
+    <p>Everything downstream of the producer — the broker's request-handling threads (chapter 8 of a full broker
+    course), replication and the in-sync-replica set (chapter 6), and the consumer's fetch path and offset
+    management (chapter 5, next) — is shaped by decisions this chapter makes. <code>acks</code>, <code>retries</code>,
+    and idempotence are producer-side knobs, but their consequences (duplicate records, reordering, data loss
+    windows) are what every consumer-side guarantee has to be built to tolerate or prevent. Get the producer's
+    model right in your head, and the consumer chapter's hardest question — "how do I preserve ordering across a
+    rebalance?" — will already have half its answer.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a synchronous Scala client to a two-thread Java engine</h2>
+  <p>The producer you configure today is the product of five separate design decisions made years apart, each one
+  a direct response to an operational pain the previous design exposed. Click through the timeline.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the producer's evolution</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · THE PAPER THAT STARTED IT</div>
+    <p>Kreps, Narkhede & Rao's 2011 NetDB paper, "Kafka: a Distributed Messaging System for Log Processing,"
+    is explicit that per-message request/response overhead was the enemy from day one: LinkedIn's activity-tracking
+    volume made batching — on both the produce and fetch paths — a stated design requirement, not an
+    optimization bolted on later. The <code>RecordAccumulator</code>/<code>Sender</code> split you'll read in
+    §13 is a much more disciplined descendant of that original idea, but the motivating math (amortize one
+    network round trip over many records) has not changed in over a decade.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: send, block, repeat</h2>
+  <p>Derive it honestly, the way you would before ever seeing <code>KafkaProducer</code>'s real source. The
+  simplest correct producer opens one connection to a partition's leader and does exactly one thing per record:
+  writes it, waits for the acknowledgment, then returns control to the caller.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>naive_producer.pseudo — the strawman, annotated</span></div>
+    <pre><span class="k">function</span> <span class="f">send</span>(record):
+    conn = <span class="f">connectionFor</span>(record.partition.leader)   <span class="c">// one TCP conn per broker</span>
+    req  = <span class="f">buildProduceRequest</span>([record])          <span class="c">// exactly ONE record inside</span>
+    conn.<span class="f">write</span>(req)                               <span class="c">// blocking socket write</span>
+    resp = conn.<span class="f">readResponse</span>()                    <span class="c">// BLOCKS until broker replies —</span>
+                                                    <span class="c">// this is one full network round trip</span>
+    <span class="k">if</span> resp.error: <span class="f">retry</span>(record)                <span class="c">// still on the SAME calling thread</span>
+    <span class="k">return</span> resp.offset                            <span class="c">// caller resumes only now</span>
+
+<span class="c">// application code:</span>
+<span class="k">for</span> event <span class="k">in</span> stream:
+    <span class="f">send</span>(event)   <span class="c">// ← the whole app thread is idle here, every single call</span></pre>
+  </div>
+
+  <p>This is not a strawman built to be knocked down for sport — it is the architecture you should arrive at
+  first, and it already gets the hard part right: correctness. There is no reordering risk (nothing is ever
+  in flight concurrently), no partial-batch bookkeeping, and no memory-pool accounting. Every record is
+  durably acknowledged before the next line of application code runs. If your entire workload is a few records
+  per second, this design is arguably <i>correct enough and simple enough to ship</i>. It fails the instant you
+  need throughput, and §4 puts a number on exactly how badly.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Throughput capped at 1/RTT, independent of message size</h2>
+  <p>With exactly one outstanding request at a time, the calling thread's loop is: write, wait one round trip
+  <b>R</b>, read, repeat. No matter how small the payload or how much spare bandwidth the NIC has, you cannot
+  issue request <i>n+1</i> until request <i>n</i>'s response arrives. Throughput is therefore capped at
+  <b>1/R</b> requests per second — a pure latency bound, structurally incapable of using available bandwidth.</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>At <b>R = 2&nbsp;ms</b> (a same-datacenter round trip — realistic for a broker a few hops away), the
+    ceiling is <b>1 / 0.002 = 500 requests/sec</b>, full stop — whether each record is 50 bytes or 50 kilobytes.
+    Batch 1,000 records into that same request and the ceiling becomes <b>500,000 records/sec</b> at the same
+    network cost, because the round trip is now amortized over 1,000× more payload. Cross-region, where
+    <b>R ≈ 40&nbsp;ms</b> is common, the naive design's ceiling collapses to <b>~25 requests/sec</b> — and batching
+    is no longer an optimization, it is the only way to get usable throughput out of a WAN link at all.</p>
+  </div>
+  <p>There is a second, independent cost that batching also happens to fix: per-request overhead that has
+  nothing to do with the network wire. Each write is a separate syscall (<code>write()</code>/<code>send()</code>
+  crossing into kernel space), a separate TCP/TLS framing operation, and on the broker side a separate pass
+  through request parsing, log-append bookkeeping, and (if <code>acks=all</code>) a separate replication round
+  trip to followers. A tiny record pays the same fixed CPU tax as a large one — so sending a million
+  one-record requests burns roughly a million times that fixed cost, whereas sending a thousand
+  thousand-record requests burns it a thousand times. The naive design isn't just RTT-bound; it is also paying
+  the maximum possible multiple of a fixed per-request CPU overhead on both ends of the connection.</p>
+  <p>So the requirement is now precise: keep records flowing to the broker in <b>large, infrequent</b> requests
+  instead of small, frequent ones — without making the calling application thread respsonsible for assembling
+  that batch synchronously. §5 works through the candidate shapes for doing that, in order of increasing
+  sophistication, and eliminates the ones that don't hold up.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Queue vs synchronous batching vs a decoupled two-thread pipeline</h2>
+  <p>Three shapes are worth taking seriously before landing on the real one. Step through the deck; each
+  candidate is rejected for a concrete, specific reason, not vibes.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Candidates for decoupling send() from the network</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>The design that survives is a <b>fully decoupled two-thread pipeline</b>. The calling application thread
+  does the cheap, CPU-only work synchronously — serialize the key/value, run the partitioner, append the
+  serialized bytes into an in-memory structure — and then returns a <code>Future</code> immediately. A single
+  dedicated background thread, the <code>Sender</code>, is the only thread that ever touches a socket; it
+  continuously drains whatever batches have accumulated and ships them, independently of how many application
+  threads are calling <code>send()</code> or how fast they're calling it.</p>
+  <div class="callout ok">
+    <div class="co-t">WHY THE DECOUPLING HAS TO BE STRUCTURAL, NOT JUST "ASYNC"</div>
+    <p>It is tempting to think "just make the network call async" is enough — fire the write, register a
+    callback, move on. But that alone doesn't produce batching: it produces N concurrent one-record requests
+    instead of N sequential ones, which fixes latency-boundedness but not the per-request overhead problem
+    from §4, and creates a much harder ordering problem (N requests racing to the same partition with no
+    ordering discipline between them). The <code>RecordAccumulator</code> exists precisely to convert "many
+    application threads calling send() whenever they want" into "one dense, ordered, per-partition byte buffer
+    that a single I/O thread drains deterministically." Batching requires a buffer with an owner; async alone
+    only requires a callback.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The bill: bounded memory, held-open batches, and a new ordering hazard</h2>
+  <p>Decoupling the application thread from the network does not make buffering free. Three costs are load-bearing
+  for the rest of this chapter, and each one maps directly to a producer config you already set without, perhaps,
+  knowing precisely why it exists.</p>
+  <ul class="plain">
+    <li><b>The accumulator's memory is finite, on purpose.</b> <code>buffer.memory</code> (default
+      <code>33554432</code> — 32&nbsp;MB) bounds how much unacknowledged data the producer will hold in
+      client-side RAM at once. When every byte of that pool is allocated to batches still awaiting an
+      acknowledgment (broker slow, network congested, or a partition's leader unreachable), the next call to
+      <code>send()</code> cannot get a buffer — and <b>blocks the calling thread</b> for up to <code>max.block.ms</code>
+      (default <code>60000</code>) before throwing a <code>TimeoutException</code>. This is back-pressure,
+      and it is the classic symptom operators learn to recognize: application threads stuck inside
+      <code>send()</code>, not because Kafka is "down," but because nothing has freed accumulator memory fast enough.</li>
+    <li><b>Held batches cost real memory for real time.</b> A batch sits in the accumulator from its first
+      appended record until its acknowledgment is processed — under <code>acks=all</code> that includes the
+      full round trip to the leader <i>and</i> the leader's wait for in-sync-replica acknowledgment. Slow
+      followers or a struggling leader directly inflate how long buffer memory stays pinned, which is exactly
+      how a downstream slowdown becomes a producer-side memory problem (§11 has the incident).</li>
+    <li><b>Compression trades CPU for those held bytes</b> — smaller batches in memory and on the wire, at the
+      cost of CPU cycles spent compressing (and, on the broker, sometimes decompressing) every batch. §8 works
+      through which codec buys how much of which trade.</li>
+    <li><b>Retries reopen the ordering question §1 already flagged.</b> If a batch to partition P fails and is
+      retried while a <i>later</i> batch to the same partition is already in flight on a different connection
+      slot, and <code>max.in.flight.requests.per.connection</code> &gt; 1, the retried (earlier) batch can land
+      at the broker <i>after</i> the later one — silent reordering, with no error raised anywhere. Idempotence
+      (§8) is precisely the mechanism that closes this hole, which is why increasing in-flight concurrency was
+      historically dangerous and is now safe.</li>
+  </ul>
+  <p>None of these costs are defects — they are the visible price of the throughput §4 demanded. §7 lays out the
+  architecture that pays that price deliberately, and §8 goes inside each piece.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The producer pipeline, component by component</h2>
+  <p>Every <code>KafkaProducer</code> you have ever instantiated runs this exact pipeline internally. Click any
+  component to see its real class, which thread touches it, and what protects it from concurrent access.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">APPLICATION THREAD(S) — CALL send()</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="appthread">app thread(s)</div>
+          <div class="acard" data-p="serpart">serializer + partitioner</div>
+        </div>
+        <div class="arch-row-label">ACCUMULATION LAYER (shared, lock-protected)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="accumulator">RecordAccumulator</div>
+          <div class="acard" data-p="bufferpool">BufferPool</div>
+        </div>
+        <div class="arch-row-label">I/O THREAD (the only thread that touches sockets)</div>
+        <div class="arch-grid"><div class="acard" data-p="sender">Sender thread</div></div>
+        <div class="arch-row-label">NETWORK / BROKER SIDE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="inflight">in-flight requests tracker</div>
+          <div class="acard" data-p="brokerresp">broker response &amp; callback completion</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE ONE INVARIANT THAT MAKES ALL OF THIS SAFE</div>
+    <p>Exactly one thread — the <code>Sender</code> — ever writes to a broker socket or reads a broker response.
+    Every other thread's job ends at <code>RecordAccumulator.append()</code>. This is the same discipline you
+    saw in the postmaster's supervisor pattern in other courses: concentrate the one operation that must be
+    strictly ordered and externally visible (network I/O, in this case) into a single thread, and every other
+    thread's concurrency concerns collapse to "did I append correctly to a shared, lock-protected structure,"
+    which is a vastly easier problem than "did I send network requests in the right order from N racing threads."</p>
+  </div>
+</section>
+
+<!-- ================= S8 INTERNAL IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Inside <code>send()</code>: accumulation, batching economics, partitioning, compression, idempotence</h2>
+  <p>This is the deep core of the chapter — five mechanisms that together make the architecture in §7 actually
+  work, in the order data flows through them.</p>
+
+  <h3>(a) The two-thread design, precisely</h3>
+  <p><code>KafkaProducer.send()</code> runs almost entirely on the <b>calling thread</b>, synchronously: it
+  invokes the configured serializers on the key and value, calls the partitioner to choose a
+  <code>TopicPartition</code>, and then calls <code>RecordAccumulator.append()</code>. Inside <code>append()</code>,
+  the accumulator looks up (or lazily creates) the <code>Deque&lt;ProducerBatch&gt;</code> for that partition in
+  its <code>ConcurrentMap&lt;TopicPartition, Deque&lt;ProducerBatch&gt;&gt;</code>, and — holding only that one
+  partition's deque lock, never a global lock — tries to append to the <b>last</b> (newest) batch in the deque.
+  If that batch has room, the bytes are copied in and <code>append()</code> returns a <code>Future</code>
+  immediately: <b>the calling thread never touches the network</b>. If the last batch is full or doesn't exist yet,
+  the accumulator must allocate a fresh <code>ProducerBatch</code>, and that means asking the
+  <code>BufferPool</code> for memory.</p>
+  <p><code>BufferPool.allocate(size, maxTimeToBlock)</code> is the mechanism worth understanding precisely,
+  because it is where §6's "held-open memory" cost becomes a concrete blocking call. For the common case —
+  requesting exactly <code>batch.size</code> bytes, the standard allocation unit — the pool keeps a
+  <b>free list</b> of already-allocated, same-sized <code>ByteBuffer</code>s that were returned when earlier
+  batches were fully acknowledged and released. Handing back a pooled buffer is a list-pop, not a fresh
+  allocation — this is the whole point: without pooling, a high-throughput producer would allocate and then
+  garbage-collect one new direct/heap buffer per batch, continuously, which is exactly the kind of allocation
+  churn a low-latency system cannot afford. Only when the free list is empty <i>and</i> the pool's total
+  outstanding memory is below <code>buffer.memory</code> does it perform an actual new allocation. When neither
+  is possible — the pool is fully committed and nothing has been freed — the calling thread <b>blocks on a
+  condition variable</b> inside <code>allocate()</code>, waiting for another thread to deallocate space, for up
+  to <code>max.block.ms</code> (default <code>60000</code>). Exceed that and <code>allocate()</code> throws, which
+  surfaces to the application as the <code>send()</code> call itself throwing <code>TimeoutException</code>.</p>
+
+  <div class="widget deck" id="deckAppend">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">RecordAccumulator.append() — the decision tree</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) Batching economics: what linger.ms actually buys</h3>
+  <p><code>batch.size</code> (default <code>16384</code> bytes, 16&nbsp;KB) is a <b>per-partition ceiling</b> on
+  a single <code>ProducerBatch</code>'s byte size — not a global cap, and not a record-count cap. <code>linger.ms</code>
+  (default <code>0</code>) is deliberately <i>added</i> latency: even a batch with room left will be considered
+  "ready" to send once it has sat for <code>linger.ms</code> milliseconds, trading a few milliseconds of
+  application-visible latency for a chance to accumulate more records first. The throughput payoff is exactly
+  the RTT-amortization math from §4 — more records per request means fewer requests to pay the fixed per-request
+  cost (network framing, broker log-append bookkeeping, and under <code>acks=all</code>, one full ISR replication
+  round trip) against.</p>
+  <p>Drag the sliders below and watch why a batch's real-world size depends on the arrival rate, not just the
+  linger timer:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Batching under load — live</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>linger.ms</label><input type="range" id="econ-linger" min="0" max="50" value="0" step="1"><span class="val" id="econ-linger-val">0 ms</span></div>
+      <div class="slider-row"><label>arrival rate</label><input type="range" id="econ-rate" min="1" max="200" value="20" step="1"><span class="val" id="econ-rate-val">20 rec/s</span></div>
+      <div class="memlegend" id="econ-legend"></div>
+      <div class="memmap" id="econ-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="econ-note"></p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="co-t">THE COUNTERINTUITIVE FACT: linger.ms=0 STILL BATCHES UNDER LOAD</div>
+    <p>Set <code>linger.ms=0</code> and a batch is "ready" the instant it has any data — but "ready" only means
+    <i>eligible to be drained by the Sender thread</i>, not "closed to further appends." A batch keeps accepting
+    new records for as long as it has room <i>and</i> the Sender hasn't gotten around to draining it yet. Under
+    load, while one request for partition P is in flight to its broker (occupying one of P's limited in-flight
+    slots), new records for P keep arriving and appending into whatever batch is now at the back of P's deque —
+    so by the time a slot frees up and the Sender drains the next batch, it may already contain far more than
+    one record. Batching under load is therefore a consequence of the async pipeline's drain cadence relative to
+    the append rate — <b>not of the linger timer</b>, which only matters when arrivals are too sparse to fill a
+    batch between drains on their own.</p>
+  </div>
+
+  <h3>(c) Partitioning: murmur2 hashing vs the sticky partitioner (KIP-480)</h3>
+  <p>For a <b>keyed</b> record, <code>DefaultPartitioner</code>'s built-in hashing takes <code>murmur2(key) % numPartitions</code>
+  — deterministic, so every record with the same key always lands on the same partition, which is what makes
+  per-key ordering meaningful downstream. For an <b>unkeyed</b> record, there is no key to hash, and the original
+  behavior (pre-2.4) was strict round robin: record 1 to partition 0, record 2 to partition 1, record 3 to
+  partition 2, and so on. Round robin looks fair, but it is catastrophic for batching: at a low-to-moderate
+  production rate, by the time record 4 comes back around to partition 0, partition 0's previous batch has
+  almost certainly already been drained (it only had one record in it) — so nearly every batch ships with a
+  single record, regardless of <code>batch.size</code>.</p>
+  <p><b>KIP-480's sticky partitioner</b> fixes this by inverting the strategy: pick one partition at random and
+  send <i>every</i> unkeyed record to it until its current batch is actually sent, only then picking a new
+  random partition for the next batch. Concretely: with 10 partitions, a 16&nbsp;KB <code>batch.size</code>, and
+  a modest production rate, round robin can produce roughly <b>10× more requests</b>, each carrying roughly a
+  tenth as much data, compared to sticky partitioning funneling the same records into full or near-full batches
+  on whichever single partition is currently "it." The records still spread evenly across partitions over time
+  (each partition gets its turn), but the request-count and CPU-overhead cost of that spreading drops by roughly
+  an order of magnitude at typical batch sizes.</p>
+
+  <h3>(d) Compression: applied per batch, not per record</h3>
+  <p>The producer compresses an entire <code>ProducerBatch</code>'s bytes as one unit — never individual
+  records — which matters for two reasons: compression works far better with more context (a whole batch of
+  similarly-shaped records compresses much better than each record alone), and the broker stores and serves the
+  compressed batch <b>as-is</b> on the normal path. Consumers fetch the same compressed bytes the producer sent;
+  the broker does not decompress and recompress per request. This is why compression is close to free for the
+  broker in steady state — it never touches the payload bytes at all on the happy path.</p>
+  <table class="cmp">
+    <tr><th>CODEC</th><th>TYPICAL RATIO</th><th>CPU COST</th><th>SPEED</th><th>NOTES</th></tr>
+    <tr><td>none</td><td>1.0× (baseline)</td><td>none</td><td>fastest</td><td>Largest bytes on the wire and on disk; zero CPU tax anywhere.</td></tr>
+    <tr><td>gzip</td><td>~3–4×</td><td>highest</td><td>slowest</td><td>Best ratio of the classic codecs; CPU-bound at high throughput — an early, now less common, default.</td></tr>
+    <tr><td>snappy</td><td>~2×</td><td>very low</td><td>very fast</td><td>Prioritizes speed over ratio; long-time favorite for latency-sensitive pipelines.</td></tr>
+    <tr><td>lz4</td><td>~2–2.2×</td><td>low</td><td>fastest "real" codec</td><td>Good balance; a common modern recommendation for high-throughput producers.</td></tr>
+    <tr><td>zstd</td><td>~3× (tunable)</td><td>moderate</td><td>fast</td><td>Added in Kafka 2.1 (KIP-110); compression level trades CPU for ratio, usually the best modern default.</td></tr>
+  </table>
+  <div class="callout bad">
+    <div class="co-t">THE MESSAGE-FORMAT-CONVERSION CLIFF</div>
+    <p>The "broker never touches the payload" property only holds when the batch's on-disk record format and
+    compression can be served to a fetch request unchanged. If a broker must down-convert a batch — most
+    commonly because an old consumer only understands an older message format, or a topic still has segments
+    written under an older on-disk magic byte — it has no choice but to <b>decompress the whole batch, rewrite
+    per-record fields (offsets, timestamps), and recompress</b> before it can serve the response. That is genuine
+    CPU work happening synchronously on a request-handling path that is normally near-zero-cost, and it is a
+    real, recognizable category of production incident: broker CPU spikes and request queues back up the moment
+    a legacy consumer (or a topic straggling on an old format) forces conversion at scale.</p>
+  </div>
+
+  <h3>(e) Idempotence: PIDs, epochs, and sequence numbers (KIP-98)</h3>
+  <p>With <code>enable.idempotence=true</code> (the default since Kafka 3.0), the producer's first act on
+  initialization is an <code>InitProducerId</code> request to a broker acting as transaction coordinator, which
+  returns a <b>Producer ID (PID)</b> and an initial <b>epoch</b>. From then on, every <code>ProducerBatch</code>
+  sent for a given partition carries <code>(PID, producerEpoch, baseSequence)</code>, with the sequence number
+  simply incrementing per batch, per partition. On the broker, the partition leader's
+  <code>ProducerStateManager</code> keeps, for each PID it has seen on that partition, the metadata (sequence
+  range) of the <b>last five</b> batches it accepted. When a batch arrives:</p>
+  <ul class="plain">
+    <li>If its sequence range exactly matches one already recorded — this is a retried batch that actually
+      succeeded server-side before the producer's timeout fired and triggered a retry — the broker returns
+      success <b>without appending it again</b>. The duplicate is silently absorbed.</li>
+    <li>If its sequence range has a gap relative to what's recorded (a batch appears to be missing), the broker
+      rejects it with <code>OutOfOrderSequenceException</code>, because accepting it would mean a hole in the
+      partition's data that the producer can never fill in later once the PID's sequence has moved past it.</li>
+  </ul>
+  <p>Why five entries specifically? It has to cover the maximum number of batches that could plausibly be
+  in flight to one broker simultaneously for one PID — and Kafka enforces
+  <code>max.in.flight.requests.per.connection</code> ≤ <b>5</b> whenever idempotence is enabled (default is
+  exactly 5), so five tracked entries is sufficient headroom to recognize a duplicate no matter which of the
+  up-to-five outstanding batches is the one being retried. Before KIP-98, safe ordering under retries required
+  capping in-flight requests at exactly <b>1</b> — one outstanding request per connection, so a retry could
+  never race past something sent later. Idempotence is precisely what makes 5-way pipelining safe again:
+  the broker's own bookkeeping, not the producer's request ordering, is now what guarantees no duplication and
+  no silent gap.</p>
+
+  <h3>(f) acks, retries, and delivery.timeout.ms</h3>
+  <p>Three settings govern how hard the producer tries, and how it defines "given up":</p>
+  <ul class="plain">
+    <li><code>acks=0</code> — fire and forget. The producer doesn't wait for any broker response at all; a
+      dropped connection or a down leader loses the record with no error ever surfacing to the application.</li>
+    <li><code>acks=1</code> — the leader acknowledges after appending to its own local log, before followers
+      have replicated it. If the leader crashes before replication completes, an already-acknowledged record
+      can be lost when a follower without it is elected leader.</li>
+    <li><code>acks=all</code> (<code>-1</code>, the default since KIP-679 / Kafka 3.0) — the leader withholds
+      acknowledgment until the record is replicated to enough in-sync replicas to satisfy
+      <code>min.insync.replicas</code>. This is the strongest durability the producer can ask for, at the cost
+      of waiting on the slowest replica in the in-sync set on every batch.</li>
+  </ul>
+  <p><code>retries</code> defaults to an effectively unbounded value (<code>Integer.MAX_VALUE</code>), which
+  sounds alarming until you see what actually bounds it: <code>delivery.timeout.ms</code> (default
+  <code>120000</code>, introduced by KIP-91 to replace an earlier, ambiguous combination of retry-count and
+  per-request timeout configs) is a single overall budget covering <i>linger time + all retry attempts + all
+  request round trips</i> for a batch, from the moment it's first ready to send. Once that budget is exhausted,
+  the batch's <code>Future</code> fails — regardless of how many individual retries remain available — which
+  gives applications one clean, predictable number to reason about instead of multiplying out retry count by
+  per-request timeout by hand. And the ordering hazard from §6 remains real background context here: retries
+  with <code>max.in.flight.requests.per.connection</code> &gt; 1 and idempotence <i>disabled</i> can still
+  reorder batches at the broker — which is exactly why the modern default pairs <code>acks=all</code> with
+  <code>enable.idempotence=true</code> rather than leaving either as an opt-in.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same problem, six producer models</h2>
+  <p>Every messaging system that promises both throughput and delivery guarantees has to make the same
+  buffering decision somewhere. The spread below shows there is no dominant strategy — only different places
+  to put the same costs.</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>PRODUCER MODEL</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>Kafka</td><td>Two-thread async accumulator + Sender, per-partition batching, idempotent PID/sequence tracking</td>
+      <td><span class="pill g">RTT-amortized throughput</span> <span class="pill g">ordering preserved under retries</span> <span class="pill g">EOS-capable</span></td>
+      <td><span class="pill b">buffer.memory back-pressure</span> <span class="pill b">added linger latency</span> <span class="pill y">batch/sequence bookkeeping complexity</span></td></tr>
+    <tr><td>RabbitMQ</td><td>Publisher confirms — per-message (or per-channel window) acknowledgment; no client-side record accumulator by default</td>
+      <td><span class="pill g">simple per-message mental model</span> <span class="pill g">mature routing/exchanges</span></td>
+      <td><span class="pill b">throughput closer to a per-request ceiling unless the app manually batches payloads itself</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>Producer-side batching (batchingMaxMessages / batchingMaxPublishDelay) + async send, broker/BookKeeper storage split</td>
+      <td><span class="pill g">batching benefits comparable to Kafka's</span> <span class="pill g">independent compute/storage scaling</span></td>
+      <td><span class="pill b">extra hop latency to the BookKeeper ensemble</span> <span class="pill y">two systems to operate</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Publish-ack model; async publish allows pipelining outstanding acks, but no dedicated per-partition accumulator layer</td>
+      <td><span class="pill g">simplicity</span> <span class="pill g">low latency for small messages</span></td>
+      <td><span class="pill b">throughput at scale depends on manual pipelining depth chosen by the caller</span></td></tr>
+    <tr><td>SQS / Kinesis</td><td>SQS: caller-driven SendMessageBatch (≤10 msgs/256KB, hard cap). Kinesis: KPL does its own record aggregation + buffering (RecordMaxBufferedTime, linger.ms's cousin)</td>
+      <td><span class="pill g">KPL: comparable amortization to Kafka's</span> <span class="pill y">SQS: dead simple API</span></td>
+      <td><span class="pill b">SQS batching is manual and capped — no automatic large-scale amortization</span> <span class="pill b">KPL adds a native daemon process</span></td></tr>
+    <tr><td>ActiveMQ / classic JMS</td><td>Synchronous send by default, especially for persistent messages awaiting a broker disk ack per message</td>
+      <td><span class="pill g">strict ordering, simple transactional semantics</span></td>
+      <td><span class="pill b">severe per-message RTT-bound throughput ceiling unless async send / batched transactions are configured explicitly</span></td></tr>
+  </table>
+  <p>Read it as a proof by exhaustion: automatic, transparent, per-partition batching with a background I/O
+  thread — Kafka's and, in spirit, Pulsar's and the Kinesis Producer Library's approach — is what buys
+  throughput without asking the application to hand-roll its own batching logic. Systems that skip it (plain
+  SQS, classic JMS, RabbitMQ's default confirms) push that batching decision back onto the caller, trading
+  producer-internal complexity for application-level complexity instead of eliminating it.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Numbers you can predict before benchmarking</h2>
+  <p><code>RecordAccumulator.append()</code> is amortized <b>O(1)</b> per record: a deque lookup by partition key
+  (hash map, O(1) average) plus an append to the tail batch's backing buffer (a bounded memcopy). Draining is
+  <b>O(batches currently ready)</b> per <code>Sender</code> iteration — it never has to scan records, only
+  batch headers. Neither operation's cost scales with how many records have accumulated <i>total</i>, only with
+  how many are touched this call or this drain — which is exactly why the design tolerates arbitrarily high
+  sustained throughput as long as <code>buffer.memory</code> and broker acknowledgment keep pace.</p>
+  <ul class="plain">
+    <li><b>Compression's CPU/bytes trade, worked:</b> a batch of JSON-ish event records (moderate field
+      repetition) at roughly 200 bytes/record typically compresses to somewhere around 90–120 bytes/record with
+      snappy or lz4 (roughly 2×), and closer to 55–75 bytes/record with gzip or a mid-level zstd (roughly 3×) —
+      at correspondingly higher CPU cost per batch for the latter two. The bytes saved reduce both network egress
+      and the broker's on-disk footprint identically, since the broker stores the batch compressed.</li>
+    <li><b>GC behavior:</b> without <code>BufferPool</code>'s free list, a sustained-throughput producer would
+      allocate one new <code>batch.size</code>-sized buffer per <code>ProducerBatch</code>, continuously — direct
+      allocation churn that either pressures the GC (heap buffers) or fragments native memory (direct buffers).
+      The free list of pre-sized, already-allocated buffers turns that into pop/push against an existing pool,
+      so steady-state throughput does not correlate with GC pause frequency the way a naive per-batch allocator
+      would.</li>
+    <li><b>Throughput vs RTT, restated as a formula:</b> for one partition with a single in-flight request,
+      throughput ≈ (average batch bytes) / (RTT + broker processing time). Growing average batch bytes — via
+      <code>linger.ms</code>, via a larger <code>batch.size</code>, or simply via more load naturally filling
+      batches faster (§8b) — is the only lever that increases throughput without also increasing RTT itself.</li>
+  </ul>
+  <p>Drag <code>linger.ms</code> and <code>batch.size</code> below and watch the classic tradeoff curve: more
+  linger buys throughput but costs p99 latency, with diminishing throughput returns once batches are already
+  near full from load alone.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Throughput vs p99 latency — as linger.ms and batch.size move</span><span class="w-sub">DRAG</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>linger.ms</label><input type="range" id="perf-linger" min="0" max="100" value="5" step="1"><span class="val" id="perf-linger-val">5 ms</span></div>
+      <div class="slider-row"><label>batch.size</label><input type="range" id="perf-batch" min="4" max="128" value="16" step="4"><span class="val" id="perf-batch-val">16 KB</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> throughput (relative)</span>
+        <span><span style="color:var(--bad)">━</span> p99 latency (relative)</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch — batch bytes ≈ min(batch.size, arrival-rate × (linger.ms + effective RTT)),
+    throughput ∝ batch bytes / (RTT + fixed per-request overhead), latency ≈ linger.ms + RTT + overhead — tuned
+    to match the qualitative shape reported in Kafka's own producer-tuning benchmarks. The point is the shape:
+    throughput gains from added linger flatten out once the batch is already filling from load alone, while
+    latency keeps climbing linearly — which is exactly why tuning <code>linger.ms</code> past a few milliseconds
+    on an already-busy partition rarely helps.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Four incidents you will eventually meet</h2>
+
+  <h3>Incident 1: batching as a founding requirement, not an afterthought</h3>
+  <p>Kreps, Narkhede & Rao's original 2011 Kafka paper is explicit that LinkedIn's activity-tracking pipeline
+  made per-message request overhead a first-order design constraint from the start — the paper calls out
+  batching on both produce and consume paths as central to achieving the throughput their tracking volume
+  demanded, at a time when comparable messaging systems paid a full request/response round trip per message.
+  Every config this chapter covers is a descendant of that founding requirement.</p>
+
+  <h3>Incident 2: BufferPool exhaustion cascading into application thread-pool exhaustion</h3>
+  <p>A common, recognizable operational pattern at scale: a downstream slowdown — an in-sync replica falling
+  behind, a broker under disk or network pressure, or simply a spike in <code>acks=all</code> latency — causes
+  batches to sit unacknowledged in the accumulator longer than usual. Because <code>buffer.memory</code> is
+  finite, sustained production against a slow broker fills it; new <code>send()</code> calls start blocking
+  inside <code>BufferPool.allocate()</code>. If the calling application is, say, a web service that publishes to
+  Kafka synchronously from a bounded HTTP request-handling thread pool, those blocked threads pile up one by one
+  until the pool itself is exhausted — and now HTTP requests are timing out for reasons that have nothing to do
+  with Kafka's own availability. This exact shape — a slow downstream dependency exhausting an upstream bounded
+  thread pool through a blocking client call — is a recurring theme in large-scale engineering postmortems
+  (the pattern shows up under different names at companies like Uber and Netflix in their public backpressure
+  writeups), and the producer-side fix is almost always the same: keep <code>max.block.ms</code> tight, monitor
+  <code>buffer.available.bytes</code>/<code>bufferpool-wait-time</code> metrics as a leading indicator, and use
+  a bounded async queue in front of the producer rather than calling <code>send()</code> synchronously from a
+  latency-critical request path.</p>
+
+  <h3>Incident 3: the message-format-conversion CPU cliff</h3>
+  <p>The category of incident flagged in §8d is a real and recurring one: a broker upgraded ahead of its
+  consumers, or a topic with segments still written under an older on-disk record format, forces
+  down-conversion on every fetch a lagging consumer makes. Because that conversion means decompress → rewrite
+  per-record metadata → recompress, done synchronously on what is normally a near-zero-cost request path,
+  broker CPU can spike sharply and request queues back up cluster-wide — not because of a bug, but because an
+  assumption ("the broker just streams bytes off disk") silently stopped holding for one consumer group. The
+  standard operational guidance — upgrade consumers before (or at worst, alongside) brokers, and monitor the
+  broker's <code>MessageConversionsPerSec</code>/format-conversion metrics — exists directly because of this
+  incident shape.</p>
+
+  <h3>Incident 4: defaulting to correctness over raw throughput</h3>
+  <p>Kafka 3.0 flipping <code>enable.idempotence</code> and <code>acks</code> to their safer defaults (KIP-679)
+  codifies guidance the community and Confluent had already been giving for years: the throughput cost of
+  <code>acks=all</code> plus idempotence, versus <code>acks=1</code> with idempotence off, is commonly in the
+  range of roughly single digits to on the order of 20% lower throughput and a few extra milliseconds of p99
+  latency within a single datacenter — a cost most pipelines should happily pay, because the alternative is
+  data loss or silent duplication that is far more expensive to detect and repair after the fact than to prevent
+  up front. Cross-region, where RTT dominates far more than the replication wait itself, the relative cost of
+  <code>acks=all</code> shrinks further, since you were already RTT-bound. The operational lesson: only opt back
+  out of the safe defaults for the specific minority of pipelines (best-effort metrics, high-volume telemetry
+  where an occasional lost or duplicated record is genuinely inconsequential) where the throughput is worth more
+  than the guarantee — and say so explicitly in the config, rather than inheriting a weaker guarantee by
+  accident from an old default.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is the level of detail a Staff/Principal interview loop actually expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: the producer package</h2>
+  <p>Where everything from this chapter lives. Files marked <span style="color:var(--warn)">●</span> are this
+  chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">clients/src/main/java/org/apache/kafka/clients/producer/</span></div>
+<div>├── <span class="fhl">● KafkaProducer.java</span> <span class="fnote">— send(): serialize → partition → accumulate → return Future; also owns InitProducerId + close()</span></div>
+<div>├── ProducerConfig.java <span class="fnote">— linger.ms, batch.size, buffer.memory, acks, enable.idempotence, delivery.timeout.ms defaults live here</span></div>
+<div>├── <span class="dir">internals/</span></div>
+<div>│   ├── <span class="fhl">● RecordAccumulator.java</span> <span class="fnote">— ConcurrentMap&lt;TopicPartition, Deque&lt;ProducerBatch&gt;&gt;; append(), ready(), drain()</span></div>
+<div>│   ├── <span class="fhl">● ProducerBatch.java</span> <span class="fnote">— one batch's backing MemoryRecordsBuilder, record count, byte size, completion future(s)</span></div>
+<div>│   ├── <span class="fhl">● BufferPool.java</span> <span class="fnote">— free-list allocator over buffer.memory; allocate()/deallocate(), the blocking-wait logic</span></div>
+<div>│   ├── <span class="fhl">● Sender.java</span> <span class="fnote">— the I/O thread's run() loop: ready() → drain() → send Produce requests → handle responses</span></div>
+<div>│   ├── <span class="fhl">● TransactionManager.java</span> <span class="fnote">— PID/epoch lifecycle, per-partition sequence assignment, transactional state machine</span></div>
+<div>│   ├── StickyPartitionCache.java <span class="fnote">— KIP-480's original sticky-partition cache</span></div>
+<div>│   └── BuiltInPartitioner.java <span class="fnote">— KIP-794's uniform sticky partitioner that superseded the cache above</span></div>
+<div><span class="dir">core/src/main/scala/kafka/log/</span></div>
+<div>└── <span class="fhl">● ProducerStateManager.scala</span> <span class="fnote">— broker-side: tracks last 5 (PID, epoch, sequence-range) entries per partition; dedup + gap detection</span></div>
+  </div></div>
+
+  <p>Four simplified-but-faithful excerpts. First, the accumulator's core append decision:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Java</span><span>RecordAccumulator.java — append(), simplified</span></div>
+    <pre><span class="k">public</span> RecordAppendResult <span class="f">append</span>(TopicPartition tp, <span class="k">byte</span>[] key, <span class="k">byte</span>[] value, <span class="k">long</span> maxTimeToBlockMs) {
+    Deque&lt;ProducerBatch&gt; dq = <span class="f">getOrCreateDeque</span>(tp);      <span class="c">// per-partition, from a ConcurrentMap</span>
+    <span class="k">synchronized</span> (dq) {                                <span class="c">// lock is scoped to ONE partition's deque</span>
+        ProducerBatch last = dq.peekLast();
+        <span class="k">if</span> (last != <span class="k">null</span>) {
+            FutureRecordMetadata frm = last.<span class="f">tryAppend</span>(key, value, <span class="k">this</span>.time.milliseconds());
+            <span class="k">if</span> (frm != <span class="k">null</span>) <span class="k">return</span> <span class="k">new</span> RecordAppendResult(frm, <span class="n">false</span>);  <span class="c">// fit — no network involved</span>
+        }
+    }
+    <span class="c">// last batch didn't exist or didn't have room: allocate fresh memory</span>
+    ByteBuffer buffer = <span class="k">this</span>.free.<span class="f">allocate</span>(<span class="k">this</span>.batchSize, maxTimeToBlockMs);   <span class="c">// MAY BLOCK the calling thread</span>
+    <span class="k">synchronized</span> (dq) {
+        ProducerBatch batch = <span class="k">new</span> ProducerBatch(tp, buffer, <span class="k">this</span>.time.milliseconds());
+        FutureRecordMetadata frm = batch.<span class="f">tryAppend</span>(key, value, <span class="k">this</span>.time.milliseconds());
+        dq.<span class="f">addLast</span>(batch);                              <span class="c">// new batch becomes the tail — future appends target it</span>
+        <span class="k">return</span> <span class="k">new</span> RecordAppendResult(frm, <span class="n">true</span>);
+    }
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Java</span><span>BufferPool.java — allocate(), the blocking-wait path</span></div>
+    <pre><span class="k">public</span> ByteBuffer <span class="f">allocate</span>(<span class="k">int</span> size, <span class="k">long</span> maxTimeToBlockMs) <span class="k">throws</span> InterruptedException {
+    <span class="k">synchronized</span> (<span class="k">this</span>) {
+        <span class="k">if</span> (size == poolableSize &amp;&amp; !free.isEmpty())
+            <span class="k">return</span> free.<span class="f">pollFirst</span>();                 <span class="c">// free-list hit: no allocation at all</span>
+
+        <span class="k">int</span> freeListBytes = free.size() * poolableSize;
+        <span class="k">if</span> (<span class="k">this</span>.availableMemory + freeListBytes &gt;= size)
+            <span class="k">return</span> <span class="f">freeUp</span>(size);                        <span class="c">// enough headroom: allocate fresh (or reclaim)</span>
+
+        <span class="c">/* Pool is fully committed. Park this thread on a per-request Condition
+         * until another thread's deallocate() frees enough bytes, or time out. */</span>
+        Condition moreMemory = <span class="k">this</span>.lock.<span class="f">newCondition</span>();
+        <span class="k">long</span> remainingMs = maxTimeToBlockMs;
+        <span class="k">while</span> (<span class="k">this</span>.availableMemory &lt; size) {
+            <span class="k">boolean</span> woken = moreMemory.<span class="f">await</span>(remainingMs, MILLISECONDS);
+            <span class="k">if</span> (!woken) <span class="k">throw</span> <span class="k">new</span> TimeoutException(
+                <span class="s">"Failed to allocate memory within the configured max.block.ms."</span>);
+        }
+        <span class="k">return</span> <span class="f">freeUp</span>(size);
+    }
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Java</span><span>Sender.java — run(), one iteration</span></div>
+    <pre><span class="k">void</span> <span class="f">runOnce</span>() {
+    <span class="c">// 1. Which partitions have a batch ready (full OR linger elapsed) AND a free in-flight slot?</span>
+    ReadyCheckResult ready = <span class="k">this</span>.accumulator.<span class="f">ready</span>(<span class="k">this</span>.metadataCache, now);
+
+    <span class="c">// 2. Pull those batches out of the accumulator, grouped by destination broker —</span>
+    <span class="c">//    one Produce request per broker, carrying many partitions' batches at once.</span>
+    Map&lt;Integer, List&lt;ProducerBatch&gt;&gt; batches =
+        <span class="k">this</span>.accumulator.<span class="f">drain</span>(<span class="k">this</span>.metadataCache, ready.readyNodes, <span class="k">this</span>.maxRequestSize, now);
+
+    <span class="k">for</span> (Map.Entry&lt;Integer, List&lt;ProducerBatch&gt;&gt; e : batches.entrySet())
+        <span class="f">sendProduceRequest</span>(e.getKey(), e.getValue());   <span class="c">// occupies one in-flight slot per request</span>
+
+    <span class="c">// 3. Poll the network client — this is where responses complete batch Futures / callbacks.</span>
+    <span class="k">this</span>.client.<span class="f">poll</span>(pollTimeout, now);
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Lock scope is per-partition, never global.</b> <code>append()</code> only ever synchronizes on one
+    partition's deque, so a burst on partition 7 never blocks an append to partition 2 — throughput scales with
+    partition count, not with a single global mutex. <b>2. Blocking lives at the memory boundary, not the network
+    boundary.</b> The calling thread can only ever be made to wait inside <code>BufferPool.allocate()</code>
+    (a local resource with a clear, bounded budget, <code>max.block.ms</code>) — never inside a socket read,
+    which would have an unboundable wait tied to broker/network health instead of a config the caller controls.
+    <b>3. The broker owns the safety net idempotence needs.</b> Rather than trusting the producer to never
+    double-send (impossible to guarantee over an unreliable network), <code>ProducerStateManager</code> puts
+    the deduplication decision on the one side of the connection that actually knows what was durably
+    committed — the same "judge by ground truth, not by client-side promises" instinct you'll see again in
+    the consumer's offset-commit protocol next chapter.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them,
+  they encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a record's journey</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from the application
+      calling <code>send()</code> to the Sender thread completing the batch's <code>Future</code>. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The producer pipeline, live</h2>
+  <p>A running <code>RecordAccumulator</code> across three partitions, a <code>BufferPool</code> meter, a
+  <code>Sender</code> draining batches into three simulated brokers with bounded in-flight slots, and the
+  idempotence machinery you can actually break. Click any batch or in-flight slot to inspect it.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">RecordAccumulator &amp; Sender — live producer</span><span class="w-sub" id="sim-phase">RUNNING</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:6px">RECORDACCUMULATOR — PER-PARTITION DEQUE&lt;PRODUCERBATCH&gt;</div>
+          <div class="partitions" id="sim-partitions"></div>
+          <div id="sim-blocked-wrap"></div>
+          <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px">SENDER — IN-FLIGHT REQUESTS PER BROKER</div>
+          <div class="brokers" id="sim-brokers"></div>
+          <div class="chartbox" style="margin-top:14px"><canvas id="sim-chart" width="500" height="170"></canvas></div>
+          <div class="chart-legend">
+            <span><span style="color:var(--pg)">━</span> throughput</span>
+            <span><span style="color:var(--bad)">━</span> p99 latency</span>
+            <span><span style="color:var(--warn)">┆</span> current settings</span>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">WORKLOAD</div>
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">arrival rate</label><span class="val" id="sim-rate-val" style="min-width:60px">40/s</span></div>
+            <input type="range" id="sim-rate" min="1" max="300" value="40" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">record size</label><span class="val" id="sim-recsize-val" style="min-width:60px">200 B</span></div>
+            <input type="range" id="sim-recsize" min="20" max="2000" value="200" style="width:100%;accent-color:var(--pg)">
+            <div class="btns" style="margin-top:8px">
+              <button class="chip on" id="sim-key-random">keys: random (sticky)</button>
+              <button class="chip" id="sim-key-keyed">keys: keyed (hash)</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">BATCHING / MEMORY</div>
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">linger.ms</label><span class="val" id="sim-linger-val" style="min-width:50px">0 ms</span></div>
+            <input type="range" id="sim-linger" min="0" max="100" value="0" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">batch.size</label><span class="val" id="sim-batch-val" style="min-width:50px">16 KB</span></div>
+            <input type="range" id="sim-batch" min="4" max="64" value="16" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">buffer.memory</label><span class="val" id="sim-bufmem-val" style="min-width:50px">4 MB</span></div>
+            <input type="range" id="sim-bufmem" min="1" max="16" value="4" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">max.in.flight</label><span class="val" id="sim-maxinflight-val" style="min-width:50px">5</span></div>
+            <input type="range" id="sim-maxinflight" min="1" max="5" value="5" style="width:100%;accent-color:var(--pg)">
+            <div class="meter"><div class="m-l"><span>BufferPool used</span><span id="m-buf-v">0%</span></div><div class="m-bar"><div class="m-fill" id="m-buf"></div></div></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">COMPRESSION</div>
+            <div class="btns" id="sim-codec-chips"></div>
+            <div class="prod-readouts">
+              <div class="scounter"><div class="cv" id="cnt-wire" style="font-size:13px">0 B</div><div class="cl">bytes on wire</div></div>
+              <div class="scounter"><div class="cv" id="cnt-cpu" style="font-size:13px">0</div><div class="cl">rel. CPU cost</div></div>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">FAILURE INJECTION</div>
+            <div class="btns">
+              <button class="btn danger" id="sim-exhaust">exhaust BufferPool</button>
+              <button class="btn" id="sim-idem-toggle">idempotence: ON</button>
+              <button class="btn warn" id="sim-replay">replay a retry</button>
+              <button class="btn danger" id="sim-oos">force out-of-order</button>
+              <button class="btn" id="sim-pause">⏸ pause</button>
+            </div>
+          </div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">INSPECTOR</div>
+            <div style="color:var(--dim)">click a batch or in-flight slot…</div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-produced">0</div><div class="cl">produced</div></div>
+            <div class="scounter"><div class="cv" id="cnt-acked">0</div><div class="cl">acked</div></div>
+            <div class="scounter"><div class="cv" id="cnt-blocked" style="color:var(--bad)">0</div><div class="cl">blocked events</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Set keys to random and watch the sticky partitioner fill one partition's deque at a time —
+    switch to keyed and watch all three fill simultaneously by hash. <b>2.</b> Push arrival rate high with
+    <code>linger.ms=0</code> — batches still grow, because the Sender can't drain faster than the in-flight
+    slots allow. <b>3.</b> Click "exhaust BufferPool" and watch <code>send()</code> block — then watch it either
+    recover or time out. <b>4.</b> Turn idempotence OFF, click "replay a retry," and see a duplicate accepted;
+    turn it back ON and see the exact same replay deduped via the sequence-number check. <b>5.</b> Click "force
+    out-of-order" with idempotence ON and read the <code>OutOfOrderSequenceException</code> in the log.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 5: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head, <i>then</i> reveal. If any reveal
+  surprises you, re-run the relevant simulator experiment.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 04 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now trace a record from <code>send()</code> through
+    <code>RecordAccumulator</code>, <code>BufferPool</code>, and <code>Sender</code> to a broker acknowledgment,
+    explain exactly when and why <code>send()</code> blocks, and reason precisely about idempotent duplicate
+    detection. Chapter 5 goes to the other end of the pipe: the consumer group protocol, partition assignment,
+    and the fetch path that has to preserve every ordering guarantee this chapter established.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="kafka-05.html" style="text-decoration:none;display:inline-flex;align-items:center">Next: Consumer Internals →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2011", l:"Old Scala client", d:"<b>Kafka open-sourced at LinkedIn.</b> The original producer, written in Scala, ships with synchronous and asynchronous modes and a simple in-memory queue feeding a background sender — batching exists, but as a single shared queue, not a per-partition accumulator. The Kreps/Narkhede/Rao paper is explicit that batching was a founding requirement, not an optimization added later." },
+  { yr:"2015", l:"New Java producer (0.8.2)", d:"<b>The Java producer rewrite ships</b> and eventually deprecates the old Scala clients. This is where <code>RecordAccumulator</code> and <code>Sender</code> as you know them today appear: a per-partition <code>Deque&lt;ProducerBatch&gt;</code> structure and a dedicated I/O thread, replacing the single shared queue. Nearly everything in §7–§8 of this chapter describes this rewrite's shape." },
+  { yr:"2017", l:"KIP-98 · idempotence & EOS (0.11)", d:"<b>The idempotent producer and transactions ship.</b> <code>InitProducerId</code>, per-batch <code>(PID, epoch, sequence)</code>, and broker-side <code>ProducerStateManager</code> deduplication arrive together, finally making it safe to pipeline more than one in-flight request per connection without risking silent duplication or reordering on retry." },
+  { yr:"2019", l:"KIP-480 · sticky partitioner (2.4)", d:"<b>Round robin for unkeyed records is replaced.</b> Instead of spraying each unkeyed record to a new partition (and shipping mostly-empty single-record batches), the producer sticks to one partition until its batch is sent, then picks a new one. Request counts for low-to-moderate-rate unkeyed producers drop by roughly an order of magnitude." },
+  { yr:"2021", l:"Kafka 3.0 · safer defaults", d:"<b><code>enable.idempotence</code> flips to true by default</b>, and (via KIP-679) <code>acks</code> defaults to <code>all</code>. The project decides new users should get correctness — no silent duplicates, no silent data loss on leader failure — without having to discover and opt into it, accepting the modest throughput cost as the new baseline." },
+  { yr:"2022→", l:"KIP-794 · uniform sticky partitioner", d:"<code>BuiltInPartitioner</code> supersedes the original <code>StickyPartitionCache</code>, weighting partition selection by broker load/latency rather than pure randomness, while keeping the same core idea: stick to a partition for a whole batch's lifetime instead of round-robining per record." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+
+/* ============================================================
+   2. DECK: candidates for decoupling send() (§5)
+   ============================================================ */
+(function(){
+  const box=(t,inner)=>`<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:200px">
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell=(t,c="#8b94a7",bg="transparent")=>`<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap=(...b)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${b.join("")}</div>`;
+  stepper("deckCandidates", [
+    { stage: wrap(box("CANDIDATE A — ONE SHARED BUFFER, NO PER-PARTITION STRUCTURE",
+        cell("send() → single fixed-size queue","#f25c54") + cell("one background thread drains FIFO order","#8b94a7") + cell("partition P3's record stuck behind P1's slow broker","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Candidate A: a single shared buffer.</b> Simplest possible fix — one queue, one drain thread. But with no per-partition structure, a slow or unreachable broker for partition P1 head-of-line-blocks records for every other partition sitting behind it in the same FIFO. There is also no way to batch "this partition's records together" — the drain thread would have to sort by destination broker on every drain, and a burst on one partition still stalls unrelated ones. <b>Rejected: doesn't parallelize across brokers.</b>` },
+    { stage: wrap(box("CANDIDATE B — SYNCHRONOUS BATCHING",
+        cell("send() call #1 → held open…","#ff9f43") + cell("send() call #2 → held open…","#ff9f43") + cell("…until batch fills, THEN both return","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Candidate B: block the app thread until a batch fills.</b> This does batch — but every calling thread stalls inside <code>send()</code> until enough <i>other</i> calls arrive to fill the batch, or a timeout fires. That reintroduces exactly the blocking-application-thread problem batching was supposed to solve, and makes latency wildly dependent on how many concurrent callers happen to exist at any moment. <b>Rejected: still blocks the caller on someone else's I/O.</b>` },
+    { stage: wrap(box("CANDIDATE C ✓ — DECOUPLED TWO-THREAD PIPELINE",
+        cell("app thread: serialize → partition → append()","#4ade80") + cell("returns Future immediately — never blocks on network","#4ade80","rgba(74,222,128,.08)") + cell("Deque&lt;ProducerBatch&gt; per TopicPartition","#60a5fa") + cell("Sender thread: the ONLY thread touching sockets","#f25c54"))),
+      cap:`<b>Candidate C, accepted:</b> the calling thread does only CPU-bound work (serialize, partition, append to an in-memory per-partition deque) and returns a <code>Future</code> immediately. A single dedicated <code>Sender</code> thread continuously drains whatever's ready and ships it — decoupled from how many application threads exist or how fast they call <code>send()</code>. Per-partition structure means one slow broker never blocks unrelated partitions.` },
+    { stage: wrap(box("WHY THE SPLIT IS EXACTLY HERE", cell("app thread owns: serialization, partitioning, buffer accounting","#4ade80") + cell("Sender owns: batching decisions (ready/drain), all network I/O, response handling","#f25c54"))),
+      cap:`<b>The line, drawn once.</b> Everything CPU-bound and fast stays on the caller's thread; everything that can legitimately take an unbounded amount of time (network I/O, waiting on broker acknowledgment) is concentrated into the one thread built to wait. §7 names every component on both sides of that line.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: RecordAccumulator.append() decision tree (§8a)
+   ============================================================ */
+(function(){
+  const box=(t,inner,hot)=>`<div style="border:1px solid ${hot?'var(--pg)':'var(--border-hi)'};background:${hot?'var(--pg-dim)':'var(--panel-2)'};border-radius:11px;padding:12px;min-width:220px">
+    <div style="font-family:var(--mono);font-size:10px;color:${hot?'var(--pg)':'var(--dim)'};letter-spacing:.06em;margin-bottom:6px">${t}</div>${inner}</div>`;
+  const arrow = `<div style="text-align:center;color:var(--dim);font-family:var(--mono);font-size:16px;margin:4px 0">↓</div>`;
+  stepper("deckAppend", [
+    { stage: box("1 · APP THREAD CALLS append(tp, key, value)", `<span style="font-family:var(--mono);font-size:12px;color:#c6cddb">getOrCreateDeque(tp) — ConcurrentMap lookup, O(1)</span>`, true),
+      cap:`<b>Entry point.</b> The partition's <code>Deque&lt;ProducerBatch&gt;</code> is found (or created) in a <code>ConcurrentMap</code> — no global lock is ever taken for this step.` },
+    { stage: box("2 · synchronized(dq): peek the LAST batch", `<span style="font-family:var(--mono);font-size:12px;color:#c6cddb">last = dq.peekLast()<br>last != null && last.tryAppend(...) succeeds?</span>`, true),
+      cap:`<b>Fast path.</b> The lock scope is this one partition's deque only. If the newest batch has room, the record is copied in and a <code>Future</code> returns — done, no allocation, no network.` },
+    { stage: box("3 · NO ROOM (or no batch yet) → BufferPool.allocate()", `<span style="font-family:var(--mono);font-size:12px;color:#f25c54">free.allocate(batch.size, max.block.ms)</span>${arrow}<span style="font-family:var(--mono);font-size:11px;color:#c6cddb">free-list hit → pop, no GC pressure<br>else → fresh allocation if under buffer.memory<br>else → BLOCK the calling thread</span>`, true),
+      cap:`<b>The one place a caller can be made to wait.</b> A pooled, already-allocated <code>batch.size</code> buffer is handed back if the free list has one; only if the pool is fully committed does the calling thread park inside <code>allocate()</code>, up to <code>max.block.ms</code>.` },
+    { stage: box("4 · new ProducerBatch created, appended, added as new tail", `<span style="font-family:var(--mono);font-size:12px;color:#4ade80">dq.addLast(batch) → Future returned</span>`, false),
+      cap:`<b>Done.</b> The new batch becomes the deque's tail — the target for the <i>next</i> append. The old (now full) batch stays at whatever position it reached in the deque, waiting for the <code>Sender</code> to drain it from the front.` }
+  ]);
+})();
+
+/* ============================================================
+   4. BATCHING ECONOMICS SLIDER WIDGET (§8b)
+   ============================================================ */
+(function(){
+  function render(){
+    const linger = +el("econ-linger").value;
+    const rate = +el("econ-rate").value;
+    el("econ-linger-val").textContent = linger + " ms";
+    el("econ-rate-val").textContent = rate + " rec/s";
+    const RTT = 4; // ms, illustrative same-DC round trip used only for this widget's window
+    const recBytes = 200; // illustrative fixed record size for this widget
+    const window = linger + RTT; // linger + time one request occupies the in-flight slot
+    const capBytes = 16384; // batch.size default, fixed for this widget
+    const arrivalBytesPerMs = (rate * recBytes) / 1000;
+    const avgBatchBytes = Math.min(capBytes, arrivalBytesPerMs * window);
+    const recsPerBatch = Math.max(1, avgBatchBytes / recBytes);
+    const reqsPerSec = (rate * recBytes) / avgBatchBytes;
+    const fillPct = avgBatchBytes / capBytes * 100;
+    const segs = [
+      ["batch payload", fillPct, "#f25c54"],
+      ["headroom to batch.size", 100-fillPct, "#2a3446"]
+    ];
+    el("econ-map").innerHTML = segs.map(([n,v,c])=>`<div class="seg" style="background:${c};width:${Math.max(v,0.5)}%" title="${n}">${v>10?Math.round(v)+"%":""}</div>`).join("");
+    el("econ-legend").innerHTML = segs.map(([n,v,c])=>`<span><span class="sw" style="background:${c}"></span>${n}</span>`).join("");
+    el("econ-note").innerHTML = `At <b style="color:var(--pg)">${rate} rec/s</b> and <b style="color:var(--pg)">linger.ms=${linger}</b>: average batch ≈ <b>${Math.round(avgBatchBytes)} bytes</b> (~${recsPerBatch.toFixed(1)} records), requiring ≈ <b>${reqsPerSec.toFixed(1)} requests/sec</b> to carry this load — versus ${(rate).toFixed(1)} requests/sec if every record shipped alone. ${linger===0 ? "Notice this is nonzero batching even at linger.ms=0 — it comes from the request-in-flight window, not the timer." : "Raising linger.ms widens the accumulation window further, at the cost of that many added milliseconds of latency per batch."}`;
+  }
+  el("econ-linger").oninput = render;
+  el("econ-rate").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   5. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  appthread:{ n:"application thread(s)", f:"caller's own code → KafkaProducer.send()", r:"Any thread in your application calling send(). Runs the serializers and the partitioner synchronously, then hands off to RecordAccumulator.append() and receives a Future immediately.", l:"Lives as long as your application's own threads; not owned by the producer.", d:"If it never calls get() on the returned Future (or registers a callback), it never learns whether the record was actually acknowledged — a very common correctness bug." },
+  serpart:{ n:"serializer + partitioner", f:"org.apache.kafka.clients.producer.{Serializer, Partitioner}", r:"Converts the key/value to bytes, then chooses a TopicPartition — murmur2(key) % partitions for keyed records, or the sticky/uniform-sticky partitioner (BuiltInPartitioner) for unkeyed ones.", l:"Invoked once per send(), synchronously, on the calling thread.", d:"A slow custom serializer directly adds to the calling thread's send() latency — this code never runs on the Sender thread." },
+  accumulator:{ n:"RecordAccumulator", f:"clients/.../internals/RecordAccumulator.java", r:"ConcurrentMap<TopicPartition, Deque<ProducerBatch>>. Owns append() (called by app threads), and ready()/drain() (called by the Sender thread) to decide which batches can be sent.", l:"One instance per KafkaProducer, lives for the producer's whole lifetime.", d:"Its per-partition deque locks are the only synchronization between app threads and the Sender — never a single global lock." },
+  bufferpool:{ n:"BufferPool", f:"clients/.../internals/BufferPool.java", r:"A free-list allocator over buffer.memory (default 32 MB). Hands out pooled batch.size ByteBuffers to avoid per-batch GC churn; blocks callers in allocate() when memory is exhausted, up to max.block.ms.", l:"One instance per producer; buffers are returned to the free list when a batch is fully acknowledged and released.", d:"Exhaustion doesn't crash anything — it manifests purely as blocked send() calls and, past max.block.ms, TimeoutExceptions." },
+  sender:{ n:"Sender thread", f:"clients/.../internals/Sender.java", r:"The single I/O thread: calls accumulator.ready()/drain() to pick ready batches per destination broker, issues Produce requests, and polls the NetworkClient for responses that complete batch Futures/callbacks.", l:"One background thread per producer, running from construction until close().", d:"If this thread dies or stalls, no batch is ever drained again — send() calls keep succeeding (appending to the accumulator) until buffer.memory fills, then everything blocks." },
+  inflight:{ n:"in-flight requests tracker", f:"clients/.../NetworkClient.java (InFlightRequests)", r:"Per broker connection, tracks how many Produce requests are outstanding, capped at max.in.flight.requests.per.connection (default 5, and ≤5 is enforced whenever idempotence is on).", l:"Lives inside the NetworkClient the Sender thread owns.", d:"If this cap is exceeded pre-KIP-98 semantics without idempotence, retries can land out of order at the broker — this tracker's bound is what makes 5-way pipelining safe now." },
+  brokerresp:{ n:"broker response / callback completion", f:"clients/.../internals/ProducerBatch.java (completion) + kafka.log.ProducerStateManager.scala (broker-side)", r:"When a Produce response arrives, the Sender thread completes every record's Future in the batch and invokes any registered callbacks — success, or the error that will drive a retry decision.", l:"Happens on the Sender thread, once per response, never on an application thread.", d:"A callback that itself blocks or does slow work directly stalls the Sender thread — a classic hidden performance bug." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">WHAT PROTECTS / RISKS IT</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("appthread");
+
+/* ============================================================
+   6. PERFORMANCE CHART (§10) — linger.ms / batch.size
+   ============================================================ */
+(function(){
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  const RTT = 4, overheadMs = 0.35, arrivalBytesPerMs = 12; // illustrative constants for this analytic sketch
+  function model(lingerMs, batchKB){
+    const cap = batchKB*1024;
+    const windowMs = lingerMs + RTT;
+    const batchBytes = Math.min(cap, arrivalBytesPerMs*windowMs);
+    const reqIntervalMs = Math.max(batchBytes/arrivalBytesPerMs, overheadMs);
+    const tput = batchBytes / reqIntervalMs; // bytes/ms, relative units
+    const lat = lingerMs + RTT + overheadMs;
+    return { tput, lat, batchBytes };
+  }
+  function render(){
+    const L = +el("perf-linger").value, B = +el("perf-batch").value;
+    el("perf-linger-val").textContent = L+" ms";
+    el("perf-batch-val").textContent = B+" KB";
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=0; x<=100; x+=2) xs.push(x);
+    let maxT=0, maxL=0;
+    const pts = xs.map(x=>{ const m = model(x,B); maxT=Math.max(maxT,m.tput); maxL=Math.max(maxL,m.lat); return m; });
+    const X = x => PAD + (x/100)*(W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [0,25,50,75,100].forEach(x=>{ ctx.beginPath(); ctx.moveTo(X(x),10); ctx.lineTo(X(x),H-20); ctx.stroke(); ctx.fillText(x+"ms", X(x)-10, H-6); });
+    function curve(get,max,color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const y = H-24-(get(pts[i])/max)*(H-44); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+      ctx.stroke();
+    }
+    curve(m=>m.tput, maxT, "#f25c54");
+    curve(m=>Math.min(m.lat, maxL), maxL, "#ff9f43");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(L),10); ctx.lineTo(X(L),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(L,B), best = pts.reduce((a,b)=>b.tput>a.tput?b:a);
+    el("perf-note").innerHTML = `At <b>linger.ms=${L}</b>, <b>batch.size=${B}KB</b>: average batch ≈ <b style="color:var(--pg)">${Math.round(here.batchBytes)} bytes</b>, relative throughput ≈ <b style="color:var(--pg)">${Math.round(here.tput/best.tput*100)}%</b> of this batch.size's peak, p99 ≈ <b style="color:var(--bad)">${here.lat.toFixed(1)} ms</b> added over raw RTT. Notice throughput flattens once batch bytes saturate batch.size — beyond that point, more linger only buys latency.`;
+  }
+  el("perf-linger").oninput = render;
+  el("perf-batch").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. qaCards() ENGINE + INTERVIEW QUESTIONS (§12)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Walk through, precisely, what happens end-to-end when the BufferPool is exhausted.", hint:"where does the calling thread actually park?",
+    a:"Every byte of buffer.memory is currently allocated to batches awaiting acknowledgment. A new send() reaches RecordAccumulator.append(), finds no room in the tail batch, and calls BufferPool.allocate(batch.size, max.block.ms). The free list is empty and availableMemory is below what's requested, so the calling thread creates a Condition and calls await() on it, blocking the application thread itself — not just some background queue. If another batch is acknowledged and released within max.block.ms, the pool signals the condition, memory frees up, and allocate() returns normally. If not, allocate() throws after max.block.ms, which surfaces to the application as send() itself throwing TimeoutException. Nothing crashes — the symptom is purely blocked application threads, which is why it's so often misdiagnosed as 'Kafka is down' rather than 'my batches aren't draining fast enough.'" },
+  { lvl:"SENIOR", q:"Derive why exactly five in-flight requests is the safe upper bound for the idempotent producer.", hint:"what does the broker have to remember to recognize a duplicate?",
+    a:"ProducerStateManager on the broker tracks, per (PID, partition), the metadata of the last five accepted batches so it can recognize an exact-match retry as a duplicate (dedup, no re-append) or a sequence gap as a real problem (OutOfOrderSequenceException). That window has to be at least as large as the maximum number of batches that could be genuinely outstanding to one broker for one PID at once — which is exactly what max.in.flight.requests.per.connection bounds. Kafka enforces max.in.flight.requests.per.connection ≤ 5 whenever idempotence is enabled specifically so the broker's 5-entry memory is always sufficient to disambiguate any outstanding batch. Before KIP-98, there was no such bookkeeping, so the only way to guarantee no reordering on retry was to allow just 1 in-flight request — idempotence is what let the limit rise back to 5 without reintroducing the reordering risk." },
+  { lvl:"STAFF", q:"Explain precisely why linger.ms=0 still produces multi-record batches under sustained load.", hint:"what does 'ready' actually mean, versus 'drained'?",
+    a:"linger.ms=0 makes a batch 'ready' — eligible for the Sender to drain — the instant it holds any data. But 'ready' isn't 'closed'; a batch can keep accepting appends for as long as it has room and the Sender hasn't actually drained it yet. Under load, while one request for partition P occupies P's limited in-flight slot(s), new records for P keep landing in whatever batch is currently at the deque's tail. By the time a slot frees and the Sender actually drains that batch, it can contain many records — the batch size is a function of the append-rate-versus-drain-cadence relationship, not of the linger timer. linger.ms only matters when the batch would otherwise sit nearly empty between drains because arrivals are too sparse to fill it on their own." },
+  { lvl:"STAFF", q:"Compare the failure scenarios for acks=1 versus acks=all precisely — not just 'all is safer.'", hint:"what specifically has to go wrong, and when?",
+    a:"acks=1: the leader appends to its own local log and acknowledges before any follower has replicated the record. If that specific leader then crashes before any follower replicates it, and a replica without the record is elected leader, the acknowledged record is gone — the producer believed it succeeded and it didn't. This window is exactly 'time between local append and replication,' typically small but nonzero, and directly proportional to replication lag. acks=all: the leader withholds acknowledgment until min.insync.replicas replicas (including itself) have the record, so the failure mode requires losing enough replicas simultaneously to drop below min.insync.replicas before any of them can be promoted — a materially rarer event, at the cost of every batch's latency now including the slowest in-sync replica's replication time, and unavailability (NotEnoughReplicasException) if the ISR shrinks below the minimum." },
+  { lvl:"STAFF", q:"With numbers: quantify the sticky partitioner's improvement over the pre-2.4 round-robin default.", hint:"what happens to batch size at a partition's turn under round robin?",
+    a:"Under round robin across 10 partitions, an unkeyed record stream at a modest rate means each partition only gets roughly one record before its turn passes to the next partition — so its single-record batch is almost always drained (or times out via linger) long before record #11 (its next turn) arrives, producing close to one request per record, each carrying a small fraction of batch.size. Under the sticky partitioner, every record goes to the same partition until that partition's current batch is actually sent, so at the same arrival rate the same 10-way spread across partitions is achieved over time, but each individual batch fills far closer to batch.size before shipping — commonly around a 10x reduction in request count at typical batch sizes and rates, because you've converted '10 partitions each getting a sliver of every batch' into '1 partition getting a full batch, then handing off.'" },
+  { lvl:"PRINCIPAL", q:"Why is compression applied per-batch rather than per-record, and what exactly causes the message-format-conversion CPU cliff?", hint:"what does the broker do differently on the normal path versus the down-conversion path?",
+    a:"Compressing a whole batch as one unit gets far better ratios than compressing each record alone (shared dictionary context across similarly-shaped records), and — just as importantly — lets the broker store and serve those exact compressed bytes unchanged: a fetch response can be built by copying the on-disk batch straight onto the wire, no decompression required. That property breaks only when the broker must down-convert a batch to an older record format — typically because a consumer is old enough to only understand an earlier message version, or a topic still carries segments from before an upgrade. Down-conversion requires decompressing the entire batch, rewriting per-record offsets/timestamps into the older layout, and recompressing — real CPU work injected into what is normally a near-zero-cost request path, and it scales with how much traffic a lagging consumer or stale topic segment forces through that path, which is exactly why it shows up as a sudden, hard-to-diagnose broker CPU spike rather than a gradual degradation." },
+  { lvl:"PRINCIPAL", q:"From producer-side metrics alone, how would you distinguish 'BufferPool exhaustion' from 'the broker itself is just slow' as the root cause of rising send() latency?", hint:"think about which metric moves first and which is a downstream symptom",
+    a:"Broker slowness (rising replication lag, a struggling leader, or ISR shrinkage under acks=all) shows up first as rising request-latency-avg / request-latency-max on the producer's per-broker metrics and rising records-lag on the batches waiting for acknowledgment — buffer occupancy rises only as a consequence, because batches simply aren't being freed as fast as they're created. BufferPool exhaustion as the primary cause, by contrast, shows bufferpool-wait-time (or buffer-exhausted-rate) climbing while broker-side request latency stays comparatively flat — meaning the producer is memory-bound on its own client-side accounting, not blocked waiting on the network. In practice: if buffer-available-bytes hits zero before request-latency starts climbing, suspect BufferPool sizing (buffer.memory too small, or record sizes/rate outstripping it); if request latency climbs first and buffer occupancy follows, the broker or network is the actual bottleneck and no producer-side memory tuning will fix it." }
+]);
+
+/* ============================================================
+   8. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"send() has been blocked for longer than max.block.ms with no broker in sight. What does the calling thread see?",
+    opts:[ "It silently keeps waiting — max.block.ms only limits the network timeout, not memory allocation",
+           "A TimeoutException, thrown from inside BufferPool.allocate() because no memory was freed in time",
+           "The record is silently dropped and a warning is logged asynchronously",
+           "The call succeeds anyway once buffer.memory usage crosses 100%, using emergency overflow memory" ],
+    a:1,
+    why:"max.block.ms bounds how long a thread will wait inside BufferPool.allocate() for memory to free up. Once it elapses without enough bytes becoming available, allocate() throws, and that exception propagates out of send() as a TimeoutException the caller must handle. There is no silent drop (C) and no overflow memory (D) — buffer.memory is a hard ceiling by design; option A confuses this memory-allocation timeout with the separate delivery.timeout.ms budget for network retries." },
+  { q:"Where does batch compression happen, and what does the broker do with the compressed bytes on the normal (non-format-conversion) path?",
+    opts:[ "Per record, on the producer; the broker decompresses each record before appending it",
+           "Per batch, on the producer; the broker stores and serves the compressed batch bytes unchanged",
+           "Per batch, but only on the broker — producers always send uncompressed",
+           "Per record, on the broker, after receiving uncompressed data from the producer" ],
+    a:1,
+    why:"The producer compresses an entire ProducerBatch as a single unit before sending it. On the normal path, the broker appends those compressed bytes to the log as-is and later serves the identical compressed bytes to consumers on fetch — no decompression happens on the broker at all unless a message-format conversion is forced (an old consumer, or a stale on-disk format), which is precisely the expensive edge case covered in §8d/§11." },
+  { q:"Why does Kafka enforce max.in.flight.requests.per.connection ≤ 5 specifically when idempotence is enabled?",
+    opts:[ "5 is an arbitrary network-buffer limit unrelated to correctness",
+           "It matches the number of in-sync replicas typically configured for acks=all",
+           "It matches the number of batch metadata entries ProducerStateManager tracks per (PID, partition) to detect duplicates/gaps",
+           "It is the maximum number of partitions a single Produce request can address" ],
+    a:2,
+    why:"The broker's ProducerStateManager remembers the last 5 accepted batches' sequence ranges per (PID, partition) specifically so it can recognize any of up to 5 simultaneously outstanding batches as a duplicate retry or detect a genuine gap. The in-flight cap and the tracked-entry count are the same number for exactly this reason — raise one without the other and the safety property breaks. It has nothing to do with replica count (B) or partitions per request (D), and it is very much not arbitrary (A)." },
+  { q:"acks=all is configured with min.insync.replicas=2 on a topic with replication factor 3. The leader crashes immediately after acknowledging a batch. What is guaranteed?",
+    opts:[ "The record might still be lost if replication hadn't reached 2 replicas yet",
+           "The record is safe: at least 2 replicas (including the former leader) had it before the ack was sent",
+           "The record is safe only if all 3 replicas had it",
+           "Nothing is guaranteed; acks=all only protects against producer-side failures, not broker crashes" ],
+    a:1,
+    why:"acks=all means the leader withholds the acknowledgment until min.insync.replicas replicas — 2 here — have the record. So by the time the producer receives the ack, at least 2 replicas already have it durably, and one of those (a follower) can safely become the new leader without losing the record. Option A describes what CAN happen with acks=1, not acks=all; option C over-states the requirement (only min.insync.replicas need to have it, not all 3); option D is simply wrong — this is exactly the guarantee acks=all is built to provide against a leader crash." },
+  { q:"Which thread executes RecordAccumulator.append(), and which thread executes the actual Produce request send?",
+    opts:[ "Both on the Sender thread — append() is queued and processed asynchronously",
+           "append() on the calling application thread; the send on the Sender (I/O) thread",
+           "append() on the Sender thread; the send on whichever application thread called send()",
+           "Both on the calling application thread — Sender only handles retries" ],
+    a:1,
+    why:"append() runs synchronously on whichever thread called producer.send() — that's precisely why it must be fast and non-network-blocking (aside from the BufferPool allocation path). All actual network I/O — building and sending the Produce request, reading the response — happens exclusively on the single Sender thread, which is the entire point of the two-thread design: application threads never touch a socket." },
+  { q:"An unkeyed record stream is sent under the sticky partitioner. What determines when the producer switches to a different partition?",
+    opts:[ "Every record — sticky partitioning still round-robins per record, just with jitter",
+           "A fixed timer, independent of batching (e.g. every 100ms)",
+           "When the current sticky partition's batch is actually sent, at which point a new partition is chosen",
+           "Only when the application explicitly calls producer.flush()" ],
+    a:2,
+    why:"KIP-480's sticky partitioner keeps sending unkeyed records to the same chosen partition until that partition's current batch is handed off to the Sender (i.e., a new batch would need to be opened for it) — at that point a new partition is chosen for subsequent records. This is what lets batches fill up (many records to one partition per batch) instead of round robin's one-record-per-partition-per-turn pattern; it is not driven by a fixed timer (B) or only by explicit flush() (D), and it is not still round robin with jitter (A)." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; the Sender thread would be proud.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks and the simulator's failure-injection buttons — the model clicks fast once you break it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Application thread calls producer.send(record)",
+    "Serializers convert key/value to bytes on the calling thread",
+    "Partitioner selects a TopicPartition (sticky cache or key hash)",
+    "RecordAccumulator.append() locks the partition's deque, tries the tail batch",
+    "BufferPool.allocate() reserves batch.size bytes if a new batch is needed",
+    "send() returns a Future immediately — calling thread resumes",
+    "Sender thread's ready()/drain() pulls the batch once a broker in-flight slot is free",
+    "Batch (optionally compressed) is sent as a Produce request",
+    "Broker leader appends to its log, waits on ISR if acks=all, then replies — Sender completes the Future"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real call path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   9. KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"The producer preserves per-partition ordering by pinning every retry to the leader's sequence-number check on a single connection. Predict: what must a consumer-side component do differently when that same partition is reassigned to a new consumer mid-stream (a rebalance), to avoid violating the exact ordering guarantee the producer just worked so hard to establish?",
+    a:"The producer's ordering guarantee is only meaningful if reads happen in offset order too — a rebalance handing partition P to a new consumer instance must ensure that consumer resumes fetching from exactly the offset the previous owner last safely processed (its committed offset), not from wherever its own internal state thinks it is. Chapter 5 will show this means: the outgoing consumer's offset commit must complete (or be fenced) before the incoming consumer starts fetching, and the group coordinator's rebalance protocol (or KIP-848's incremental cooperative version) exists specifically to sequence 'stop consuming / commit / hand off / resume consuming' so that no message is skipped or reprocessed out of order across the handoff — the read-side mirror of the sequence-number machinery you just studied on the write side." },
+  { lvl:"THINK", q:"Idempotence deduplicates producer retries using a 5-entry window of (PID, epoch, sequence) tracked per partition on the broker. Predict: what must a consumer's offset-commit protocol do differently to avoid a symmetric duplicate-processing problem when a consumer crashes after processing a batch of records but before committing its offset?",
+    a:"There is no broker-side sequence check on the read path analogous to ProducerStateManager — a consumer that processes records and then crashes before committing will, on restart (or on a new group member taking over the partition), re-fetch from the last committed offset and reprocess everything since, including records already handled. Chapter 5 will show the mitigations mirror the producer's own toolkit: either make downstream processing idempotent (the consumer-side equivalent of relying on a natural dedup key), or use Kafka's transactional/exactly-once consume-transform-produce pattern, which ties the offset commit to the same transaction as any output writes so both succeed or both roll back together — closing the gap the producer's PID/sequence mechanism can't close by itself." },
+  { lvl:"THINK", q:"acks=all only waits for min.insync.replicas to have a record — not the full replica set, and not necessarily the replica that will eventually be the leader forever. Predict what a fetch path needs to know about the relationship between the high-watermark and 'what's been replicated' to avoid ever serving a consumer a record that could later disappear.",
+    a:"A consumer must never be allowed to fetch past the partition's high-watermark — the offset up to which the record is known to be replicated to the full in-sync-replica set at the time, which is the boundary the broker treats as 'safe to expose,' independent of which specific replicas eventually survive. Chapter 5 will show the fetch path enforces this by capping what it returns at the high-watermark (not at the leader's raw log-end-offset, which may include unreplicated tail records), so a consumer only ever sees data that has already cleared the same durability bar acks=all made the producer wait for — the read-side promise is calibrated to exactly the write-side guarantee this chapter established, no more and no less." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const NPART = 3, NBROK = 3;
+  const KEY_TO_PART = [0,1,2,0,1,2];
+  const CODEC_RATIO = { none:1, gzip:0.28, snappy:0.5, lz4:0.46, zstd:0.33 };
+  const CODEC_CPU   = { none:0, gzip:10,  snappy:2,   lz4:3,    zstd:6   };
+  const CODECS = ["none","gzip","snappy","lz4","zstd"];
+  const MAX_BLOCK_TICKS = 14; // compressed stand-in for max.block.ms, for demo pacing
+
+  const S = {
+    tick:0, paused:false, nextBatchId:1, recAcc:0,
+    stickyPartition:null,
+    partitions: Array.from({length:NPART},(_,i)=>({ id:i, broker:i%NBROK, deque:[], waitingSince:null })),
+    brokers: Array.from({length:NBROK},(_,i)=>({ id:i, inflight:[] })),
+    cfg:{ rate:40, recSize:200, keyMode:"random", lingerMs:0, batchKB:16, bufMemMB:4, maxInflight:5, codec:"none", idempotent:true },
+    bufferPoolUsed:0,
+    exhaustActive:false, exhaustUntilTick:0,
+    pid:9001, epoch:0, seqCounters:[0,0,0], brokerSeqLog:[[],[],[]],
+    counters:{ produced:0, acked:0, blockedTimeouts:0 },
+    readouts:{ wireBytes:0, cpuCost:0 },
+    lastSent:null, sel:null
+  };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function bufTotal(){ return S.cfg.bufMemMB*1024*1024; }
+  function capBytes(){ return S.cfg.batchKB*1024; }
+  function lingerTicks(){ return Math.round(S.cfg.lingerMs/12); }
+  function fmtBytes(n){ return n>1048576 ? (n/1048576).toFixed(2)+" MB" : n>1024 ? (n/1024).toFixed(1)+" KB" : Math.round(n)+" B"; }
+
+  function pickRandomPartition(){ return Math.floor(Math.random()*NPART); }
+
+  function canAllocate(){ return !S.exhaustActive && (S.bufferPoolUsed + capBytes() <= bufTotal()); }
+
+  function appendRecord(){
+    const size = Math.max(10, Math.round(S.cfg.recSize * (0.8+Math.random()*0.4)));
+    let pIdx;
+    if (S.cfg.keyMode === "keyed"){
+      const keyId = Math.floor(Math.random()*KEY_TO_PART.length);
+      pIdx = KEY_TO_PART[keyId];
+    } else {
+      if (S.stickyPartition===null) S.stickyPartition = pickRandomPartition();
+      pIdx = S.stickyPartition;
+    }
+    const part = S.partitions[pIdx];
+    const tail = part.deque[part.deque.length-1];
+    if (tail && !tail.full && tail.bytesUsed+size <= tail.cap){
+      tail.bytesUsed += size; tail.count++;
+      if (tail.bytesUsed >= tail.cap) tail.full = true;
+      S.counters.produced++;
+      return;
+    }
+    // need a new batch
+    if (!canAllocate()){
+      part.waitingSince = part.waitingSince ?? S.tick;
+      return; // this record's append() call is blocked; app thread would be parked here
+    }
+    S.bufferPoolUsed += capBytes();
+    const batch = { id:S.nextBatchId++, bytesUsed:size, count:1, cap:capBytes(), createdAt:S.tick, full:size>=capBytes(), partition:pIdx, state:"filling" };
+    part.deque.push(batch);
+    part.waitingSince = null;
+    S.counters.produced++;
+    if (S.cfg.keyMode === "random") S.stickyPartition = pickRandomPartition();
+  }
+
+  function ackBatch(broker, item){
+    const b = item.batch;
+    S.bufferPoolUsed = Math.max(0, S.bufferPoolUsed - b.cap);
+    S.counters.acked += b.count;
+    const ratio = CODEC_RATIO[S.cfg.codec];
+    S.readouts.wireBytes += Math.round(b.bytesUsed*ratio);
+    S.readouts.cpuCost += b.count * CODEC_CPU[S.cfg.codec] * 0.02;
+    S.lastSent = { partition:b.partition, pid:b.pid, epoch:b.epoch, baseSeq:b.baseSeq, lastSeq:b.lastSeq, count:b.count, bytesUsed:b.bytesUsed };
+    log("OK", `broker ${broker.id}: acked batch #${b.id} (partition ${b.partition}, ${b.count} recs, ${fmtBytes(b.bytesUsed)}${S.cfg.idempotent?`, seq ${b.baseSeq}-${b.lastSeq}`:""})`);
+  }
+
+  function senderTick(){
+    S.brokers.forEach(broker=>{
+      let free = S.cfg.maxInflight - broker.inflight.length;
+      const myParts = S.partitions.filter(p=>p.broker===broker.id);
+      for (const part of myParts){
+        while (free>0 && part.deque.length>0){
+          const front = part.deque[0];
+          const ready = front.full || (S.tick - front.createdAt >= lingerTicks());
+          if (!ready) break;
+          part.deque.shift();
+          if (S.cfg.idempotent){
+            front.pid = S.pid; front.epoch = S.epoch;
+            front.baseSeq = S.seqCounters[part.id];
+            front.lastSeq = front.baseSeq + front.count - 1;
+            S.seqCounters[part.id] = front.lastSeq + 1;
+            const l = S.brokerSeqLog[part.id]; l.push({base:front.baseSeq,last:front.lastSeq}); if (l.length>5) l.shift();
+          } else { front.pid=null; front.epoch=null; front.baseSeq=null; front.lastSeq=null; }
+          front.state = "sending";
+          broker.inflight.push({ batch:front, sentAtTick:S.tick, rttTicks: 2+Math.floor(Math.random()*3) });
+          free--;
+        }
+      }
+      broker.inflight = broker.inflight.filter(item=>{
+        if (S.tick - item.sentAtTick >= item.rttTicks){ ackBatch(broker, item); return false; }
+        return true;
+      });
+    });
+  }
+
+  function blockedRetryTick(){
+    S.partitions.forEach(part=>{
+      if (part.waitingSince===null) return;
+      if (canAllocate()){
+        log("LOG", `partition ${part.id}: BufferPool freed enough memory — blocked send() unblocked`);
+        part.waitingSince = null;
+        appendRecord(); // let one pending append through now
+      } else if (S.tick - part.waitingSince >= MAX_BLOCK_TICKS){
+        S.counters.blockedTimeouts++;
+        log("FATAL", `partition ${part.id}: TimeoutException: Failed to allocate memory within max.block.ms`);
+        part.waitingSince = null;
+      }
+    });
+  }
+
+  function renderChart(){
+    const cv = el("sim-chart"), ctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height, PAD = 30;
+    const RTT=4, overhead=0.35, arrivalBytesPerMs = (S.cfg.rate*S.cfg.recSize)/1000;
+    function model(lm){
+      const cap = S.cfg.batchKB*1024;
+      const win = lm+RTT;
+      const bb = Math.min(cap, arrivalBytesPerMs*win);
+      const interval = Math.max(bb/Math.max(arrivalBytesPerMs,0.01), overhead);
+      return { tput: bb/interval, lat: lm+RTT+overhead };
+    }
+    ctx.clearRect(0,0,W,H);
+    const xs=[]; for(let x=0;x<=100;x+=4) xs.push(x);
+    let maxT=0,maxL=0;
+    const pts = xs.map(x=>{ const m=model(x); maxT=Math.max(maxT,m.tput); maxL=Math.max(maxL,m.lat); return m; });
+    const X = x => PAD + (x/100)*(W-PAD-8);
+    ctx.strokeStyle="#1c2330"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(PAD,H-18); ctx.lineTo(W-6,H-18); ctx.stroke();
+    function curve(get,max,color){ ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const y=H-22-(get(pts[i])/max)*(H-36); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); }); ctx.stroke(); }
+    curve(m=>m.tput,maxT,"#f25c54");
+    curve(m=>Math.min(m.lat,maxL),maxL,"#ff9f43");
+    ctx.strokeStyle="#ff9f43"; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(X(S.cfg.lingerMs),8); ctx.lineTo(X(S.cfg.lingerMs),H-18); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle="#5b6475"; ctx.font="9px monospace"; ctx.fillText("linger.ms →", PAD, H-6);
+  }
+
+  function selectBatch(b){ S.sel = { type:"batch", ref:b }; render(); }
+  function selectSlot(item){ S.sel = { type:"inflight", ref:item }; render(); }
+
+  function render(){
+    el("sim-rate-val").textContent = S.cfg.rate+"/s";
+    el("sim-recsize-val").textContent = S.cfg.recSize+" B";
+    el("sim-linger-val").textContent = S.cfg.lingerMs+" ms";
+    el("sim-batch-val").textContent = S.cfg.batchKB+" KB";
+    el("sim-bufmem-val").textContent = S.cfg.bufMemMB+" MB";
+    el("sim-maxinflight-val").textContent = S.cfg.maxInflight;
+
+    el("sim-partitions").innerHTML = S.partitions.map(part=>{
+      const batches = part.deque.map(b=>{
+        const pct = Math.min(100, b.bytesUsed/b.cap*100);
+        const cls = "pbatch" + (b.full?" ready":"") + (S.sel && S.sel.type==="batch" && S.sel.ref===b ? " sel" : "");
+        return `<div class="${cls}" data-bid="${b.id}"><div class="pbfill" style="width:${pct}%"></div><span class="pblabel">#${b.id} · ${b.count}r · ${fmtBytes(b.bytesUsed)}/${fmtBytes(b.cap)}</span></div>`;
+      }).join("") || `<div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);padding:8px;text-align:center">empty</div>`;
+      return `<div class="partition"><div class="p-label"><span>P${part.id} → broker ${part.broker}</span><span>${part.deque.length} batch(es)</span></div><div class="p-deque">${batches}</div></div>`;
+    }).join("");
+    el("sim-partitions").querySelectorAll(".pbatch").forEach(node=>{
+      node.onclick = ()=>{ const bid=+node.dataset.bid; for(const p of S.partitions){ const b=p.deque.find(x=>x.id===bid); if(b){ selectBatch(b); return; } } };
+    });
+
+    el("sim-blocked-wrap").innerHTML = S.partitions.filter(p=>p.waitingSince!==null).map(p=>
+      `<div class="blocked-thread">⏳ app thread blocked in BufferPool.allocate() for partition ${p.id} — ${S.tick-p.waitingSince} / ${MAX_BLOCK_TICKS} ticks toward TimeoutException</div>`
+    ).join("");
+
+    el("sim-brokers").innerHTML = S.brokers.map(b=>{
+      const slots = Array.from({length:S.cfg.maxInflight},(_,i)=>{
+        const item = b.inflight[i];
+        if (!item) return `<div class="islot">idle</div>`;
+        const left = item.rttTicks - (S.tick-item.sentAtTick);
+        const cls = "islot busy" + (S.sel && S.sel.type==="inflight" && S.sel.ref===item ? " sel" : "");
+        return `<div class="${cls}" data-bkr="${b.id}" data-idx="${i}">#${item.batch.id}<br>${Math.max(0,left)}t</div>`;
+      }).join("");
+      return `<div class="broker"><div class="b-label">broker ${b.id} — ${b.inflight.length}/${S.cfg.maxInflight} in-flight</div><div class="inflight-slots">${slots}</div></div>`;
+    }).join("");
+    el("sim-brokers").querySelectorAll(".islot.busy").forEach(node=>{
+      node.onclick = ()=>{ const bkr=+node.dataset.bkr, idx=+node.dataset.idx; const item=S.brokers[bkr].inflight[idx]; if(item) selectSlot(item); };
+    });
+
+    const pct = Math.min(100, S.bufferPoolUsed/bufTotal()*100);
+    el("m-buf-v").textContent = Math.round(pct)+"%"+(S.exhaustActive?" (forced)":"");
+    const mf = el("m-buf"); mf.style.width = pct+"%"; mf.className = "m-fill " + (pct>85?"hot":pct>60?"warm":"");
+
+    el("cnt-produced").textContent = S.counters.produced;
+    el("cnt-acked").textContent = S.counters.acked;
+    el("cnt-blocked").textContent = S.counters.blockedTimeouts;
+    el("cnt-wire").textContent = fmtBytes(S.readouts.wireBytes);
+    el("cnt-cpu").textContent = S.readouts.cpuCost.toFixed(1);
+
+    el("sim-idem-toggle").textContent = "idempotence: " + (S.cfg.idempotent ? "ON" : "OFF");
+    el("sim-idem-toggle").classList.toggle("good", S.cfg.idempotent);
+
+    const insp = el("sim-insp");
+    if (S.sel && S.sel.type==="batch"){
+      const b = S.sel.ref;
+      insp.innerHTML = `<div class="i-t">INSPECTOR — BATCH #${b.id}</div>
+        partition ${b.partition} · state ${b.state}<br>${b.count} records · ${fmtBytes(b.bytesUsed)} / ${fmtBytes(b.cap)}<br>
+        ${S.cfg.idempotent ? (b.pid!=null?`PID <span class="i-pid">${b.pid}</span> epoch ${b.epoch} · seq ${b.baseSeq}-${b.lastSeq}`:"not yet sent — sequence assigned at drain time") : "idempotence disabled — no PID/sequence tracked"}`;
+    } else if (S.sel && S.sel.type==="inflight"){
+      const item = S.sel.ref, b = item.batch;
+      insp.innerHTML = `<div class="i-t">INSPECTOR — IN-FLIGHT #${b.id}</div>
+        partition ${b.partition} · ${item.rttTicks-(S.tick-item.sentAtTick)} ticks to ack<br>
+        ${S.cfg.idempotent ? `PID <span class="i-pid">${b.pid}</span> epoch ${b.epoch} · seq ${b.baseSeq}-${b.lastSeq}` : "idempotence disabled — no sequence check"}`;
+    } else {
+      insp.innerHTML = `<div class="i-t">INSPECTOR</div><div style="color:var(--dim)">click a batch or in-flight slot…</div>`;
+    }
+    renderChart();
+  }
+
+  function tick(){
+    if (S.paused) return;
+    S.tick++;
+    if (S.exhaustActive && S.tick>=S.exhaustUntilTick) { S.exhaustActive=false; log("LOG","forced BufferPool exhaustion released"); }
+    S.recAcc += S.cfg.rate * 0.26; // tick interval ~260ms
+    while (S.recAcc >= 1){ appendRecord(); S.recAcc -= 1; }
+    senderTick();
+    blockedRetryTick();
+    render();
+  }
+
+  // wire controls
+  el("sim-rate").oninput = e=>{ S.cfg.rate=+e.target.value; render(); };
+  el("sim-recsize").oninput = e=>{ S.cfg.recSize=+e.target.value; render(); };
+  el("sim-linger").oninput = e=>{ S.cfg.lingerMs=+e.target.value; render(); };
+  el("sim-batch").oninput = e=>{ S.cfg.batchKB=+e.target.value; render(); };
+  el("sim-bufmem").oninput = e=>{ S.cfg.bufMemMB=+e.target.value; render(); };
+  el("sim-maxinflight").oninput = e=>{ S.cfg.maxInflight=+e.target.value; render(); };
+  el("sim-key-random").onclick = ()=>{ S.cfg.keyMode="random"; el("sim-key-random").classList.add("on"); el("sim-key-keyed").classList.remove("on"); log("LOG","unkeyed records — sticky partitioner selects one partition per batch lifetime"); render(); };
+  el("sim-key-keyed").onclick = ()=>{ S.cfg.keyMode="keyed"; el("sim-key-keyed").classList.add("on"); el("sim-key-random").classList.remove("on"); log("LOG","keyed records — murmur2(key) % partitions, deterministic"); render(); };
+  el("sim-codec-chips").innerHTML = CODECS.map(c=>`<button class="chip${c==="none"?" on":""}" data-c="${c}">${c}</button>`).join("");
+  el("sim-codec-chips").querySelectorAll(".chip").forEach(chip=>{
+    chip.onclick = ()=>{ S.cfg.codec = chip.dataset.c; el("sim-codec-chips").querySelectorAll(".chip").forEach(c=>c.classList.toggle("on", c===chip)); render(); };
+  });
+  el("sim-exhaust").onclick = ()=>{
+    S.exhaustActive = true; S.exhaustUntilTick = S.tick+20;
+    log("WARN","simulated BufferPool exhaustion forced — new batch allocations will block until released (~5s)");
+    render();
+  };
+  el("sim-idem-toggle").onclick = ()=>{ S.cfg.idempotent = !S.cfg.idempotent; log("LOG", "enable.idempotence set to " + S.cfg.idempotent); render(); };
+  el("sim-replay").onclick = ()=>{
+    if (!S.lastSent){ log("WARN","no acknowledged batch yet to replay"); return; }
+    const ls = S.lastSent;
+    if (S.cfg.idempotent){
+      const match = S.brokerSeqLog[ls.partition].find(r=>r.base===ls.baseSeq && r.last===ls.lastSeq);
+      log("OK", `ProducerStateManager(partition ${ls.partition}): retried batch seq ${ls.baseSeq}-${ls.lastSeq} for PID ${ls.pid} ${match?"matches a recorded range":"outside tracked window"} — ack returned WITHOUT re-append (deduped)`);
+    } else {
+      log("WARN", `broker appended the retried batch again (no sequence tracking) — records ${ls.count} will be seen twice downstream`);
+    }
+    render();
+  };
+  el("sim-oos").onclick = ()=>{
+    const p = 0;
+    const expected = S.seqCounters[p];
+    const skipped = expected + 3;
+    if (S.cfg.idempotent){
+      log("FATAL", `OutOfOrderSequenceException: partition ${p} expected baseSequence ${expected} but received ${skipped} for PID ${S.pid} epoch ${S.epoch} — producer must abort and reset its epoch`);
+    } else {
+      log("WARN", `partition ${p}: no sequence tracking (idempotence disabled) — broker simply appends; ordering after retries is NOT guaranteed`);
+    }
+    render();
+  };
+  el("sim-pause").onclick = ()=>{ S.paused = !S.paused; el("sim-pause").textContent = S.paused ? "▶ resume" : "⏸ pause"; el("sim-phase").textContent = S.paused ? "PAUSED" : "RUNNING"; };
+
+  log("OK", "producer initialized — InitProducerId → PID "+S.pid+", epoch "+S.epoch);
+  log("HINT", "Try: keyed vs random partitioning, exhaust BufferPool, then replay a retry with idempotence on/off.");
+  setInterval(tick, 260);
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["kafka-04"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#f25c54"><a class="cn-btn" href="kafka-03.html"><span>←</span><span><span class="cn-lbl">PREV · CH 03</span><span class="cn-ttl">Log Internals: Segments, Indexes & the Record Format</span></span></a><div class="cn-mid"><a class="cn-home" href="course-kafka.html">☰ Apache Kafka Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="kafka-01.html">CH 01 · Genesis: Why a Log, Not a Queue</option><option value="kafka-02.html">CH 02 · Broker Architecture & the Request Pipeline</option><option value="kafka-03.html">CH 03 · Log Internals: Segments, Indexes & the Record Format</option><option value="kafka-04.html" selected>CH 04 · Producer Internals: Batching, Compression & Idempotence</option><option value="kafka-05.html">CH 05 · Replication: ISR, High Watermark & Leader Epochs</option><option value="kafka-06.html">CH 06 · The Controller: From ZooKeeper to KRaft</option><option value="kafka-07.html">CH 07 · Consumer Groups & Rebalancing</option><option value="kafka-08.html">CH 08 · Offsets & Delivery Semantics</option><option value="kafka-09.html">CH 09 · Transactions & Exactly-Once</option><option value="kafka-10.html">CH 10 · Storage Performance: Page Cache, Zero-Copy & Sequential I/O</option><option value="kafka-11.html">CH 11 · Retention & Log Compaction</option><option value="kafka-12.html">CH 12 · Networking & the Wire Protocol</option><option value="kafka-13.html">CH 13 · Performance Tuning & Cluster Sizing</option><option value="kafka-14.html">CH 14 · Production Incidents & Failure Handling</option><option value="kafka-15.html">CH 15 · Capstone: Build a Mini Kafka</option></select><span class="cn-prog">04 / 15</span></div><a class="cn-btn" href="kafka-05.html"><span><span class="cn-lbl">NEXT · CH 05</span><span class="cn-ttl">Replication: ISR, High Watermark & Leader Epochs</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

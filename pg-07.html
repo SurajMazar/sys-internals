@@ -1,0 +1,1720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-07 · Transactions & Isolation: From Read Committed to SSI — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* generic tree/box node styles reused across decks */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars (reused shape for generic segmented bars) */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- CH07-SPECIFIC: transaction lanes for anomaly demos ---------- */
+  .lanes{display:flex;flex-direction:column;gap:10px}
+  .lane{border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;background:var(--bg-2)}
+  .lane .lane-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px;letter-spacing:.05em}
+  .lane .lane-t .txid{color:var(--pg)}
+  .lane .step{font-family:var(--mono);font-size:12px;color:#c6cddb;padding:3px 0}
+  .lane .step .op{color:var(--warn)}
+  .lane .step.hit{background:rgba(242,92,84,.08);border-radius:6px;padding-left:6px;color:var(--bad)}
+  .lane .step.commit{color:var(--ok)}
+
+  /* ---------- CH07-SPECIFIC: conflict graph (SSI) ---------- */
+  .cgraph{display:flex;justify-content:center;padding:8px}
+  .cgraph svg text{font-family:var(--mono);fill:var(--muted)}
+  .cnode-label{font-family:var(--mono);font-size:11px}
+  .cnode-pivot{filter:drop-shadow(0 0 6px rgba(255,159,67,.6))}
+
+  /* ---------- CH07-SPECIFIC: predicate lock granularity ---------- */
+  .granrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+  .granbox{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;
+    font-family:var(--mono);font-size:11px;color:var(--muted);text-align:center;flex:1;min-width:90px;transition:all .2s}
+  .granbox.on{border-color:var(--warn);color:var(--warn);background:rgba(255,159,67,.08)}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 07 / 21</b> · ISOLATION</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Isolation Levels</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Fails</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 07</div>
+  <h1>Transactions & Isolation:<br><span class="grad">From Read Committed to SSI</span></h1>
+  <p class="lead">Chapter 6 gave you the byte-level machinery of tuple versions — xmin, xmax, HOT chains, freezing.
+  This chapter answers the question that machinery exists to serve: <b>when two transactions run at the same time
+  against the same rows, what is each one actually allowed to see, and what can go wrong that the SQL standard
+  never quite defines precisely enough to protect you?</b> You'll derive the anomaly taxonomy from first
+  principles, watch snapshot isolation quietly fail on a case the standard doesn't even name, and then meet the
+  algorithm — Serializable Snapshot Isolation — that closes the gap without reverting to a global lock.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Name the exact anomaly a given concurrent schedule produces, and at which isolation level it stops.</div>
+    <div class="obj"><b>You will understand</b>Why "serializable" in Oracle and "serializable" in PostgreSQL are not the same guarantee.</div>
+    <div class="obj"><b>You will predict</b>When SSI will abort a transaction, and why it sometimes aborts one that didn't need to be.</div>
+    <div class="obj"><b>You will simulate</b>Lost updates, write skew, and a live rw-antidependency conflict graph forming a dangerous structure.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Concurrency is a promise you can only half keep</h2>
+  <p class="lead">Every transactional database sells the same fiction: <i>your transaction runs alone against the
+  database</i>. It's a fiction because dozens of other transactions are, in fact, reading and writing the same
+  rows at the same instant — for correctness and for performance, you cannot actually run them one at a time
+  (chapter 1's Little's Law argument applies here too). So the real question a database answers isn't "do
+  transactions run in isolation" — none genuinely do — it's <b>how much of the illusion do you get, and what
+  breaks when the illusion has a crack in it.</b></p>
+  <p>Define the crack precisely, because "isolation" is a word people use loosely. Two transactions run
+  concurrently against overlapping rows. Depending on exactly what each is allowed to observe of the other's
+  in-flight or recently-committed work, you get a specific, nameable <b>anomaly</b> — a result that could not have
+  happened if the two transactions had truly run one after the other. The anomaly taxonomy, derived from first
+  principles rather than memorized as SQL-standard trivia:</p>
+  <ul class="plain">
+    <li><b>Dirty read</b> — you see a write from a transaction that hasn't committed yet, and might never commit.</li>
+    <li><b>Non-repeatable read</b> — you read the same row twice in one transaction and get two different values, because someone else committed a change in between.</li>
+    <li><b>Phantom read</b> — you run the same <i>predicate</i> query twice and get a different set of rows, because someone else inserted or deleted a matching row in between.</li>
+    <li><b>Lost update</b> — two transactions each read a value, each compute a new value based on what they read, and one's write silently overwrites the other's — the first writer's update is lost as if it never happened.</li>
+    <li><b>Read skew</b> — you read two related rows that are supposed to satisfy some invariant together, but you catch them at different points in someone else's multi-row update, seeing a combination that never actually existed at any single instant.</li>
+    <li><b>Write skew</b> — the one that will take the rest of this chapter to earn: two transactions each read an overlapping set of rows, each writes to a <i>disjoint</i> row based on what they read, both commit, and the combined result violates an invariant that either transaction alone would have preserved.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE REST OF THE COURSE</div>
+    <p>Every anomaly above is a specific failure of a general promise: that the concurrent schedule is
+    <b>equivalent to some serial (one-at-a-time) execution</b> of the same transactions. That promise, called
+    serializability, is the actual gold standard — the SQL standard's four named levels are four different,
+    partial approximations of it, and PostgreSQL implements exactly three distinct behaviors (not four) to realize
+    them. Chapter 8's lock manager is the mechanism that makes any of this enforceable; this chapter is about what
+    guarantee you're buying with it.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">1992–2011: from a standard everyone implemented differently to a proof everyone could implement the same way</h2>
+  <p>Isolation levels look standardized. They are not, in the way most engineers assume. Click through — the story
+  runs from a 1992 standard whose definitions turned out to be actively misleading for MVCC systems, to a 2008
+  doctoral thesis that gave PostgreSQL an algorithm nobody had shipped in a mainstream open-source database before.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the isolation levels you actually use didn't come from the SQL standard</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY THE STANDARD'S DEFINITIONS FAIL FOR POSTGRESQL</div>
+    <p>SQL-92 defines isolation levels purely in terms of which of three phenomena (dirty read, non-repeatable
+    read, phantom) they forbid. That framing implicitly assumes a <b>locking</b> implementation, where "does this
+    schedule ever expose an uncommitted write" is the right question. MVCC systems don't expose uncommitted writes
+    to snapshot-based readers at ANY level above Read Uncommitted — so by the standard's own phenomena, PostgreSQL's
+    Read Committed already looks like it satisfies most of what the standard asks of much stronger levels, while
+    still permitting write skew, an anomaly the standard's three named phenomena don't even describe. Berenson et
+    al.'s 1995 Microsoft Research paper, <i>"A Critique of ANSI SQL Isolation Levels,"</i> is the paper that named
+    this gap precisely and introduced write skew and other phenomena the standard had simply missed.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: strict two-phase locking, textbook correct</h2>
+  <p>Derive it the way a first course in concurrency control would: if the danger is two transactions touching the
+  same data unsafely, make every read and write acquire a lock, and never release any lock until commit
+  (<b>strict two-phase locking</b>, S2PL). This is provably serializable — it is, in fact, the textbook proof
+  technique for why locking protocols work at all — and several production databases genuinely run something close
+  to it under "serializable" mode.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">SQL / pseudocode</span><span>strict_2pl.pseudo — the textbook-correct strawman</span></div>
+    <pre><span class="c">-- Every statement acquires a lock before touching a row, and EVERY lock
+-- (read or write) is held until COMMIT or ROLLBACK. No exceptions.</span>
+
+BEGIN;
+  <span class="k">SELECT</span> balance <span class="k">FROM</span> accounts <span class="k">WHERE</span> id = <span class="n">1</span>;   <span class="c">-- acquire SHARED lock on row 1, held to commit</span>
+  <span class="k">SELECT</span> on_call  <span class="k">FROM</span> doctors  <span class="k">WHERE</span> id = <span class="n">7</span>;   <span class="c">-- acquire SHARED lock on row 7, held to commit</span>
+  <span class="c">-- ... application logic decides what to write ...</span>
+  <span class="k">UPDATE</span> accounts <span class="k">SET</span> balance = balance - <span class="n">100</span> <span class="k">WHERE</span> id = <span class="n">1</span>;  <span class="c">-- upgrade to EXCLUSIVE, held to commit</span>
+COMMIT;                                            <span class="c">-- ALL locks released only now</span></pre>
+  </div>
+
+  <p>This gets the correctness proof for free: any schedule S2PL permits is provably equivalent to some serial
+  order of the same transactions, because the two-phase discipline (acquire-only, then release-only, no
+  interleaving) prevents exactly the interleavings that would make the schedules diverge. Watch it under a
+  realistic OLTP mix — a hot row that several transactions want to read and write concurrently:</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Strict 2PL under contention on a hot row</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Readers block writers, writers block readers — the cost is structural, not incidental</h2>
+  <p>S2PL's correctness proof is airtight; its throughput is not. Three structural costs, each a direct consequence
+  of "every read takes a lock held to commit":</p>
+  <ul class="plain">
+    <li><b>Readers and writers queue behind each other.</b> A long-running read holds a shared lock for its
+      entire duration; any writer touching the same row queues behind it, and vice versa. This is precisely the
+      cost MVCC (chapter 5) was invented to eliminate — under pure S2PL you have reintroduced it deliberately, in
+      exchange for the correctness proof.</li>
+    <li><b>Deadlocks are a normal, expected event, not an edge case.</b> Two transactions acquiring locks on the
+      same two rows in opposite orders will deadlock at some nonzero rate under any real concurrent workload; the
+      database must detect the cycle and abort one participant — an abort born purely of lock-acquisition order,
+      unrelated to any actual data conflict.</li>
+    <li><b>Lock-table contention scales with concurrency, not with data conflict.</b> Every row touched, read or
+      written, registers in a shared lock manager that every other transaction's lock requests must check. At high
+      connection counts (chapter 1's territory again) the lock manager itself becomes a shared bottleneck even when
+      transactions rarely conflict on actual data.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Take a workload where 95% of transactions are read-only reporting queries averaging 200&nbsp;ms, and 5% are
+    short OLTP writes averaging 2&nbsp;ms, both touching a shared "settings" row. Under pure S2PL, every write queues
+    behind whichever reads are mid-flight holding a shared lock on that row — a single 200&nbsp;ms report can delay
+    dozens of 2&nbsp;ms writes behind it, and p99 write latency inherits the tail of report latency, not of write
+    latency. This is the same head-of-line problem chapter 1 diagnosed in the iterative server, relocated from the
+    process scheduler to the lock manager. MVCC's entire pitch is eliminating exactly this coupling for the common
+    read/write mix — which is why almost nobody runs pure S2PL as their default isolation mechanism, PostgreSQL
+    included.</p>
+  </div>
+  <p>So the fix has to preserve MVCC's readers-never-block-writers property while still answering the isolation
+  question honestly. That means picking, deliberately, how much of the serializability promise you give up for
+  concurrency — and living with the specific anomaly that choice reopens.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three real levels, and exactly what each one buys back</h2>
+  <p>PostgreSQL implements three distinct isolation behaviors, not four — <code>READ UNCOMMITTED</code> is accepted
+  syntax that silently behaves as <code>READ COMMITTED</code>, because MVCC makes true dirty reads structurally
+  impossible without extra work to expose them; there's no cheaper, weaker mode to fall back to. Step through what
+  each of the other three actually does, mechanically:</p>
+
+  <div class="widget deck" id="deckLevels">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Read Committed → Repeatable Read → Serializable, mechanically</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>Read Committed's re-check dance: EvalPlanQual</h3>
+  <p>Read Committed's per-statement snapshot creates a subtle problem: what should <code>UPDATE ... WHERE
+  balance &gt; 100</code> do if, between when the statement started and when it reaches a particular row, some
+  other transaction concurrently updated that exact row and committed? The row your statement's snapshot sees
+  might already be stale. PostgreSQL's answer is <b>EvalPlanQual</b> (EPQ): when an UPDATE or DELETE finds that the
+  row it's about to touch was concurrently modified by a transaction that has since committed, it re-fetches the
+  latest committed version, re-evaluates the statement's <code>WHERE</code> clause and any relevant expressions
+  against <i>that</i> version, and only then proceeds — silently, from the application's point of view, except for
+  the latency of the re-check.</p>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT FOR MVCC-BASED LEVELS OVER S2PL</div>
+    <p>Read Committed and Repeatable Read both deliver their entire guarantee using snapshots built from data
+    chapter 5 and 6 already maintain (xmin/xmax visibility) — no lock is held on a row merely because it was
+    <i>read</i>. Only actual writes take row locks, and only for as long as needed to serialize with other writers,
+    never with readers. This is the direct payoff of paying MVCC's versioning cost (chapter 6): two of PostgreSQL's
+    three isolation levels are essentially free concurrency-wise, funded entirely by infrastructure you already
+    understand.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL FAILS</div>
+  <h2 class="sec">Snapshot isolation's hole: write skew, made concrete</h2>
+  <p>Repeatable Read (PostgreSQL's implementation of <b>snapshot isolation</b>) prevents every anomaly in §1's list
+  except one — and that one isn't a corner case, it's a routine invariant-violation waiting to happen anywhere a
+  business rule spans more than one row. The canonical example, due to Fekete et al. and repeated in every SSI
+  paper since: a hospital rule requires <b>at least one doctor on call at all times</b>. Two doctors, both on call,
+  each independently decide they're free to go home because "someone else is still on call":</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">SQL</span><span>write_skew.sql — two transactions, snapshot isolation, invariant violated</span></div>
+    <pre><span class="c">-- invariant: COUNT(*) FROM doctors WHERE on_call = true AND shift = 'today' >= 1</span>
+
+<span class="c">-- Transaction A (Dr. Alice)                    Transaction B (Dr. Bob)</span>
+BEGIN ISOLATION LEVEL REPEATABLE READ;         BEGIN ISOLATION LEVEL REPEATABLE READ;
+<span class="k">SELECT</span> count(*) <span class="k">FROM</span> doctors                      <span class="k">SELECT</span> count(*) <span class="k">FROM</span> doctors
+  <span class="k">WHERE</span> on_call AND shift=<span class="s">'today'</span>;                <span class="k">WHERE</span> on_call AND shift=<span class="s">'today'</span>;
+<span class="c">-- sees 2 (both Alice and Bob)                  -- sees 2 (both Alice and Bob)</span>
+<span class="c">--   -- both snapshots were taken before either write --</span>
+<span class="k">UPDATE</span> doctors <span class="k">SET</span> on_call=<span class="k">false</span>
+  <span class="k">WHERE</span> name=<span class="s">'Alice'</span>;                          <span class="k">UPDATE</span> doctors <span class="k">SET</span> on_call=<span class="k">false</span>
+                                                  <span class="k">WHERE</span> name=<span class="s">'Bob'</span>;
+COMMIT;  <span class="c">-- succeeds, no conflict detected</span>          COMMIT;  <span class="c">-- succeeds, no conflict detected -- SAME ROW never touched by both!</span>
+
+<span class="c">-- Result: BOTH doctors are now off call. Zero doctors on call. Invariant violated.
+-- Neither transaction wrote a row the other transaction wrote OR read in the
+-- write/write sense snapshot isolation actually checks -- Alice wrote Alice's
+-- row, Bob wrote Bob's row. Snapshot isolation's conflict detection (first-
+-- committer-wins on the SAME row) has nothing to say about this at all.</span></pre>
+  </div>
+
+  <p>Watch it happen with the two transactions interleaved on a shared timeline — this is the exact schedule §7's
+  SSI mechanism exists to catch:</p>
+
+  <div class="widget deck" id="deckWriteSkew">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Write skew, step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">WHY THIS ISN'T A CORNER CASE</div>
+    <p>Write skew's shape — read a set of rows, decide based on their aggregate state, write a <i>different</i> row
+    based on that decision — is the shape of an enormous fraction of real business logic: inventory checks before
+    decrementing a different SKU's count, seat availability checks before booking a different seat, balance checks
+    across accounts before a transfer. Under Repeatable Read alone, every one of these is a latent invariant
+    violation waiting for the right (or wrong) concurrent timing. The traditional workaround — <code>SELECT ...
+    FOR UPDATE</code> on the rows you merely read, converting a read into a write-lock acquisition — works, but it
+    requires the application developer to correctly identify every such read in advance. §7's mechanism is
+    PostgreSQL's answer for when you'd rather the database catch this automatically.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">SSI: catch write skew without ever blocking a reader</h2>
+  <p><b>Serializable Snapshot Isolation</b> (Cahill, Röhm & Fekete, University of Sydney, landed in PostgreSQL 9.1
+  by Kevin Grittner and Dan Ports) starts from ordinary snapshot isolation — nothing about the read path changes,
+  no reader ever blocks or is blocked — and adds a second, independent tracking system purely to <i>detect</i> the
+  pattern write skew requires, then abort one participant before the damage commits. Click through each component:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer — SSI's conflict-detection layer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">BASELINE (UNCHANGED FROM REPEATABLE READ)</div>
+        <div class="arch-grid"><div class="acard" data-p="snapshot">per-transaction snapshot — reads never block, never blocked</div></div>
+        <div class="arch-row-label">NEW: PREDICATE LOCKING</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="siread">SIREAD lock — records WHAT a transaction read</div>
+          <div class="acard" data-p="granularity">lock granularity — tuple → page → relation promotion</div>
+        </div>
+        <div class="arch-row-label">NEW: CONFLICT TRACKING</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="rwconflict">rw-antidependency edge — a write invalidates a prior read</div>
+          <div class="acard" data-p="pivot">pivot transaction — the one with BOTH an in-edge and an out-edge</div>
+          <div class="acard" data-p="dangerous">dangerous structure — two consecutive rw-edges through a pivot</div>
+        </div>
+        <div class="arch-row-label">ENFORCEMENT</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="abort">abort one participant with 40001 — no cycle-tracking, no false negatives, some false positives</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE CENTRAL DESIGN BET: DETECT A PATTERN, NOT A CYCLE</div>
+    <p>True serializability violations correspond to a <b>cycle</b> in the graph of conflicts between committed
+    transactions (the classical theory: a schedule is serializable iff its conflict graph is acyclic). Tracking full
+    cycles across arbitrarily many transactions is expensive and requires seeing the whole graph. Cahill's thesis
+    proves something narrower and far cheaper to check: every cycle that can actually occur under snapshot isolation
+    <i>must contain two consecutive rw-antidependency edges</i> sharing a "pivot" transaction. PostgreSQL only ever
+    needs to notice that local, three-transaction pattern — not reconstruct or search a graph — to catch every real
+    violation. The cost of the shortcut: it sometimes fires on a structure that, traced through to the full graph,
+    wasn't actually part of a cycle. That's an accepted, deliberate false-positive rate in exchange for O(1)
+    bookkeeping per conflict instead of global cycle detection.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">SIREAD locks, conflict edges, and the moment PostgreSQL decides to abort</h2>
+  <p>Three pieces, in the order a transaction actually encounters them: <b>(a)</b> the struct that represents a
+  serializable transaction's state, <b>(b)</b> how a read registers a predicate lock and how a write checks for
+  conflicts against one, and <b>(c)</b> the exact rule for recognizing a dangerous structure.</p>
+
+  <h3>(a) The bookkeeping struct — real fields, simplified</h3>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>storage/lmgr/predicate.c (via include/storage/predicate_internals.h) — simplified but structurally faithful</span></div>
+    <pre><span class="k">typedef struct</span> SERIALIZABLEXACT
+{
+    VirtualTransactionId vxid;
+    SerCommitSeqNo prepareSeqNo;
+    SerCommitSeqNo commitSeqNo;      <span class="c">/* assigned at commit; orders xacts for conflict checks */</span>
+
+    <span class="k">struct</span> SERIALIZABLEXACT *finishedLink;
+
+    SHM_QUEUE outConflicts;          <span class="c">/* rw-edges where I am the READER (I read something someone else later wrote) */</span>
+    SHM_QUEUE inConflicts;           <span class="c">/* rw-edges where I am the WRITER (I wrote something someone else earlier read) */</span>
+
+    <span class="k">bool</span> didWrite;                <span class="c">/* read-only xacts are cheaper to reason about -- see §10 */</span>
+    <span class="k">bool</span> possibleUnsafeConflict;
+    <span class="k">bool</span> pendingRoConflictOut;
+
+    <span class="k">int</span> flags;                     <span class="c">/* SXACT_FLAG_DOOMED, SXACT_FLAG_ROLLED_BACK, ... */</span>
+} SERIALIZABLEXACT;
+
+<span class="c">/* One SIREAD lock: "this xact read (or would-have-matched) this target" */</span>
+<span class="k">typedef struct</span> PREDICATELOCK
+{
+    PREDICATELOCKTARGETTAG tag;      <span class="c">/* identifies relation, page, or specific tuple */</span>
+    SERIALIZABLEXACT *sxact;
+} PREDICATELOCK;</pre>
+  </div>
+
+  <p>Notice what's absent: no blocking primitive anywhere in this struct. A <code>SERIALIZABLEXACT</code> doesn't
+  wait on anything to acquire a SIREAD lock — taking one is pure bookkeeping, cheap enough to do on every row a
+  serializable transaction reads.</p>
+
+  <h3>(b) Read locks the future, write checks the past</h3>
+  <div class="widget deck" id="deckSSIMechanics">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A SIREAD lock, then the write that conflicts with it</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(c) The dangerous structure, precisely</h3>
+  <p>Given three transactions T1, T2, T3 (T1 and T3 may be the same transaction in the two-transaction write-skew
+  case, or distinct in the general case), a dangerous structure is: <b>T1 →rw T2 →rw T3</b>, where T2 is the
+  <span class="term" data-def="The transaction sitting in the middle of the structure — it has an incoming rw-edge (someone read something it later wrote, or it wrote over something the prior xact read) AND an outgoing rw-edge to the next transaction.">pivot</span>,
+  <i>and</i> T1 has not yet committed before T3 commits (the precise commit-order condition from Cahill's proof — a
+  dangerous structure only becomes an actual violation if it's possible for T1 to still be in-flight when T3
+  commits). PostgreSQL doesn't wait to see if a full cycle materializes; the instant this local pattern is
+  confirmed, it aborts either the pivot or one of its neighbors with SQLSTATE <code>40001</code>.</p>
+
+  <div class="widget deck" id="deckDangerous">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Write skew's dangerous structure forming</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Predicate locks must not exhaust shared memory the way an unbounded per-row lock table would under a large
+  scan — so, like the ordinary lock manager, SSI promotes granularity upward when a transaction's tuple-level locks
+  on one page (or one relation) get too numerous:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Predicate lock promotion — memory bound in exchange for coarser conflicts</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>rows scanned by this xact</label><input type="range" id="gran-slider" min="1" max="5000" value="20" step="1"><span class="val" id="gran-val">20</span></div>
+      <div class="granrow" id="gran-row"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="gran-note"></p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">WHY GRANULARITY PROMOTION MEANS MORE FALSE POSITIVES UNDER LOAD</div>
+    <p><code>max_pred_locks_per_page</code> and <code>max_pred_locks_per_relation</code> (both default 64, alongside
+    <code>max_pred_locks_per_transaction</code> governing total SIREAD locks) force a promotion from tuple-level to
+    page-level, or page-level to relation-level, once a transaction's own lock count on that granularity gets too
+    high. A relation-level SIREAD lock conflicts with <i>any</i> write to <i>any</i> row in that relation — not just
+    the rows actually read — which is exactly the false-positive tradeoff from §7's callout, now driven by memory
+    pressure rather than by the theoretical dangerous-structure shortcut. A large sequential scan under SERIALIZABLE
+    is measurably more abort-prone than an index lookup touching three rows, for this reason specifically.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">"Serializable" means different things in different products — read the fine print</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>WHAT "SERIALIZABLE" ACTUALLY MEANS</th><th>MECHANISM</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>True serializability — write skew is caught</td>
+      <td>Snapshot isolation + SSI predicate locks + rw-conflict graph shortcut</td>
+      <td><span class="pill b">extra SIREAD bookkeeping per read</span> <span class="pill y">false-positive aborts under contention</span> <span class="pill g">readers never block</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td>True serializability, via locking not MVCC-plus-detection</td>
+      <td>Next-key locking (gap + record locks) escalates plain SELECTs to shared locks</td>
+      <td><span class="pill b">SELECT itself takes locks under SERIALIZABLE</span> <span class="pill g">no separate conflict-graph subsystem needed</span></td></tr>
+    <tr><td>Oracle</td><td>What Oracle calls "SERIALIZABLE" is actually snapshot isolation — write skew is <i>not</i> caught</td>
+      <td>Multiversioning identical in spirit to PostgreSQL's Repeatable Read, with first-committer-wins on same-row conflicts</td>
+      <td><span class="pill b">the write-skew hole from §6 is present and undocumented as such</span> <span class="pill g">simpler implementation, no predicate-lock subsystem</span></td></tr>
+    <tr><td>SQLite</td><td>Trivially serializable — one writer at a time, full stop</td>
+      <td>Single global writer lock</td>
+      <td><span class="pill g">zero anomaly surface by construction</span> <span class="pill b">zero concurrent writers by construction</span></td></tr>
+    <tr><td>CockroachDB</td><td>True serializability, the only isolation level offered</td>
+      <td>Similar SSI-style conflict detection plus a distributed commit-timestamp protocol (uncertainty intervals, read refresh)</td>
+      <td><span class="pill y">retries required under contention, like PostgreSQL's SSI</span> <span class="pill g">no weaker level to accidentally choose wrong</span></td></tr>
+    <tr><td>FoundationDB</td><td>True serializability via optimistic concurrency</td>
+      <td>Every transaction declares its read/write conflict ranges; a centralized resolver rejects conflicting commits</td>
+      <td><span class="pill y">short transaction lifetime limits (5s) imposed by the design</span> <span class="pill g">conceptually close to SSI's "detect, don't lock" philosophy</span></td></tr>
+  </table>
+  <p>The Oracle row is the one worth dwelling on precisely because it's a trap for anyone reasoning by product-name
+  analogy: an engineer who has used Oracle's <code>SERIALIZABLE</code> and assumes PostgreSQL's behaves the same
+  way is right about most anomalies and wrong about exactly the one — write skew — this chapter spent §6 making
+  concrete. "Serializable" is a claim about a guarantee, not a fixed implementation, and verifying which anomalies
+  a specific product's specific level actually forecloses is the only way to know what you're really buying.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">What SSI costs, and the optimizations that claw it back</h2>
+  <ul class="plain">
+    <li><b>Per-read cost:</b> <code>O(1)</code> amortized SIREAD lock acquisition per row read under SERIALIZABLE —
+      cheap, but not free; Read Committed and Repeatable Read pay none of this.</li>
+    <li><b>Per-write cost:</b> checking a write against existing SIREAD locks on the target is
+      <code>O(locks on that target)</code>, bounded by the granularity-promotion limits from §8.</li>
+    <li><b>Memory:</b> bounded by <code>max_pred_locks_per_transaction</code> (default 64) — promotion to
+      page/relation granularity is precisely the mechanism that keeps this from growing unboundedly with scan size,
+      at the cost of coarser (more false-positive-prone) conflict detection, exactly as §8's slider showed.</li>
+    <li><b>Read-only optimization:</b> a transaction that never writes cannot be the pivot of a dangerous structure
+      requiring it to abort for a write-skew reason in the same way a writer can — PostgreSQL specifically
+      recognizes read-only transactions and, combined with <code>DEFERRABLE</code>, can grant them a
+      <span class="term" data-def="A snapshot proven safe for a read-only transaction to use without further conflict checking, because no in-progress writer could still create a dangerous structure involving it.">safe snapshot</span>
+      — at the cost of the transaction blocking briefly at BEGIN until such a snapshot is available, in exchange for
+      running its entire duration with zero further SSI overhead and zero abort risk.</li>
+    <li><b>Abort/retry cost:</b> the one SSI cost that dominates in practice under heavy write contention — every
+      <code>40001</code> is a transaction that did real work and must be retried by the application from scratch;
+      designing retry loops is a mandatory part of using SERIALIZABLE correctly, not an edge case to handle
+      defensively.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Serialization failure rate vs contention and lock granularity</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>concurrent writers on hot rows</label><input type="range" id="perf-writers" min="1" max="200" value="20" step="1"><span class="val" id="perf-writers-val">20</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-tuple">tuple-granularity locks</button>
+        <button class="chip" id="perf-relation">force relation-granularity (large scans)</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> committed successfully</span>
+        <span><span style="color:var(--bad)">━</span> aborted with 40001</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch — abort probability rising with both writer concurrency and lock
+    granularity coarseness — tuned to match the qualitative shape reported in SSI benchmarking literature (Ports &
+    Grittner's original PG 9.1 evaluation, and subsequent contention studies). The point is the shape: SERIALIZABLE
+    is close to free under low contention and fine granularity, and increasingly retry-heavy as either rises.
+    Real abort rates depend heavily on workload shape; chapter 20 covers measurement methodology.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Where isolation-level choice actually bites</h2>
+
+  <h3>Incident pattern 1: the silent lost update in a "read-then-write" balance check</h3>
+  <p>A recurring shape across financial and inventory systems built on Read Committed by default: application code
+  reads a balance or stock count, computes a new value in the application tier, then writes it back with a plain
+  <code>UPDATE</code> — no <code>WHERE balance = :original_value</code> guard, no <code>SELECT ... FOR UPDATE</code>.
+  Under Read Committed, two concurrent instances of this pattern each get their own per-statement snapshot for the
+  read, compute independently, and the second write simply clobbers the first — a textbook lost update, invisible
+  in testing (which rarely has real concurrency) and visible only under production load, typically discovered as
+  "the numbers don't add up" rather than as an exception. <b>The fix, in order of correctness guarantee:</b>
+  push the read-modify-write into a single atomic statement (<code>UPDATE ... SET balance = balance - 100</code>
+  needs no read at all); failing that, <code>SELECT ... FOR UPDATE</code> to take a row lock at read time; failing
+  that, move the whole transaction to SERIALIZABLE and add a retry loop.</p>
+
+  <h3>Incident pattern 2: write skew surviving code review because nobody looked for it</h3>
+  <p>Booking and scheduling systems are the most common real-world home for write skew: two concurrent requests
+  each check "is there still capacity" against an aggregate (seats remaining, on-call staff, available inventory
+  bucketed by category) and then write to a <i>different specific row</i> (a specific seat, a specific staff
+  member's shift, a specific SKU) than the one they aggregated over. Because the two transactions' write sets
+  never intersect, ordinary snapshot-isolation conflict detection (first-committer-wins on the same row) has
+  nothing to catch, and the invariant violation ships to production, discovered only when the business rule it
+  broke becomes visible externally (double-booked capacity, zero on-call coverage — exactly §6's example). Teams
+  that catch this in design review are the ones that explicitly ask, for every "check an aggregate, then write a
+  row" pattern, "what if two of these run at the exact same instant" — and either serialize the check with
+  <code>FOR UPDATE</code> against every row the aggregate depends on, or move the transaction to SERIALIZABLE and
+  let SSI's conflict graph do that reasoning automatically.</p>
+
+  <h3>Incident pattern 3: retry-storm amplification after adopting SERIALIZABLE</h3>
+  <p>A team migrates a contended, business-critical code path to SERIALIZABLE to eliminate a class of correctness
+  bugs, ships it, and discovers that at peak load a meaningful fraction of transactions now fail with
+  <code>40001</code> — expected and by design — but the application's retry logic retries <i>immediately</i>, in a
+  tight loop, with no backoff. Under sustained contention this manufactures a self-inflicted retry storm: each
+  retry re-does the transaction's full work, re-acquires SIREAD locks, and has a nontrivial chance of hitting
+  another dangerous structure immediately, multiplying load precisely when the system is already contended enough
+  to be aborting transactions. <b>The fix</b> is the same lesson every optimistic-concurrency system eventually
+  teaches its adopters: retry with jittered exponential backoff, treat <code>40001</code> as an expected, budgeted
+  outcome in capacity planning (not an exceptional error), and — where the write-skew risk is narrow and
+  well-understood — prefer a targeted <code>SELECT ... FOR UPDATE</code> over blanket SERIALIZABLE, which trades a
+  small amount of explicit locking discipline for a much lower abort rate under load.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend SSI's design at a whiteboard?</h2>
+  <p>Think before you reveal — these are the follow-ups a Staff/Principal loop asks once you've said "PostgreSQL's
+  SERIALIZABLE is real serializability."</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>predicate.c</code> and its README</h2>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/storage/lmgr/</span></div>
+<div>├── <span class="fhl">● predicate.c</span> <span class="fnote">— the entire SSI subsystem: SIREAD locks, conflict tracking, dangerous-structure detection (~5k lines)</span></div>
+<div>├── <span class="fhl">● README-SSI</span> <span class="fnote">— the design document; read this before the source, it explains the theory the code implements</span></div>
+<div>├── lock.c <span class="fnote">— ordinary object locks (chapter 8's subject) — a SEPARATE mechanism from predicate locks</span></div>
+<div>├── deadlock.c <span class="fnote">— cycle detection for ordinary lock waits, NOT used by SSI's rw-conflict detection</span></div>
+<div><span class="dir">src/backend/access/transam/</span></div>
+<div>├── <span class="fhl">● xact.c</span> <span class="fnote">— transaction commit/abort; calls into predicate.c at PreCommit_CheckForSerializationFailure()</span></div>
+<div><span class="dir">src/backend/executor/</span></div>
+<div>├── <span class="fhl">● execMain.c</span> <span class="fnote">— EvalPlanQual(): Read Committed's concurrent-update re-check dance</span></div>
+<div><span class="dir">src/include/storage/</span></div>
+<div>├── predicate_internals.h <span class="fnote">— SERIALIZABLEXACT, PREDICATELOCK, PREDICATELOCKTARGETTAG struct definitions</span></div>
+  </div></div>
+
+  <p>First, where a read registers itself — every serializable-mode heap/index fetch passes through this:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>storage/lmgr/predicate.c — PredicateLockTuple(), simplified</span></div>
+    <pre><span class="k">void</span>
+<span class="f">PredicateLockTuple</span>(Relation relation, HeapTuple tuple, Snapshot snapshot)
+{
+    <span class="k">if</span> (!<span class="f">SerializationNeededForRead</span>(relation, snapshot))
+        <span class="k">return</span>;             <span class="c">/* not a SERIALIZABLE xact -- zero cost for RC/RR */</span>
+
+    PREDICATELOCKTARGETTAG tag;
+    <span class="f">SET_PREDICATELOCKTARGETTAG_TUPLE</span>(tag, relation, tuple-&gt;t_self);
+
+    <span class="c">/* Pure bookkeeping: register "MyXact read this tuple." No lock
+     * is acquired against any OTHER transaction here -- this cannot
+     * block, and nothing else can block on it either.               */</span>
+    <span class="f">CheckAndPromotePredicateLockRequest</span>(&amp;tag);   <span class="c">/* may upgrade to page/relation granularity */</span>
+    <span class="f">CreatePredicateLock</span>(&amp;tag, MySerializableXact);
+}</pre>
+  </div>
+
+  <p>Then, where a write discovers it collided with something a still-active (or already-committed) transaction
+  read — this is the function that actually creates an rw-antidependency edge:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>storage/lmgr/predicate.c — CheckForSerializableConflictOut(), simplified</span></div>
+    <pre><span class="k">void</span>
+<span class="f">CheckForSerializableConflictOut</span>(Relation relation, HeapTuple tuple, Snapshot snapshot)
+{
+    <span class="k">if</span> (!<span class="f">SerializationNeededForRead</span>(relation, snapshot))
+        <span class="k">return</span>;
+
+    <span class="c">/* Find every SERIALIZABLEXACT holding a SIREAD lock on this tuple
+     * (or its page/relation, if promoted) that is NOT me.            */</span>
+    <span class="k">foreach</span>(reader, <span class="f">PredicateLockConflictingXacts</span>(relation, tuple))
+    {
+        <span class="k">if</span> (reader == MySerializableXact)
+            <span class="k">continue</span>;
+
+        <span class="c">/* MySerializableXact is about to WRITE something 'reader' READ:
+         * that's an rw-antidependency edge, reader -> MySerializableXact.  */</span>
+        <span class="f">SetRWConflict</span>(reader, MySerializableXact);
+
+        <span class="c">/* THE ONLY CHECK THAT MATTERS: does this new edge complete a
+         * dangerous structure -- i.e. does 'reader' ALSO have an incoming
+         * rw-edge from some xact that hasn't committed yet? If so, abort
+         * NOW rather than wait to see if a full cycle ever closes.        */</span>
+        <span class="k">if</span> (<span class="f">MightConstituteDangerousStructure</span>(reader, MySerializableXact))
+            <span class="f">ereport</span>(ERROR,
+                (<span class="f">errcode</span>(ERRCODE_T_R_SERIALIZATION_FAILURE),
+                 <span class="f">errmsg</span>(<span class="s">"could not serialize access due to read/write dependencies among transactions"</span>)));
+    }
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — TWO CHOICES TO STEAL</div>
+    <p><b>1. Keep SSI's bookkeeping entirely orthogonal to the ordinary lock manager.</b> <code>predicate.c</code>
+    shares no code path with <code>lock.c</code>'s object locks or <code>deadlock.c</code>'s cycle detection —
+    SIREAD locks never block anything, so they need none of the wait-queue or deadlock-detection machinery real
+    locks require. Keeping the two systems separate meant SSI could be added in 9.1 without touching the lock
+    manager other people's code already depended on. <b>2. Check for the danger the instant an edge forms, not
+    later.</b> <code>MightConstituteDangerousStructure()</code> runs synchronously inside the write that created the
+    new edge — no background scanner, no periodic graph walk. The cost of the check is paid exactly once, by
+    exactly the transaction whose action made it necessary, which is the same "attribute the cost to the party
+    that caused it" instinct you'll see repeated in the lock manager's own deadlock detection (chapter 8).</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — SSI catching a dangerous structure</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from two transactions beginning to one of them receiving a 40001. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The anomaly lab — run scenarios, watch the conflict graph form</h2>
+  <p>Pick a scripted scenario (lost update, write skew, phantom read), pick an isolation level, and step through
+  two or three interleaved transactions. Under <b>SERIALIZABLE</b>, a live rw-antidependency graph draws every edge
+  as it forms and highlights the dangerous structure the instant it completes, then shows exactly which transaction
+  gets aborted and why.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Anomaly lab</span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body" style="padding:0">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="lanes" id="sim-lanes"></div>
+          <div class="hp-label" style="margin:14px 0 6px">RW-ANTIDEPENDENCY CONFLICT GRAPH</div>
+          <div class="cgraph"><svg id="cgraph-svg" width="360" height="180" viewBox="0 0 360 180"></svg></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">SCENARIO</div>
+            <div class="btns">
+              <button class="btn" id="sc-lost">lost update</button>
+              <button class="btn" id="sc-skew">write skew</button>
+              <button class="btn" id="sc-phantom">phantom read</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">ISOLATION LEVEL</div>
+            <div class="btns">
+              <button class="chip" id="lvl-rc">READ COMMITTED</button>
+              <button class="chip" id="lvl-rr">REPEATABLE READ</button>
+              <button class="chip on" id="lvl-ser">SERIALIZABLE</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">RUN</div>
+            <div class="btns">
+              <button class="btn primary" id="sc-step">step →</button>
+              <button class="btn" id="sc-run">run all</button>
+              <button class="btn danger" id="sc-restart">restart scenario</button>
+            </div>
+          </div>
+          <div class="inspector" id="sim-insp"><div class="i-t">OUTCOME</div><div style="color:var(--dim)">pick a scenario and step through it…</div></div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-step">0</div><div class="cl">step</div></div>
+            <div class="scounter"><div class="cv" id="cnt-edges">0</div><div class="cl">rw-edges</div></div>
+            <div class="scounter"><div class="cv" id="cnt-aborts" style="color:var(--bad)">0</div><div class="cl">aborts</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Write skew under REPEATABLE READ — step through it and watch both COMMITs succeed silently, invariant broken. <b>2.</b> Same scenario under SERIALIZABLE — watch the rw-edges appear on the graph one at a time, and see the abort fire the instant the second edge completes the dangerous structure. <b>3.</b> Lost update under READ COMMITTED vs SERIALIZABLE — compare which one lets the second writer clobber the first. <b>4.</b> Phantom read under REPEATABLE READ vs SERIALIZABLE — see how a concurrently-inserted matching row is or isn't caught.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 8: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head, <i>then</i> reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 07 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now name any anomaly on sight, explain precisely why
+    snapshot isolation lets write skew through, and trace an SSI abort from the SIREAD lock that created the first
+    edge to the <code>40001</code> that fired on the second. Chapter 8 goes underneath the SERIALIZABLE and
+    SIREAD-lock vocabulary you just learned into the lock manager itself: how ordinary object locks (the ones §9's
+    MySQL comparison and this chapter's S2PL strawman both depend on) are actually represented in shared memory,
+    how the lock table is structured for O(1) conflict checking, and how real deadlock detection — the general-cycle
+    kind SSI deliberately avoided — actually works.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="pg-08.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-08: Lock Manager Internals →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1976–1979", l:"2PL theory", d:"<b>Eswaran, Gray, Lorie & Traiger (IBM) formalize two-phase locking</b> and prove it guarantees serializability. This is the theoretical bedrock every isolation mechanism in this chapter is ultimately judged against — including the ones, like snapshot isolation, that don't use locking at all." },
+  { yr:"1992", l:"SQL-92 isolation levels", d:"<b>The SQL standard defines four levels purely by which of three phenomena they forbid</b> (dirty read, non-repeatable read, phantom read). The framing implicitly assumes a locking implementation is checking for these specific phenomena — an assumption that will age badly once MVCC systems, which don't expose most of these phenomena at any level above Read Uncommitted, become dominant." },
+  { yr:"1995", l:"Berenson et al.'s critique", d:"<b>Hal Berenson, Phil Bernstein, Jim Gray and others (Microsoft Research) publish 'A Critique of ANSI SQL Isolation Levels.'</b> The paper shows the standard's phenomena-based definitions are ambiguous and, crucially, don't even name write skew — the anomaly that would define snapshot isolation's precise boundary a decade later." },
+  { yr:"1999", l:"PostgreSQL 6.5: MVCC + snapshot isolation", d:"<b>PostgreSQL's REPEATABLE READ ships as snapshot isolation</b> (chapter 5/6's machinery), not as the SQL standard's locking-based definition of that level. It is stronger than the standard requires in some ways (no phantom reads) and permits an anomaly (write skew) the standard's own phenomena don't capture." },
+  { yr:"2008", l:"Cahill's SSI thesis", d:"<b>Michael Cahill's PhD thesis at the University of Sydney</b> (with Uwe Röhm and Alan Fekete), published as 'Serializable Isolation for Snapshot Databases,' proves that every serialization anomaly reachable under snapshot isolation must contain two consecutive rw-antidependency edges through a common pivot transaction — reducing 'detect serializability violations' to a cheap, local pattern check instead of full cycle detection." },
+  { yr:"2011", l:"PostgreSQL 9.1: SSI ships", d:"<b>Kevin Grittner and Dan Ports implement Cahill's algorithm</b> as PostgreSQL's true SERIALIZABLE mode — the first mainstream open-source database to offer real serializability without reverting to blocking locks for reads. DEFERRABLE read-only transactions and safe-snapshot support follow in the same release cycle." },
+  { yr:"2012–2018", l:"the pattern spreads", d:"<b>CockroachDB and FoundationDB adopt closely related optimistic, detect-don't-block designs</b> for distributed serializability, treating conflict detection (rather than locking) as the default strategy for a globally-consistent, horizontally-scaled store — SSI's philosophy outliving its single-node origin." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===4 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[4].d;
+
+/* ============================================================
+   2. DECK: strict 2PL under contention (§3)
+   ============================================================ */
+(function(){
+  function lane(t,rows){ return `<div class="lane"><div class="lane-t">${t}</div>${rows.map(r=>`<div class="step ${r.c||''}">${r.t}</div>`).join("")}</div>`; }
+  stepper("deckNaive", [
+    { stage: lane("T1 (long report, holds SHARED lock on row R)",[{t:"BEGIN; SELECT * FROM accounts WHERE id=R;",c:""},{t:"<span class=\"op\">... 200ms of aggregation work, lock still held ...</span>"}]) +
+             lane("T2 (fast OLTP write, wants row R)",[{t:"BEGIN; UPDATE accounts SET balance=... WHERE id=R;"},{t:"<span class=\"op\">blocked — waiting for T1's shared lock to release</span>",c:"hit"}]),
+      cap:`<b>T2 wants an exclusive lock T1 is blocking with a shared one.</b> Under strict 2PL, T1 won't release ANY lock until it commits — even locks it's done reading from — so T2 simply waits.` },
+    { stage: lane("T1",[{t:"BEGIN; SELECT * FROM accounts WHERE id=R;"},{t:"<span class=\"op\">... still aggregating ...</span>"}]) +
+             lane("T2",[{t:"BEGIN; UPDATE ... WHERE id=R;"},{t:"<span class=\"op\">still blocked</span>",c:"hit"}]) +
+             lane("T3, T4, T5 (more fast writes, same row)",[{t:"all now queued behind T2, which is queued behind T1",c:"hit"}]),
+      cap:`<b>The queue grows.</b> Every subsequent writer to row R queues behind T2, which queues behind T1's 200ms read. Three 2ms writes now each wait ~200ms — p99 write latency has inherited the tail of an unrelated report's runtime.` },
+    { stage: lane("T1",[{t:"COMMIT;",c:"commit"},{t:"<span class=\"op\">all locks released</span>"}]) +
+             lane("T2",[{t:"UPDATE proceeds, acquires EXCLUSIVE lock"},{t:"COMMIT;",c:"commit"}]) +
+             lane("T3 → T4 → T5",[{t:"each now runs in turn, ~2ms apiece",c:""}]),
+      cap:`<b>T1 finally commits, releasing everything at once.</b> T2 through T5 now drain in sequence. Total elapsed time for five fast writes: dominated entirely by one slow read's duration — not by any actual data conflict between the writes themselves.` },
+    { stage: lane("VERDICT",[{t:"Correctness: provably serializable ✓",c:"commit"},{t:"Throughput: coupled to the slowest concurrent reader",c:"hit"},{t:"Deadlock risk: nonzero on every multi-row transaction, unrelated to actual data conflicts",c:"hit"}]),
+      cap:`<b>S2PL earns its correctness proof by reintroducing exactly the reader/writer coupling MVCC exists to eliminate.</b> §4 quantifies this properly; §5 shows the levels PostgreSQL actually ships instead.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: Read Committed → Repeatable Read → Serializable (§5)
+   ============================================================ */
+(function(){
+  const box = (t,rows,c="var(--border-hi)") => `<div style="border:1px solid ${c};border-radius:11px;padding:12px;flex:1;min-width:220px">
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${rows.map(r=>`<div style="border:1px solid var(--border);border-radius:7px;padding:6px 9px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${r.c||'#8b94a7'}">${r.t}</div>`).join("")}</div>`;
+  stepper("deckLevels", [
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("READ COMMITTED — one snapshot PER STATEMENT",
+        [{t:"statement 1 sees committed data as of NOW"},{t:"statement 2 (same txn) sees a FRESH, later snapshot"},{t:"→ non-repeatable reads possible, by design",c:"var(--warn)"}])}</div>`,
+      cap:`<b>Read Committed.</b> Every individual statement gets its own snapshot at the moment it starts. Two SELECTs in the same transaction can legitimately see different committed states of the world — that's not a bug, it's the level's entire definition. This is PostgreSQL's default.` },
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("REPEATABLE READ — ONE snapshot for the whole transaction",
+        [{t:"snapshot fixed at BEGIN (or first statement)"},{t:"every later statement reuses THAT snapshot"},{t:"→ non-repeatable reads and phantoms eliminated",c:"var(--ok)"},{t:"→ write skew still possible",c:"var(--bad)"}])}</div>`,
+      cap:`<b>Repeatable Read = snapshot isolation.</b> One consistent view for the transaction's entire lifetime closes non-repeatable reads and phantoms completely — but, as §6 derives concretely, two disjoint writes based on an overlapping read are still invisible to its conflict detection.` },
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("SERIALIZABLE — snapshot isolation + predicate-lock tracking",
+        [{t:"same single snapshot as Repeatable Read"},{t:"+ SIREAD locks record every row read"},{t:"+ writes check for rw-antidependency edges"},{t:"→ write skew caught via dangerous-structure detection",c:"var(--ok)"}])}</div>`,
+      cap:`<b>Serializable.</b> Identical read-path mechanics to Repeatable Read — same snapshot, same non-blocking reads — plus an entirely separate bookkeeping layer (§7–§8) whose only job is noticing the one pattern snapshot isolation's native conflict detection misses.` },
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("WHAT EACH LEVEL STOPS",
+        [{t:"Read Committed: dirty reads only",c:"var(--pg)"},{t:"Repeatable Read: + non-repeatable reads, + phantoms",c:"var(--purple)"},{t:"Serializable: + write skew, + everything else",c:"var(--ok)"}])}</div>`,
+      cap:`<b>The three levels form a strict hierarchy of guarantees</b>, each strictly more restrictive (and, in the presence of contention, more abort-prone) than the last. Choosing one is choosing exactly which anomaly from §1's list you're accepting responsibility for handling in application code.` }
+  ]);
+})();
+
+/* ============================================================
+   4. DECK: write skew, interleaved (§6)
+   ============================================================ */
+(function(){
+  function lane(t,rows){ return `<div class="lane"><div class="lane-t">${t}</div>${rows.map(r=>`<div class="step ${r.c||''}">${r.t}</div>`).join("")}</div>`; }
+  stepper("deckWriteSkew", [
+    { stage: lane("T_alice (REPEATABLE READ)",[{t:"BEGIN;"},{t:"SELECT count(*) FROM doctors WHERE on_call; <span class=\"op\">→ 2</span>"}]) +
+             lane("T_bob (REPEATABLE READ)",[{t:"BEGIN;"},{t:"SELECT count(*) FROM doctors WHERE on_call; <span class=\"op\">→ 2</span>"}]),
+      cap:`<b>Both snapshots taken before either write.</b> Both transactions see the true, current state: 2 doctors on call. Both conclude "at least one other doctor is covering — I can safely go off call."` },
+    { stage: lane("T_alice",[{t:"BEGIN;"},{t:"SELECT ... → 2"},{t:"UPDATE doctors SET on_call=false WHERE name='Alice';"}]) +
+             lane("T_bob",[{t:"BEGIN;"},{t:"SELECT ... → 2"},{t:"UPDATE doctors SET on_call=false WHERE name='Bob';"}]),
+      cap:`<b>Each writes a DIFFERENT row.</b> Alice's UPDATE touches Alice's row only; Bob's touches Bob's row only. Snapshot isolation's conflict detection watches for two transactions writing the SAME row — that never happens here.` },
+    { stage: lane("T_alice",[{t:"UPDATE ... WHERE name='Alice';"},{t:"COMMIT;",c:"commit"}]) +
+             lane("T_bob",[{t:"UPDATE ... WHERE name='Bob';"},{t:"COMMIT;",c:"commit"}]),
+      cap:`<b>Both commit successfully.</b> No conflict was ever detected, because none exists in the sense snapshot isolation checks for. Both transactions did exactly what a serial execution of either one alone would have done — it's only the COMBINATION that's wrong.` },
+    { stage: lane("RESULT",[{t:"SELECT count(*) FROM doctors WHERE on_call; <span class=\"op\">→ 0</span>",c:"hit"},{t:"Invariant 'at least 1 on call' — VIOLATED",c:"hit"}]),
+      cap:`<b>Zero doctors on call.</b> Each transaction's individual logic was correct given what it saw; the anomaly exists purely in the gap between "what I read" and "what became true after both of us wrote." This exact pattern — read an aggregate, write a disjoint row — is what §7's SSI mechanism specifically targets.` }
+  ]);
+})();
+
+/* ============================================================
+   5. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  snapshot:{ n:"per-transaction snapshot", f:"access/transam/snapmgr.c (from chapters 5–6)", r:"Identical to Repeatable Read's snapshot — one consistent view of committed data fixed at transaction start. SSI changes NOTHING about what a read returns; it only adds bookkeeping about what was read.", l:"Established once, at BEGIN (or first statement), held for the transaction's lifetime.", d:"No change in failure mode from Repeatable Read — a reader here never blocks and is never blocked." },
+  siread:{ n:"SIREAD lock", f:"storage/lmgr/predicate.c — PredicateLockTuple()", r:"A pure bookkeeping record: 'this transaction read this tuple (or page/relation).' Despite the name, it is not a lock in the blocking sense — acquiring one never waits on anything and never causes any other transaction to wait.", l:"Created on read under SERIALIZABLE only; released when the transaction ends (commit or abort).", d:"Millions of these can exist concurrently with zero contention, precisely because none of them block — the cost is memory and per-write conflict-checking, not throughput." },
+  granularity:{ n:"lock granularity promotion", f:"storage/lmgr/predicate.c — CheckAndPromotePredicateLockRequest()", r:"Bounds memory: once a transaction's tuple-level SIREAD locks on one page exceed a threshold, they're collapsed into a single page-level lock (and page-level into relation-level under the same pressure).", l:"Triggered automatically as a scan progresses; governed by max_pred_locks_per_page / _per_relation / _per_transaction.", d:"A promoted lock conflicts with writes to ANY row at that granularity, not just the ones actually read — directly increasing false-positive abort rate under large scans (§8's slider)." },
+  rwconflict:{ n:"rw-antidependency edge", f:"storage/lmgr/predicate.c — CheckForSerializableConflictOut() / ...In()", r:"Recorded the instant a write discovers a still-relevant SIREAD lock on its target held by a different transaction — meaning that transaction read a value this write is about to change. The edge direction is reader → writer.", l:"Created during the conflicting write; stored on both transactions' SERIALIZABLEXACT (outConflicts on the reader, inConflicts on the writer).", d:"A single edge alone is NOT an error — write skew requires two of them in a row through a shared pivot; see 'dangerous structure.'" },
+  pivot:{ n:"pivot transaction", f:"conceptual — see README-SSI", r:"The transaction in the middle of two consecutive rw-edges: something wrote what it read (incoming edge), and it later wrote something a third transaction had read (outgoing edge) — or the reverse ordering, per Cahill's proof.", l:"Identified implicitly the moment the second edge is checked against the first.", d:"The pivot itself isn't necessarily the one aborted — PostgreSQL may abort the pivot or either neighbor, whichever commit ordering makes the abort valid and cheapest to enact." },
+  dangerous:{ n:"dangerous structure", f:"storage/lmgr/predicate.c — MightConstituteDangerousStructure()", r:"Two consecutive rw-antidependency edges (T1 →rw T2 →rw T3) where T1 hasn't necessarily committed before T3 does. Cahill's thesis proves every real cycle reachable under snapshot isolation contains this pattern — so finding it is sufficient, without ever building or searching the full conflict graph.", l:"Checked synchronously inside CheckForSerializableConflictOut/In, the instant a new edge is added.", d:"Detecting the pattern is not the same as confirming a cycle exists in the FULL graph — this is the source of SSI's accepted false-positive rate." },
+  abort:{ n:"serialization failure abort", f:"storage/lmgr/predicate.c — raises ERRCODE_T_R_SERIALIZATION_FAILURE", r:"Once a dangerous structure is confirmed, one participant is aborted immediately with SQLSTATE 40001 and the message 'could not serialize access due to read/write dependencies among transactions.'", l:"Fires synchronously, mid-transaction, at the moment the conflicting write executes — not at COMMIT time.", d:"The aborted transaction must be retried by the application from scratch; SSI provides no automatic retry — designing a retry loop is a mandatory part of using SERIALIZABLE correctly (§10, §11)." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">EDGE CASES</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("dangerous");
+
+/* ============================================================
+   6. DECK: SIREAD mechanics (§8b)
+   ============================================================ */
+(function(){
+  function lane(t,rows){ return `<div class="lane"><div class="lane-t">${t}</div>${rows.map(r=>`<div class="step ${r.c||''}">${r.t}</div>`).join("")}</div>`; }
+  stepper("deckSSIMechanics", [
+    { stage: lane("T1 (SERIALIZABLE)",[{t:"SELECT * FROM doctors WHERE name='Bob';"},{t:"PredicateLockTuple(): SIREAD lock registered on Bob's row — pure bookkeeping, blocks nothing",c:""}]),
+      cap:`<b>A read registers, it doesn't lock in the blocking sense.</b> T1 continues immediately; no other transaction is affected by this call at all.` },
+    { stage: lane("T1",[{t:"SIREAD lock on Bob's row: held"}]) +
+             lane("T2 (SERIALIZABLE)",[{t:"UPDATE doctors SET on_call=false WHERE name='Bob';"},{t:"CheckForSerializableConflictOut(): finds T1's SIREAD lock on this row",c:""}]),
+      cap:`<b>T2's write discovers T1's prior read.</b> The write itself is NOT blocked by the SIREAD lock — it proceeds — but the discovery creates bookkeeping: T1 read something T2 is now changing.` },
+    { stage: lane("EDGE CREATED",[{t:"SetRWConflict(T1, T2): rw-antidependency edge T1 → T2 recorded",c:"hit"}]),
+      cap:`<b>One edge, by itself, is not an error.</b> MightConstituteDangerousStructure() checks whether T1 ALSO has an incoming edge from some other xact — if not, both transactions simply proceed, edge and all.` },
+    { stage: lane("IF a prior edge already existed",[{t:"T0 → T1 (recorded earlier) + T1 → T2 (just created)",c:"hit"},{t:"= dangerous structure. One of {T0, T1, T2} aborts with 40001.",c:"hit"}]),
+      cap:`<b>Two edges through one pivot is the whole signal.</b> No graph traversal, no cycle search across arbitrarily many transactions — just: does this new edge complete a two-edge chain with an edge that was already there? §8c makes this precise.` }
+  ]);
+})();
+
+/* ============================================================
+   7. DECK: dangerous structure forming (§8c)
+   ============================================================ */
+(function(){
+  function graph(edges, note, dangerNode){
+    const nodes = {A:{x:60,y:30},B:{x:180,y:100},C:{x:300,y:30}};
+    let svg = `<svg viewBox="0 0 360 140" width="100%" height="140">`;
+    edges.forEach(([a,b])=>{
+      svg += `<line x1="${nodes[a].x}" y1="${nodes[a].y}" x2="${nodes[b].x}" y2="${nodes[b].y}" stroke="#f25c54" stroke-width="2" marker-end="url(#arrow)"/>`;
+      const mx=(nodes[a].x+nodes[b].x)/2, my=(nodes[a].y+nodes[b].y)/2-6;
+      svg += `<text x="${mx}" y="${my}" font-family="monospace" font-size="10" fill="#ff9f43" text-anchor="middle">rw</text>`;
+    });
+    svg += `<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#f25c54"/></marker></defs>`;
+    Object.entries(nodes).forEach(([k,p])=>{
+      const isD = k===dangerNode;
+      svg += `<circle cx="${p.x}" cy="${p.y}" r="20" fill="${isD?'rgba(255,159,67,.2)':'#131824'}" stroke="${isD?'#ff9f43':'#2a3446'}" stroke-width="2"/>`;
+      svg += `<text x="${p.x}" y="${p.y+4}" font-family="monospace" font-size="12" fill="${isD?'#ff9f43':'#c6cddb'}" text-anchor="middle">${k===('A')?'Alice':k==='B'?'?':'Bob'}</text>`;
+    });
+    svg += `</svg>`;
+    return `<div class="cgraph">${svg}</div><p style="text-align:center;font-family:var(--mono);font-size:11px;color:var(--dim)">${note}</p>`;
+  }
+  stepper("deckDangerous", [
+    { stage: graph([], "No edges yet. Both transactions have only read so far.", null),
+      cap:`<b>Both T_alice and T_bob have read the on-call count.</b> Two SIREAD locks exist (one per transaction, on the doctors rows), but zero conflicts have been detected — reads never conflict with reads.` },
+    { stage: graph([["A","B"]], "Alice's UPDATE conflicts with a read Bob's transaction... wait — reframe: label B as 'reader of both rows'.", null),
+      cap:`<b>Reframe for the general 3-transaction case:</b> imagine a third transaction M read BOTH Alice's and Bob's on-call status earlier (e.g., a staffing dashboard query). Alice's UPDATE creates edge M → Alice (Alice's write invalidates what M read).` },
+    { stage: graph([["A","B"],["B","C"]], "Second edge forms: Bob's UPDATE invalidates what M (pivot) read too.", "B"),
+      cap:`<b>Bob's UPDATE creates the second edge: M → Bob.</b> Wait — for the DANGEROUS STRUCTURE specifically, we need M sitting between two edges: someone-reads-then-M-writes (in-edge) AND M-reads-then-someone-writes (out-edge). Relabeling: T_alice →rw M →rw T_bob is exactly this shape if M read data both Alice and Bob later modified.` },
+    { stage: graph([["A","B"],["B","C"]], "Dangerous structure confirmed: two consecutive rw-edges through pivot M.", "B") + `<div style="text-align:center;margin-top:10px"><span style="font-family:var(--mono);font-size:11px;color:var(--bad)">ERROR: could not serialize access due to read/write dependencies among transactions (SQLSTATE 40001)</span></div>`,
+      cap:`<b>The moment the second edge lands, PostgreSQL checks and finds the pattern.</b> Under SERIALIZABLE, this fires as soon as the second UPDATE executes — it doesn't wait for either transaction to attempt COMMIT. One of the three participating transactions is aborted; the other two may proceed.` }
+  ]);
+})();
+
+/* ============================================================
+   8. GRANULARITY PROMOTION WIDGET (§8c)
+   ============================================================ */
+(function(){
+  function render(){
+    const n = +el("gran-slider").value;
+    el("gran-val").textContent = n.toLocaleString();
+    let gran, note;
+    if (n <= 64){ gran = "tuple"; }
+    else if (n <= 64*200){ gran = "page"; }
+    else { gran = "relation"; }
+    el("gran-row").innerHTML = ["tuple","page","relation"].map(g=>
+      `<div class="granbox ${g===gran?'on':''}">${g}-level<span style="display:block;font-size:9px;color:var(--dim)">${g==='tuple'?'≤64 locks/page':g==='page'?'≤64 pages/relation':'promoted fully'}</span></div>`).join("");
+    if (gran==="tuple") note = `At ${n.toLocaleString()} rows scanned, tuple-level SIREAD locks are still under the max_pred_locks_per_page threshold (default 64) — conflict detection stays precise: only a write to one of the SPECIFIC rows read will create an edge.`;
+    else if (gran==="page") note = `Past 64 tuple-level locks on a page, PostgreSQL promotes to a single page-level SIREAD lock. Now ANY write to ANY row on that page — not just the ones actually read — will register as a conflict. More false positives, far less memory.`;
+    else note = `At this scan size, even page-level locks exceed max_pred_locks_per_relation and get promoted to a single relation-level lock. A write ANYWHERE in the table now conflicts with this transaction's read set — the coarsest, cheapest-to-store, most abort-prone granularity.`;
+    el("gran-note").innerHTML = note;
+  }
+  el("gran-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   9. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let tuple = true;
+  el("perf-tuple").onclick = ()=>{ tuple = true; el("perf-tuple").classList.add("on"); el("perf-relation").classList.remove("on"); render(); };
+  el("perf-relation").onclick = ()=>{ tuple = false; el("perf-relation").classList.add("on"); el("perf-tuple").classList.remove("on"); render(); };
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function abortRate(writers, tuple){
+    const base = tuple ? 0.0009 : 0.006; // per-pair conflict probability
+    const p = 1 - Math.pow(1-base, writers*(writers-1)/2);
+    return Math.min(0.97, p);
+  }
+  function render(){
+    const N = +el("perf-writers").value;
+    el("perf-writers-val").textContent = N;
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=1;x<=200;x+=2) xs.push(x);
+    const X = n => PAD + (n/200)*(W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [1,50,100,150,200].forEach(n=>{ ctx.beginPath(); ctx.moveTo(X(n),10); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText(n, X(n)-8, H-6); });
+    function curve(get,color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((n,i)=>{ const y = H-24 - get(n)*(H-44); i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y); });
+      ctx.stroke();
+    }
+    curve(n=>1-abortRate(n,tuple), "#60a5fa");
+    curve(n=>abortRate(n,tuple), "#f25c54");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(N),10); ctx.lineTo(X(N),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const rate = abortRate(N,tuple);
+    el("perf-note").innerHTML = `At <b>${N}</b> concurrent writers on hot rows, ${tuple?'tuple':'relation'}-granularity locking: modeled abort rate ≈ <b style="color:var(--bad)">${(rate*100).toFixed(1)}%</b>. ${tuple? "Fine-granularity conflict detection keeps this low until contention itself gets severe." : "Relation-granularity promotion (forced by large scans) makes nearly every concurrent writer a potential conflict, regardless of whether their actual row sets overlap — this is the direct cost of §8's memory-bound promotion."}`;
+  }
+  el("perf-writers").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   10. INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A junior engineer says 'we use Repeatable Read, so we're protected from lost updates and concurrency bugs.' What's missing from that claim?", hint:"which anomaly from §1 is NOT stopped by snapshot isolation alone?",
+    a:"Repeatable Read (snapshot isolation) does stop lost updates in the classic same-row sense — PostgreSQL's first-committer-wins rule means a second transaction writing a row already written by a concurrent, committed transaction gets a serialization error, not a silent overwrite. What it does NOT stop is write skew: two transactions reading an overlapping set of rows and each writing to a DIFFERENT row based on what they read, where the combination violates an invariant neither write alone would break. The doctors-on-call example is the canonical case. 'We use Repeatable Read' is a real, meaningful protection — it's just not the same claim as 'we're safe from every concurrency anomaly,' and the gap is exactly the anomaly the standard's own phenomena don't name." },
+  { lvl:"SENIOR", q:"Why doesn't taking a SIREAD lock ever block another transaction, when an ordinary read lock in a 2PL system would?", hint:"what question is a SIREAD lock actually answering, versus what question a 2PL read lock answers?",
+    a:"A 2PL shared lock exists to physically PREVENT a conflicting write from happening while the lock is held — that's why it must block. A SIREAD lock exists purely to answer a different, retrospective question later: 'did anyone read this before I wrote it?' It doesn't need to prevent anything at read time because PostgreSQL's snapshot mechanism (chapters 5–6) already guarantees the reader sees a consistent view regardless of concurrent writes — the SIREAD lock's only job is bookkeeping for a check that happens when (and if) a conflicting WRITE later occurs. Separating 'guarantee a consistent read' (free, via MVCC) from 'detect a dangerous read/write pattern' (cheap, via SIREAD) is the core architectural move that lets SSI add serializability without reintroducing 2PL's blocking." },
+  { lvl:"STAFF", q:"Explain precisely why finding two consecutive rw-antidependency edges through a pivot is enough to prove a serialization anomaly is possible, without ever building the full conflict graph.", hint:"what did Cahill's thesis actually prove about which cycles are reachable under snapshot isolation?",
+    a:"Cahill's proof shows that under snapshot isolation specifically (not locking in general), any cycle in the conflict graph that could actually occur must contain at least one pair of ADJACENT rw-antidependency edges — because snapshot isolation already forecloses ww-conflicts (first-committer-wins) and most wr/rw single-edge patterns are individually harmless. So rather than needing to detect an arbitrary-length cycle across arbitrarily many transactions (expensive, requires global graph state), PostgreSQL only needs to check, locally, at the moment each new edge is created: does this edge, combined with an edge already recorded on the same transaction, form that specific two-edge local pattern? This reduces a global graph problem to an O(1) check per conflict, at the cost of occasionally flagging a two-edge pattern that — traced through the FULL graph — wasn't actually part of a closed cycle. That's the accepted false-positive rate: cheap, local, sound (catches every real case) but not complete-and-precise (some unnecessary aborts)." },
+  { lvl:"STAFF", q:"max_pred_locks_per_page is 64 (the default). A SERIALIZABLE transaction does a sequential scan touching 500 rows on one page. What happens to its predicate locks, and what does that do to the abort rate for OTHER transactions writing to that page?", hint:"which rows, specifically, become 'off limits' after promotion?",
+    a:"Once the transaction's tuple-level SIREAD locks on that page exceed 64, PostgreSQL promotes them to a SINGLE page-level SIREAD lock covering the whole page — collapsing potentially hundreds of fine-grained locks into one coarse one, bounding memory. The consequence for other transactions: any write to ANY row on that page — including rows the scanning transaction never actually cared about or would have matched a WHERE clause on — now creates an rw-antidependency edge with it, because the lock no longer distinguishes which specific rows were read. This directly raises the abort rate for unrelated writers touching that page, purely as a side effect of the scan's size, not because of any real overlap in the data each transaction cared about — exactly what §8's granularity slider and §10's chart both demonstrate." },
+  { lvl:"STAFF", q:"A DEFERRABLE READ ONLY SERIALIZABLE transaction can sometimes begin executing its first query with a noticeable delay, but then runs with zero SSI overhead afterward. Explain the mechanism.", hint:"what's PostgreSQL waiting FOR at BEGIN, and why does having it eliminate ALL further checking?",
+    a:"A read-only transaction can never be the pivot of certain dangerous structures the way a writer can (it has no outgoing 'wrote something someone read' edge in the relevant sense once granted a safe snapshot), but proving a GIVEN snapshot is actually safe for this purpose requires waiting until no currently-active writer could still create a problematic structure involving it — which is what DEFERRABLE requests at BEGIN. Once granted, that snapshot is provably safe for the rest of the transaction's lifetime: no further SIREAD lock tracking or conflict checking is needed for it AT ALL, because the proof was done once, up front, rather than incrementally on every read. The tradeoff is exactly what the question describes: pay a one-time wait at BEGIN in exchange for zero marginal SSI cost for the rest of the transaction — valuable specifically for long-running reporting queries that would otherwise accumulate many SIREAD locks over their lifetime." },
+  { lvl:"PRINCIPAL", q:"Steelman choosing Oracle-style snapshot isolation (mislabeled 'serializable') over PostgreSQL's true SSI for a large-scale financial system, then steelman the opposite.", hint:"who bears the cost of a false positive abort vs. who bears the cost of an undetected write-skew bug?",
+    a:"For snapshot isolation: every real-world query pattern that's actually vulnerable to write skew can, in principle, be identified by a careful engineering team and defended with explicit SELECT ... FOR UPDATE on the rows the invariant depends on — at the cost of that analysis being manual, incomplete, and only as good as the team's vigilance on every future code change touching that invariant, forever. You avoid SSI's false-positive abort tax and its retry-loop requirement entirely, at the cost of correctness being an ongoing code-review discipline rather than a database guarantee. For true SSI: the database catches every write-skew pattern automatically, including ones introduced by a future engineer who has never heard of the concept — the cost is universally distributed as a modest abort rate under contention, converted into an availability/retry-engineering problem instead of a silent-correctness-bug problem. For a financial system specifically, where a silent invariant violation (double-spent balance, incorrectly released hold) is far more expensive than an application-level retry, the argument tilts hard toward SSI — which is exactly why systems in that domain are disproportionately represented among PostgreSQL SERIALIZABLE's real adopters." },
+  { lvl:"PRINCIPAL", q:"Your team reports SERIALIZABLE transaction abort rates climbing from 0.5% to 15% after a schema migration added a new reporting query that full-scans a hot table. Diagnose using this chapter's mechanics, and propose the fix that doesn't involve abandoning SERIALIZABLE.", hint:"what does a full scan do to lock granularity, and who pays for that?",
+    a:"A full scan on a hot table almost certainly triggers predicate-lock promotion (§8) from tuple to page or even relation granularity as its own SIREAD lock count crosses max_pred_locks_per_page/_per_relation — and a relation-level SIREAD lock conflicts with EVERY subsequent write to that table by ANY other serializable transaction, regardless of actual row overlap. The new reporting query is manufacturing false-positive rw-edges against every OLTP writer touching that table for its scan's duration. Fixes, in order of leverage: (1) run the reporting query at REPEATABLE READ instead of SERIALIZABLE if it doesn't itself need write-skew protection — it's read-only and its own correctness doesn't depend on catching anomalies; (2) if it must be SERIALIZABLE and read-only, make it explicitly READ ONLY DEFERRABLE to get a safe snapshot and avoid contributing new rw-edges at all; (3) raise max_pred_locks_per_relation/_per_transaction if memory allows, deferring promotion to a much larger scan size; (4) as a last resort, partition or index the table so the report can use an index scan touching far fewer distinct pages, keeping its predicate locks at tuple granularity." }
+]);
+
+/* ============================================================
+   11. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Two transactions under REPEATABLE READ each read the combined on-call count of two doctors, then each sets a DIFFERENT doctor off-call, and both commit. What does snapshot isolation's native conflict detection do about this?",
+    opts:[ "Aborts the second COMMIT with a serialization failure",
+           "Nothing — no same-row write/write conflict occurred, so both commit successfully",
+           "Blocks the second UPDATE until the first transaction commits",
+           "Silently merges the two writes into one consistent result" ],
+    a:1,
+    why:"Snapshot isolation's conflict detection (first-committer-wins) only fires when two concurrent transactions write the SAME row. Here, each transaction writes a different doctor's row — there is no same-row conflict for the mechanism to catch, so both commit cleanly, and the combined result (zero doctors on call) is never flagged. This is precisely write skew, and precisely the gap SERIALIZABLE's SIREAD-lock tracking exists to close — under SERIALIZABLE, the SAME schedule would be caught via a dangerous structure and one transaction would be aborted with 40001." },
+  { q:"What does a SIREAD lock do when another transaction tries to READ the same row it covers?",
+    opts:[ "Blocks the second reader until the first transaction commits",
+           "Nothing at all — SIREAD locks never conflict with other reads, only get checked against later writes",
+           "Immediately aborts one of the two transactions",
+           "Upgrades both readers' locks to exclusive mode" ],
+    a:1,
+    why:"SIREAD locks exist purely to be checked against future WRITES (via CheckForSerializableConflictOut/In) — two transactions reading the same row never conflict with each other in any isolation level PostgreSQL implements, since MVCC readers never block other readers. The whole point of separating SIREAD bookkeeping from actual blocking locks is that read-read interactions cost nothing extra under SERIALIZABLE beyond ordinary snapshot isolation." },
+  { q:"Why does PostgreSQL's SSI implementation check for a 'dangerous structure' (two consecutive rw-edges) instead of tracking the full conflict graph and detecting cycles directly?",
+    opts:[ "Full cycle detection is provably impossible for read/write conflicts",
+           "Cahill's proof shows every reachable anomaly under snapshot isolation must contain this local pattern, so checking for it is sufficient and far cheaper than global cycle detection",
+           "PostgreSQL's lock manager (chapter 8) doesn't support graph-structured data",
+           "The dangerous-structure check only works for exactly two transactions, never three or more" ],
+    a:1,
+    why:"It's not that full cycle detection is impossible (A) — it's that it's expensive and requires global state, and Cahill's thesis specifically proves it's UNNECESSARY for snapshot-isolation-based systems: every real anomaly reachable under SI contains the two-consecutive-rw-edges pattern, so a cheap local check catches everything a full cycle search would, at the cost of some false positives. The lock manager (C) is unrelated — predicate.c is a separate subsystem. And the pattern applies with a three-transaction pivot structure (D is wrong) or can degenerate to two transactions where one plays both outer roles." },
+  { q:"A transaction is granted a 'safe snapshot' via READ ONLY DEFERRABLE. What can it skip for the rest of its lifetime?",
+    opts:[ "Taking any snapshot at all — it reads uncommitted data directly",
+           "Acquiring row-level locks on tables it writes to",
+           "All further SSI conflict-checking overhead — the snapshot is proven safe once, up front",
+           "Participating in MVCC visibility rules" ],
+    a:2,
+    why:"DEFERRABLE READ ONLY transactions wait at BEGIN until a snapshot can be proven safe from ever becoming part of a dangerous structure, then run with zero further SIREAD-lock bookkeeping or conflict-checking for their entire duration — the proof is done once, not incrementally. It does NOT skip taking a snapshot (A) — it still reads via ordinary MVCC visibility (D), it just avoids the EXTRA SSI machinery. Row-level locks (B) are moot since it's read-only and takes none regardless." },
+  { q:"Which statement about 'SERIALIZABLE' across different databases is TRUE?",
+    opts:[ "Oracle's SERIALIZABLE mode catches write skew exactly like PostgreSQL's does",
+           "MySQL/InnoDB's SERIALIZABLE mode uses the same SIREAD-lock mechanism as PostgreSQL",
+           "Oracle's SERIALIZABLE is actually snapshot isolation and does NOT catch write skew, despite the name",
+           "SQLite offers no serializability guarantee of any kind" ],
+    a:2,
+    why:"This is the trap §9 dwells on: Oracle's 'SERIALIZABLE' is implemented as snapshot isolation, the same mechanism as PostgreSQL's REPEATABLE READ — it does not include SSI-style predicate-lock conflict detection, so write skew passes through uncaught despite the reassuring name. MySQL/InnoDB (B) achieves serializability through locking (next-key locks escalating plain SELECTs to shared locks), a completely different mechanism from SIREAD tracking. SQLite (D) is trivially serializable by having only one writer at a time — the strongest possible guarantee, by the simplest possible means." },
+  { q:"A large sequential scan under SERIALIZABLE causes far more false-positive aborts for OTHER transactions than an equivalent index lookup touching 3 rows would. Why?",
+    opts:[ "Sequential scans always run at a lower isolation level internally",
+           "The scan's SIREAD locks get promoted to page/relation granularity, causing writes to UNRELATED rows on those pages to register as conflicts",
+           "Sequential scans do not participate in SSI at all",
+           "PostgreSQL disables SSI automatically once a scan exceeds a row-count threshold" ],
+    a:1,
+    why:"A large scan quickly exceeds max_pred_locks_per_page/_per_relation, forcing promotion to coarser granularity (§8) — at which point a page- or relation-level SIREAD lock conflicts with a write to ANY row at that granularity, not just the specific rows the scan actually needed. This directly manufactures rw-edges (and potential dangerous structures) against transactions writing completely unrelated rows that merely happen to share a page or table with the scan. Options A, C, and D describe behaviors that don't occur — SSI applies uniformly regardless of scan type, it just pays a granularity-promotion cost that scales with how many rows are touched." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review the predicate.c patch series.":correct>=4?"solid mental model; re-read the explanations you missed.":"re-run §7–§8's decks, then try the simulator — the conflict graph makes this click fast."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "T_alice and T_bob each BEGIN under SERIALIZABLE, taking snapshots",
+    "Both SELECT the on-call aggregate — SIREAD locks registered on both doctors' rows",
+    "T_alice's UPDATE runs: CheckForSerializableConflictOut() finds no prior edge yet, proceeds",
+    "T_bob's UPDATE runs: CheckForSerializableConflictOut() finds T_alice's read, creates first rw-edge",
+    "A second rw-edge is discovered forming a dangerous structure through the pivot",
+    "MightConstituteDangerousStructure() confirms the pattern synchronously",
+    "One transaction is aborted immediately with SQLSTATE 40001",
+    "The surviving transaction commits; application retries the aborted one"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real conflict-detection timeline</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 8 will show that ordinary lock waits form a wait-for graph checked for cycles by a genuinely different deadlock detector than SSI's dangerous-structure check. Predict: why couldn't PostgreSQL just reuse deadlock.c's cycle detection for SSI's rw-conflicts too?",
+    a:"deadlock.c's cycle detection operates over transactions that are BLOCKED, waiting on locks they cannot yet acquire — its entire job is deciding whether to break a wait cycle by aborting a participant, and it runs only when a wait actually occurs. SSI's rw-conflicts, by construction, never involve any blocking at all — a SIREAD lock never causes a wait, so there is no wait-for edge for deadlock.c's algorithm to see in the first place. The two systems detect structurally different graphs (blocked-on-lock vs. read-then-later-overwritten) built from different events (a lock request vs. a predicate-lock conflict check), which is exactly why predicate.c implements its own, separate, synchronous check rather than feeding into the existing deadlock detector." },
+  { lvl:"THINK", q:"This chapter showed SSI accepting false-positive aborts as the price of O(1) conflict checking. Chapter 8's lock manager also has to choose between expensive-but-precise and cheap-but-approximate techniques somewhere. Predict where.",
+    a:"The most likely candidate is deadlock detection itself: building and searching the exact wait-for graph across every blocked backend on every lock wait would be expensive to do on every single lock acquisition, so real implementations typically only run deadlock detection after a wait has persisted past a timeout (PostgreSQL's deadlock_timeout, default 1 second) — trading a brief, usually-wasted wait for the common case (most locks are granted quickly and no cycle exists) against paying the full cycle-detection cost only when contention has already gone on long enough to suggest a real deadlock might be present. It's the same 'don't pay full precision cost on the common path' instinct as SSI's local-pattern shortcut, applied to timing rather than to graph completeness." },
+  { lvl:"THINK", q:"A transaction under SERIALIZABLE gets aborted with 40001 on its FIRST attempt, retries, and gets aborted again on the SECOND attempt with a different set of conflicting transactions. Using this chapter's model, is this evidence of a bug, or an expected outcome under some conditions — and what would you check first?",
+    a:"Not necessarily a bug — this is an expected, if uncomfortable, outcome under sustained high contention on hot rows, exactly what §10's chart models (abort rate rising with concurrent writers) and §11's retry-storm incident describes (naive immediate retries can even make it worse by re-attempting into the same contended window). What to check first: whether retries use jittered backoff (not tight-loop immediate retry), whether the transaction's read set is unexpectedly large (triggering lock-granularity promotion per §8, inflating false positives), and whether an index exists to narrow what the transaction actually needs to scan — before assuming anything about the SSI implementation itself is wrong." }
+]);
+
+/* ============================================================
+   12. SIMULATOR (§15) — ANOMALY LAB + CONFLICT GRAPH
+   ============================================================ */
+(function(){
+  const SCEN = {
+    lost: { name:"lost update", steps:[
+      {lane:"T1", text:"BEGIN;"},
+      {lane:"T2", text:"BEGIN;"},
+      {lane:"T1", text:"SELECT balance FROM accounts WHERE id=1;  → 100"},
+      {lane:"T2", text:"SELECT balance FROM accounts WHERE id=1;  → 100"},
+      {lane:"T1", text:"UPDATE accounts SET balance=70 WHERE id=1;  COMMIT;", commit:"T1"},
+      {lane:"T2", text:"UPDATE accounts SET balance=50 WHERE id=1;", finalOp:true}
+    ]},
+    skew: { name:"write skew", steps:[
+      {lane:"T1", text:"BEGIN;"},
+      {lane:"T2", text:"BEGIN;"},
+      {lane:"T1", text:"SELECT count(*) FROM doctors WHERE on_call;  → 2"},
+      {lane:"T2", text:"SELECT count(*) FROM doctors WHERE on_call;  → 2"},
+      {lane:"T1", text:"UPDATE doctors SET on_call=false WHERE name='Alice';  COMMIT;", commit:"T1"},
+      {lane:"T2", text:"UPDATE doctors SET on_call=false WHERE name='Bob';", finalOp:true}
+    ]},
+    phantom: { name:"phantom read", steps:[
+      {lane:"T1", text:"BEGIN;"},
+      {lane:"T1", text:"SELECT count(*) FROM orders WHERE status='pending';  → 5"},
+      {lane:"T2", text:"BEGIN; INSERT INTO orders(status) VALUES('pending'); COMMIT;", commit:"T2"},
+      {lane:"T1", text:"SELECT count(*) FROM orders WHERE status='pending';  → ?", finalOp:true}
+    ]}
+  };
+  const OUTCOMES = {
+    lost:{ rc:{res:"hit", log:"balance overwritten to 50 — T1's -30 is silently LOST. No error raised.", val:"→ 50 (WRONG: should reflect both withdrawals)"},
+           rr:{res:"abort", log:"ERROR: could not serialize access due to concurrent update — row 1 was modified by T1, a since-committed transaction. T2 must retry.", val:"aborted, no write applied"},
+           ser:{res:"abort", log:"Same same-row conflict as Repeatable Read catches this — ERROR 40001 before SSI's graph tracking is even needed.", val:"aborted, no write applied"} },
+    skew:{ rc:{res:"hit", log:"Both UPDATEs succeed — no same-row conflict exists. Zero doctors on call.", val:"→ 0 on-call (INVARIANT VIOLATED)"},
+           rr:{res:"hit", log:"Same as Read Committed here — disjoint rows, snapshot isolation's ww-conflict check has nothing to catch.", val:"→ 0 on-call (INVARIANT VIOLATED)"},
+           ser:{res:"abort", log:"rw-antidependency edges + dangerous structure detected. ERROR 40001 fires on T2's UPDATE.", val:"one transaction aborted, invariant preserved"} },
+    phantom:{ rc:{res:"hit", log:"Second SELECT gets a FRESH per-statement snapshot — sees the committed INSERT. Count changes within one transaction.", val:"→ 6 (phantom: count changed mid-transaction)"},
+           rr:{res:"ok", log:"Second SELECT reuses the transaction's original snapshot — the new row is invisible to it.", val:"→ 5 (consistent for the whole transaction)"},
+           ser:{res:"ok", log:"Same snapshot behavior as Repeatable Read — no phantom. (SSI would only add overhead if T1 later WROTE based on this count.)", val:"→ 5 (consistent, and would be protected if T1 wrote based on it)"} }
+  };
+  const SS = { scen:"skew", level:"ser", step:0, edges:0, aborts:0 };
+  const btnScen = { lost: el("sc-lost"), skew: el("sc-skew"), phantom: el("sc-phantom") };
+  const btnLvl = { rc: el("lvl-rc"), rr: el("lvl-rr"), ser: el("lvl-ser") };
+  const slog = el("sim-log");
+  function slogf(lv,msg){ const d=document.createElement("div"); d.className="lv-"+lv; d.textContent=(lv==="OK"?"":lv+":  ")+msg; slog.appendChild(d); while(slog.children.length>70) slog.removeChild(slog.firstChild); slog.scrollTop=slog.scrollHeight; }
+  Object.entries(btnScen).forEach(([k,b])=> b.onclick = ()=>{ SS.scen=k; restart(); });
+  Object.entries(btnLvl).forEach(([k,b])=> b.onclick = ()=>{
+    SS.level=k; Object.values(btnLvl).forEach(x=>x.classList.remove("on")); b.classList.add("on"); restart();
+  });
+  function drawGraph(){
+    const svg = el("cgraph-svg");
+    const s = SCEN[SS.scen], scenOutcome = OUTCOMES[SS.scen][SS.level];
+    let inner = `<defs><marker id="arr2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#f25c54"/></marker></defs>`;
+    const nodes = { T1:{x:70,y:90,label:"T1"}, T2:{x:290,y:90,label:"T2"} };
+    const showEdge = SS.level==="ser" && SS.step >= s.steps.length-1 && (scenOutcome.res!=="ok");
+    if (showEdge){
+      inner += `<line x1="90" y1="90" x2="270" y2="90" stroke="#f25c54" stroke-width="2" marker-end="url(#arr2)"/>`;
+      inner += `<text x="180" y="80" text-anchor="middle" font-family="monospace" font-size="10" fill="#ff9f43">rw</text>`;
+      if (SS.scen==="skew"){
+        inner += `<line x1="270" y1="100" x2="90" y2="100" stroke="#f25c54" stroke-width="2" marker-end="url(#arr2)" stroke-dasharray="3,3"/>`;
+        inner += `<text x="180" y="118" text-anchor="middle" font-family="monospace" font-size="10" fill="#ff9f43">rw (via shared aggregate)</text>`;
+      }
+    }
+    Object.values(nodes).forEach(n=>{
+      const danger = showEdge;
+      inner += `<circle cx="${n.x}" cy="${n.y}" r="26" fill="${danger?'rgba(255,159,67,.15)':'#131824'}" stroke="${danger?'#ff9f43':'#2a3446'}" stroke-width="2"/>`;
+      inner += `<text x="${n.x}" y="${n.y+5}" text-anchor="middle" font-family="monospace" font-size="13" fill="${danger?'#ff9f43':'#c6cddb'}">${n.label}</text>`;
+    });
+    svg.innerHTML = inner;
+  }
+  function render(){
+    const s = SCEN[SS.scen];
+    let html = "";
+    ["T1","T2"].forEach(who=>{
+      const rows = s.steps.slice(0, SS.step+1).filter(st=>st.lane===who).map((st,idx)=>{
+        const globalIdx = s.steps.indexOf(st);
+        const isLast = globalIdx === SS.step;
+        let cls = st.commit ? "commit" : "";
+        let text = st.text;
+        if (isLast && st.finalOp){
+          const oc = OUTCOMES[SS.scen][SS.level];
+          text += `  <span class="op">${oc.val}</span>`;
+          cls = oc.res==="hit" ? "hit" : oc.res==="abort" ? "hit" : "commit";
+        }
+        return `<div class="step ${cls}">${text}</div>`;
+      });
+      html += `<div class="lane"><div class="lane-t"><span class="txid">${who}</span> ${SS.level==="rc"?"(READ COMMITTED)":SS.level==="rr"?"(REPEATABLE READ)":"(SERIALIZABLE)"}</div>${rows.join("") || '<div class="step" style="color:var(--dim)">not started</div>'}</div>`;
+    });
+    el("sim-lanes").innerHTML = html;
+    el("cnt-step").textContent = SS.step+1 <= s.steps.length ? (SS.step+1) : s.steps.length;
+    el("cnt-edges").textContent = SS.edges;
+    el("cnt-aborts").textContent = SS.aborts;
+    const done = SS.step >= s.steps.length-1;
+    const oc = OUTCOMES[SS.scen][SS.level];
+    if (done){
+      el("sim-insp").innerHTML = `<div class="i-t">OUTCOME</div><div style="color:${oc.res==='hit'?'var(--bad)':oc.res==='abort'?'var(--warn)':'var(--ok)'}">${oc.res==='hit'?'ANOMALY OCCURRED':oc.res==='abort'?'ABORTED — retry required':'NO ANOMALY'}</div><div style="margin-top:4px;color:var(--muted)">${oc.val}</div>`;
+    } else {
+      el("sim-insp").innerHTML = `<div class="i-t">OUTCOME</div><div style="color:var(--dim)">step through to the end to see the result…</div>`;
+    }
+    drawGraph();
+  }
+  function restart(){
+    SS.step = -1; SS.edges = 0;
+    el("sim-phase").textContent = SCEN[SS.scen].name.toUpperCase() + " — " + SS.level.toUpperCase();
+    slogf("LOG", `scenario reset: ${SCEN[SS.scen].name}, isolation = ${SS.level.toUpperCase()}`);
+    render();
+  }
+  el("sc-step").onclick = ()=>{
+    const s = SCEN[SS.scen];
+    if (SS.step >= s.steps.length-1) { slogf("WARN","scenario already complete — restart to run again."); return; }
+    SS.step++;
+    const cur = s.steps[SS.step];
+    slogf("LOG", `${cur.lane}: ${cur.text.replace(/<[^>]+>/g,"")}`);
+    if (cur.finalOp){
+      const oc = OUTCOMES[SS.scen][SS.level];
+      if (SS.level==="ser" && oc.res!=="ok"){ SS.edges += (SS.scen==="skew"?2:1); }
+      if (oc.res==="hit") slogf("WARN", oc.log);
+      else if (oc.res==="abort"){ slogf("FATAL", oc.log); SS.aborts++; el("sim-phase").textContent = "ABORTED — 40001"; }
+      else slogf("OK", oc.log);
+    }
+    render();
+  };
+  el("sc-run").onclick = ()=>{
+    const s = SCEN[SS.scen];
+    const iv = setInterval(()=>{
+      if (SS.step >= s.steps.length-1){ clearInterval(iv); return; }
+      el("sc-step").click();
+    }, 550);
+  };
+  el("sc-restart").onclick = restart;
+  slogf("OK","anomaly lab ready — pick a scenario, pick an isolation level, then step through.");
+  restart();
+})();
+
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-07"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-06.html"><span>←</span><span><span class="cn-lbl">PREV · CH 06</span><span class="cn-ttl">MVCC II: HOT Updates, Freezing & XID Wraparound</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html" selected>CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">07 / 21</span></div><a class="cn-btn" href="pg-08.html"><span><span class="cn-lbl">NEXT · CH 08</span><span class="cn-ttl">The Lock Manager: Heavyweight, LWLocks & Spinlocks</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

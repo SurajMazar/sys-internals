@@ -1,0 +1,2016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-04 · Heap Storage: Segments, FSM, Visibility Map & TOAST — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+  .pill.p{color:var(--purple);background:rgba(167,139,250,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- CHAPTER-04 SPECIFIC WIDGETS ---------- */
+  .segfiles{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 6px}
+  .segfile{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:9px 13px;
+    font-family:var(--mono);font-size:11px;color:var(--muted);transition:all .2s;min-width:118px;text-align:center}
+  .segfile .sf-t{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .segfile.hit{border-color:var(--pg);color:var(--pg);background:var(--pg-dim);box-shadow:0 0 14px rgba(96,165,250,.25)}
+  .segfile.hit .sf-t{color:var(--pg)}
+
+  .fsmtree{display:flex;flex-direction:column;align-items:center;gap:12px;padding:6px 0}
+  .fsmlevel{display:flex;justify-content:center;gap:8px;width:100%}
+  .fsmnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 4px;
+    font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:center;flex:1;max-width:110px;
+    transition:all .2s;cursor:default}
+  .fsmnode .fv{display:block;font-weight:700;font-size:12px;color:var(--text)}
+  .fsmnode .fb{display:block;font-size:9px;color:var(--dim)}
+  .fsmnode.path{border-color:var(--pg);background:var(--pg-dim)}
+  .fsmnode.path .fv{color:var(--pg)}
+  .fsmnode.hit{border-color:var(--ok);background:rgba(74,222,128,.1);box-shadow:0 0 14px rgba(74,222,128,.25)}
+  .fsmnode.hit .fv{color:var(--ok)}
+  .fsmnode.dead{border-color:var(--bad);opacity:.55}
+  .fsmnode.leaf{border-style:dashed}
+
+  /* TOAST slicer */
+  #toastsim .w-body{padding:18px}
+  .col-cfg{border:1px solid var(--border);background:var(--bg-2);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+  .col-cfg .cc-head{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap}
+  .col-cfg .cc-name{font-family:var(--mono);font-size:12.5px;color:var(--text);font-weight:700;min-width:96px}
+  .col-cfg .cc-state{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:6px;border:1px solid var(--border-hi);color:var(--muted)}
+  .col-cfg .cc-state.st-inline{color:var(--muted)}
+  .col-cfg .cc-state.st-compressed{color:var(--purple);border-color:rgba(167,139,250,.4);background:rgba(167,139,250,.08)}
+  .col-cfg .cc-state.st-external{color:var(--pg);border-color:rgba(96,165,250,.4);background:var(--pg-dim)}
+  .col-cfg .cc-state.st-externalc{color:var(--warn);border-color:rgba(255,159,67,.4);background:rgba(255,159,67,.08)}
+  .col-cfg .cc-state.st-fail{color:var(--bad);border-color:rgba(242,92,84,.4);background:rgba(242,92,84,.08)}
+  .toastrow{display:flex;height:52px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 4px}
+  .toastattr{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;
+    color:#04121f;font-weight:700;transition:width .45s cubic-bezier(.22,1,.36,1),background .3s;
+    white-space:nowrap;overflow:hidden;min-width:3px}
+  .toastmeter{font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;margin-bottom:4px}
+  .toastmeter b{color:var(--pg)}
+  .toast-table{margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--bg-2)}
+  .toast-table .tt-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px}
+  .chunklist{display:flex;flex-wrap:wrap;gap:5px}
+  .chunk{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:6px;padding:4px 8px;
+    font-family:var(--mono);font-size:9.5px;color:var(--muted);animation:framein .25s ease}
+  .toastlog{background:#05070b;font-family:var(--mono);font-size:10.6px;line-height:1.7;padding:11px 13px;
+    height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;margin-top:12px}
+  .toastlog div{white-space:pre-wrap}
+  .toastlog .tl-ok{color:var(--ok)} .toastlog .tl-warn{color:var(--warn)} .toastlog .tl-bad{color:var(--bad)} .toastlog .tl-info{color:#7d8aa3}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 04 / 21</b> · HEAP STORAGE</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 04</div>
+  <h1>Heap Storage: Segments, FSM,<br><span class="grad">Visibility Map & TOAST</span></h1>
+  <p class="lead">A table is not a file — it is a directory of 1&nbsp;GiB segment files, addressed through a fork
+  abstraction, tracked by a free-space map that is deliberately allowed to be wrong, guarded by a visibility map
+  that is not allowed to be wrong, with an escape hatch — TOAST — for the one thing an 8&nbsp;KB page can never
+  hold: a value bigger than the page. This chapter takes the heap apart down to the struct fields and the C
+  functions that read and write them.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Compute exactly which segment file and byte offset any block number lives in.</div>
+    <div class="obj"><b>You will understand</b>Why the FSM is allowed to lie and the visibility map is not — and what enforces each guarantee.</div>
+    <div class="obj"><b>You will predict</b>When a wide row gets compressed, when it gets pushed out of line, and why <code>substring()</code> is sometimes free and sometimes isn't.</div>
+    <div class="obj"><b>You will simulate</b>The TOAST insertion algorithm live — compress, check, externalize, repeat — against a row you compose yourself.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A fixed-size page has to hold a variable-sized world</h2>
+  <p class="lead">Every heap page in PostgreSQL is exactly <code>BLCKSZ</code> bytes — 8&nbsp;KiB by default,
+  fixed at compile time, uniform across the entire cluster. That single number collides with three facts about
+  real data that have nothing to do with it: rows vary in width from a few bytes to gigabytes, tables grow from
+  zero rows to billions, and most operating systems and filesystems have historically imposed their own ceilings
+  on how large a single file is allowed to get. Heap storage is the layer that reconciles a rigid, fixed-size
+  page abstraction with data that refuses to be rigid or fixed-size.</p>
+  <p>Unpack that into four separate problems, because the chapter's four subsystems each answer exactly one:</p>
+  <ul class="plain">
+    <li><b>Where does a table's data physically live on disk?</b> — a naming and addressing problem, solved by
+      <span class="term" data-def="A numeric identifier assigned to a relation's on-disk storage, decoupled from the relation's OID so operations like TRUNCATE and CLUSTER can swap storage without changing the table's identity.">relfilenode</span>-named
+      files, segmented, and a fork abstraction (§7–8).</li>
+    <li><b>Where is there room for the next tuple?</b> — a search problem: scanning every page to find one with
+      enough free space does not scale, so PostgreSQL maintains a purpose-built index of free space, the
+      <b>Free Space Map (FSM)</b> (§8).</li>
+    <li><b>Which pages can a reader skip entirely?</b> — an optimization-and-correctness problem: certain scans
+      (index-only scans, VACUUM) want to avoid touching the heap at all when every tuple on a page is already
+      known-visible, which requires a durable, crash-safe record — the <b>Visibility Map (VM)</b> (§8).</li>
+    <li><b>What happens when one column's value is bigger than the whole page?</b> — an overflow problem, solved
+      by <b>TOAST</b>: transparently compressing and/or relocating oversized attributes into a side table, so the
+      main heap tuple never has to hold more than a pointer (§8, §15).</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT 17 CHAPTERS</div>
+    <p>Almost everything downstream reads or writes through this layer. MVCC (chapter 5) stores its visibility
+    metadata in the tuple header this chapter defines. VACUUM (chapter 6) exists largely to maintain the FSM and
+    VM this chapter introduces. Indexes (chapters 7–8) point at heap TIDs whose page layout is fixed here. And
+    every <code>jsonb</code>, <code>text</code>, or <code>bytea</code> column you have ever queried was, at some
+    size threshold, silently rewritten by the TOAST machinery described in §8 and simulated in §15. Get the
+    physical layer right in your head, and the rest of the course has somewhere solid to stand.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From "big rows just fail" to three purpose-built side structures</h2>
+  <p>None of FSM, VM, or TOAST existed in the earliest Postgres releases in anything like their current form. Each
+  was bolted on — sometimes decades apart — as the gap between "a fixed 8&nbsp;KB page" and "what applications
+  actually store" became impossible to ignore. Click through the timeline; each entry is a fingerprint you can
+  still find in the source tree today.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — how the heap grew side structures</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY "TOAST"?</div>
+    <p>The name is a backronym — <b>T</b>he <b>O</b>versized-<b>A</b>ttribute <b>S</b>torage <b>T</b>echnique —
+    picked to be memorable rather than descriptive, and it stuck the way "postmaster" did. What it names is not
+    a single mechanism but a coordinated policy across four layers: the tuple's varlena header format
+    (<code>src/include/postgres.h</code>), the per-attribute storage class chosen in <code>pg_attribute</code>,
+    the compression codec, and a side table with the unglamorous name <code>pg_toast.pg_toast_&lt;oid&gt;</code>.
+    You will meet all four in §8.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: one giant file, no map, no size limit, no compression</h2>
+  <p>Derive the architecture honestly, the way §3 of every chapter in this course does. The simplest possible
+  heap implementation stores a relation as a single, unbounded file, appends new tuples wherever a linear scan
+  finds room, and never compresses or relocates anything — a value is a value, inline, however big it is.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudo-C</span><span>naive_heap.c — the strawman, annotated</span></div>
+    <pre><span class="k">typedef struct</span> {
+    <span class="k">char</span>  data[<span class="n">VARIABLE</span>];   <span class="c">/* one giant, unbounded file per table   */</span>
+} <span class="t">NaiveRelationFile</span>;
+
+<span class="k">BlockNumber</span>
+<span class="f">naive_find_free_page</span>(<span class="t">Relation</span> rel, <span class="k">Size</span> needed)
+{
+    <span class="c">/* No map of free space exists anywhere.
+     * The only way to find room is to ask every page. */</span>
+    <span class="k">for</span> (<span class="k">BlockNumber</span> b = <span class="n">0</span>; b &lt; <span class="f">naive_nblocks</span>(rel); b++)
+    {
+        <span class="t">Page</span> p = <span class="f">naive_read_block</span>(rel, b);   <span class="c">/* one syscall per candidate page  */</span>
+        <span class="k">if</span> (<span class="f">naive_free_space</span>(p) &gt;= needed)
+            <span class="k">return</span> b;
+    }
+    <span class="k">return</span> <span class="f">naive_extend</span>(rel);       <span class="c">/* give up, grow the file            */</span>
+}
+
+<span class="k">void</span>
+<span class="f">naive_insert</span>(<span class="t">Relation</span> rel, <span class="t">HeapTuple</span> tup)
+{
+    <span class="c">/* Whatever size the row is, store it inline, verbatim.
+     * A 500 MB text column becomes a 500 MB tuple.       */</span>
+    <span class="k">BlockNumber</span> b = <span class="f">naive_find_free_page</span>(rel, tup-&gt;t_len);
+    <span class="f">naive_write_block</span>(rel, b, tup);
+}</pre>
+  </div>
+
+  <p>This is, again, not a joke — it is exactly where you should start. It already gets the essential job done:
+  data goes in, data comes out, and there is no separate structure to keep consistent with the heap, so nothing
+  can drift out of sync with reality. Small tables on a friendly filesystem never notice a problem. Watch it
+  degrade as both dimensions — table size and row size — grow past what a naive design can absorb.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The naive heap under growth</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Three independent ceilings, and they all get hit</h2>
+  <p>The naive design does not fail gracefully — it fails in three unrelated ways, each with a quantifiable
+  breaking point, which is exactly why the final architecture needs three separate mechanisms rather than one
+  fix:</p>
+  <ul class="plain">
+    <li><b>Filesystem and OS file-size ceilings are real and historically low.</b> Postgres's Unix ancestry runs
+      through machines and filesystems where a single file could not exceed 2&nbsp;GiB — 32-bit signed byte
+      offsets cap a file at 2³¹−1 bytes, and several widely deployed 1990s filesystems (older ext2 configurations,
+      some FAT variants, certain NFS servers) enforced limits at or below that line. A design that stores a
+      multi-gigabyte table as one file simply cannot be created on such a system, full stop — no amount of query
+      tuning fixes a file the filesystem refuses to extend.</li>
+    <li><b>Free-space search is <code>O(n)</code> in the number of pages, per insert.</b> With no index of free
+      space, finding room means reading candidate pages until one has enough. On a 10-million-page table (about
+      80&nbsp;GB at 8&nbsp;KB pages) with most pages full, an insert might scan thousands of pages before finding
+      space near the end — and every one of those reads is a real <code>read()</code> syscall or, worse, a
+      buffer-pool miss. Do that for every one of <code>n</code> inserts and the aggregate cost trends toward
+      <code>O(n²)</code> exactly when you can least afford it: heavy insert load into a nearly-full table.</li>
+    <li><b>A row bigger than a page cannot exist, arithmetically.</b> <code>BLCKSZ</code> is 8192 bytes; subtract
+      the page header (24 bytes), the line pointer array, and per-tuple overhead, and the realistic ceiling for
+      a single heap tuple sits close to <code>MaxHeapTupleSize</code>, a few bytes over 8&nbsp;KB. A <code>text</code>
+      or <code>jsonb</code> value of 50&nbsp;KB is not a performance problem under the naive design — it is a
+      hard impossibility. There is no "just make the page bigger": <code>BLCKSZ</code> is fixed cluster-wide at
+      compile time, shared by every table, every index, and the buffer pool's slot arithmetic.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE ARITHMETIC THAT FORCES THE REDESIGN</div>
+    <p>Three independent constraints, three independent fixes: the filesystem ceiling forces <b>segmentation</b>
+    (§7–8), the <code>O(n)</code> free-space search forces a <b>maintained map</b> (§8), and the fixed page size
+    forces an <b>out-of-line storage mechanism</b> for oversized values (§8, §15). None of the three problems can
+    be solved by tuning the other two — you cannot compress your way out of a 2&nbsp;GiB filesystem ceiling, and
+    you cannot segment your way out of an <code>O(n)</code> free-space scan. §5 walks each candidate fix and
+    eliminates the ones that don't survive contact with a multi-terabyte production table.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three problems, three families of candidate fix</h2>
+
+  <h3>For the file-size ceiling: pick a segment size and split</h3>
+  <p>The candidates here are narrow: either raise the theoretical file-size limit by relying on a 64-bit-only
+  filesystem (rejected — Postgres must run on whatever filesystem the operator already has, not the one you wish
+  they had), or split each relation's storage into multiple, independently sized files under one logical
+  identity. PostgreSQL takes the second path: a compile-time constant, <code>RELSEG_SIZE</code>
+  (<code>src/include/pg_config_manual.h</code>), fixes the maximum size of one segment file at
+  131072 blocks — exactly 1&nbsp;GiB at the default 8&nbsp;KiB <code>BLCKSZ</code> — comfortably under every
+  historical filesystem ceiling with a wide safety margin, while keeping the segment count for even a multi-TB
+  table in the low thousands.</p>
+
+  <h3>For free-space search: cache a hint, or build a real index</h3>
+  <p>Step through the candidates the project actually tried, in order, because the history matters here more than
+  usual — PostgreSQL shipped and later <i>removed</i> an intermediate design:</p>
+
+  <div class="widget deck" id="deckFsmCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Free-space tracking: three designs, one survivor</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>For oversized values: reject, chain, or relocate</h3>
+  <p>Three shapes were on the table: <b>(A)</b> reject rows above a hard limit and force applications to use a
+  separate, explicitly-managed large-object API (Postgres actually shipped this first — the <code>pg_largeobject</code>
+  system, still present, chunked into 2&nbsp;KB pieces manually addressed by <code>lo_import</code>/<code>lo_read</code>);
+  <b>(B)</b> let a row physically span multiple heap pages, chained together (the path Oracle and SQL Server take
+  for very wide rows); <b>(C)</b> keep every heap tuple confined to one page by transparently compressing and/or
+  relocating individual <i>attributes</i> — not whole rows — into a side table, leaving an in-tuple pointer behind.
+  PostgreSQL's answer, arriving in 7.1 (2001), is <b>(C)</b>: TOAST. It is worth sitting with why (A) and (B) were
+  rejected, because the reasons are structural, not incidental:</p>
+  <ul class="plain">
+    <li><b>(A) large objects</b> work, but they are not transparent: every application has to know a column is
+      "large" and use a different API (<code>lo_import()</code>/<code>lo_export()</code>, large-object file
+      descriptors) instead of ordinary <code>SELECT</code>/<code>UPDATE</code>. That breaks the relational
+      model's promise that a column is a column regardless of size, and it pushes the size-awareness burden onto
+      every client, forever.</li>
+    <li><b>(B) row chaining across pages</b> keeps ordinary SQL working, but it means the heap access method must
+      handle multi-page tuples everywhere — every scan, every lock, every WAL record for a chained row now spans
+      pages, and pages themselves can no longer be reasoned about independently. It also does nothing for the
+      case that dominates in practice: a handful of oversized <i>columns</i> in an otherwise narrow row, where
+      chaining the entire row is wasteful when only one attribute is the problem.</li>
+  </ul>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: PER-ATTRIBUTE, NOT PER-ROW</div>
+    <p>TOAST's key design decision is granularity: the unit of relocation is one <i>attribute value</i>, not one
+    row. A row with nine narrow columns and one 500&nbsp;KB <code>jsonb</code> column keeps the nine columns
+    inline, in the heap page, cheap to scan — and only the one oversized value is compressed and/or pushed into
+    <code>pg_toast.pg_toast_&lt;oid&gt;</code>. Every other subsystem — the buffer manager, the heap scan, the
+    line-pointer array — keeps its "one tuple fits in one page" invariant, because by construction it now always
+    does: the in-tuple representation of even a gigabyte-sized value is an 18-byte pointer struct. §8 shows
+    exactly what that pointer contains.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">The bill for segments, a maintained map, and a compress-and-relocate policy</h2>
+  <p>Each winning design in §5 trades the original problem for a new, smaller, but very real cost. Being precise
+  about where each cost comes from is what separates "the FSM sometimes misses free space" from actually knowing
+  <i>why</i>, and what you can and cannot do about it:</p>
+  <ul class="plain">
+    <li><b>Segmentation adds an indirection to every I/O.</b> Reading block number <code>N</code> is no longer
+      "seek to <code>N × BLCKSZ</code> in one file" — it is "compute <code>N / RELSEG_SIZE</code> to pick the
+      segment file, <code>N % RELSEG_SIZE</code> for the offset within it, and possibly open a file descriptor
+      the storage manager hasn't cached yet." Cheap arithmetic, but it is arithmetic and an <code>open()</code>
+      that a single-file design would not need, on the hottest path in the system.</li>
+    <li><b>A maintained free-space map can be, and is designed to be, wrong.</b> The FSM is a cache of
+      approximate free-space <i>categories</i>, not exact byte counts, and — critically — its contents are
+      <b>not WAL-logged</b>. A crash can leave it stale relative to the heap; a concurrent transaction that hasn't
+      committed yet can make a page look free when it isn't really available yet. The system tolerates this
+      because the failure mode is bounded: a wasted probe of one page, not corruption. But it means the FSM can
+      never be the sole source of truth about anything, only a hint that saves an <code>O(n)</code> scan most of
+      the time.</li>
+    <li><b>The visibility map inverts that tradeoff — it must never lie</b>, which is precisely why it costs
+      more to maintain: every bit it sets must be WAL-logged, and every <code>UPDATE</code>/<code>DELETE</code>
+      that touches a page must synchronously clear both of its bits <i>before</i> making the page's data
+      inconsistent with what the bit claims. Get this wrong and index-only scans return rows that were deleted,
+      not "slightly stale performance" — a correctness bug, not an efficiency one. §11 covers a real historical
+      incident from exactly this class of failure.</li>
+    <li><b>TOAST buys page-size independence by taxing every access to a toasted value.</b> Reading a toasted
+      column means, at minimum, following a pointer into a second relation (<code>pg_toast.pg_toast_&lt;oid&gt;</code>)
+      and its index, reassembling ~2000-byte chunks, and — if the value was compressed — decompressing the whole
+      thing before you can read even one byte of it. An <code>UPDATE</code> that changes one unrelated narrow
+      column on a row with a 200&nbsp;KB toasted <code>jsonb</code> value does not touch the toasted value at
+      all (TOAST pointers are copied forward, not re-toasted, when the underlying value is unchanged) — but an
+      <code>UPDATE</code> that touches the big column itself re-runs the entire compress/externalize algorithm
+      from scratch and writes an entirely new set of chunk rows, because MVCC (chapter 5) never mutates a tuple
+      in place.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THE PATTERN, STATED ONCE</div>
+    <p>Every side structure in this chapter buys a fast path for the common case by accepting a slow, expensive,
+    or care-must-be-taken path for the uncommon one. Segments make huge tables possible at the cost of one
+    division per I/O. The FSM makes inserts fast at the cost of being allowed to guess wrong. The VM makes
+    index-only scans and vacuum skip work at the cost of a strict, WAL-logged clearing discipline. TOAST makes
+    "just declare a <code>text</code> column, no size limit" possible at the cost of every access to a big value
+    paying a detour through a second table. None of these are free lunches — they are all different places to
+    put the bill.</p>
+  </div>
+</section>
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">One relation, four forks, N segments, one side table</h2>
+  <p>A table you think of as one object is, on disk, a small constellation of files plus one hidden relation.
+  Click any component to see its role, its real file path, and how it's addressed. Notice the asymmetry: only
+  the <b>main fork</b> holds row data; <b>fsm</b> and <b>vm</b> are auxiliary indexes over the main fork's free
+  space and visibility state, and the <b>toast relation</b> is a fully independent table with its own main/fsm/vm
+  forks, sitting one level down.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Storage explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">ADDRESSING LAYER</div>
+        <div class="arch-grid"><div class="acard" data-p="smgr">smgr / md.c</div></div>
+        <div class="arch-row-label">RELATION FORKS (relfilenode-named)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="main">main fork</div>
+          <div class="acard" data-p="fsm">fsm fork</div>
+          <div class="acard" data-p="vm">vm fork</div>
+          <div class="acard" data-p="init">init fork</div>
+        </div>
+        <div class="arch-row-label">SEGMENTATION (per fork, independently)</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="segment">segment 0 (≤1 GiB) · segment 1 · segment 2 · …</div></div>
+        <div class="arch-row-label">OVERFLOW RELATION (own forks, own segments)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="toasttable">pg_toast.pg_toast_&lt;oid&gt;</div>
+          <div class="acard" data-p="toastindex">toast index on (chunk_id,chunk_seq)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE FORK, NOT A SEPARATE FILE PER FEATURE</div>
+    <p>An earlier, simpler design could have given each table one file for data and hard-coded a second,
+    differently-named file for free-space tracking. Instead PostgreSQL generalized: <code>ForkNumber</code>
+    (<code>src/include/common/relpath.h</code>) is an enum — <code>MAIN_FORKNUM</code>, <code>FSM_FORKNUM</code>,
+    <code>VISIBILITYMAP_FORKNUM</code>, <code>INIT_FORKNUM</code> — and every storage-manager call
+    (<code>smgrread</code>, <code>smgrwrite</code>, <code>smgrextend</code>, in <code>storage/smgr/smgr.c</code>)
+    takes a fork number alongside the relation and block number. That one abstraction is what let the project add
+    the visibility map in 8.4 without touching a single call site that only cared about the main fork — it just
+    became "one more fork number" to an addressing scheme built to accept it.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The addressing math, the two maps, and the tuple header</h2>
+  <p>Four mechanisms, in the order data actually flows through them: <b>(a)</b> how a block number becomes a
+  file and an offset, <b>(b)</b> the Free Space Map's tree-in-a-page search, <b>(c)</b> the visibility map's two
+  bits and its WAL-logging discipline, <b>(d)</b> the TOAST decision algorithm and the varlena header formats
+  that make it possible.</p>
+
+  <h3>(a) From (relation, fork, block) to a byte offset in a real file</h3>
+  <p>Every relation's identity for storage purposes is not its OID but its
+  <span class="term" data-def="A numeric filename for a relation's storage, independent of its catalog OID — TRUNCATE and CLUSTER can assign a table a new relfilenode while its OID (and therefore its identity to foreign keys, permissions, etc.) stays fixed.">relfilenode</span>
+  (renamed to <code>relfilenumber</code> inside the <code>RelFileLocator</code> struct as of PostgreSQL 16, which
+  also renamed the older <code>RelFileNode</code>). A file's path is built from three pieces — tablespace,
+  database OID, relfilenode — plus a fork suffix and a segment number: <code>base/&lt;dbOid&gt;/&lt;relfilenode&gt;</code>
+  for the main fork's first segment, <code>..._fsm</code> for the FSM fork, <code>..._vm</code> for the
+  visibility map, <code>..._init</code> for the init fork (unlogged tables only), and <code>.1</code>,
+  <code>.2</code>, … appended once a fork exceeds <code>RELSEG_SIZE</code> blocks. Step through turning a
+  block number into a real path:</p>
+
+  <div class="widget deck" id="deckAddr">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">mdread(): block number → file + offset</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Drag the block number to see it live, for a relation whose main fork is already several segments long:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Segment addressing calculator</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>target block number</label><input type="range" id="blk-slider" min="0" max="450000" value="5000" step="1"><span class="val" id="blk-val">5000</span></div>
+      <div class="segfiles" id="segfiles"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="seg-note"></p>
+    </div>
+  </div>
+
+  <h3>(b) The Free Space Map: a binary tree of one-byte hints, stored in pages</h3>
+  <p>The FSM (<code>src/backend/storage/freespace/freespace.c</code>, <code>fsmpage.c</code>) does not store byte
+  counts — it stores one-byte <b>categories</b>, <code>FSM_CATEGORIES = 255</code> of them, mapped to
+  approximate free-byte ranges by <code>fsm_space_avail_to_cat()</code> and back by
+  <code>fsm_space_cat_to_avail()</code>. Coarsening the value to one byte is deliberate: a search only ever needs
+  "does this subtree contain a page with <i>roughly</i> enough room," never an exact count, and one byte per page
+  reference is what lets an entire FSM page (<code>FSMPageData</code>) hold a complete binary tree covering
+  thousands of heap pages. Each non-leaf node stores the maximum category of its two children, so a search never
+  has to look at more than one node per level: start at the root, and if a child's stored maximum is at least
+  the requested category, descend into it — otherwise there is provably no page with enough space in that whole
+  subtree, and the search backs out. Large relations get more than one FSM page, arranged in their own
+  <span class="term" data-def="The FSM fork itself is organized as a tree of pages: leaf-level FSM pages each summarize a range of heap blocks, and higher-level FSM pages summarize ranges of lower-level FSM pages, so the whole structure is a tree of trees, typically three levels deep even for very large tables.">tree of FSM pages</span> — leaf FSM pages summarizing ranges of heap blocks, and one or two levels above
+  summarizing ranges of FSM pages — so even a relation with millions of pages resolves a free-space search in a
+  handful of page reads.</p>
+
+  <p>Drag the requested space and watch the tree search descend (category values are simplified to a linear
+  scale for legibility — the real mapping coarsens further at the high end, where a difference of a few hundred
+  bytes matters less):</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">FSM binary-tree search</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>requested free space</label><input type="range" id="fsm-slider" min="0" max="8192" value="2400" step="32"><span class="val" id="fsm-val">2400 B</span></div>
+      <div class="toggle-row"><button class="btn" id="fsm-shuffle">⤾ reshuffle leaf pages</button></div>
+      <div class="fsmtree" id="fsmtree"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="fsm-note"></p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">DELIBERATELY NOT DURABLE</div>
+    <p>FSM pages are ordinary pages in an ordinary fork, but their <i>contents</i> are not WAL-logged the way
+    heap or index contents are — <code>RecordPageWithFreeSpace()</code> updates the in-memory buffer and marks it
+    dirty, full stop. A crash can lose recent FSM updates entirely; the map is rebuilt lazily as
+    <code>VACUUM</code> and ordinary inserts re-populate it, and <code>VACUUM</code>'s
+    <code>FreeSpaceMapVacuum()</code> pass exists specifically to reconcile it against reality. This is the
+    correct tradeoff only because being wrong here costs a wasted page probe, never a wrong answer — contrast
+    with (c).</p>
+  </div>
+
+  <h3>(c) The Visibility Map: two bits that must never lie</h3>
+  <p>The VM (<code>src/backend/access/heap/visibilitymap.c</code>) stores exactly two bits per heap page:
+  <code>VM_ALL_VISIBLE</code> and, since PostgreSQL 9.6, <code>VM_ALL_FROZEN</code>. <code>ALL_VISIBLE</code>
+  means every tuple on the page is visible to every possible snapshot — no concurrent transaction could still
+  need to see an older, now-invisible version — which is exactly the condition an
+  <span class="term" data-def="A plan node that answers a query directly from an index, without visiting the heap, provided the index is index-only-scan-capable and the referenced heap page is marked all-visible in the VM.">index-only scan</span>
+  needs before it can skip the heap fetch entirely and trust the index tuple alone. <code>ALL_FROZEN</code> means
+  every tuple's XID has additionally been frozen (chapter 6), letting <code>VACUUM</code> skip the page even
+  during an anti-wraparound sweep. Only <code>VACUUM</code> sets these bits, after confirming the condition holds
+  for every tuple on the page — and setting the bit is itself WAL-logged, because an incorrectly-set
+  <code>ALL_VISIBLE</code> bit is not a performance bug, it is a wrong query result.</p>
+  <p>The other half of the contract runs in the opposite direction: any <code>UPDATE</code> or <code>DELETE</code>
+  that dirties a page must clear both bits for that page <i>before</i> the change becomes visible — a fresh dead
+  tuple on the page immediately violates "every tuple is visible to every snapshot." <code>heap_update()</code> and
+  <code>heap_delete()</code> call <code>visibilitymap_clear()</code> as part of the same critical section that
+  modifies the page, so the two never drift apart even across a crash.</p>
+
+  <div class="widget deck" id="deckVm">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Index-only scan vs. a dirtied page</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(d) TOAST: varlena headers, storage classes, and the compress-then-externalize algorithm</h3>
+  <p>Every variable-length value in PostgreSQL is a <code>struct varlena</code>
+  (<code>src/include/postgres.h</code>): conceptually a length word followed by data, but with three physical
+  encodings layered on top so that short values never pay a 4-byte tax and large values never have to be inline
+  at all:</p>
+  <ul class="plain">
+    <li><b>1-byte header, inline, uncompressed</b> — the top bit of the first byte marks this "short" form; the
+      remaining seven bits give the total length (header included), so it covers values up to 126 payload bytes
+      with only one byte of overhead. Unaligned, because paying for alignment on a value this small isn't worth it.</li>
+    <li><b>4-byte header, inline</b> — a full 4-byte length word, with a flag bit distinguishing plain uncompressed
+      data from <i>compressed</i> data (in which case a second 4-byte field records the pre-compression size, so
+      decompression knows how large a buffer to allocate).</li>
+    <li><b>1-byte header, "external"</b> — a special marker (all-bits pattern reserved for this case) followed by
+      a one-byte tag identifying what kind of external datum this is — an on-disk TOAST pointer
+      (<code>VARTAG_ONDISK</code>) being the common case, with other tags used for in-memory "expanded" object
+      representations unrelated to disk storage.</li>
+  </ul>
+  <p>An on-disk TOAST pointer is a small fixed struct, <code>varatt_external</code>: <code>va_rawsize</code> (the
+  original, uncompressed length), <code>va_extinfo</code> (packing the stored size together with a compression
+  method identifier — <code>pglz</code> or, since PostgreSQL 14, <code>lz4</code> — so a value keeps working even
+  if the table's <code>default_toast_compression</code> changes later), <code>va_valueid</code> (the OID grouping
+  this value's chunks in the toast table) and <code>va_toastrelid</code> (which toast relation to look in). That
+  whole struct is on the order of 18 bytes — the entire "cost" of storing a value of <i>any</i> size, once it's
+  external, inside the main heap tuple.</p>
+  <p>Every attribute is declared with one of four storage classes (<code>pg_attribute.attstorage</code>), and the
+  class determines what the toast algorithm is allowed to do to it:</p>
+  <table class="cmp">
+    <tr><th>STORAGE CLASS</th><th>MAY COMPRESS?</th><th>MAY MOVE OUT-OF-LINE?</th><th>TYPICAL USE</th></tr>
+    <tr><td>PLAIN</td><td>no</td><td>no</td><td>fixed-length pass-by-value types (<code>int4</code>, …) and any varlena you've explicitly forced inline</td></tr>
+    <tr><td>EXTENDED</td><td>yes</td><td>yes (last resort after compression)</td><td>default for <code>text</code>, <code>jsonb</code>, most varlena types</td></tr>
+    <tr><td>EXTERNAL</td><td>no</td><td>yes</td><td>columns you plan to <code>substring()</code> a lot — no compression means chunk-range fetches stay possible</td></tr>
+    <tr><td>MAIN</td><td>yes</td><td>only if nothing else made the row fit</td><td>values you want compressed but strongly prefer to keep inline</td></tr>
+  </table>
+  <p>The insertion path — <code>heap_toast_insert_or_update()</code> in <code>src/backend/access/heap/heaptoast.c</code>,
+  driving generic helpers in <code>src/backend/access/common/toast_internals.c</code> — runs in ordered phases,
+  stopping the instant the tuple fits under the target size (about 2&nbsp;KB by default, derived from
+  <code>BLCKSZ / 4</code> and tunable per table via the <code>toast_tuple_target</code> storage parameter):</p>
+
+  <div class="widget deck" id="deckToastAlgo">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The compress-then-externalize algorithm</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY COMPRESS BEFORE EXTERNALIZING, NOT AFTER</div>
+    <p>It would be simpler to always externalize first (move the biggest attribute out, unconditionally) and
+    compress later if needed. The actual order is compress-first because compression is far cheaper than an
+    extra table's worth of I/O: if compressing the single biggest compressible attribute gets the tuple under
+    the threshold, the row never touches <code>pg_toast.pg_toast_&lt;oid&gt;</code> at all — no second relation,
+    no second index, no extra WAL for chunk rows. Only when compression alone can't close the gap does the
+    algorithm pay for external storage, and even then it compresses <i>before</i> moving out where the storage
+    class allows it, so the toast table holds compressed bytes, not raw ones, whenever possible.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Every large-value store solves this; almost none solve it the same way</h2>
+  <p>Segmentation is close to universal — the interesting divergence is in how each system handles free-space
+  tracking and oversized values:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>LARGE-VALUE STRATEGY</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>Per-attribute TOAST: compress inline, else relocate to a side table; FSM tree for free space</td>
+      <td><span class="pill g">page-size independence</span> <span class="pill g">narrow rows stay narrow</span></td>
+      <td><span class="pill b">detour + decompress on read</span> <span class="pill b">whole-value rewrite on any change</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td>Row formats (<code>DYNAMIC</code>/<code>COMPRESSED</code>) store a prefix
+      in-page and the remainder in off-page overflow pages; free space tracked via per-extent bitmaps</td>
+      <td><span class="pill g">clustered index keeps PK-adjacent data together</span></td>
+      <td><span class="pill y">overflow chain length affects read cost</span> <span class="pill b">page compression is a separate, extra-cost feature</span></td></tr>
+    <tr><td>Oracle</td><td>Row chaining/migration across blocks for wide rows; dedicated LOB segments with their
+      own chunked storage for CLOB/BLOB</td>
+      <td><span class="pill g">tunable chunk size per LOB</span></td>
+      <td><span class="pill b">row migration adds a hop to every access of a migrated row</span></td></tr>
+    <tr><td>SQLite</td><td>Overflow pages: a value too big for one page spills into a singly-linked chain of
+      overflow pages; no separate free-space map — just a page-level freelist</td>
+      <td><span class="pill g">extremely simple implementation</span></td>
+      <td><span class="pill b">chain traversal is <code>O(chunks)</code>, no random access into a large value</span></td></tr>
+    <tr><td>RocksDB / Cassandra (LSM)</td><td>Values stored inline in sorted string tables (SSTables); no in-place
+      free-space tracking at all — space is reclaimed by background compaction, not by tracking holes</td>
+      <td><span class="pill g">sequential writes, no in-place free-space bookkeeping</span></td>
+      <td><span class="pill b">large values bloat every level they pass through until compacted</span> <span class="pill y">read amplification across levels</span></td></tr>
+  </table>
+  <p>Read this as more proof-by-exhaustion: <b>a fixed page size and unbounded value sizes are fundamentally in
+  tension, and every serious storage engine pays for the mismatch somewhere</b> — in extra I/O per access
+  (Postgres, InnoDB), in a second storage form entirely (Oracle's LOB segments), in chain-traversal cost (SQLite),
+  or in deferred, batch-amortized reclamation instead of an index at all (LSM engines). PostgreSQL's specific bet —
+  attribute-level granularity plus a strict separation between the "must never lie" visibility map and the
+  "allowed to lie" free-space map — is unusually explicit about which invariants are load-bearing and which are
+  merely helpful hints, a distinction worth stealing regardless of which engine you build.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">The costs you can predict before you benchmark</h2>
+  <ul class="plain">
+    <li><b>Segment addressing:</b> <code>O(1)</code> — one integer division and one modulo per I/O
+      (<code>blocknum / RELSEG_SIZE</code>, <code>blocknum % RELSEG_SIZE</code>). The only variable cost is
+      whether the target segment's file descriptor is already open in the storage manager's cache; a cold
+      <code>open()</code> is the dominant term, not the arithmetic.</li>
+    <li><b>FSM search:</b> <code>O(log n)</code> in the number of heap pages, and in practice bounded by a small
+      constant — the tree is rarely more than three levels deep even for huge tables, and the upper levels are
+      tiny and stay resident in the buffer pool, so a search is typically one or two real page reads.</li>
+    <li><b>Visibility map check:</b> <code>O(1)</code> — a single bit test replaces an entire heap page fetch
+      (8&nbsp;KB) plus per-tuple visibility checks against the current snapshot. On a table where most pages are
+      all-visible, this is the difference between an index-only scan touching kilobytes of index data and
+      touching the full row width for every match.</li>
+    <li><b>TOAST read cost is bimodal, and the discontinuity is the point:</b> reading an inline value costs
+      nothing extra; reading an out-of-line, <i>uncompressed</i> value for a <code>substring()</code> can cost as
+      little as <code>O(range requested)</code> — <code>toast_fetch_datum_slice()</code> in
+      <code>src/backend/access/common/detoast.c</code> computes exactly which ~2000-byte chunks overlap the
+      requested byte range and fetches only those, via an index scan on <code>(chunk_id, chunk_seq)</code>.
+      Reading a <i>compressed</i> value — inline or external — is <code>O(size)</code> regardless of how much of
+      it you actually want, because pglz and LZ4 are both byte-stream compressors with no seek points: there is
+      no way to jump to "byte 50,000" of a compressed stream without decompressing everything before it.</li>
+  </ul>
+  <p>Drag the row width to see the write-path cost curve bend at the toast threshold, and compare compressible
+  vs. incompressible payloads:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Insert cost vs. attribute size</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>attribute size</label><input type="range" id="perf-size" min="10" max="20000" value="1500" step="10"><span class="val" id="perf-size-val">1500 B</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="perf-compressible">payload: TEXT-LIKE (compresses ~4×)</button>
+        <button class="chip" id="perf-storage-ext">storage class: EXTERNAL (no compression)</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> estimated write cost (relative)</span>
+        <span><span style="color:var(--bad)">━</span> full-value read cost (relative)</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">CACHE AND DISK ACCESS PATTERN</div>
+    <p>The main heap fork is accessed with the access pattern of your query — sequential for a seq scan, random
+    for index lookups. The FSM and VM forks, by contrast, are small relative to the heap (roughly one FSM byte
+    per heap page, two VM bits per heap page) and are read repeatedly by every inserting backend and every
+    <code>VACUUM</code>, which pushes them toward the hottest part of the buffer pool almost by accident — they
+    are exactly the kind of small, hot, frequently-reread structure that benefits disproportionately from a
+    healthy cache hit ratio, and their small size is precisely why they can afford to stay resident while the
+    heap itself is far larger than <code>shared_buffers</code>.</p>
+  </div>
+</section>
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents this chapter's mechanics explain completely</h2>
+
+  <h3>Incident 1: mass DELETE, then bloat that VACUUM alone doesn't fix fast enough</h3>
+  <p>A nightly job deletes 80% of a table's rows and reinserts fresh data in the same transaction window.
+  Disk usage does not shrink — and worse, new inserts keep extending the relation with brand-new pages instead of
+  reusing the space the delete just freed. The mechanism: a <code>DELETE</code> only marks tuples dead; it does
+  not update the FSM, and it does not shrink the file. Only <code>VACUUM</code> reclaims dead tuples into free
+  space <i>and</i> calls <code>FreeSpaceMapVacuum()</code> to make that space visible to future inserts. If
+  autovacuum hasn't caught up — cost-limited, or competing with the same I/O the reinsert job is generating —
+  every new tuple's <code>GetPageWithFreeSpace()</code> lookup finds a stale, still-full-looking FSM and the
+  relation grows instead of recycling. <b>Fix, in order of leverage:</b> run an explicit, cost-limit-free
+  <code>VACUUM</code> (not <code>FULL</code> — that rewrites the whole table and takes an exclusive lock; plain
+  <code>VACUUM</code> reclaims space and refreshes the FSM without blocking readers) between the delete and
+  reinsert phases; raise <code>autovacuum_vacuum_cost_limit</code> for this table; and, if the pattern is
+  routine, consider whether the delete-and-reinsert should be a <code>TRUNCATE</code> instead, which drops the
+  relfilenode entirely rather than fighting the FSM at all.</p>
+
+  <h3>Incident 2: a major-version upgrade and a visibility-map format change</h3>
+  <p>PostgreSQL 9.6 changed the on-disk visibility map format — from one bit per heap page to two (adding
+  <code>ALL_FROZEN</code>) — which is exactly the kind of change that turns "just copy the data files" into a
+  correctness incident. A raw file-level copy across that boundary (skipping <code>pg_upgrade</code> or a
+  logical dump/reload, which know about the format change and rebuild the map) would have every old single-bit
+  entry misread under the new two-bit layout, potentially reporting pages as all-visible or all-frozen when they
+  are neither. Symptom: an index-only scan silently skips heap fetches it should have made, and returns stale or
+  simply wrong rows — with no error, no log line, nothing to alert on. This is precisely why cross-major-version
+  upgrades in PostgreSQL are gated through <code>pg_upgrade</code> (which handles fork-format transitions
+  explicitly) or dump/reload (which never carries old fork files forward at all) rather than any filesystem-level
+  shortcut, and why the release notes for a version that changes an on-disk fork format call it out as
+  a hard compatibility break, not a footnote.</p>
+
+  <h3>Incident 3: one small update to a huge JSONB column, and the I/O bill that follows</h3>
+  <p>An application stores a 300&nbsp;KB <code>jsonb</code> "settings blob" per user and updates one nested key
+  on every request. Query plans look fine, indexes are used correctly, and yet write I/O and toast-table growth
+  are far higher than the logical size of the change suggests. The mechanism is structural, not a misconfiguration:
+  MVCC (chapter 5) never mutates a tuple in place, and TOAST has no concept of a partial update — changing one
+  byte inside a toasted value means the whole new value re-runs <code>heap_toast_insert_or_update()</code> from
+  scratch, is (re)compressed, and is (re)chunked into an entirely new set of rows in
+  <code>pg_toast.pg_toast_&lt;oid&gt;</code>, while the old chunk rows become dead tuples waiting on
+  <code>VACUUM</code>. A high-frequency small-field update against a large TOASTed blob is, from the storage
+  layer's point of view, indistinguishable from replacing the entire blob every time. <b>Fixes:</b> normalize the
+  frequently-updated fields out of the large JSON blob into narrow columns of their own (only they get rewritten
+  per update, and TOAST never gets involved); if that's impractical, tune the toast table's own autovacuum
+  settings (<code>ALTER TABLE ... SET (toast.autovacuum_vacuum_scale_factor = ...)</code>, since a toast table's
+  bloat characteristics can differ wildly from its parent's); and measure, rather than assume, whether the JSONB
+  column actually needs to cross the ~2&nbsp;KB toast threshold at all — a smaller, more normalized document
+  might stay inline and avoid the whole detour.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend these four mechanisms at a whiteboard?</h2>
+  <p>Think before you reveal — each answer targets the depth a Staff-level systems interview (or a pgsql-hackers
+  thread) actually expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: freespace.c, visibilitymap.c, toast_internals.c</h2>
+  <p>Where this chapter's mechanisms actually live. Files marked <span style="color:var(--warn)">●</span> are
+  this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/</span></div>
+<div>├── <span class="dir">storage/freespace/</span></div>
+<div>│   ├── <span class="fhl">● freespace.c</span> <span class="fnote">— public API: RecordPageWithFreeSpace(), GetPageWithFreeSpace(), FreeSpaceMapVacuum()</span></div>
+<div>│   └── <span class="fhl">● fsmpage.c</span> <span class="fnote">— the tree-in-a-page: fsm_search_avail(), fsm_set_avail(), fsm_get_avail()</span></div>
+<div>├── <span class="dir">access/heap/</span></div>
+<div>│   ├── <span class="fhl">● visibilitymap.c</span> <span class="fnote">— visibilitymap_set/clear/get_status(); the two-bit VM and its WAL logging</span></div>
+<div>│   └── <span class="fhl">● heaptoast.c</span> <span class="fnote">— heap_toast_insert_or_update(): the heap AM's entry point into TOAST</span></div>
+<div>├── <span class="dir">access/common/</span></div>
+<div>│   ├── <span class="fhl">● toast_internals.c</span> <span class="fnote">— toast_tuple_try_compression(), toast_save_datum(), toast_delete_datum()</span></div>
+<div>│   ├── <span class="fhl">● detoast.c</span> <span class="fnote">— detoast_attr(), toast_fetch_datum_slice(): the read path, including partial fetch</span></div>
+<div>│   └── toast_compression.c <span class="fnote">— pglz_compress_datum()/lz4_compress_datum() dispatch by stored method id</span></div>
+<div>├── <span class="dir">storage/smgr/</span></div>
+<div>│   ├── smgr.c <span class="fnote">— smgrread/smgrwrite/smgrextend: the fork-aware storage-manager switch</span></div>
+<div>│   └── <span class="fhl">● md.c</span> <span class="fnote">— mdopen/mdread/mdextend: segment file lookup and per-segment offset math</span></div>
+<div>└── <span class="dir">utils/adt/</span>pg_lzcompress.c <span class="fnote">— pglz_compress()/pglz_decompress(): the original, always-available codec</span></div>
+<div><span class="dir">src/include/</span></div>
+<div>├── <span class="fhl">● postgres.h</span> <span class="fnote">— struct varlena, varattrib_1b/4b/1b_e, VARSIZE/VARDATA macros</span></div>
+<div>└── <span class="dir">common/</span>relpath.h <span class="fnote">— ForkNumber enum, relpath()/GetRelationPath(): fork suffix + segment naming</span></div>
+  </div></div>
+
+  <p>The FSM's tree search, simplified from the real structure but faithful to the algorithm — descend while a
+  child's stored maximum category is large enough, back out the instant it isn't:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>fsmpage.c — fsm_search_avail(), simplified</span></div>
+    <pre><span class="k">int</span>
+<span class="f">fsm_search_avail</span>(<span class="t">Page</span> page, <span class="k">uint8</span> min_cat, <span class="k">bool</span> advancenext)
+{
+    <span class="k">int</span> nodeno = <span class="n">0</span>;                     <span class="c">/* start at the root of the tree-in-a-page */</span>
+    FSMPageData *fsmpage = (FSMPageData *) <span class="f">PageGetContents</span>(page);
+
+    <span class="k">if</span> (fsmpage-&gt;fp_nodes[<span class="n">0</span>] &lt; min_cat)
+        <span class="k">return</span> -<span class="n">1</span>;    <span class="c">/* root already tells us: nothing here is big enough */</span>
+
+    <span class="k">while</span> (!<span class="f">fsm_is_leaf</span>(nodeno))
+    {
+        <span class="k">int</span> left  = <span class="f">fsm_left_child</span>(nodeno);
+        <span class="k">int</span> right = <span class="f">fsm_right_child</span>(nodeno);
+
+        <span class="c">/* Each non-leaf slot caches max(left, right) — one comparison
+         * per level is enough to know which subtree can possibly help. */</span>
+        <span class="k">if</span> (fsmpage-&gt;fp_nodes[left] &gt;= min_cat)
+            nodeno = left;
+        <span class="k">else if</span> (fsmpage-&gt;fp_nodes[right] &gt;= min_cat)
+            nodeno = right;
+        <span class="k">else</span>
+            <span class="k">return</span> -<span class="n">1</span>;     <span class="c">/* both children too small — dead end, caller tries
+                                 * the next FSM page or extends the relation      */</span>
+    }
+    <span class="k">return</span> <span class="f">fsm_leaf_to_slot</span>(nodeno);   <span class="c">/* leaf index → a real heap BlockNumber */</span>
+}</pre>
+  </div>
+
+  <p>The visibility map's set path — note the WAL record, which the FSM's equivalent update never takes:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>visibilitymap.c — visibilitymap_set(), simplified</span></div>
+    <pre><span class="k">void</span>
+<span class="f">visibilitymap_set</span>(<span class="t">Relation</span> rel, <span class="k">BlockNumber</span> heapBlk, <span class="t">Buffer</span> heapBuf,
+                  XLogRecPtr recptr, <span class="t">Buffer</span> vmBuf, TransactionId cutoff_xid,
+                  <span class="k">uint8</span> flags)
+{
+    <span class="c">/* Unlike an FSM update, this runs inside a critical section and,
+     * outside of recovery, WRITES ITS OWN WAL RECORD before the bit
+     * is considered set — because a lost VM bit after crash is merely
+     * a missed optimization, but a bit that SURVIVES a crash while
+     * claiming ALL_VISIBLE for a page that recovery just changed
+     * would be a silently wrong answer to every index-only scan.     */</span>
+    <span class="k">if</span> (RelationNeedsWAL(rel) &amp;&amp; !InRecovery)
+        recptr = <span class="f">log_heap_visible</span>(rel, heapBuf, vmBuf, cutoff_xid, flags);
+
+    <span class="f">PageSetLSN</span>(<span class="f">BufferGetPage</span>(vmBuf), recptr);
+    <span class="f">vm_set_bits</span>(vmBuf, heapBlk, flags);   <span class="c">/* ALL_VISIBLE and/or ALL_FROZEN */</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — TWO CHOICES TO STEAL</div>
+    <p><b>1. Durability is a per-structure decision, not a blanket policy.</b> The FSM and the VM live in
+    structurally identical forks — same fork abstraction, same page format, same buffer pool — and yet one is
+    WAL-logged and one deliberately is not. The project didn't pick a durability policy for "auxiliary forks" as
+    a category; it asked, for each one, "what does it cost if this is wrong after a crash?" and let the answer
+    (a wasted probe vs. a wrong query result) decide. <b>2. Compress before you pay for a second relation.</b>
+    <code>toast_tuple_try_compression()</code> runs before <code>toast_save_datum()</code> ever gets a chance,
+    for exactly the reason §8's callout gives: a CPU-bound compression pass that avoids an entire extra table and
+    its index is close to free by comparison.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — inserting a row that doesn't fit</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order the TOAST algorithm actually
+      performs them for a row that starts out too big for the page. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The TOAST slicer — build a row, watch it get toasted</h2>
+  <p>Configure four columns' sizes and compressibility, pick a target inline size, and step through the exact
+  algorithm from §8(d) against the row you built. Watch the row shrink, the toast table fill up with chunk rows,
+  and each attribute's varlena representation change from <b>inline</b> to <b>inline-compressed</b> to an
+  <b>external pointer</b> — and try to make it fail.</p>
+
+  <div class="widget" id="toastsim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">heap_toast_insert_or_update() — live</span><span class="w-sub" id="toast-phase">CONFIGURE A ROW</span></div>
+    <div class="w-body">
+      <div id="toast-cols"></div>
+
+      <div class="slider-row"><label>target tuple size</label><input type="range" id="toast-target" min="500" max="4000" value="2000" step="50"><span class="val" id="toast-target-val">2000 B</span></div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+        <button class="btn primary" id="toast-step">▶ Step algorithm</button>
+        <button class="btn good" id="toast-run">⏩ Run to completion</button>
+        <button class="btn" id="toast-reset">↺ Reset row</button>
+      </div>
+
+      <div class="toastmeter"><span>tuple size (fixed overhead + attrs)</span><span><b id="toast-size">0</b> / <span id="toast-target-2">2000</span> B</span></div>
+      <div class="toastrow" id="toast-row"></div>
+
+      <div class="toast-table">
+        <div class="tt-title">PG_TOAST.PG_TOAST_&lt;OID&gt; — CHUNKS WRITTEN THIS INSERT</div>
+        <div class="chunklist" id="toast-chunks"></div>
+      </div>
+
+      <div class="toastlog" id="toast-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Make every column small — watch the algorithm finish at "phase 0," never touching the toast
+    table. <b>2.</b> Crank one EXTENDED, compressible column way up — watch compression alone save the row.
+    <b>3.</b> Set a column's compressibility to LOW (simulating already-compressed binary data) and watch pglz's
+    "not worth it" bail-out send it straight to external storage. <b>4.</b> Force a column to PLAIN and crank its
+    size past the target — watch the exact <code>ERROR: row is too big</code> failure mode, because a PLAIN
+    attribute may never compress or move out-of-line, no matter how the algorithm would like to help.
+    <b>5.</b> Set the EXTERNAL column's compressibility to HIGH anyway — notice compression never even gets
+    attempted, because the storage class forbids it outright.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 5: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head (or out loud — it's better), <i>then</i>
+  reveal. Chapter 5 is MVCC — and you've already met several of its dependencies in this chapter without being
+  told they were dependencies.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 04 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now compute which segment file and offset any block
+    lives at, explain why the FSM is allowed to be wrong and the VM is not, and predict exactly when a wide value
+    gets compressed versus pushed out of line. Chapter 5 builds directly on the tuple header this chapter defined:
+    MVCC, snapshots, and the <code>xmin</code>/<code>xmax</code> fields that decide what "visible" even means.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="pg-05.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-05: MVCC & Snapshots →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* reveal cards */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1986", l:"POSTGRES", d:"<b>No side structures at all.</b> The original POSTGRES design has a single heap file per relation and no notion of an oversized attribute — a value either fits in a page or it doesn't. Big binary data is out of scope for the relational storage layer entirely." },
+  { yr:"1989", l:"Large Objects", d:"<b>pg_largeobject arrives</b> as the first answer to 'what if a value is huge' — but it's an explicit, separate API (<code>lo_import</code>, <code>lo_read</code>, a special <code>oid</code>-typed column), chunked manually into ~2 KB pieces. Ordinary columns still can't be big; you have to know in advance and opt in." },
+  { yr:"2001", l:"TOAST (7.1)", d:"<b>Jan Wieck's TOAST lands.</b> For the first time, an ordinary <code>text</code> or <code>bytea</code> column can hold a value of any size, transparently — compressed and/or relocated to a per-table side relation, with no application changes. This is the single biggest usability change to storage in the project's history." },
+  { yr:"pre-8.4", l:"the old FSM", d:"<b>A global, in-memory, bounded free-space map.</b> Before 8.4, free space for every relation in the cluster lived in one shared-memory array, sized once at startup by <code>max_fsm_pages</code> and <code>max_fsm_relations</code> — GUCs an operator had to guess correctly. Guess too low and large or numerous tables silently lost free-space tracking; the log would warn 'free space map contains too many pages' and inserts fell back to blind relation-extension." },
+  { yr:"2009", l:"FSM & VM rework (8.4)", d:"<b>The free-space map moves into the relation itself</b> as a disk-based fork (<code>_fsm</code>), sized proportionally and per-relation instead of globally bounded — <code>max_fsm_pages</code>/<code>max_fsm_relations</code> are removed outright, because the structure that needed sizing no longer exists. The same release introduces the <b>visibility map</b> as a second new fork (<code>_vm</code>), initially just to let <code>VACUUM</code> skip pages it already knows are all-visible." },
+  { yr:"2012", l:"Index-only scans (9.2)", d:"<b>The visibility map gets a second job.</b> Index-only scans mean a query can, for the first time, be answered from an index alone — <i>if</i> the visibility map confirms the heap page is all-visible. Overnight, a structure that was purely a VACUUM optimization becomes load-bearing for query correctness and a headline performance feature." },
+  { yr:"2016", l:"ALL_FROZEN bit (9.6)", d:"<b>The visibility map grows a second bit per page.</b> <code>ALL_FROZEN</code> lets <code>VACUUM</code>'s anti-wraparound freeze pass skip pages that are already fully frozen, not just already all-visible — cutting the cost of routine freezing dramatically on big, mostly-static tables. The on-disk VM format change is exactly why cross-version upgrades must go through <code>pg_upgrade</code> or a reload, never a raw file copy (see §11)." },
+  { yr:"2021", l:"LZ4 TOAST (14)", d:"<b>A second compression codec.</b> pglz, the original hand-written compressor, gets a modern alternative: LZ4, selectable via the <code>default_toast_compression</code> GUC or per-column with <code>ALTER TABLE ... SET COMPRESSION</code>. The compression method travels with each value (packed into its <code>varatt_external</code> pointer), so changing the default never breaks values already compressed the old way." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+
+/* ============================================================
+   2. DECK: naive heap under growth (§3)
+   ============================================================ */
+(function(){
+  const box=(t,inner,style="")=>`<div style="border:1px solid var(--border-hi);border-radius:11px;padding:12px;${style}">
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  const bar=(label,pct,color)=>`<div style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:3px"><span>${label}</span></div>
+    <div style="height:14px;border-radius:6px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden">
+      <div style="height:100%;width:${pct}%;background:${color};transition:width .5s"></div></div></div>`;
+  stepper("deckNaive", [
+    { stage: box("SMALL TABLE, SMALL ROWS", bar("file size","8","#4ade80")+bar("insert scan cost","4","#4ade80")+bar("largest row seen","2","#4ade80")),
+      cap:`<b>Everything looks fine.</b> A few thousand rows, each a few hundred bytes, one file well under any filesystem's size ceiling. Free-space scans touch a handful of pages. This is the naive design's entire comfort zone.` },
+    { stage: box("TABLE GROWS TO 80 GB", bar("file size (approaching 2 GiB ceiling on legacy fs)","82","#ff9f43")+bar("insert scan cost (pages probed before finding room)","55","#ff9f43")+bar("largest row seen","2","#4ade80")),
+      cap:`<b>The file-size ceiling gets close.</b> On a filesystem or OS with a historical 2 GiB single-file limit, this table is now living dangerously — and even where the limit doesn't apply, backup tools, some replication utilities, and certain copy operations still choke on multi-gigabyte single files. Meanwhile every insert's free-space scan is getting slower because there is still no map, only a linear probe.` },
+    { stage: box("ONE APPLICATION CHANGE: STORE A LARGE JSON BLOB", bar("file size","82","#ff9f43")+bar("insert scan cost","55","#ff9f43")+bar("largest row seen — 50 KB value, no page holds it","100","#f25c54")),
+      cap:`<b>The hard wall.</b> A developer starts storing a 50 KB JSON export per row. There is no error message that fixes this — 8 KB pages cannot hold a 50 KB tuple, and the naive design has no mechanism to compress it or split it out. The insert simply cannot succeed; this is not a tuning problem, it's arithmetic.` },
+    { stage: box("VERDICT", bar("file-size ceiling","100","#f25c54")+bar("O(n) free-space scan","100","#f25c54")+bar("oversized-row impossibility","100","#f25c54")),
+      cap:`<b>Three independent failures, hit in this order as the table matures:</b> the file grows toward a historical OS/filesystem ceiling, free-space search degrades toward O(n²) in aggregate, and eventually a single value simply cannot exist inline. §5 tackles each with a purpose-built mechanism — no single fix addresses all three.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: free-space tracking candidates (§5)
+   ============================================================ */
+(function(){
+  const box=(t,inner,tone="")=>`<div style="border:1px solid ${tone==='bad'?'var(--bad)':tone==='ok'?'var(--ok)':'var(--border-hi)'};border-radius:11px;padding:12px;background:${tone==='bad'?'rgba(242,92,84,.06)':tone==='ok'?'rgba(74,222,128,.05)':'transparent'}">
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  const row=(t,c="#8b94a7")=>`<div style="font-family:var(--mono);font-size:11px;color:${c};margin:4px 0">${t}</div>`;
+  stepper("deckFsmCandidates", [
+    { stage: box("CANDIDATE A: LINEAR SCAN, NO MAP AT ALL", row("for each candidate page: read it, check free space")+row("cost: O(n) per insert, worse as the table fills",'#f25c54')),
+      cap:`<b>What §3–4 already showed.</b> Zero bookkeeping to keep consistent, but the scan cost scales with table size, and gets worse exactly as a table fills up — the case you care about most.` },
+    { stage: box("CANDIDATE B: A GLOBAL, FIXED-SIZE HINT ARRAY (pre-8.4)", row("one shared-memory array, sized once at postmaster start")+row("max_fsm_pages / max_fsm_relations — guessed by the operator",'#ff9f43')+row("undersized → falls back to blind relation-extension",'#f25c54'), ""),
+      cap:`<b>What PostgreSQL actually shipped first.</b> Fast when it fit, but it was a fixed-size cache with no ability to grow, sized by GUCs the operator had to predict correctly for every relation in the cluster combined. Get it wrong and tracking silently degrades back to candidate A for the relations that didn't fit — with no local signal at the table you're inserting into.` },
+    { stage: box("CANDIDATE C: PER-RELATION, DISK-BACKED TREE (8.4→today)", row("one _fsm fork per relation, grows with the relation")+row("O(log n) tree search, no global size to guess",'#4ade80')+row("intentionally NOT durable — approximate by design",'#60a5fa'), "ok"),
+      cap:`<b>The winner.</b> Because the map lives in the relation's own fork, it scales automatically with the relation — no cluster-wide GUC to size in advance, and no cliff when one table gets unexpectedly large. The price of removing the sizing problem is accepting that the map, like any cache, can be stale — which is fine, because a wrong FSM answer costs one wasted probe, never a wrong result.` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  smgr:{ n:"smgr / md.c", f:"src/backend/storage/smgr/smgr.c · storage/smgr/md.c", r:"The storage-manager abstraction: every read/write/extend call names a relation, a ForkNumber, and a BlockNumber. smgr.c dispatches to md.c, the (only in-tree) implementation that maps that triple onto real files on a POSIX filesystem.", l:"Called on essentially every heap or index access; stateless between calls beyond a small open-file-descriptor cache per backend.", d:"Not a process — nothing to crash independently. A failed I/O here surfaces as a backend-level error (or, for critical writes, a PANIC) rather than a separate failure mode." },
+  main:{ n:"main fork", f:"relfilenode with no suffix, e.g. base/16401/16414", r:"Holds actual tuple data — the heap pages themselves, with line pointers, tuple headers, and the bytes chapters 5 onward pick apart in detail.", l:"Created when the relation is created; grows one segment at a time as inserts need room.", d:"Corruption here is the worst case in the whole storage stack — it's why VM correctness (never let the main fork's true state diverge from what the VM claims) is a hard requirement, not a nice-to-have." },
+  fsm:{ n:"fsm fork", f:"relfilenode + \"_fsm\" suffix", r:"A tree of FSM pages, each holding a binary tree of one-byte free-space category values, letting GetPageWithFreeSpace() find a page with enough room in O(log n) instead of scanning the main fork.", l:"Created lazily on first need; extended alongside the main fork; never shrinks except via VACUUM FULL / CLUSTER rewriting the relation.", d:"Its contents are not WAL-logged — a crash can leave it stale. Worst case: a wasted probe or an unnecessary relation extension, not a wrong answer." },
+  vm:{ n:"vm fork", f:"relfilenode + \"_vm\" suffix", r:"Two bits per heap page — ALL_VISIBLE and ALL_FROZEN — read by index-only scans (to skip a heap fetch) and by VACUUM (to skip pages that need no work).", l:"Created lazily; bits set only by VACUUM after it confirms the condition holds; cleared synchronously by any UPDATE/DELETE that dirties the page.", d:"Unlike the FSM, changes here ARE WAL-logged. A lost or incorrectly-surviving bit after a crash is a correctness bug, not a performance one — see §11's upgrade incident." },
+  init:{ n:"init fork", f:"relfilenode + \"_init\" suffix — unlogged tables only", r:"Holds the empty, freshly-initialized state of an unlogged table. Because unlogged tables skip WAL entirely for speed, they cannot be crash-recovered normally — instead, at the start of recovery, the init fork is copied back over the main (and fsm/vm) forks, resetting the table to empty.", l:"Written once, at table creation; read once per crash recovery, if the table is unlogged.", d:"This fork's entire existence is a workaround: it turns 'we can't recover this data' into 'we reset it to a known-empty state', which is the contract UNLOGGED tables advertise." },
+  segment:{ n:"segmentation", f:"src/include/pg_config_manual.h — RELSEG_SIZE", r:"Every fork, independently, is split into files of at most RELSEG_SIZE blocks (131072 blocks = 1 GiB at the default 8 KiB BLCKSZ). Segment 0 has no suffix; segment N appends \".N\" to the fork's filename.", l:"A new segment file is created transparently the moment the previous one hits RELSEG_SIZE blocks — no operator action, no visible event beyond a new file appearing in the data directory.", d:"Segmentation itself can't 'fail' — but choosing to change RELSEG_SIZE requires a source rebuild (configure --with-segsize), not a runtime GUC, which is why essentially nobody changes it from the 1 GiB default." },
+  toasttable:{ n:"pg_toast.pg_toast_<oid>", f:"a genuine heap relation, own main/fsm/vm forks, own relfilenode", r:"Stores oversized attribute values as rows of (chunk_id oid, chunk_seq int4, chunk_data bytea), each chunk roughly 2000 bytes, reassembled in chunk_seq order to reconstruct one logical value.", l:"Created automatically the first time a table has a toastable column; grows and shrinks exactly like any other heap table, including needing its own VACUUM attention.", d:"Because it's an ordinary table, everything else in this chapter applies to IT too, recursively — it has its own FSM and VM forks, and its own bloat characteristics, which is why §11's incident 3 tunes it separately from its parent." },
+  toastindex:{ n:"toast index on (chunk_id, chunk_seq)", f:"a standard B-tree index over the toast table", r:"Makes toast_fetch_datum() and toast_fetch_datum_slice() efficient: given a value's OID (chunk_id), the index finds exactly the chunk rows needed — all of them for a full detoast, or only the overlapping range for a substring() on an uncompressed external value.", l:"Maintained like any B-tree index — grows with the toast table, vacuumed alongside it.", d:"Without this index, reconstructing even one toasted value would require a sequential scan of the entire toast table — the index is what makes TOAST's read path sub-linear rather than a full-table scan per detoast." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">FAILURE MODE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("main");
+
+/* ============================================================
+   5. DECK: segment addressing (§8a)
+   ============================================================ */
+(function(){
+  const RELSEG = 131072;
+  const line=(t,c="#8b94a7")=>`<div style="font-family:var(--mono);font-size:11.5px;color:${c};margin:5px 0">${t}</div>`;
+  const box=(t,inner)=>`<div style="border:1px solid var(--border-hi);border-radius:11px;padding:14px">
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  stepper("deckAddr", [
+    { stage: box("THE CALL", line("smgrread(reln, MAIN_FORKNUM, blkno = 260000)")+line("→ dispatches to md.c, the only in-tree smgr implementation","#82aaff")),
+      cap:`<b>Every heap or index page access</b> starts as a (relation, fork, block number) triple — never a raw byte offset. The storage manager layer's whole job is turning that triple into an actual file and an offset within it.` },
+    { stage: box("THE DIVISION", line("segno   = blkno / RELSEG_SIZE   =  260000 / 131072  =  1", "#4ade80")+line("segoff  = blkno % RELSEG_SIZE   =  260000 % 131072  =  128928", "#4ade80")+line("byte offset in that file = segoff × BLCKSZ = 128928 × 8192","#4ade80")),
+      cap:`<b>Two integer operations, RELSEG_SIZE = 131072 blocks (1 GiB at 8 KiB pages).</b> Block 260000 lands in segment 1 (the second segment file), at block 128928 within it. This is _mdfd_getseg()'s entire job — cheap, but it's real work the single-file naive design never had to do.` },
+    { stage: box("THE FILENAME", line("segment 0:  base/16401/16414", "#8b94a7")+line("segment 1:  base/16401/16414.1  ← our target", "#60a5fa")+line("segment 2:  base/16401/16414.2", "#8b94a7")),
+      cap:`<b>relpath()/GetRelationPath() (src/include/common/relpath.h)</b> builds the filename: the relfilenode alone for segment 0, with \".N\" appended for every later segment. Notice there's no gap in the naming scheme for the fsm/vm/init forks — they get the same treatment, just with a suffix inserted before the segment number: \"16414_fsm.1\", if the FSM fork itself ever grew that large (it essentially never does).` },
+    { stage: box("THE READ", line("open (or reuse cached fd for) base/16401/16414.1","#82aaff")+line("pread(fd, buf, BLCKSZ, 128928 × 8192)","#82aaff")+line("→ 8192 bytes handed back to the buffer manager (ch. 9)","#4ade80")),
+      cap:`<b>One syscall, once the fd is resolved.</b> The storage manager keeps a small per-backend cache of open segment file descriptors so this path doesn't reopen a file on every single block read — the segmentation math is cheap, but paying an open() every time would not be.` }
+  ]);
+})();
+
+/* segment addressing slider (§8a) */
+(function(){
+  const RELSEG = 131072;
+  function render(){
+    const blk = +el("blk-slider").value;
+    el("blk-val").textContent = blk.toLocaleString();
+    const segno = Math.floor(blk / RELSEG);
+    const segoff = blk % RELSEG;
+    const byteOff = segoff * 8192;
+    const segs = [];
+    for (let s = Math.max(0, segno-2); s <= segno+2; s++) segs.push(s);
+    el("segfiles").innerHTML = segs.map(s=>{
+      const name = s===0 ? "16414" : `16414.${s}`;
+      const hit = s===segno;
+      return `<div class="segfile ${hit?'hit':''}">${name}<span class="sf-t">${hit? segoff.toLocaleString()+" / "+RELSEG.toLocaleString()+" blk" : "≤"+RELSEG.toLocaleString()+" blk"}</span></div>`;
+    }).join("");
+    el("seg-note").innerHTML = `Block <b style="color:var(--pg)">${blk.toLocaleString()}</b> → segment <b style="color:var(--pg)">${segno}</b> (file <code>16414${segno? "."+segno : ""}</code>), offset <b style="color:var(--pg)">${segoff.toLocaleString()}</b> blocks in (byte ${byteOff.toLocaleString()}). At ${RELSEG.toLocaleString()} blocks/segment × 8 KiB, each segment holds exactly 1 GiB — a relation this large (block ${blk.toLocaleString()}) is about ${(blk*8192/1073741824).toFixed(2)} GiB of main-fork data before considering its fsm/vm forks.`;
+  }
+  el("blk-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   6. FSM TREE SLIDER (§8b)
+   ============================================================ */
+(function(){
+  const FSM_CATEGORIES = 255;
+  const catToBytes = cat => Math.round(cat * (8192/FSM_CATEGORIES));
+  const bytesToCat = b => Math.min(FSM_CATEGORIES, Math.round(b / (8192/FSM_CATEGORIES)));
+  let leaves = [];
+  function reshuffle(){ leaves = Array.from({length:8}, ()=> Math.floor(Math.random()*(FSM_CATEGORIES+1))); }
+  reshuffle();
+  function buildTree(){
+    // level2 = leaves (8), level1 = 4 internal nodes = max of pairs, level0 = root = max of level1
+    const level1 = [0,1,2,3].map(i=>Math.max(leaves[i*2], leaves[i*2+1]));
+    const root = Math.max(...level1);
+    return { root, level1, leaves: leaves.slice() };
+  }
+  function render(){
+    const reqB = +el("fsm-slider").value;
+    el("fsm-val").textContent = reqB + " B";
+    const reqCat = bytesToCat(reqB);
+    const t = buildTree();
+    // descent simulation
+    const path = { root:true, level1:-1, leaf:-1, found:false };
+    if (t.root >= reqCat){
+      // pick first level1 child >= reqCat (simulating left-then-right probe)
+      let chosen = -1;
+      for (let i=0;i<4;i++){ if (t.level1[i] >= reqCat){ chosen = i; break; } }
+      if (chosen >= 0){
+        path.level1 = chosen;
+        const c0 = leaves[chosen*2], c1 = leaves[chosen*2+1];
+        if (c0 >= reqCat){ path.leaf = chosen*2; path.found = true; }
+        else if (c1 >= reqCat){ path.leaf = chosen*2+1; path.found = true; }
+      }
+    }
+    let html = `<div class="fsmlevel">
+      <div class="fsmnode ${path.root?'path':''} ${t.root<reqCat?'dead':''}"><span class="fv">${t.root}</span><span class="fb">root · ${catToBytes(t.root)}B</span></div>
+    </div>`;
+    html += `<div class="fsmlevel">` + t.level1.map((v,i)=>{
+      const onpath = path.level1===i;
+      const dead = v < reqCat;
+      return `<div class="fsmnode ${onpath?'path':''} ${dead?'dead':''}"><span class="fv">${v}</span><span class="fb">node${i} · ${catToBytes(v)}B</span></div>`;
+    }).join("") + `</div>`;
+    html += `<div class="fsmlevel">` + leaves.map((v,i)=>{
+      const onpath = path.leaf===i;
+      const dead = v < reqCat && !onpath;
+      return `<div class="fsmnode leaf ${onpath?(path.found?'hit':'path'):''} ${dead?'dead':''}"><span class="fv">${v}</span><span class="fb">page ${i} · ${catToBytes(v)}B</span></div>`;
+    }).join("") + `</div>`;
+    el("fsmtree").innerHTML = html;
+    el("fsm-note").innerHTML = path.found
+      ? `Requested <b style="color:var(--pg)">${reqB} B</b> ≈ category <b style="color:var(--pg)">${reqCat}</b>. Search descended root → node${path.level1} → <b style="color:var(--ok)">page ${path.leaf}</b>, which advertises ≥ that much free space. Two comparisons, three page reads at most — never a scan of all eight candidate pages.`
+      : `Requested <b style="color:var(--pg)">${reqB} B</b> ≈ category <b style="color:var(--pg)">${reqCat}</b>. The root's cached maximum (${t.root}) is already below that — <b style="color:var(--bad)">no page in this FSM page can satisfy it</b>. The search returns immediately; the caller tries the next FSM page or extends the relation. No page in this subtree was even read.`;
+  }
+  el("fsm-slider").oninput = render;
+  el("fsm-shuffle").onclick = ()=>{ reshuffle(); render(); };
+  render();
+})();
+
+/* ============================================================
+   7. DECK: visibility map vs dirtied page (§8c)
+   ============================================================ */
+(function(){
+  const page=(vis,froz,dirty)=>`<div style="border:1px solid ${dirty?'var(--bad)':'var(--border-hi)'};background:${dirty?'rgba(242,92,84,.08)':'var(--panel-2)'};border-radius:10px;padding:12px;text-align:center;font-family:var(--mono);font-size:11px">
+    <div style="font-size:10px;color:var(--dim);margin-bottom:6px">HEAP PAGE 42</div>
+    <div style="color:${dirty?'var(--bad)':'#c6cddb'}">${dirty? "3 live tuples + 1 fresh dead tuple" : "3 live tuples, all committed"}</div>
+    <div style="margin-top:10px;display:flex;gap:8px;justify-content:center">
+      <span style="border:1px solid ${vis?'var(--ok)':'var(--border-hi)'};color:${vis?'var(--ok)':'var(--dim)'};border-radius:6px;padding:3px 8px">ALL_VISIBLE=${vis?1:0}</span>
+      <span style="border:1px solid ${froz?'var(--purple)':'var(--border-hi)'};color:${froz?'var(--purple)':'var(--dim)'};border-radius:6px;padding:3px 8px">ALL_FROZEN=${froz?1:0}</span>
+    </div></div>`;
+  const scan=(ok)=>`<div style="border:1px dashed ${ok?'var(--ok)':'var(--bad)'};border-radius:10px;padding:10px;text-align:center;font-family:var(--mono);font-size:10.5px;color:${ok?'var(--ok)':'var(--bad)'};margin-top:10px">
+    ${ok ? "index-only scan: bit set → trust the index, SKIP heap fetch" : "index-only scan: bit clear → MUST fetch heap page 42 and check visibility per-tuple"}</div>`;
+  stepper("deckVm", [
+    { stage: page(false,false,false) + scan(false),
+      cap:`<b>A brand-new page.</b> VACUUM hasn't looked at it yet. Both bits are 0. Any index-only scan touching a tuple on this page must fall back to fetching the full heap page and checking each tuple's xmin/xmax against the current snapshot — correct, but exactly the cost VM exists to avoid.` },
+    { stage: page(true,false,false) + scan(true),
+      cap:`<b>VACUUM runs.</b> It confirms every tuple on the page is visible to every possible snapshot — no in-progress transaction could still need an older version — and calls visibilitymap_set(), which WAL-logs the change before the bit is considered durable. From now on, an index-only scan can trust the index tuple alone for this page.` },
+    { stage: page(true,false,true) + scan(false),
+      cap:`<b>An UPDATE touches this page.</b> heap_update() creates a new tuple version and marks the old one dead-but-not-yet-vacuumed — the page no longer satisfies "every tuple visible to every snapshot." Critically, heap_update() calls visibilitymap_clear() in the SAME critical section that dirties the page, so the bit and the data can never be observed out of sync, even by a concurrent reader or across a crash.` },
+    { stage: page(false,false,false) + scan(false),
+      cap:`<b>Back to square one for this page.</b> The next VACUUM will re-examine it and re-set ALL_VISIBLE once it's safe again. Compare this whole cycle to the FSM: a stale FSM entry costs a wasted probe; a stale-but-still-set VM bit would cost a wrong query result — which is exactly why only one of the two is WAL-logged.` }
+  ]);
+})();
+
+/* ============================================================
+   8. DECK: TOAST compress-then-externalize algorithm (§8d)
+   ============================================================ */
+(function(){
+  const bar=(label,val,max,color,note="")=>`<div style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:3px"><span>${label}</span><span>${note}</span></div>
+    <div style="height:16px;border-radius:6px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden">
+      <div style="height:100%;width:${Math.min(100,val/max*100)}%;background:${color};transition:width .5s"></div></div></div>`;
+  const box=(t,inner)=>`<div style="border:1px solid var(--border-hi);border-radius:11px;padding:14px">
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  stepper("deckToastAlgo", [
+    { stage: box("PHASE 0 — CHEAP CHECK FIRST", bar("tuple size, everything inline","9400","9400","#f25c54","9.4 KB, threshold ~2 KB")),
+      cap:`<b>Before doing anything expensive,</b> heap_toast_insert_or_update() checks whether the tuple already fits under the target size with every attribute inline. If it does, TOAST never runs at all — this is the common case for the overwhelming majority of rows in most schemas.` },
+    { stage: box("PHASE 1 — COMPRESS EXTENDED/EXTERNAL ATTRS, LARGEST FIRST", bar("after compressing the biggest EXTENDED attribute","3800","9400","#a78bfa","pglz/LZ4, in place, still inline")),
+      cap:`<b>toast_tuple_try_compression()</b> targets the largest remaining attribute whose storage class allows compression (EXTENDED or MAIN — EXTERNAL is skipped, it forbids compression by definition), largest first. If pglz/LZ4 can't hit roughly a 20–25% reduction, the attempt is abandoned for that attribute rather than wasting the CPU cycles — and the algorithm falls through to moving it out-of-line instead.` },
+    { stage: box("PHASE 1b — MOVE EXTENDED/EXTERNAL ATTRS OUT-OF-LINE", bar("after externalizing the next-largest attribute","2100","9400","#60a5fa","now an 18-byte toast pointer inline")),
+      cap:`<b>toast_save_datum()</b> writes the value's bytes (compressed, if phase 1 succeeded on it) as ~2000-byte chunk rows into pg_toast.pg_toast_&lt;oid&gt;, and replaces the in-tuple bytes with an 18-byte varatt_external pointer. The loop repeats — largest remaining EXTENDED/EXTERNAL attribute, compress-or-externalize — until the tuple fits or none are left.` },
+    { stage: box("PHASE 2 — ONLY IF STILL TOO BIG: COMPRESS MAIN ATTRS", bar("after compressing a MAIN attribute too","1850","9400","#a78bfa","below target — algorithm stops here")),
+      cap:`<b>MAIN-storage attributes are the last thing touched</b>, and only if EXTENDED/EXTERNAL attributes alone couldn't close the gap. Compression is tried first for them too, respecting the "MAIN avoids external storage" preference as long as possible.` },
+    { stage: box("PHASE 3 — LAST RESORT: MOVE MAIN ATTRS OUT TOO", bar("forced to externalize a MAIN attribute","1900","9400","#ff9f43","only when nothing else was enough")),
+      cap:`<b>Only if compressing every compressible attribute still isn't enough</b> does the algorithm break its own preference and move a MAIN-storage attribute out-of-line. If, after this, the tuple still can't fit — usually because one or more attributes are PLAIN and therefore untouchable — the insert fails outright with <code>ERROR: row is too big</code>. §15 lets you force exactly this failure.` }
+  ]);
+})();
+
+/* ============================================================
+   9. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let compressible = true, external = false;
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  const THRESH = 2000, CHUNK = 2000, PTR = 18, OVERHEAD = 27;
+  function writeCost(size, compressible, external){
+    // relative cost model: base linear cost + a step for crossing threshold (extra relation + index write)
+    let inlineSize = size;
+    let cost = size * 0.02; // baseline per-byte write cost
+    if (OVERHEAD + inlineSize <= THRESH) return cost + 1;
+    // needs toasting
+    let effective = size;
+    if (!external && compressible) effective = size * 0.25;
+    else if (!external && !compressible) effective = size * 0.9;
+    cost += 8; // fixed toast-path overhead (second relation + index insert setup)
+    cost += (effective / CHUNK) * 3; // per-chunk write cost
+    if (!external && compressible) cost += size * 0.01; // compression CPU cost
+    return cost;
+  }
+  function readCost(size, compressible, external){
+    let inlineSize = size;
+    if (OVERHEAD + inlineSize <= THRESH) return size * 0.01 + 1;
+    let effective = size;
+    let compressed = !external && compressible;
+    if (compressed) effective = size * 0.25;
+    let cost = 6 + (effective / CHUNK) * 2.5;
+    if (compressed) cost += size * 0.012; // full decompress, always, even for a slice
+    return cost;
+  }
+  function render(){
+    const size = +el("perf-size").value;
+    el("perf-size-val").textContent = size + " B";
+    el("perf-compressible").textContent = "payload: " + (compressible?"TEXT-LIKE (compresses ~4×)":"BINARY-LIKE (incompressible)");
+    el("perf-compressible").classList.toggle("on", compressible);
+    el("perf-storage-ext").textContent = "storage class: " + (external?"EXTERNAL (no compression)":"EXTENDED (default)");
+    el("perf-storage-ext").classList.toggle("on", external);
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=10; x<=20000; x+=100) xs.push(x);
+    const effCompressible = external ? false : compressible;
+    let maxW=0, maxR=0;
+    const wpts = xs.map(x=>{ const v=writeCost(x, effCompressible, external); maxW=Math.max(maxW,v); return v; });
+    const rpts = xs.map(x=>{ const v=readCost(x, effCompressible, external); maxR=Math.max(maxR,v); return v; });
+    const X = x => PAD + (x/20000)*(W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [0,5000,10000,15000,20000].forEach(x=>{ ctx.beginPath(); ctx.moveTo(X(x),10); ctx.lineTo(X(x),H-20); ctx.stroke(); ctx.fillText(x, X(x)-10, H-6); });
+    // threshold marker
+    ctx.strokeStyle = "#5b6475"; ctx.setLineDash([2,3]); ctx.beginPath(); ctx.moveTo(X(THRESH),10); ctx.lineTo(X(THRESH),H-20); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#8b94a7"; ctx.fillText("~2KB threshold", X(THRESH)+4, 22);
+    function curve(pts, max, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const y = H-24 - (pts[i]/max)*(H-44); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+      ctx.stroke();
+    }
+    const gmax = Math.max(maxW,maxR);
+    curve(wpts, gmax, "#60a5fa");
+    curve(rpts, gmax, "#f25c54");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(size),10); ctx.lineTo(X(size),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const w = writeCost(size, effCompressible, external), r = readCost(size, effCompressible, external);
+    const toasted = OVERHEAD + size > THRESH;
+    el("perf-note").innerHTML = `At <b>${size} B</b>${external?" (EXTERNAL, uncompressed)":compressible?" (compressible)":" (incompressible)"}: ${toasted? "this attribute IS toasted" : "this attribute stays INLINE, no toast table involved"}. Relative write cost ≈ <b style="color:var(--pg)">${w.toFixed(1)}</b>, full-value read cost ≈ <b style="color:var(--bad)">${r.toFixed(1)}</b>. ${toasted && !external && compressible ? "A substring() here still requires full decompression — there is no seek point inside a compressed byte stream." : toasted && external ? "A substring() here can fetch only the overlapping ~2000-byte chunks — no need to touch the rest." : "No detour through pg_toast at all for this value."}`;
+  }
+  el("perf-size").oninput = render;
+  el("perf-compressible").onclick = ()=>{ compressible=!compressible; render(); };
+  el("perf-storage-ext").onclick = ()=>{ external=!external; render(); };
+  render();
+})();
+
+/* ============================================================
+   10. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A table's FSM says a page has 4KB free, but the insert fails to fit there and has to try again. Is this a bug?", hint:"what durability guarantee does the FSM actually make?",
+    a:"No — it's the FSM working as designed. FSM categories are coarse, approximate buckets (FSM_CATEGORIES=255 values mapped nonlinearly to byte ranges), not exact byte counts, and the map is not WAL-logged, so it can also simply be stale relative to concurrent activity on that page. RecordPageWithFreeSpace() updates it as a best-effort hint; GetPageWithFreeSpace() consumers are required to re-verify the page has enough room after locking it, and to fall back to another page or extend the relation if it doesn't. The FSM's entire value proposition is turning an O(n) search into an O(log n) search for the COMMON case — it was never a promise, and treating it as one anywhere in the codebase would be the actual bug." },
+  { lvl:"SENIOR", q:"Why is the visibility map's ALL_VISIBLE bit WAL-logged when the FSM's free-space data is not — aren't they structurally the same kind of auxiliary fork?", hint:"what happens to a READER if each one is wrong after a crash?",
+    a:"They're the same kind of fork mechanically — same page format, same buffer pool, same fork abstraction — but a wrong FSM entry costs a wasted page probe (a performance hit, silently corrected on the next look), while a wrongly-surviving ALL_VISIBLE bit tells an index-only scan it may skip fetching the heap page and trust the index alone — for a page that, after crash recovery, might no longer actually satisfy that condition. That's a wrong query result with no error raised. The project's rule isn't 'auxiliary forks skip WAL' — it's 'WAL-log whatever a wrong answer would corrupt', evaluated independently per structure." },
+  { lvl:"STAFF", q:"You have a text column storing customer bios, average 300 bytes, storage class EXTENDED, default_toast_compression=pglz. Would switching to LZ4 clearly help?", hint:"where does the toast algorithm even get invoked?",
+    a:"Almost certainly not, and possibly not at all: a 300-byte value plus tuple overhead is nowhere near the ~2KB TOAST_TUPLE_THRESHOLD, so heap_toast_insert_or_update() likely never even attempts compression — the value stays inline as an ordinary 1-byte or 4-byte-header varlena. Compression method choice (pglz vs LZ4) only matters once a value is actually large enough to trigger the toast path; for a column whose values rarely cross a couple hundred bytes, changing default_toast_compression is a no-op in practice. The lever that would matter here, if any, is elsewhere — e.g. whether some outlier bios are much longer than the average." },
+  { lvl:"STAFF", q:"A column is storage class EXTERNAL specifically so substring() stays fast. A teammate proposes switching it to EXTENDED to 'save disk space via compression.' What do you tell them?", hint:"can a compressed byte stream be partially read?",
+    a:"That EXTENDED will very likely save space (compression), but it will break exactly the property EXTERNAL was chosen for: pglz and LZ4 are byte-stream compressors with no seek points, so reading any substring of a compressed value requires decompressing from the beginning — O(full size) every time, regardless of how small the requested slice is. EXTERNAL forbids compression specifically so toast_fetch_datum_slice() can compute which ~2000-byte chunks overlap the requested byte range and fetch only those. If the workload genuinely does substring()-heavy access on large values, the disk savings from compression are very likely not worth trading away O(range) reads for O(full size) reads." },
+  { lvl:"STAFF", q:"max_connections aside — why does RELSEG_SIZE default to 1 GiB rather than, say, 100 MiB or 100 GiB?", hint:"think about both directions of the tradeoff, and what's a compile-time vs runtime cost",
+    a:"Smaller segments (say 100 MiB) would multiply the number of open file descriptors and directory entries per large relation for no benefit once you're comfortably under any real filesystem ceiling — pure overhead. Much larger segments (100 GiB) would defeat the entire point: modern filesystem limits are mostly non-issues at that scale, but historical ones (2 GiB on some legacy/32-bit systems) very much were, and some backup/copy/replication tooling still has an easier time with files in the low single-digit gigabytes than files that are enormous. 1 GiB is comfortably under every ceiling anyone still operates against, while keeping segment counts for even multi-terabyte tables in a manageable low-thousands range. It's a compile-time constant (RELSEG_SIZE, via --with-segsize) rather than a GUC precisely because changing it retroactively would require rewriting every existing relation's files." },
+  { lvl:"PRINCIPAL", q:"Design exercise: you're adding a new pluggable table access method that wants columnar, not row-oriented, storage. Which of this chapter's four mechanisms (segments, FSM, VM, TOAST) do you get 'for free', and which do you have to reinvent?", hint:"which of the four are heap-AM-specific vs smgr/fork-generic?",
+    a:"Segmentation and the fork abstraction are generic at the smgr layer (ForkNumber, RELSEG_SIZE, mdopen/mdread) — any table access method storing data through smgr gets 1 GiB segment splitting and the main/fsm/vm/init fork naming scheme for free, regardless of what's inside the pages. The FSM's free-space category tracking is also fork-generic in principle, though its usefulness depends on your AM having a notion of 'free space within a page' the way slotted heap pages do — a pure append-only columnar format might not need it at all. TOAST and the visibility map, by contrast, are heap-AM-specific: TOAST is wired into heap_toast_insert_or_update() and the heap tuple's varlena handling, and the VM's ALL_VISIBLE semantics assume heap-style in-place tuple versioning with vacuum-driven cleanup — a columnar AM with its own MVCC and compression story would very likely need to reinvent both, or simply not need an equivalent at all if its storage model makes the same problems moot." },
+  { lvl:"PRINCIPAL", q:"A monitoring dashboard shows a table's toast relation is 40× the size of the parent table, and growing faster than the parent. Walk through the likely mechanism and the fix, using only this chapter's model.", hint:"what does an UPDATE to a toasted column actually do to old chunk rows?",
+    a:"The parent table's own bloat is capped by its own vacuum cadence, but its toast table is a fully separate heap relation with its own bloat dynamics — and every UPDATE that touches (or even just re-toasts) a large attribute writes an entirely new set of chunk rows while the old ones become dead tuples, because TOAST has no partial-update concept and MVCC never mutates in place. If the parent table sees frequent updates to large toasted columns, or if the toast table's own autovacuum keeps losing the race against that write rate (autovacuum thresholds are evaluated per-relation, and the toast table is its own relation with its own stats), dead chunk rows accumulate disproportionately. Fix: verify with pg_stat_user_tables joined to pg_class.reltoastrelid; tune the toast table's own storage parameters (toast.autovacuum_vacuum_scale_factor / cost_limit) rather than assuming the parent's settings apply; and, structurally, consider whether the frequently-changing data even belongs inside the large toasted value at all." }
+]);
+
+/* ============================================================
+   11. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why is the Free Space Map's content not WAL-logged, while the Visibility Map's bits are?",
+    opts:[ "FSM pages are smaller and WAL-logging them would be wasted overhead",
+           "Being wrong in the FSM costs a wasted probe; being wrong in the VM can produce an incorrect query result",
+           "The FSM is only used by VACUUM, which doesn't need crash safety",
+           "WAL-logging the FSM was removed for performance in PostgreSQL 8.4 and never restored" ],
+    a:1,
+    why:"The two forks are mechanically identical (same page format, same fork abstraction) — the durability decision is made per-structure based on what a wrong answer after a crash actually costs. A stale FSM entry just wastes one page probe before self-correcting; a visibility map bit that incorrectly claims ALL_VISIBLE after a crash lets an index-only scan skip a heap fetch it needed, silently returning a wrong result. Option A is backwards (size isn't the deciding factor); C is false (inserts consult the FSM constantly, not just VACUUM); D is fabricated." },
+  { q:"An attribute has storage class EXTERNAL. What does the TOAST algorithm do to it when the tuple is too big?",
+    opts:[ "Compresses it first, then moves it out-of-line only if compression wasn't enough",
+           "Moves it out-of-line directly, without ever attempting compression",
+           "Leaves it inline permanently, since EXTERNAL means 'never toast'",
+           "Compresses it but always keeps it inline, since EXTERNAL forbids external storage" ],
+    a:1,
+    why:"EXTERNAL explicitly disallows compression (that's the whole point — it keeps the value seekable for chunk-range fetches) while explicitly allowing out-of-line storage. So when the algorithm reaches an EXTERNAL attribute, it skips the compression attempt entirely and moves straight to writing it as chunk rows in the toast table. Option A describes EXTENDED/MAIN; C describes PLAIN; D inverts EXTERNAL's actual permissions (it's PLAIN that forbids external storage, not EXTERNAL)." },
+  { q:"Which of these is stored in a heap tuple in place of a value that has been moved out-of-line?",
+    opts:[ "The full compressed value, inline",
+           "A varatt_external struct — rawsize, size+compression-method info, and OIDs identifying the toast table row group",
+           "A simple file path to a separate file holding the value",
+           "Nothing — the attribute is dropped from the tuple and reconstructed from a catalog default" ],
+    a:1,
+    why:"An externalized attribute leaves behind a small fixed-size pointer struct (varatt_external, roughly 18 bytes): va_rawsize, va_extinfo (packing stored size with the compression method actually used), va_valueid (groups this value's chunk rows) and va_toastrelid (which toast relation to read). Option A describes what happens for MAIN/EXTENDED values that fit after compression alone (no externalization needed); C invents a mechanism Postgres doesn't use (no filesystem-level indirection); D is nonsensical — a stored value can't be reconstructed from a catalog default." },
+  { q:"A relation's main fork is at block number 300000, with RELSEG_SIZE = 131072. Which segment file holds it, and at what block offset within that file?",
+    opts:[ "Segment 2, offset 37856", "Segment 3, offset 6784", "Segment 2, offset 300000", "Segment 1, offset 168928" ],
+    a:0,
+    why:"segno = 300000 / 131072 = 2 (integer division); segoff = 300000 % 131072 = 300000 − 2×131072 = 37856. So it's the third segment file (named with suffix \".2\"), 37856 blocks into it. Option B miscounts which segment; C forgets to take the modulus at all; D uses the wrong segment number." },
+  { q:"Why does compression happen BEFORE externalization in the TOAST algorithm, rather than after?",
+    opts:[ "Compression is required before a value can be split into chunks at all",
+           "It's arbitrary — the order doesn't affect the outcome",
+           "If compression alone gets the tuple under the threshold, the toast table and its index are never touched, which is far cheaper than paying for external storage",
+           "PostgreSQL's compressor cannot run on data once it's stored in a separate relation" ],
+    a:2,
+    why:"Compression is comparatively cheap CPU work performed in place; moving a value out-of-line means writing rows into a second relation and its index, which is real extra I/O and WAL. Trying the cheap option first and only paying for the expensive one if necessary is the whole rationale — and even when externalization does happen, the algorithm still compresses first where the storage class allows it, so the toast table holds compressed bytes rather than raw ones. Option A is false — chunking works on any bytes, compressed or not; D is false — compression happens before the chunking/write step regardless." },
+  { q:"An UPDATE changes a narrow integer column but leaves a table's large toasted jsonb column completely untouched. What happens to that jsonb value's TOAST pointer?",
+    opts:[ "It's re-toasted from scratch anyway, because UPDATE always rewrites the whole tuple",
+           "The unchanged attribute's TOAST pointer is carried forward into the new tuple version without re-running compression or re-chunking",
+           "The old toast chunks are updated in place to save space",
+           "The column is temporarily NULLed out until the transaction commits" ],
+    a:1,
+    why:"MVCC creates a new tuple version for the row, but an attribute that isn't being modified doesn't need its value touched — the existing TOAST pointer (and the chunk rows it references) is simply copied into the new tuple version as-is. Re-toasting only happens for attributes whose value actually changed, or in some cases when the tuple's total size changes enough to require re-evaluating storage decisions. Option A is the misconception §11's incident directly warns against — it's true for the changed attribute path, but not for every attribute; C is false (toast chunks are never updated in place, only added/superseded); D is fabricated." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; the FSM would be jealous of your precision.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks and the §15 simulator — the four mechanisms click fast once you drive them yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "heap_toast_insert_or_update(): check whether the tuple already fits inline",
+    "toast_tuple_try_compression(): compress the largest EXTENDED/MAIN attribute",
+    "Recheck tuple size against the target (~2 KB) threshold",
+    "toast_save_datum(): externalize the largest remaining EXTENDED/EXTERNAL attribute",
+    "Repeat compress-or-externalize over EXTENDED/EXTERNAL attributes until they're exhausted",
+    "If still too big, compress MAIN attributes",
+    "If still too big, externalize MAIN attributes as a last resort",
+    "Insert the now-shrunk tuple, or fail with 'row is too big' if nothing more can be done"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real algorithm order</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 5 will show that MVCC never updates a tuple in place — every UPDATE creates a brand-new tuple version with its own xmin. Predict: what must happen to the OLD tuple version's visibility map bit the instant a new version is created on the same page, and why can't that wait until VACUUM runs later?",
+    a:"The old version's page must have its ALL_VISIBLE (and ALL_FROZEN) bits cleared immediately, synchronously, as part of the same operation that creates the new tuple version — not deferred to the next VACUUM. The moment a new, not-yet-all-visible tuple exists on a page, the page as a whole no longer satisfies 'every tuple visible to every snapshot', and any index-only scan that trusted a stale ALL_VISIBLE=1 bit would return the old dead tuple's data (or miss the new one) without knowing anything was wrong. This is exactly why heap_update()/heap_delete() call visibilitymap_clear() inline, in the same critical section that dirties the page — deferring it even briefly would create a window where the VM actively lies." },
+  { lvl:"THINK", q:"A table's rows each have a wide, frequently-updated 'last_seen' timestamp and a rarely-updated 500 KB toasted document. Using only this chapter's model, predict whether frequent updates to last_seen create write amplification for the toasted document, and why.",
+    a:"No — as long as the toasted attribute's value is genuinely unchanged, its existing TOAST pointer is carried forward into each new tuple version without re-running compression or re-chunking; only the tuple's own narrow columns and header are rewritten. TOAST's expensive path (heap_toast_insert_or_update's compress/externalize algorithm) only fires for attributes whose value changed or whose overall tuple size needs re-evaluating. This is the detail that makes 'one huge JSON blob plus lots of unrelated narrow-column churn' a fine pattern — it's specifically 'frequent updates that touch the big value itself' (chapter 11's incident 3) that's expensive." },
+  { lvl:"THINK", q:"Design exercise, forward-referencing MVCC: if a long-running transaction's snapshot still needs to see a very old tuple version, what does that imply about how early VACUUM is allowed to set ALL_VISIBLE on the page holding it — and what does that predict about VACUUM behavior on tables with long-lived idle-in-transaction sessions?",
+    a:"VACUUM can only set ALL_VISIBLE on a page once it has confirmed no currently-possible snapshot could still need an older version of any tuple on it — which means it must consider the oldest still-active transaction's snapshot horizon, not just whether a tuple is committed. A long-running or idle-in-transaction session holds that horizon back indefinitely, which is exactly why such sessions are notorious for causing VACUUM to skip marking pages all-visible (and skip freezing) for as long as they're open — you'll see this xmin-horizon mechanism formalized as chapter 5's core subject, and its consequences for bloat as chapter 6's." }
+]);
+
+/* ============================================================
+   12. TOAST SLICER SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const CHUNK = 2000, PTR = 18, OVERHEAD = 27;
+  const COLS = [
+    { key:"bio", label:"bio (text)", storage:"EXTENDED", size:800, compressible:true, min:0, max:12000 },
+    { key:"avatar", label:"avatar (bytea)", storage:"EXTERNAL", size:1200, compressible:false, min:0, max:12000 },
+    { key:"notes", label:"notes (text)", storage:"MAIN", size:600, compressible:true, min:0, max:12000 },
+    { key:"tag", label:"tag (varchar)", storage:"PLAIN", size:80, compressible:true, min:0, max:6000 }
+  ];
+  let target = 2000;
+  let state, phase, chunkOid, log, running;
+
+  function freshState(){
+    return COLS.map(c=> ({ ...c, curSize: c.size, kind:"inline", compressedOK:false, done:false }));
+  }
+  function resetSim(){
+    state = freshState();
+    phase = 0; chunkOid = 90000; running = false;
+    log = [];
+    el("toast-chunks").innerHTML = "";
+    renderConfig();
+    logmsg("info", "row configured — press Step or Run to insert it");
+    renderRow();
+  }
+  function logmsg(cls,msg){ log.push({cls,msg}); if (log.length>60) log.shift();
+    el("toast-log").innerHTML = log.map(l=>`<div class="tl-${l.cls}">${l.msg}</div>`).join("");
+    el("toast-log").scrollTop = 1e9;
+  }
+  function totalSize(){
+    return OVERHEAD + state.reduce((s,c)=> s + (c.kind==="inline" ? c.curSize : c.kind==="compressed" ? c.curSize : PTR), 0);
+  }
+  function renderConfig(){
+    el("toast-cols").innerHTML = state.map((c,i)=>{
+      const stClass = c.kind==="inline" ? (c.compressedOK? "st-compressed":"st-inline") : c.kind==="compressed" ? "st-compressed" : c.kind==="external" ? "st-external" : c.kind==="externalc" ? "st-externalc" : c.kind==="fail" ? "st-fail" : "st-inline";
+      const stLabel = { inline:"inline", compressed:"inline · compressed", external:"external pointer", externalc:"external · compressed", fail:"FAILED — cannot fit" }[c.kind] || c.kind;
+      return `<div class="col-cfg">
+        <div class="cc-head">
+          <span class="cc-name">${c.label}</span>
+          <span class="cc-state ${stClass}">${stLabel}</span>
+          <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">storage=${c.storage} · ${c.curSize} B</span>
+        </div>
+        <div class="slider-row" style="margin:4px 0"><label style="min-width:60px">size</label>
+          <input type="range" data-k="${i}" class="tc-size" min="${c.min}" max="${c.max}" step="20" value="${c.size}">
+          <span class="val">${c.size} B</span></div>
+        <div class="toggle-row" style="margin:2px 0">
+          <button class="chip tc-comp ${c.compressible?'on':''}" data-k="${i}">${c.compressible?"compressible: HIGH (~4×)":"compressible: LOW (~1.1×)"}</button>
+          <button class="chip tc-storage ${''}" data-k="${i}">storage: ${c.storage}</button>
+        </div>
+      </div>`;
+    }).join("");
+    state.forEach((c,i)=>{
+      el("toast-cols").querySelectorAll(`.tc-size[data-k="${i}"]`)[0].oninput = e=>{
+        c.size = +e.target.value; c.curSize = c.size; c.kind="inline"; c.compressedOK=false; c.done=false;
+        e.target.nextElementSibling.textContent = c.size+" B";
+        phase = 0;
+        renderConfig(); renderRow();
+      };
+      el("toast-cols").querySelectorAll(`.tc-comp[data-k="${i}"]`)[0].onclick = ()=>{ c.compressible = !c.compressible; renderConfig(); };
+      el("toast-cols").querySelectorAll(`.tc-storage[data-k="${i}"]`)[0].onclick = ()=>{
+        const order = ["PLAIN","EXTENDED","EXTERNAL","MAIN"];
+        c.storage = order[(order.indexOf(c.storage)+1)%order.length];
+        renderConfig();
+      };
+    });
+  }
+  const COLORS = { bio:"#60a5fa", avatar:"#a78bfa", notes:"#4ade80", tag:"#ff9f43" };
+  function renderRow(){
+    const total = totalSize();
+    el("toast-size").textContent = total;
+    el("toast-target-2").textContent = target;
+    const parts = [`<div class="toastattr" style="width:${Math.max(2, OVERHEAD/total*100)}%;background:#5b6475" title="fixed overhead">hdr</div>`];
+    state.forEach(c=>{
+      const w = (c.kind==="inline"||c.kind==="compressed" ? c.curSize : PTR) / total * 100;
+      const bg = c.kind==="external" ? "#60a5fa" : c.kind==="externalc" ? "#ff9f43" : c.kind==="compressed" ? "#a78bfa" : c.kind==="fail" ? "#f25c54" : "#8b94a7";
+      parts.push(`<div class="toastattr" style="width:${Math.max(1.5,w)}%;background:${bg}" title="${c.label}">${c.key}</div>`);
+    });
+    el("toast-row").innerHTML = parts.join("");
+    const over = total > target;
+    el("toast-phase").textContent = state.some(c=>c.kind==="fail") ? "FAILED" : total<=target ? "FITS — DONE" : `PHASE ${phase}`;
+    el("toast-phase").style.color = state.some(c=>c.kind==="fail") ? "var(--bad)" : total<=target ? "var(--ok)" : "var(--warn)";
+  }
+  function addChunks(col, bytes){
+    const n = Math.max(1, Math.ceil(bytes / CHUNK));
+    const oid = chunkOid++;
+    for (let s=0;s<n;s++){
+      const d = document.createElement("div");
+      d.className = "chunk";
+      d.textContent = `oid=${oid} seq=${s} (${Math.min(CHUNK, bytes - s*CHUNK)}B)`;
+      el("toast-chunks").appendChild(d);
+    }
+    return n;
+  }
+  function candidateAttrs(storages){
+    return state.filter(c => storages.includes(c.storage) && !c.done && c.kind!=="external" && c.kind!=="externalc" && c.kind!=="fail")
+      .sort((a,b)=> b.curSize - a.curSize);
+  }
+  function step(){
+    if (state.some(c=>c.kind==="fail")) { logmsg("bad","already failed — press Reset to try a different row."); return false; }
+    let total = totalSize();
+    if (total <= target){
+      logmsg("ok", `tuple size ${total}B ≤ target ${target}B — inserted successfully, algorithm stops.`);
+      renderRow();
+      return false;
+    }
+    if (phase === 0){
+      logmsg("info", `tuple size ${total}B > target ${target}B — toasting begins. Phase 1: compress/externalize EXTENDED & EXTERNAL attributes, largest first.`);
+      phase = 1; renderRow(); return true;
+    }
+    if (phase === 1){
+      const cands = candidateAttrs(["EXTENDED","EXTERNAL"]);
+      if (cands.length === 0){ logmsg("info","no EXTENDED/EXTERNAL attributes left to try — moving to phase 2 (MAIN attributes)."); phase = 2; renderRow(); return true; }
+      const c = cands[0];
+      if (c.storage === "EXTENDED" && !c.compressedOK && c.kind === "inline"){
+        if (c.compressible){
+          const before = c.curSize;
+          c.curSize = Math.round(c.curSize * 0.25);
+          c.compressedOK = true;
+          logmsg("ok", `compressed ${c.label}: ${before}B → ${c.curSize}B (pglz/LZ4, ~4× — stayed inline).`);
+        } else {
+          logmsg("warn", `tried compressing ${c.label}: gain < ~20%, pglz bails out — leaving it uncompressed and moving to externalize.`);
+          c.compressedOK = true; // mark attempted
+        }
+        total = totalSize();
+        if (total <= target){ c.done = true; }
+        renderRow(); return true;
+      }
+      // externalize
+      const n = addChunks(c, c.curSize);
+      const wasCompressed = c.kind==="inline" && c.compressedOK && c.compressible;
+      c.kind = wasCompressed ? "externalc" : "external";
+      c.done = true;
+      logmsg("ok", `externalized ${c.label}: wrote ${n} chunk row(s) to pg_toast; in-tuple size now ${PTR}B (toast pointer)${wasCompressed?", data stored compressed":""}.`);
+      renderRow(); return true;
+    }
+    if (phase === 2){
+      const cands = candidateAttrs(["MAIN"]);
+      if (cands.length === 0){ logmsg("info","no MAIN attributes left to compress — moving to phase 3 (externalize MAIN as last resort)."); phase = 3; renderRow(); return true; }
+      const c = cands[0];
+      if (!c.compressedOK && c.kind==="inline"){
+        if (c.compressible){
+          const before = c.curSize;
+          c.curSize = Math.round(c.curSize * 0.25);
+          c.compressedOK = true;
+          logmsg("ok", `phase 2: compressed MAIN attribute ${c.label}: ${before}B → ${c.curSize}B.`);
+        } else {
+          logmsg("warn", `phase 2: ${c.label} not compressible enough — will externalize next pass if still needed.`);
+          c.compressedOK = true;
+        }
+        total = totalSize();
+        if (total <= target) c.done = true;
+        renderRow(); return true;
+      }
+      c.done = true; renderRow(); return true;
+    }
+    if (phase === 3){
+      const cands = state.filter(c=> c.storage==="MAIN" && c.kind==="inline" && !( total<=target)).sort((a,b)=>b.curSize-a.curSize);
+      const real = state.filter(c=> c.storage==="MAIN" && (c.kind==="inline")).sort((a,b)=>b.curSize-a.curSize);
+      if (real.length === 0){
+        // nothing left to do — check for PLAIN offenders
+        const plainTooBig = state.some(c=> c.storage==="PLAIN");
+        if (totalSize() > target){
+          state.forEach(c=>{ if(c.storage==="PLAIN") c.kind="fail"; });
+          logmsg("bad", `ERROR: row is too big: size ${totalSize()}, maximum size ${target}. No compressible or externalizable attribute remains — check any PLAIN-storage column.`);
+          renderRow();
+          return false;
+        }
+        logmsg("ok", "tuple now fits — inserted.");
+        renderRow();
+        return false;
+      }
+      const c = real[0];
+      const n = addChunks(c, c.curSize);
+      c.kind = c.compressedOK ? "externalc" : "external";
+      c.done = true;
+      logmsg("warn", `phase 3 (last resort): externalized MAIN attribute ${c.label} — wrote ${n} chunk row(s). MAIN attributes are only moved out-of-line when nothing else was enough.`);
+      renderRow();
+      return true;
+    }
+    return false;
+  }
+  el("toast-target").oninput = e=>{ target = +e.target.value; el("toast-target-val").textContent = target+" B"; renderRow(); };
+  el("toast-step").onclick = ()=>{ step(); };
+  el("toast-run").onclick = ()=>{
+    if (running) return;
+    running = true;
+    let guard = 0;
+    const iv = setInterval(()=>{
+      const cont = step();
+      guard++;
+      if (!cont || guard > 40){ clearInterval(iv); running = false; }
+    }, 260);
+  };
+  el("toast-reset").onclick = resetSim;
+  resetSim();
+})();
+
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-04"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-03.html"><span>←</span><span><span class="cn-lbl">PREV · CH 03</span><span class="cn-ttl">The Page: On-Disk Layout, Byte by Byte</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html" selected>CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">04 / 21</span></div><a class="cn-btn" href="pg-05.html"><span><span class="cn-lbl">NEXT · CH 05</span><span class="cn-ttl">MVCC I: Tuple Versions, Snapshots & Visibility</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

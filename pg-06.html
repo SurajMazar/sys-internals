@@ -1,0 +1,2011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-06 · MVCC II: HOT Updates, Freezing & XID Wraparound — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (reused shape for generic trees) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* generic node styles reused in simulators */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+  .strunk{width:2px;height:14px;background:var(--border-hi);margin:0 auto}
+  .saux{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0 10px}
+  .snode.aux{font-size:9.5px;padding:5px 8px;color:var(--muted);cursor:default}
+  .snode.aux.off{opacity:.25}
+  .snode.aux.busy{border-color:var(--warn);color:var(--warn)}
+  .sbe-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:8px 0 6px;text-align:center}
+  .sbe{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;min-height:64px;align-content:flex-start}
+  .snode.be{animation:framein .25s}
+  .snode.be.idle{color:var(--muted)}
+  .snode.be.active{border-color:var(--ok);color:var(--ok)}
+  .snode.be.long{border-color:var(--warn);color:var(--warn)}
+  .snode.be.startup{border-color:var(--purple);color:var(--purple)}
+  .snode.be.crash{border-color:var(--bad);background:rgba(242,92,84,.15);color:var(--bad);animation:shake .35s}
+  .snode.be.sigq{border-color:var(--warn);opacity:.5}
+  .snode.be.sel{box-shadow:0 0 0 2px var(--pg)}
+  .sim-shm{margin:12px auto 0;max-width:430px}
+  .sim-shm .shm{text-align:center}
+  .waitq{font-family:var(--mono);font-size:10px;color:var(--warn);text-align:center;margin-top:8px;min-height:14px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- CH06-SPECIFIC: heap page / HOT chain visualizer ---------- */
+  .hpage{border:1px solid var(--border-hi);border-radius:12px;background:var(--bg-2);padding:14px;margin:10px 0}
+  .hpage .hp-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px}
+  .hp-lps{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
+  .lp{width:30px;height:26px;border-radius:6px;border:1px solid var(--border-hi);background:var(--panel-2);
+    display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;color:var(--muted);
+    cursor:pointer;transition:all .2s;position:relative}
+  .lp.normal{border-color:var(--pg);color:var(--pg)}
+  .lp.redirect{border-color:var(--purple);color:var(--purple);background:rgba(167,139,250,.08)}
+  .lp.dead{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.08);text-decoration:line-through}
+  .lp.unused{opacity:.3}
+  .hp-slots{display:flex;gap:4px;flex-wrap:wrap;min-height:54px}
+  .tup{min-width:64px;border-radius:8px;border:1px solid var(--border-hi);background:var(--panel-2);padding:6px 8px;
+    font-family:var(--mono);font-size:9.5px;color:var(--muted);transition:all .25s;animation:framein .3s}
+  .tup.root{border-color:var(--pg);color:var(--pg)}
+  .tup.hotchain{border-color:var(--ok);color:var(--ok);box-shadow:0 0 10px rgba(74,222,128,.15)}
+  .tup.dead{border-color:var(--bad);color:var(--bad);opacity:.45;text-decoration:line-through}
+  .tup .tf{display:block;font-size:8.5px;color:var(--dim);margin-top:2px}
+  .hp-free{flex:1;min-width:40px;border:1px dashed var(--border-hi);border-radius:8px;background:rgba(96,165,250,.03);
+    display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:var(--dim)}
+  .hp-arrow{font-family:var(--mono);font-size:11px;color:var(--dim);align-self:center}
+
+  /* ---------- CH06-SPECIFIC: XID wraparound clock ---------- */
+  .xidclock-wrap{display:flex;gap:22px;flex-wrap:wrap;align-items:center;justify-content:center}
+  .xidclock canvas{background:var(--bg-2);border:1px solid var(--border);border-radius:50%}
+  .xid-readout{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2}
+  .xid-readout b{color:var(--pg)}
+  .xid-phase{display:inline-block;font-family:var(--mono);font-size:10.5px;border-radius:7px;padding:3px 10px;letter-spacing:.05em}
+  .xid-phase.ok{color:var(--ok);background:rgba(74,222,128,.1)}
+  .xid-phase.warn{color:var(--warn);background:rgba(255,159,67,.1)}
+  .xid-phase.crit{color:var(--bad);background:rgba(242,92,84,.12)}
+  .xid-phase.stop{color:#fff;background:var(--bad)}
+
+  /* ---------- CH06-SPECIFIC: horizon pins ---------- */
+  .pinrow{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .pin{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:6px 10px;
+    font-family:var(--mono);font-size:11px;color:var(--muted);cursor:pointer;transition:all .15s}
+  .pin.on{border-color:var(--warn);color:var(--warn);background:rgba(255,159,67,.08)}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 06 / 21</b> · MVCC II</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: HOT Updates</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 06</div>
+  <h1>MVCC II: HOT Updates,<br><span class="grad">Freezing & XID Wraparound</span></h1>
+  <p class="lead">Chapter 5 showed you how MVCC gives every reader a private, consistent view of the database by
+  never overwriting a tuple in place. This chapter shows you the bill for that decision, and the two mechanisms
+  PostgreSQL built to keep the bill payable: <b>Heap-Only Tuples</b>, which quietly cancel most of the index-write
+  cost of an UPDATE, and <b>freezing</b>, which prevents the 32-bit transaction counter that makes MVCC work from
+  wrapping around and taking your data down with it.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Predict, from the DDL alone, which UPDATEs will be HOT and which won't.</div>
+    <div class="obj"><b>You will understand</b>Why a table can be perfectly vacuumed and still be one long transaction away from an outage.</div>
+    <div class="obj"><b>You will predict</b>The exact GUC and the exact age at which autovacuum stops being optional.</div>
+    <div class="obj"><b>You will simulate</b>A HOT chain forming and pruning, and a live countdown to transaction ID wraparound.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">An UPDATE that touches one column re-writes every index on the table</h2>
+  <p class="lead">Chapter 5 established the rule that makes MVCC work: <code>UPDATE</code> never overwrites a tuple.
+  It inserts a brand-new tuple version with a fresh <code>t_ctid</code>, gives it a new <span class="term"
+  data-def="Tuple identifier: (block number, offset number) — the physical address of one tuple version inside one heap page.">TID</span>,
+  and leaves the old version in place for any transaction whose snapshot still needs it. That single decision is
+  what makes readers never block writers. It also has a consequence that chapter 5 deliberately deferred: <b>every
+  index on the table stores TIDs, not primary keys</b>. An index entry doesn't say "row 42 is over there somewhere" —
+  it says "the row with this key is at block 118, offset 6." When <code>UPDATE</code> creates offset 7 instead, that
+  promise is now false for every index that made it.</p>
+  <p>So the naive consequence is unavoidable-looking: if the row moves, <b>every index must learn its new address</b>
+  — not just the index on the column you changed, but every index on the table, including the ones on columns you
+  never touched. A row in a table with five indexes that gets one integer column incremented pays for five B-tree
+  insertions, not one, purely because the physical location changed underneath indexes that never cared about that
+  column.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT TWO CHAPTERS</div>
+    <p>This chapter is really two problems that share one root cause — <b>tuples are versions, not places</b>.
+    Problem one: versions multiply write amplification through every index (solved by HOT, §5–§8). Problem two:
+    versions are tagged with a 32-bit counter that must eventually be recycled, and recycling it incorrectly is a
+    correctness bug with cluster-wide blast radius (solved by freezing, §7 onward). Chapter 7 assumes you understand
+    both, because SSI's conflict detection is built directly on the same tuple-versioning substrate.</p>
+  </div>
+  <p>Put a number on it before reading further, because the naive cost is easy to underestimate. A single-row
+  <code>UPDATE</code> on a table with <b>N</b> indexes that doesn't qualify for HOT costs: one heap insert, one old-tuple
+  header rewrite (to set <code>xmax</code> and the forward pointer), and <b>N index insertions</b>, each of which is a
+  B-tree descent that can dirty <code>O(log n)</code> pages and, on an unlucky day, trigger a page split. On an OLTP
+  table doing thousands of updates per second, that multiplier is the difference between a workload your storage
+  can absorb and one that turns your indexes into the bottleneck.</p>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">2008: the release that made UPDATE-heavy OLTP viable</h2>
+  <p>PostgreSQL shipped MVCC in 1999 (chapter 5) and then spent nine years living with its index-amplification tax
+  before shipping the fix. That gap is not laziness — HOT required getting page-level bookkeeping (line-pointer
+  redirection, opportunistic pruning) exactly right, because a bug here corrupts index scans silently. Click through
+  the timeline; each entry is a piece of the mechanism you'll assemble in §7–§8.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from MVCC's tax to HOT's rebate</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY "HEAP-ONLY"?</div>
+    <p>The name describes exactly what's missing: a heap-only tuple exists <i>only</i> in the heap. No index anywhere
+    points to it directly. It is reachable exclusively by following a chain of <code>t_ctid</code> pointers that
+    starts at the <b>root line pointer</b> — the one slot every index entry actually references. That indirection is
+    the entire trick: indexes keep pointing at a stable root forever, while the root's line pointer transparently
+    redirects to wherever the current live version happens to sit on that same page.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: update the heap, then update every index, unconditionally</h2>
+  <p>Derive it honestly, the way <code>heap_update()</code> would look if HOT didn't exist. This is not a strawman
+  invented for the lesson — it is exactly what PostgreSQL 8.2 and earlier did, and it is exactly what happens today
+  whenever HOT's conditions (§5) aren't met.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>naive_update.c — the pre-HOT path, annotated</span></div>
+    <pre><span class="k">void</span>
+<span class="f">naive_heap_update</span>(Relation rel, ItemPointer otid, HeapTuple newtup)
+{
+    HeapTuple oldtup = <span class="f">heap_fetch</span>(rel, otid);
+
+    <span class="c">/* 1. Insert the new version somewhere — same page if there's
+     *    room, otherwise ANY page with free space at all.        */</span>
+    ItemPointerData newtid = <span class="f">RelationPutHeapTuple</span>(rel, newtup);
+
+    <span class="c">/* 2. Retire the old version: stamp xmax = my XID, point its
+     *    t_ctid at the new tuple's TID (chapter 5's forward link). */</span>
+    oldtup-&gt;t_data-&gt;t_xmax = <span class="f">GetCurrentTransactionId</span>();
+    oldtup-&gt;t_data-&gt;t_ctid = newtid;
+
+    <span class="c">/* 3. THE EXPENSIVE PART: walk every index on this relation and
+     *    insert a (key, newtid) entry — even for indexes whose
+     *    indexed columns are byte-for-byte identical in newtup.   */</span>
+    <span class="k">foreach</span>(idx, RelationGetIndexList(rel))
+    {
+        Relation irel = <span class="f">index_open</span>(idx, RowExclusiveLock);
+        Datum values[INDEX_MAX_KEYS]; <span class="k">bool</span> isnull[INDEX_MAX_KEYS];
+        <span class="f">FormIndexDatum</span>(irel, newtup, &amp;values, &amp;isnull);
+        <span class="f">index_insert</span>(irel, values, isnull, &amp;newtid, rel, <span class="k">true</span>, <span class="k">true</span>, ...);
+        <span class="f">index_close</span>(irel, RowExclusiveLock);
+    }
+}</pre>
+  </div>
+
+  <p>Nothing here is wrong — it is correct, and it is how every index-organized MVCC update has to work in the
+  absence of a special case. It already tells you where the cost lives: step 3 runs once <b>per index</b>, every
+  single time, regardless of which columns actually changed. Watch it play out on a page holding one row and three
+  indexes, across three consecutive updates:</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Three updates, three indexes, no HOT</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Write amplification you can compute with one multiplication</h2>
+  <p>Quantify what §3 costs before reaching for a fix — the naive path's damage is arithmetic, not anecdote.
+  For a table with <b>N</b> indexes, every UPDATE that doesn't special-case anything performs:</p>
+  <ul class="plain">
+    <li><b>1 heap tuple insert</b> (the new version) + <b>1 heap tuple header rewrite</b> (the old version's xmax/ctid) — unavoidable, this is MVCC itself.</li>
+    <li><b>N B-tree (or GiST/GIN/BRIN) insertions</b>, each an <code>O(log n)</code> descent that can dirty several pages and, at some probability per insert, split a full index page — an operation that itself writes WAL and can cascade upward.</li>
+    <li><b>N stale index entries left behind</b>, each still pointing at the now-dead old TID, inert until a future <code>VACUUM</code> walks the index and removes them.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Take a session table with 4 indexes (primary key, a foreign key, a partial index, a timestamp index for
+    expiry sweeps) doing 10,000 UPDATEs/sec updating only a <code>last_seen</code> column that <i>one</i> of those
+    indexes covers. Naively: 10,000 heap writes/sec <i>plus</i> 40,000 index insertions/sec — four times the
+    logical write rate, most of it wasted on indexes whose keys never moved. Each of those 30,000 unnecessary index
+    insertions also produces WAL, doubles the eventual VACUUM cleanup cost (dead root entries in indexes that never
+    needed touching), and increases B-tree page-split probability, which is <i>itself</i> proportional to insert
+    rate. This is exactly the workload — high-frequency single-row updates against an indexed OLTP table — for which
+    PostgreSQL is otherwise a poor fit without HOT, and it is why chapter 12's bloat discussion keeps returning to
+    this exact multiplier.</p>
+  </div>
+  <p>The fix cannot be "don't index so much" — real schemas need those indexes for the read paths. It has to be:
+  detect, per UPDATE, whether any index actually needs to know about it, and if not, skip step 3 of §3 entirely.
+  That is a page-local bookkeeping problem, and §5 derives the two conditions under which it is safe.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three ways to avoid touching N indexes — and the one that survived</h2>
+
+  <h3>Candidate A: in-place update with an undo log (the Oracle/InnoDB shape)</h3>
+  <p>Overwrite the tuple in place, and push the <i>old</i> version into a separate undo/rollback segment for
+  readers who still need it. Indexes never move because the row's physical address never changes. This is a real,
+  successful design — it's what InnoDB and Oracle do (§9 compares it properly) — but it does not fit onto
+  PostgreSQL's storage model without inventing an entirely new subsystem: a second write path (the undo store)
+  with its own WAL, its own crash-recovery obligations, and its own space-reclamation problem, precisely mirroring
+  the "vacuum" problem it was meant to avoid. <b>Rejected for PostgreSQL specifically</b>: it would replace one
+  well-understood bookkeeping cost (heap versions + vacuum) with a second one (undo segments + purge), not
+  eliminate a cost — and PostgreSQL's append-only heap plus WAL design predates the appetite to build that.</p>
+
+  <h3>Candidate B: only re-index indexes whose columns changed</h3>
+  <p>An obvious partial fix: compare old and new tuple, compute which columns differ, and skip <code>index_insert</code>
+  for any index that doesn't reference a changed column. PostgreSQL does do exactly this comparison — but notice it
+  does not solve the problem from §1. The new tuple still has a <b>new TID</b>. Even an index on an untouched column
+  still needs to know that the key it has now points at a dead row; it must either point at the new TID or its old
+  entry becomes permanently wrong. Column-change detection alone reduces N to "the subset of indexes covering
+  changed columns" — still &gt;0 whenever <i>any</i> indexed column changes, and doesn't help the common case of
+  updating one non-indexed column on a row covered by several indexes on <i>other</i> columns, which is precisely
+  the case in §4's numeric example. <b>Necessary but not sufficient.</b></p>
+
+  <h3>Candidate C: keep the new version reachable without moving the address at all ✓</h3>
+  <p>Combine two ideas: (1) if the new version can be placed on <i>the same page</i> as the old one, and (2) if no
+  indexed column changed, then no index needs a new entry <i>at all</i> — the existing index entry, which points at
+  the old tuple's line pointer, can be made to lead to the new tuple by <b>redirecting that line pointer</b> inside
+  the page, rather than by asking every index to learn a new address. The index's promise ("the row with this key
+  is at block 118, offset 6") stays literally true forever; offset 6 is repurposed as a stable redirector, and
+  what it redirects <i>to</i> is what changes. This is HOT.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Three candidates, one page, one UPDATE</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: THE FIX NEEDS NO NEW SUBSYSTEM</div>
+    <p>HOT's decisive advantage over candidate A is that it needed no new storage layer, no new WAL record types
+    beyond a page-local prune record, and no new crash-recovery path — it is entirely a reinterpretation of two bits
+    already living in the tuple header (<code>t_infomask2</code>) plus one already-existing field
+    (<code>ItemIdData.lp_flags</code>). Every mechanism it touches — line pointers, page pruning, visibility checks —
+    already existed for ordinary heap management. That is why it shipped as one release's headline feature rather
+    than a multi-year storage rewrite.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">HOT's fine print: space you must reserve, and chains you must eventually cut</h2>
+  <p>HOT is not free, and its costs are exactly the two conditions it relies on, read backwards:</p>
+  <ul class="plain">
+    <li><b>"Same page" only works if the page has room.</b> A freshly bulk-loaded table, packed to the last byte
+      (the default heap <code>fillfactor</code> is 100 — pack pages completely full), has <i>zero</i> free space for
+      a HOT update to land in. The very first UPDATE on such a page cannot be HOT no matter how innocuous the
+      change is, because <code>RelationPutHeapTuple</code> has nowhere to put the new version without moving to
+      another page — which forces a real index update. You must <i>deliberately reserve space you are not yet
+      using</i> (lowering <code>fillfactor</code>) to make future HOT updates possible. That is dead weight on disk
+      and in the buffer cache for the sole purpose of insurance against a future write pattern.</li>
+    <li><b>Chains still have to be cut sometime.</b> Every HOT update on the same root tuple lengthens a chain of
+      heap-only tuples linked by <code>t_ctid</code>. An index scan that lands on the root line pointer must walk the
+      <i>entire live chain</i> to find the current version — a chain no one has pruned yet is a linear scan cost
+      paid on every lookup. <code>heap_page_prune()</code> reclaims dead members opportunistically (§8), but between
+      updates and the next prune opportunity, the chain is real, unindexed, in-page linked-list traversal cost.</li>
+    <li><b>An indexed-column change breaks the whole chain immediately.</b> One UPDATE that touches an indexed
+      column forces a real index insertion for <i>that</i> index — and even then, other indexes on unaffected
+      columns can still ride the HOT path for that same UPDATE, so the "all or nothing" framing of §1 is not quite
+      true in practice; it is index-by-index. But it does mean mixed workloads (some updates touch indexed columns,
+      some don't) produce mixed chains — some short, some long — and no single fillfactor setting is right for all
+      of them.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THE INDUSTRY'S UNFINISHED ANSWER — WARM</div>
+    <p>HOT's remaining gap — indexed-column changes still pay full price — was the target of the <b>WARM</b> (Write
+    Amplification Reduction Method) patch series proposed by Alvaro Herrera, Pavan Deolasee and others around
+    2017. WARM extended the same page-local redirection idea to permit <i>one</i> indexed-column change per chain by
+    storing multiple index entries pointing at the same root and disambiguating with an extra bit, at the cost of
+    real complexity in the visibility and index-scan code. It was never merged into core — reviewers judged the
+    correctness risk too high relative to the marginal win over HOT plus a sane fillfactor — and the project remains
+    the standing example of "the next 80% is much harder than the first 80%" in this specific corner of the codebase.</p>
+  </div>
+  <p>So the final architecture is HOT plus fillfactor plus opportunistic pruning plus ordinary VACUUM as the
+  backstop that eventually removes what pruning alone could not. And running alongside it — orthogonal to whether
+  any given UPDATE was HOT — is the second half of this chapter's mandate: every tuple version, HOT or not, still
+  carries a 32-bit transaction id that eventually needs freezing. Let's meet both mechanisms properly.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">One page, annotated: the whole mechanism in one picture</h2>
+  <p>Everything HOT needs lives inside a single 8&nbsp;KB heap page — no cross-page state, no separate catalog,
+  no background process required to make an individual HOT update happen. Click each component to see its role,
+  its home in the source tree, and what breaks if it's misused.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer — anatomy of a HOT-capable page</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">PAGE HEADER</div>
+        <div class="arch-grid"><div class="acard" data-p="pd_lower">pd_lower / pd_upper — free-space pointers</div></div>
+        <div class="arch-row-label">LINE POINTER ARRAY (ItemIdData[])</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="lp_normal">LP_NORMAL — points at a live tuple</div>
+          <div class="acard" data-p="lp_redirect">LP_REDIRECT — root, points at chain head</div>
+          <div class="acard" data-p="lp_dead">LP_DEAD — stub, no storage, index still points here</div>
+          <div class="acard" data-p="lp_unused">LP_UNUSED — free slot, reusable</div>
+        </div>
+        <div class="arch-row-label">TUPLE STORAGE (grows from the bottom up)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="infomask2">t_infomask2 — HEAP_HOT_UPDATED / HEAP_ONLY_TUPLE</div>
+          <div class="acard" data-p="tctid">t_ctid — forward pointer to the next chain member</div>
+        </div>
+        <div class="arch-row-label">RESERVED SPACE</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="fillfactor">fillfactor gap — deliberately unused bytes at load time</div></div>
+        <div class="arch-row-label">MAINTENANCE</div>
+        <div class="arch-grid"><div class="acard" data-p="prune">heap_page_prune() — single-page, no-VACUUM-required cleanup</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE INVARIANT THAT MAKES ALL OF THIS SAFE</div>
+    <p><b>HOT chains never span pages.</b> A heap-only tuple is only ever created on the same page as its root,
+    because the entire mechanism depends on the root's line pointer being able to redirect within its own page's
+    line-pointer array — <code>ItemPointerData</code> addresses a page and an offset, and <code>LP_REDIRECT</code>'s
+    payload is just another offset on that <i>same</i> page. If a HOT update's new version wouldn't fit on the
+    origin page, PostgreSQL doesn't get clever about cross-page redirects; it simply falls back to a normal,
+    non-HOT update, and pays the full index-insertion price from §3. This is the mechanism's real boundary, and it's
+    why fillfactor (reserving room on the origin page specifically) is the lever that matters, not overall table
+    free space.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The bits, the struct fields, and the algorithm that walks them</h2>
+  <p>Four pieces, in the order the executor actually touches them: <b>(a)</b> the two conditions
+  <code>heap_update()</code> checks before deciding to go HOT, <b>(b)</b> the header fields that record the decision,
+  <b>(c)</b> <code>heap_page_prune()</code>, which reclaims dead chain members without a full VACUUM, and <b>(d)</b>
+  the second half of this chapter — how a 32-bit XID counter is kept from lapping itself.</p>
+
+  <h3>(a) The HOT decision, step by step</h3>
+  <div class="widget deck" id="deckHotDecide">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">heap_update() deciding: HOT or not?</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) The header fields — real layout, real bit positions</h3>
+  <p><code>HeapTupleHeaderData</code> carries the whole mechanism in two fields that already existed for other
+  reasons. <code>t_ctid</code> normally just says "this is my own TID"; HOT repurposes it, for a chain member, to
+  mean "here is the next, newer version." <code>t_infomask2</code> normally just packs the tuple's attribute count
+  into its low 11 bits; HOT claims two of its high bits.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>access/htup_details.h — simplified but structurally faithful</span></div>
+    <pre><span class="k">typedef struct</span> HeapTupleHeaderData
+{
+    <span class="k">union</span> {
+        HeapTupleFields t_heap;      <span class="c">/* xmin, xmax, cid/xvac */</span>
+        DatumTupleFields t_datum;
+    } t_choice;
+
+    ItemPointerData t_ctid;          <span class="c">/* self, OR next-version TID for a HOT chain member */</span>
+
+    <span class="k">uint16</span> t_infomask2;         <span class="c">/* low 11 bits: natts. high bits, in part: */</span>
+    <span class="c">/* #define HEAP_HOT_UPDATED   0x4000   -- this version was HOT-updated;
+     *                                       t_ctid points at its successor       */</span>
+    <span class="c">/* #define HEAP_ONLY_TUPLE    0x8000   -- this version IS a heap-only tuple;
+     *                                       no index anywhere points at it        */</span>
+
+    <span class="k">uint16</span> t_infomask;          <span class="c">/* null bitmap flags, xmin/xmax commit status, etc. */</span>
+    <span class="k">uint8</span>  t_hoff;               <span class="c">/* offset to tuple data, i.e. header size */</span>
+    <span class="k">bits8</span> t_bits[<span class="n">1</span>];             <span class="c">/* null bitmap, variable length */</span>
+} HeapTupleHeaderData;
+
+<span class="c">/* storage/itemid.h — the line pointer every index TID resolves through */</span>
+<span class="k">typedef struct</span> ItemIdData
+{
+    <span class="k">unsigned</span> lp_off:<span class="n">15</span>,    <span class="c">/* byte offset of tuple, or of redirect target */</span>
+             lp_flags:<span class="n">2</span>,  <span class="c">/* LP_UNUSED=0 · LP_NORMAL=1 · LP_REDIRECT=2 · LP_DEAD=3 */</span>
+             lp_len:<span class="n">15</span>;   <span class="c">/* byte length of tuple; unused/meaningless for REDIRECT */</span>
+} ItemIdData;</pre>
+  </div>
+
+  <p>Read the two flags together and the whole chain becomes legible: a tuple with <code>HEAP_HOT_UPDATED</code> set
+  is <i>not</i> the newest version — follow its <code>t_ctid</code>. A tuple with <code>HEAP_ONLY_TUPLE</code> set is
+  reachable only through that chain — no index entry names it directly, ever, for as long as it lives. The root of
+  a chain has neither bit set on its own tuple (or is a plain <code>LP_REDIRECT</code> line pointer once pruning has
+  run); every non-root member has <code>HEAP_ONLY_TUPLE</code>, and every member except the last has
+  <code>HEAP_HOT_UPDATED</code>.</p>
+
+  <p>Drag fillfactor and watch how much of a fresh page is reserved purely so that later HOT updates have somewhere
+  to land — and watch what happens to a table loaded at the default of 100:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Fillfactor — paying for HOT before you need it</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>heap fillfactor</label><input type="range" id="ff-slider" min="50" max="100" value="90" step="5"><span class="val" id="ff-val">90%</span></div>
+      <div class="hpage">
+        <div class="hp-label">ONE 8 KB PAGE AT INITIAL LOAD</div>
+        <div class="hp-slots" id="ff-page"></div>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="ff-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) <code>heap_page_prune()</code> — vacuum's little cousin that runs on every access</h3>
+  <p>Pruning does not wait for <code>VACUUM</code>. Any backend that visits a page — during an ordinary
+  <code>SELECT</code>, an <code>UPDATE</code>, or an <code>INSERT</code> looking for free space — can trigger
+  <code>heap_page_prune()</code> if it notices dead tuples and needs the room. The algorithm walks each HOT chain
+  from its root, using <code>HeapTupleSatisfiesVacuum()</code> to classify each member, and rewrites the line
+  pointer array in place:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>access/heap/pruneheap.c — heap_prune_chain(), simplified</span></div>
+    <pre><span class="k">static void</span>
+<span class="f">heap_prune_chain</span>(Buffer buffer, OffsetNumber rootoffnum, PruneState *prstate)
+{
+    OffsetNumber offnum = rootoffnum;
+    OffsetNumber chain[MaxHeapTuplesPerPage];
+    <span class="k">int</span> nchain = <span class="n">0</span>;
+    <span class="k">bool</span> allDead = <span class="k">true</span>;
+
+    <span class="c">/* Walk t_ctid forward while HEAP_HOT_UPDATED is set, classifying
+     * every member we pass along the way.                               */</span>
+    <span class="k">for</span> (;;)
+    {
+        ItemId lp = <span class="f">PageGetItemId</span>(page, offnum);
+        <span class="k">if</span> (!<span class="f">ItemIdIsNormal</span>(lp)) <span class="k">break</span>;
+
+        HeapTupleHeader htup = (HeapTupleHeader) <span class="f">PageGetItem</span>(page, lp);
+        HTSV_Result st = <span class="f">HeapTupleSatisfiesVacuum</span>(htup, prstate-&gt;OldestXmin, buffer);
+
+        <span class="k">if</span> (st != HEAPTUPLE_DEAD)
+            allDead = <span class="k">false</span>;    <span class="c">/* one live member is enough to keep the chain */</span>
+
+        chain[nchain++] = offnum;
+        <span class="k">if</span> (!(htup-&gt;t_infomask2 &amp; HEAP_HOT_UPDATED))
+            <span class="k">break</span>;             <span class="c">/* reached the newest version */</span>
+        offnum = <span class="f">ItemPointerGetOffsetNumber</span>(&amp;htup-&gt;t_ctid);
+    }
+
+    <span class="k">if</span> (allDead)
+    {
+        <span class="c">/* Whole chain is invisible to everyone: mark every member
+         * LP_UNUSED and the root LP_DEAD (a stub — indexes may still
+         * point here, so the slot itself must survive until VACUUM's
+         * index cleanup pass removes those index entries too).        */</span>
+        <span class="f">heap_prune_record_dead</span>(prstate, rootoffnum);
+        <span class="k">for</span> (<span class="k">int</span> i = <span class="n">1</span>; i &lt; nchain; i++)
+            <span class="f">heap_prune_record_unused</span>(prstate, chain[i]);
+    }
+    <span class="k">else if</span> (nchain &gt; <span class="n">1</span>)
+    {
+        <span class="c">/* Some prefix of the chain is dead, but the tail survives:
+         * unlink the dead middle, and REDIRECT the root straight to
+         * the first live member. Indexes never learn about this —
+         * they were pointing at rootoffnum the whole time.            */</span>
+        <span class="f">heap_prune_record_redirect</span>(prstate, rootoffnum, <span class="f">first_live_offset</span>(chain, htup));
+    }
+}</pre>
+  </div>
+
+  <p>Watch the same three-update sequence from §3, this time with HOT eligible and pruning enabled:</p>
+
+  <div class="widget deck" id="deckHotChain">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A HOT chain forms, then gets pruned</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="co-t">WHY LP_DEAD SURVIVES WHEN LP_UNUSED DOESN'T</div>
+    <p>Notice the asymmetry in the algorithm above: a fully-dead chain's root becomes <code>LP_DEAD</code>, not
+    <code>LP_UNUSED</code>, while its interior members become <code>LP_UNUSED</code> immediately. The reason is
+    indexes: every index on the table may still hold an entry pointing at that root offset. Recycling the slot
+    (<code>LP_UNUSED</code>) before those index entries are removed would let a future, unrelated tuple reuse the
+    same offset — and a stale index entry would then silently point at the wrong row. Only <code>VACUUM</code>'s
+    index-cleanup phase, which physically visits every index and removes entries pointing at dead TIDs, is allowed
+    to downgrade a root from <code>LP_DEAD</code> to <code>LP_UNUSED</code>. <code>heap_page_prune()</code> can
+    reclaim tuple <i>storage</i> without VACUUM; it can never reclaim a <i>line pointer slot that an index might
+    reference</i> without VACUUM. That distinction is the entire reason VACUUM still has a job in a HOT-heavy table.</p>
+  </div>
+
+  <h3>(d) The other half of the chapter: a 32-bit clock that must never lap itself</h3>
+  <p>Every tuple's <code>xmin</code> and <code>xmax</code> are <code>TransactionId</code> — a plain
+  <code>uint32</code>. PostgreSQL does not compare XIDs with ordinary integer <code>&lt;</code>; it compares them
+  circularly, treating the 2<sup>32</sup> XID space as a clock face and asking "is id1 within the next 2<sup>31</sup>
+  ticks ahead of id2?" That single design decision — necessary because XIDs must wrap and be reused, or the counter
+  would exhaust after ~4.29 billion transactions — is also the entire wraparound danger surface:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>access/transam.h — the comparison that makes wraparound possible AND dangerous</span></div>
+    <pre><span class="k">#define</span> InvalidTransactionId        ((TransactionId) <span class="n">0</span>)
+<span class="k">#define</span> BootstrapTransactionId      ((TransactionId) <span class="n">1</span>)
+<span class="k">#define</span> FrozenTransactionId         ((TransactionId) <span class="n">2</span>)
+<span class="k">#define</span> FirstNormalTransactionId    ((TransactionId) <span class="n">3</span>)
+
+<span class="c">/* True iff id1 precedes id2 on a 2^32 circle, i.e. id2 is reachable
+ * from id1 by advancing fewer than 2^31 steps. Signed 32-bit subtraction
+ * does the modular-distance math for free via overflow wraparound.      */</span>
+<span class="k">static inline bool</span>
+<span class="f">TransactionIdPrecedes</span>(TransactionId id1, TransactionId id2)
+{
+    <span class="k">int32</span> diff = (<span class="k">int32</span>) (id1 - id2);
+    <span class="k">return</span> diff &lt; <span class="n">0</span>;
+}</pre>
+  </div>
+
+  <p>The circle is the whole point <i>and</i> the whole danger: any two XIDs less than 2<sup>31</sup> apart have an
+  unambiguous "earlier/later" relationship. But nothing stops a tuple's <code>xmin</code> from aging past that
+  window if it's simply never revisited — and once the gap between "now" and a stored <code>xmin</code> exceeds
+  2<sup>31</sup>, <code>TransactionIdPrecedes()</code> flips its answer: a transaction that actually committed
+  <i>in the past</i> now compares as being <i>in the future</i>, which for a visibility check means a row that was
+  dead can appear to spring back to life, or vice versa — silent, undetectable data corruption, not a crash. <b>Freezing exists
+  purely to keep every stored <code>xmin</code> inside a safe distance of the present.</b></p>
+
+  <p>Freezing rewrites a tuple's status, not (in modern PostgreSQL) its raw <code>xmin</code> value: it sets a
+  combination of <code>t_infomask</code> bits (<code>HEAP_XMIN_COMMITTED | HEAP_XMIN_INVALID</code> together, a
+  combination that's otherwise contradictory and is specifically repurposed to mean "frozen — always visible,
+  regardless of what xmin says") so that every future visibility check short-circuits to "definitely visible"
+  without ever running <code>TransactionIdPrecedes()</code> against that xmin again. (Versions before 9.4 physically
+  overwrote <code>xmin</code> with <code>FrozenTransactionId</code> — value 2 — which worked but required a WAL-logged
+  page rewrite for every frozen tuple; the infomask-bit approach folds freezing into work VACUUM is already doing
+  to the page.)</p>
+
+  <p>Four GUCs and two catalog columns govern when this happens:</p>
+  <table class="cmp">
+    <tr><th>NAME</th><th>DEFAULT</th><th>WHAT IT CONTROLS</th></tr>
+    <tr><td>vacuum_freeze_min_age</td><td>50,000,000</td><td>Minimum XID age before a tuple VACUUM is already touching gets frozen. Tuples younger than this are left alone even during an otherwise-necessary VACUUM.</td></tr>
+    <tr><td>vacuum_freeze_table_age</td><td>150,000,000</td><td>Once a table's <code>relfrozenxid</code> age exceeds this, VACUUM upgrades to an <b>aggressive</b> scan that visits every page (not just ones the visibility map says are dirty) so no tuple can hide from freezing.</td></tr>
+    <tr><td>autovacuum_freeze_max_age</td><td>200,000,000</td><td>Hard ceiling. Past this age, autovacuum launches a freeze on the table <b>unconditionally</b> — it cannot be deferred, throttled away, or skipped by <code>autovacuum_enabled=off</code> on that table.</td></tr>
+    <tr><td>relfrozenxid / datfrozenxid</td><td>(tracked)</td><td>Per-table and per-database low-water marks: the oldest XID that might still be un-frozen anywhere in that table/database. <code>age(relfrozenxid)</code> is the number everything above measures against.</td></tr>
+  </table>
+
+  <p>Drag the transaction-age slider below and watch which GUC fires first, in the order they actually trigger in a
+  running cluster:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Which threshold fires? — age(relfrozenxid) walkthrough</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>age(relfrozenxid)</label><input type="range" id="age-slider" min="0" max="2100000000" value="10000000" step="1000000"><span class="val" id="age-val">10,000,000</span></div>
+      <div class="pinrow" id="age-pins"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="age-note"></p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">THE HORIZON CAN BE PINNED BY THINGS THAT AREN'T EVEN RUNNING QUERIES</div>
+    <p>Freezing is bounded not just by GUCs but by <code>OldestXmin</code> — the oldest snapshot any active
+    process might still need — and that horizon can be held back by more than a slow query. A logical or physical
+    <b>replication slot</b> whose consumer has stopped reading keeps every WAL record and every XID since its
+    creation "still needed," indefinitely, with zero visible client connections. A forgotten <code>idle in
+    transaction</code> session pins the horizon just as effectively as an active one. §11 walks through real
+    outages caused by exactly this — the horizon, not the freeze machinery, was the thing that failed.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Every MVCC system pays this bill somewhere — the spread of answers</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>UPDATE-INDEX COST MODEL</th><th>OLD-VERSION GC</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>New tuple version, in-place index skip via HOT when eligible</td>
+      <td>VACUUM (heap + index cleanup) + opportunistic page pruning</td>
+      <td><span class="pill b">fillfactor tax</span> <span class="pill b">XID freezing required</span> <span class="pill g">no undo subsystem</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td>In-place update; old version in the undo log, indexes never move for non-key updates</td>
+      <td>Purge threads reclaim undo log entries once no snapshot needs them</td>
+      <td><span class="pill g">indexes untouched by non-key UPDATE</span> <span class="pill b">undo log is a second write-and-GC path</span> <span class="pill b">long transactions bloat undo, not the table</span></td></tr>
+    <tr><td>Oracle</td><td>In-place update; before-image in rollback/undo segments</td>
+      <td>Undo retention window (time or size based); <code>ORA-01555 snapshot too old</code> if a long reader outlives it</td>
+      <td><span class="pill g">mature, tunable undo retention</span> <span class="pill b">reader can fail outright, not just retry</span></td></tr>
+    <tr><td>SQLite</td><td>Rollback-journal or WAL mode; single writer, in-place page changes</td>
+      <td>Checkpointing folds the WAL back into the main file</td>
+      <td><span class="pill g">no concurrent-writer index amplification problem at all</span> <span class="pill b">one writer, full stop</span></td></tr>
+    <tr><td>RocksDB / LSM stores</td><td>Every write is a new key-value pair in an immutable memtable/SSTable</td>
+      <td>Background compaction drops shadowed/tombstoned versions</td>
+      <td><span class="pill g">writes are always sequential, cheap</span> <span class="pill b">compaction is a permanent background CPU/IO tax</span> <span class="pill y">read amplification across SSTable levels</span></td></tr>
+    <tr><td>Cassandra</td><td>Same LSM shape; secondary indexes are separate SSTables needing their own compaction</td>
+      <td>Tombstones + compaction; must run within <code>gc_grace_seconds</code></td>
+      <td><span class="pill b">tombstones can outlive gc_grace and resurrect deleted data</span> <span class="pill y">operator must actively run/monitor compaction &amp; repair</span></td></tr>
+  </table>
+  <p>Read this table the same way chapter 1 read its process-model comparison: <b>every MVCC or version-oriented
+  store must eventually reclaim old versions</b>, and the only real design choice is where the reclamation cost is
+  paid and what fails if you defer it too long. PostgreSQL's answer keeps updates fully in the primary data
+  structure (no separate undo store) at the price of a deferred, occasionally invisible garbage-collection debt —
+  bloat if VACUUM under-runs, wraparound risk if freezing under-runs — both of which are this chapter's subject.
+  InnoDB and Oracle pay a similar bill in a segregated undo area, trading "the main table never bloats from old
+  versions" for "a long-running reader can force a huge undo/rollback footprint, or in Oracle's case, simply fail."
+  LSM systems defer the same debt to compaction and accept read amplification as the ongoing cost of never doing
+  in-place work at all.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">What HOT actually buys, in Big-O and in bytes</h2>
+  <ul class="plain">
+    <li><b>Non-HOT update:</b> <code>O(1)</code> heap work + <code>O(N · log(n))</code> index work, where N is index
+      count and n is index size — dominated entirely by the index term for any table with more than one or two
+      indexes.</li>
+    <li><b>HOT update:</b> <code>O(1)</code> heap work, <code>O(0)</code> index work. The entire N-index term
+      vanishes. This is why HOT is described as the single biggest OLTP throughput feature in the codebase — it
+      doesn't optimize the index B-tree insert, it <i>skips it</i>.</li>
+    <li><b><code>heap_page_prune()</code> cost:</b> <code>O(tuples on the page)</code> per invocation, amortized
+      across ordinary page accesses — no separate scan of the table is needed, and it emits a compact, page-local
+      WAL record (a <code>PRUNE</code> record) rather than one record per reclaimed tuple.</li>
+    <li><b>Cache/locality effect:</b> because a HOT chain stays on one page, an UPDATE-heavy hot row keeps its
+      entire version history in one buffer-pool page — one pin, one set of cache lines, no extra <code>pread()</code>
+      to a second heap page and no extra random-access write into an index's B-tree leaf level (which, for a large
+      index, is very likely <i>cold</i> relative to the heap page you were already touching).</li>
+    <li><b>Freezing cost, amortized:</b> <code>heap_freeze_tuple()</code> work is folded into VACUUM passes the
+      table needed anyway under normal operation; the expensive case is the <i>aggressive</i> scan
+      (<code>vacuum_freeze_table_age</code> exceeded) which must visit every page regardless of the visibility map,
+      turning an <code>O(dirty pages)</code> job into an <code>O(table size)</code> one — exactly the scenario a
+      neglected large table hits right when you can least afford a full-table scan.</li>
+  </ul>
+  <p>Drag the index count and watch HOT-off vs HOT-on throughput diverge — then toggle fillfactor down to zero
+  headroom and watch HOT's advantage evaporate even though the code path is identical:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Update throughput vs index count — HOT on/off</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>indexes on table</label><input type="range" id="perf-idx" min="0" max="12" value="4" step="1"><span class="val" id="perf-idx-val">4</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-hot">HOT eligible (fillfactor has headroom)</button>
+        <button class="chip" id="perf-tight">simulate zero page headroom</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> HOT-eligible throughput</span>
+        <span><span style="color:var(--bad)">━</span> non-HOT throughput</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch (throughput inversely proportional to per-update index-descent cost, index
+    count as the dominant term) tuned to match the qualitative shape reported in pgbench-style HOT benchmarks since
+    8.3. The point is the shape: HOT-off throughput degrades roughly linearly as index count grows; HOT-on
+    throughput barely moves, because the index term it would have paid was never incurred. Real numbers depend on
+    index type, page cache residency, and WAL configuration — chapter 20 covers measurement methodology properly.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents that made "vacuum is boring" a dangerous opinion</h2>
+
+  <h3>Incident 1: Sentry's transaction-ID wraparound scare (2015)</h3>
+  <p>Sentry publicly documented an episode where a heavily-written table's <code>age(relfrozenxid)</code> climbed
+  far faster than autovacuum could bring it back down, driven by a combination of high UPDATE churn (bumping XID
+  consumption) and autovacuum runs that were repeatedly cancelled or starved by competing I/O and lock contention
+  from foreground traffic — the classic pattern where the very system under enough load to need aggressive
+  vacuuming is also the system too busy to let vacuuming finish. The fix followed the mechanism directly: identify
+  the table(s) closest to <code>autovacuum_freeze_max_age</code>, run a manual, throttled
+  <code>VACUUM FREEZE</code> during a quieter window ahead of the automatic forced pass, and tune
+  per-table autovacuum cost-limit settings so that table's vacuum could no longer be starved indefinitely by
+  everything else.</p>
+
+  <h3>Incident 2: Joyent's Manta outage (2015) — a replication-adjacent horizon pin</h3>
+  <p>Joyent's public postmortem for a major Manta object-storage outage traced the root cause to a PostgreSQL
+  instance approaching transaction ID wraparound: <code>age(relfrozenxid)</code> on a critical metadata table grew
+  until the cluster crossed into the emergency stop-limit region and refused new write transactions outright,
+  exactly as designed — a deliberately blunt, cluster-wide protection against the alternative (silent data
+  corruption from a flipped visibility comparison). Because the affected table sat on the critical path for the
+  entire storage service, a database-level safety mechanism became a regional outage. The structural lesson tracked
+  by the incident is the same one this chapter derives from <code>TransactionIdPrecedes()</code>: nothing about
+  wraparound protection cares how important your service is — the 2<sup>31</sup> boundary does not negotiate.</p>
+
+  <h3>Incident 3: the abandoned replication slot</h3>
+  <p>A recurring, less dramatic pattern across many production postmortems (Mailchimp among the companies that have
+  written publicly about variants of it): a logical or physical replication slot is created for a consumer —
+  a CDC pipeline, a reporting replica — and that consumer is later decommissioned without ever dropping the slot.
+  The slot's <code>xmin</code>/<code>catalog_xmin</code> keeps holding the vacuum horizon exactly where it was the
+  day the consumer stopped reading, silently, with no query, no open transaction, and no obvious symptom in
+  <code>pg_stat_activity</code> — you have to know to check <code>pg_replication_slots</code>. Autovacuum keeps
+  running, keeps "succeeding," and keeps making no progress on that table's dead tuples or its frozen-XID horizon,
+  because it correctly refuses to remove anything the slot might still need. <b>Fixes, in order of leverage:</b>
+  alert on <code>pg_replication_slots</code> age/lag independent of connection count; drop slots the moment a
+  consumer is retired, not "eventually"; and monitor <code>age(datfrozenxid)</code> cluster-wide as a first-class
+  metric, not something you discover during an incident.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend HOT and freezing at a whiteboard?</h2>
+  <p>Think before you reveal — these are the level of follow-up a Staff/Principal interview loop actually asks
+  once you've said "PostgreSQL uses MVCC."</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>pruneheap.c</code>, <code>heapam.c</code>, <code>varsup.c</code></h2>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/access/heap/</span></div>
+<div>├── <span class="fhl">● heapam.c</span> <span class="fnote">— heap_update(): decides HOT eligibility, calls RelationPutHeapTuple / index_insert as needed</span></div>
+<div>├── <span class="fhl">● pruneheap.c</span> <span class="fnote">— heap_page_prune(), heap_prune_chain(): single-page reclamation, no VACUUM required</span></div>
+<div>├── heapam_visibility.c <span class="fnote">— HeapTupleSatisfiesVacuum(): classifies each chain member as LIVE/DEAD/RECENTLY_DEAD</span></div>
+<div>├── <span class="dir">access/transam/</span></div>
+<div>│   ├── <span class="fhl">● varsup.c</span> <span class="fnote">— GetNewTransactionId(): allocates XIDs, checks the stop/warn limits before handing one out</span></div>
+<div>│   └── xact.c <span class="fnote">— transaction commit/abort bookkeeping (chapter 5's territory, revisited chapter 7)</span></div>
+<div>├── <span class="dir">include/access/</span></div>
+<div>│   ├── <span class="fhl">● transam.h</span> <span class="fnote">— TransactionIdPrecedes(): the modulo-2^31 circular comparison</span></div>
+<div>│   └── htup_details.h <span class="fnote">— HeapTupleHeaderData, HEAP_HOT_UPDATED, HEAP_ONLY_TUPLE bit definitions</span></div>
+<div>└── <span class="dir">backend/commands/</span><span class="fhl">● vacuum.c</span> <span class="fnote">— vacuum_set_xid_limits(): reads the freeze GUCs, decides normal vs aggressive scan</span></div>
+  </div></div>
+
+  <p>First, the fork in <code>heap_update()</code> — this is the single most important branch in this chapter:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>access/heap/heapam.c — heap_update(), the HOT-eligibility fork (simplified)</span></div>
+    <pre>TM_Result
+<span class="f">heap_update</span>(Relation relation, ItemPointer otid, HeapTuple newtup, ...)
+{
+    Bitmapset *modified = <span class="f">HeapDetermineColumnsInfo</span>(relation, newtup, oldtup);
+    <span class="k">bool</span> use_hot_update = <span class="k">false</span>;
+
+    <span class="c">/* Condition 1: did the UPDATE touch any column referenced by
+     * ANY index (including expression &amp; predicate indexes)?         */</span>
+    <span class="k">bool</span> indexed_cols_changed =
+        <span class="f">bms_overlap</span>(modified, RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_ALL));
+
+    <span class="k">if</span> (!indexed_cols_changed)
+    {
+        <span class="c">/* Condition 2: does the new version fit in the free space
+         * already on oldtup's page? PageGetHeapFreeSpace() answers this
+         * against pd_lower/pd_upper -- exactly the room fillfactor
+         * reserved, if any is left.                                    */</span>
+        <span class="k">if</span> (<span class="f">PageGetHeapFreeSpace</span>(page) &gt;= newtup-&gt;t_len)
+            use_hot_update = <span class="k">true</span>;
+    }
+
+    <span class="k">if</span> (use_hot_update)
+    {
+        newtup-&gt;t_data-&gt;t_infomask2 |= HEAP_ONLY_TUPLE;
+        oldtup.t_data-&gt;t_infomask2  |= HEAP_HOT_UPDATED;
+        <span class="c">/* new version placed on the SAME page; NO index_insert calls follow. */</span>
+    }
+    <span class="k">else</span>
+    {
+        <span class="c">/* fall back to the full path from §3: place anywhere, then
+         * insert into every index that needs to know.                  */</span>
+        <span class="f">RelationGetIndexList</span>(relation); <span class="c">/* ... index_insert() per index ... */</span>
+    }
+    ...
+}</pre>
+  </div>
+
+  <p>Next, the wraparound guard itself — the function every single write transaction passes through:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>access/transam/varsup.c — GetNewTransactionId(), simplified</span></div>
+    <pre>TransactionId
+<span class="f">GetNewTransactionId</span>(<span class="k">bool</span> isSubXact)
+{
+    TransactionId xid;
+
+    <span class="f">LWLockAcquire</span>(XidGenLock, LW_EXCLUSIVE);
+    xid = ShmemVariableCache-&gt;nextXid;
+
+    <span class="c">/* xidStopLimit is computed from the oldest datfrozenxid across every
+     * database, plus (2^31 - 1,000,000): once we're within one million
+     * transactions of the theoretical wrap point, refuse to allocate.  */</span>
+    <span class="k">if</span> (<span class="f">TransactionIdFollowsOrEquals</span>(xid, ShmemVariableCache-&gt;xidStopLimit))
+    {
+        <span class="f">LWLockRelease</span>(XidGenLock);
+        <span class="f">ereport</span>(ERROR,
+            (<span class="f">errmsg</span>(<span class="s">"database is not accepting commands to avoid wraparound data loss in database \"%s\""</span>,
+                    oldest_datname),
+             <span class="f">errhint</span>(<span class="s">"Stop the postmaster and vacuum that database in single-user mode.\n"</span>
+                     <span class="s">"You might also need to commit or roll back old prepared transactions, "</span>
+                     <span class="s">"or drop stale replication slots."</span>)));
+    }
+    <span class="k">else if</span> (<span class="f">TransactionIdFollowsOrEquals</span>(xid, ShmemVariableCache-&gt;xidWarnLimit))
+        <span class="f">ereport</span>(WARNING,
+            (<span class="f">errmsg</span>(<span class="s">"database \"%s\" must be vacuumed within %u transactions"</span>,
+                    oldest_datname, ShmemVariableCache-&gt;xidWrapLimit - xid)));
+
+    <span class="f">TransactionIdAdvance</span>(ShmemVariableCache-&gt;nextXid);   <span class="c">/* wraps via uint32 overflow, skipping 0/1/2 */</span>
+    <span class="f">LWLockRelease</span>(XidGenLock);
+    <span class="k">return</span> xid;
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — TWO CHOICES TO STEAL</div>
+    <p><b>1. Encode the decision in bits the visibility check already reads.</b> HOT and freezing both avoid adding
+    a new code path for readers — <code>t_infomask</code>/<code>t_infomask2</code> are inspected on every tuple
+    visibility check regardless; teaching them two more meanings costs nothing extra per read. <b>2. Fail loudly,
+    early, and by refusing writes rather than corrupting data.</b> <code>GetNewTransactionId()</code> could have let
+    the counter wrap silently — instead it deliberately takes the whole database read-only well before the
+    mathematically dangerous point, converting an invisible correctness bug into a loud, recoverable operational
+    incident. That's the same "prefer an observable failure over a silent one" instinct chapter 1's crash protocol
+    embodies, applied to a completely different subsystem.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a table's slide toward wraparound, and back</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from a healthy table to a forced single-user recovery. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Two live systems: a HOT page, and the wraparound clock</h2>
+  <p>The flagship simulator has two tabs. <b>HOT lab</b>: drive updates against a single page, watch chains form
+  and prune, and change fillfactor to see space pressure force a fallback to a real index update.
+  <b>Wraparound countdown</b>: crank a transaction rate, throttle or disable autovacuum, open long-running
+  transactions and replication slots that pin the xmin horizon, and watch <code>age(relfrozenxid)</code> climb
+  toward the 2-billion horizon with the real warning and stop messages firing at the real thresholds.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">MVCC II simulator</span><span class="w-sub" id="sim-phase">HOT LAB</span></div>
+    <div class="w-body" style="padding:0">
+      <div style="display:flex;border-bottom:1px solid var(--border)">
+        <button class="btn" id="tab-hot" style="border-radius:0;flex:1;border:none;border-right:1px solid var(--border)">HOT LAB</button>
+        <button class="btn" id="tab-xid" style="border-radius:0;flex:1;border:none">WRAPAROUND COUNTDOWN</button>
+      </div>
+
+      <div id="pane-hot">
+        <div class="sim-wrap">
+          <div class="sim-stage">
+            <div class="hp-label" style="margin-bottom:6px">LINE POINTER ARRAY</div>
+            <div class="hp-lps" id="hot-lps"></div>
+            <div class="hp-label" style="margin:10px 0 6px">TUPLE STORAGE (chain highlighted)</div>
+            <div class="hp-slots" id="hot-slots"></div>
+            <div class="hp-label" style="margin:14px 0 6px">INDEX ON THIS TABLE (points at root only)</div>
+            <div id="hot-index" style="font-family:var(--mono);font-size:11px;color:var(--muted)"></div>
+          </div>
+          <div class="sim-side">
+            <div class="sim-ctl">
+              <div class="ctl-t">WORKLOAD</div>
+              <div class="btns">
+                <button class="btn good" id="hot-update">UPDATE (non-indexed col)</button>
+                <button class="btn warn" id="hot-update-idx">UPDATE (indexed col)</button>
+                <button class="btn" id="hot-prune">force heap_page_prune()</button>
+                <button class="btn danger" id="hot-reset">reset page</button>
+              </div>
+            </div>
+            <div class="sim-ctl">
+              <div class="ctl-t">CONFIG</div>
+              <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">fillfactor</label><span class="val" id="hot-ff-val" style="min-width:34px">90%</span></div>
+              <input type="range" id="hot-ff" min="50" max="100" value="90" step="5" style="width:100%;accent-color:var(--pg)">
+            </div>
+            <div class="sim-counters">
+              <div class="scounter"><div class="cv" id="hot-cnt-hot">0</div><div class="cl">HOT updates</div></div>
+              <div class="scounter"><div class="cv" id="hot-cnt-idx">0</div><div class="cl">index writes</div></div>
+              <div class="scounter"><div class="cv" id="hot-cnt-prune">0</div><div class="cl">prunes</div></div>
+            </div>
+            <div class="inspector" id="hot-insp"><div class="i-t">CHAIN LENGTH</div><div style="color:var(--dim)">no updates yet</div></div>
+          </div>
+        </div>
+        <div class="slog" id="hot-log"></div>
+      </div>
+
+      <div id="pane-xid" style="display:none">
+        <div class="sim-wrap">
+          <div class="sim-stage">
+            <div class="xidclock-wrap">
+              <div class="xidclock"><canvas id="xid-canvas" width="260" height="260"></canvas></div>
+              <div class="xid-readout" id="xid-readout"></div>
+            </div>
+            <div style="margin-top:14px"><span id="xid-phase" class="xid-phase ok">HEALTHY</span></div>
+          </div>
+          <div class="sim-side">
+            <div class="sim-ctl">
+              <div class="ctl-t">TRANSACTION RATE</div>
+              <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">txns / tick</label><span class="val" id="xid-rate-val" style="min-width:50px">2,000,000</span></div>
+              <input type="range" id="xid-rate" min="0" max="10000000" value="2000000" step="250000" style="width:100%;accent-color:var(--pg)">
+            </div>
+            <div class="sim-ctl">
+              <div class="ctl-t">AUTOVACUUM</div>
+              <div class="btns">
+                <button class="chip on" id="xid-av-on">autovacuum: ON</button>
+                <button class="chip" id="xid-av-slow">throttled (cost limits)</button>
+              </div>
+            </div>
+            <div class="sim-ctl">
+              <div class="ctl-t">HORIZON PINS</div>
+              <div class="btns">
+                <button class="btn" id="xid-longtxn">open long-running txn</button>
+                <button class="btn" id="xid-slot">open abandoned repl. slot</button>
+                <button class="btn danger" id="xid-clearpins">clear all pins</button>
+              </div>
+            </div>
+            <div class="sim-counters">
+              <div class="scounter"><div class="cv" id="xid-cnt-age">0</div><div class="cl">age(relfrozenxid)</div></div>
+              <div class="scounter"><div class="cv" id="xid-cnt-remain">2.0B</div><div class="cl">txns remaining</div></div>
+              <div class="scounter"><div class="cv" id="xid-cnt-pins">0</div><div class="cl">active pins</div></div>
+            </div>
+            <div class="btns" style="padding:0 15px 13px"><button class="btn" id="xid-pause">⏸ pause</button><button class="btn danger" id="xid-restart">restart clock</button></div>
+          </div>
+        </div>
+        <div class="slog" id="xid-log"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> HOT lab: set fillfactor to 100%, update the same row repeatedly — watch every update fall back to
+    a real index write because there's no room. Lower fillfactor to 70% and repeat. <b>2.</b> Update an indexed
+    column once mid-chain and see the fallback happen even with headroom available. <b>3.</b> Wraparound: max out
+    the transaction rate, turn autovacuum off, and watch the phase indicator move from healthy → warning → critical
+    → forced read-only, with the exact log lines PostgreSQL emits at each threshold. <b>4.</b> Open a long-running
+    transaction or an abandoned replication slot with autovacuum ON and watch age climb anyway — the horizon, not
+    the vacuum process, is the bottleneck.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 7: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head, <i>then</i> reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 06 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now predict whether an UPDATE will be HOT before
+    running it, explain exactly which two bits and which line-pointer state make a chain work, and name the GUC and
+    the age at which a table stops being optional to vacuum. Chapter 7 leaves physical row versions behind and goes
+    up a level of abstraction: what a <i>transaction</i> is allowed to see of the tuples you now understand at the
+    byte level, from Read Committed's per-statement snapshot up through Serializable Snapshot Isolation's conflict
+    graph — built directly on the xmin/xmax machinery you just watched being frozen.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="pg-07.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-07: Transactions & Isolation →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY (shared shape with pg-01)
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1999", l:"MVCC lands", d:"<b>Vadim Mikheev's MVCC (PostgreSQL 6.5).</b> Readers stop blocking writers by never overwriting tuples in place — chapter 5's subject. The immediate, unavoidable consequence: every UPDATE now creates a new TID, and every index on the table is a map of old TIDs. The clock on this chapter's problem starts ticking here." },
+  { yr:"2003–2007", l:"the tax accumulates", d:"<b>OLTP users hit the index-amplification wall.</b> As PostgreSQL adoption grows into update-heavy workloads (session stores, counters, queues), the cost from §1–§4 becomes a recognized, named problem on the mailing lists: tables with several indexes see index bloat and write amplification directly proportional to index count, regardless of which columns actually changed." },
+  { yr:"2007", l:"HOT patch proposed", d:"<b>Pavan Deolasee (EnterpriseDB) posts the first HOT patches</b> to pgsql-hackers, with design input from Heikki Linnakangas and Simon Riggs. The core insight — redirect a stable line pointer instead of teaching every index a new address — required careful new invariants for page pruning and index-scan chain-following to avoid silently returning stale rows." },
+  { yr:"2008", l:"PostgreSQL 8.3", d:"<b>HOT ships as a headline feature.</b> Fillfactor becomes a meaningful per-table tuning lever for the first time; heap_page_prune() begins running opportunistically on ordinary access. Benchmarks of the era show dramatic reductions in index bloat and write volume for update-heavy schemas with headroom to spare." },
+  { yr:"2009", l:"9.4's freezing rework begins design", l2:"", d:"<b>The freeze-without-rewrite idea takes shape.</b> Early freezing physically overwrote xmin with FrozenTransactionId (2) — correct, but an extra WAL-logged page rewrite per frozen tuple. Work led by Álvaro Herrera and Andres Freund folds freezing into the infomask-bit combination (HEAP_XMIN_COMMITTED | HEAP_XMIN_INVALID) so a visibility check alone can recognize it." },
+  { yr:"2014", l:"PostgreSQL 9.4", d:"<b>Freezing-by-bits ships</b>, alongside a visibility-map \"all frozen\" bit that lets VACUUM skip pages known to need no more freezing work at all — not just pages with no dead tuples. This is the optimization that keeps routine VACUUMs from re-scanning a mostly-static table's frozen pages forever." },
+  { yr:"2017", l:"WARM proposed, not merged", d:"<b>Alvaro Herrera and Pavan Deolasee's WARM patches</b> attempt to extend page-local redirection to survive one indexed-column change per chain. Reviewers ultimately judge the correctness surface (multi-index disambiguation, scan semantics) too large relative to the win over HOT + sane fillfactor; the patch series does not land in core." },
+  { yr:"2023→", l:"64-bit XIDs debated", d:"<b>The 64-bit TransactionId proposal.</b> Multiple pgsql-hackers threads (Peter Eisentraut, Robert Haas, and others) weigh eliminating wraparound risk entirely against doubling xmin/xmax storage in every tuple header, doubling clog-equivalent SLRU size, and touching every on-disk format assumption this chapter relies on. No consensus design has shipped; freezing remains the load-bearing mitigation you're about to operate." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: naive three updates, three indexes (§3)
+   ============================================================ */
+(function(){
+  function pageView(indexHits, rootMoved){
+    const idxBoxes = [0,1,2].map(i=>`<div style="border:1px solid var(--border-hi);border-radius:9px;padding:8px 10px;font-family:var(--mono);font-size:10.5px;color:${indexHits[i]?'var(--bad)':'var(--muted)'};background:${indexHits[i]?'rgba(242,92,84,.08)':'transparent'}">index_${i+1}<span style="display:block;font-size:9px;color:var(--dim)">${indexHits[i]?'NEW entry written':'untouched this round'}</span></div>`).join("");
+    return `<div style="display:flex;flex-direction:column;gap:14px;align-items:center">
+      <div style="display:flex;gap:10px">${idxBoxes}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--dim)">↓ ↓ ↓ every index insertion, every time</div>
+      <div class="hpage" style="width:100%;max-width:420px"><div class="hp-label">HEAP PAGE</div>
+        <div class="hp-slots">
+          <div class="tup ${rootMoved?'dead':'root'}">old version<span class="tf">xmax set, dead once no reader needs it</span></div>
+          <div class="hp-arrow">→</div>
+          <div class="tup root">new version<span class="tf">new TID, fresh row</span></div>
+        </div></div>
+    </div>`;
+  }
+  stepper("deckNaive", [
+    { stage: pageView([false,false,false], false),
+      cap:`<b>Row 42 exists, three indexes reference it.</b> One row, one heap page, three B-trees each holding an entry that says "row 42's key is at this exact TID."` },
+    { stage: pageView([true,true,true], true),
+      cap:`<b>UPDATE sets a column no index covers.</b> Doesn't matter — the new tuple has a new TID by construction (MVCC never overwrites). All three indexes must learn the new TID, so all three pay a B-tree insertion, purely to keep pointing at a row whose indexed columns never changed.` },
+    { stage: pageView([true,true,true], true),
+      cap:`<b>Second UPDATE, same story.</b> Every one of these index writes is a real B-tree descent — O(log n) page reads, each potentially a page split — that exists purely to correct an address, not to reflect new information about the row's key or attributes.` },
+    { stage: pageView([true,true,true], true),
+      cap:`<b>Verdict after three updates:</b> 3 heap writes, 9 index insertions, and 3 permanently-stale old entries sitting in each index waiting for VACUUM. For a table with N indexes this is exactly N× amplification on every UPDATE that touches no indexed column at all. §5 removes the multiplier without removing any index.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: three candidates on one page (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner) => `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:12px;flex:1;min-width:220px">
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  const line = (t,c="#8b94a7",bg="transparent") => `<div style="border:1px solid var(--border);border-radius:7px;padding:6px 9px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  stepper("deckCandidates", [
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("CANDIDATE A — undo log (Oracle/InnoDB shape)",
+        line("row updated IN PLACE, same address") + line("old version pushed to undo/rollback segment", "#ff9f43","rgba(255,159,67,.08)") + line("indexes: never move ✓","#4ade80"))}</div>`,
+      cap:`<b>In-place + undo eliminates the index problem entirely</b> — the address never changes, so no index ever needs updating for a non-key change. The price is a whole second storage subsystem: its own write path, its own WAL-equivalent, its own space-reclamation job (purge/undo retention). PostgreSQL's append-only heap has no such structure and none of its other subsystems assume one exists.` },
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("CANDIDATE B — skip indexes whose COLUMNS didn't change",
+        line("compare old vs new tuple, per column") + line("index on unchanged column: skip? — but TID still moved!","#f25c54","rgba(242,92,84,.08)") + line("index on changed column: still must write","#ff9f43"))}</div>`,
+      cap:`<b>Necessary, not sufficient.</b> PostgreSQL does compute this column-change bitmap — but the new tuple's TID differs from the old one regardless of which columns changed, so an index on an untouched column still has a stale pointer unless something else keeps it valid. Column-change detection narrows N, it doesn't zero it.` },
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("CANDIDATE C — redirect a stable line pointer ✓",
+        line("index still points at line pointer #6, forever","#60a5fa","rgba(96,165,250,.06)") + line("line pointer #6: LP_REDIRECT → wherever the live version now sits") + line("indexes: zero new entries, zero column-change bookkeeping needed for THIS purpose","#4ade80"))}</div>`,
+      cap:`<b>HOT.</b> The index's promise ("row's key is at slot #6") never becomes false — slot #6 stops being a tuple and becomes a redirector. What it redirects to can change every update, on the same page, with zero index involvement, as long as the two conditions from §5's prose hold: no indexed column changed, and the page has room.` },
+    { stage: `<div style="display:flex;gap:14px;flex-wrap:wrap">${box("SAME UPDATE, THREE WAYS",
+        line("A: 1 heap write + undo push — no index writes, new subsystem needed") + line("B: 1 heap write + (N minus changed-cols) index writes") + line("C: 1 heap write + 0 index writes, existing subsystems only","#4ade80","rgba(74,222,128,.06)"))}</div>`,
+      cap:`<b>Why C won for PostgreSQL specifically:</b> it reaches A's zero-index-writes outcome using only mechanisms the heap already had (line pointers, page pruning) — no new subsystem, no new failure mode, no new recovery path. That's the decisive engineering argument, not raw performance alone.` }
+  ]);
+})();
+
+/* ============================================================
+   4. DECK: heap_update() HOT decision (§8a)
+   ============================================================ */
+(function(){
+  const check = (label, ok, note) => `<div style="display:flex;align-items:center;gap:10px;border:1px solid ${ok===null?'var(--border-hi)':ok?'var(--ok)':'var(--bad)'};background:${ok===null?'transparent':ok?'rgba(74,222,128,.06)':'rgba(242,92,84,.06)'};border-radius:10px;padding:10px 13px;margin-bottom:8px">
+    <span style="font-family:var(--mono);font-size:14px;color:${ok===null?'var(--dim)':ok?'var(--ok)':'var(--bad)'}">${ok===null?'?':ok?'✓':'✗'}</span>
+    <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted)">${label}<span style="display:block;font-size:10px;color:var(--dim)">${note}</span></span></div>`;
+  stepper("deckHotDecide", [
+    { stage: check("Condition 1: no indexed column modified", null, "HeapDetermineColumnsInfo() diffs old vs new tuple; bms_overlap() against every index's attribute bitmap, including expression & partial-index predicates") + check("Condition 2: new version fits on the SAME page", null, "PageGetHeapFreeSpace() checked only after condition 1 passes — no point measuring space you won't use"),
+      cap:`<b>heap_update() evaluates two independent conditions</b>, in this order, before touching a single index. Both must hold for the HOT path; either failing falls back to §3's full path.` },
+    { stage: check("Condition 1: no indexed column modified", true, "UPDATE ... SET last_login = now() — last_login is in no index's attribute list") + check("Condition 2: fits on same page", null, "checking next…"),
+      cap:`<b>Condition 1 passes.</b> The column being written isn't referenced by any index (a plain B-tree column list, an expression index's dependency set, or a partial index's WHERE clause all count). Move to condition 2.` },
+    { stage: check("Condition 1: no indexed column modified", true, "confirmed") + check("Condition 2: fits on same page", true, "fillfactor left headroom; PageGetHeapFreeSpace() ≥ new tuple length"),
+      cap:`<b>Condition 2 passes too</b> — there's unused space on this page (the whole reason fillfactor was lowered below 100). <code>use_hot_update = true</code>.` },
+    { stage: check("HEAP_ONLY_TUPLE set on new version", true, "no index will ever be told this tuple's address") + check("HEAP_HOT_UPDATED set on old version", true, "t_ctid repurposed to point at the new version") + check("index_insert() calls this UPDATE", false, "zero — this is the entire point"),
+      cap:`<b>Result.</b> Two infomask bits flip, one page is dirtied once, and every index on the table is completely untouched by this UPDATE. Contrast this with §3's deck: same logical operation, zero of the index-write cost.` }
+  ]);
+})();
+
+/* ============================================================
+   5. DECK: HOT chain forms then gets pruned (§8c)
+   ============================================================ */
+(function(){
+  function page(lps, tups, note){
+    const lpHtml = lps.map(l=>`<div class="lp ${l.cls}">${l.t}</div>`).join("");
+    const tupHtml = tups.map(t=>`<div class="tup ${t.cls}">${t.t}<span class="tf">${t.sub}</span></div>`).join("");
+    return `<div class="hpage"><div class="hp-label">LINE POINTERS</div><div class="hp-lps">${lpHtml}</div>
+      <div class="hp-label">TUPLE STORAGE</div><div class="hp-slots">${tupHtml}</div>
+      <p style="font-size:11.5px;color:var(--dim);margin-top:8px;font-family:var(--mono)">${note}</p></div>`;
+  }
+  stepper("deckHotChain", [
+    { stage: page([{cls:"normal",t:"#6"}], [{cls:"root",t:"v0 (root)",sub:"xmin=100, live"}],
+        "index_1 points at line pointer #6. One version, no chain yet."),
+      cap:`<b>Steady state.</b> One live tuple, one line pointer, one index entry pointing at #6. Nothing to prune.` },
+    { stage: page([{cls:"normal",t:"#6"}], [{cls:"dead",t:"v0",sub:"xmax=101, HOT_UPDATED"},{cls:"hotchain",t:"v1 (heap-only)",sub:"xmin=101, HEAP_ONLY_TUPLE"}],
+        "index_1 STILL points at #6 — untouched. #6's tuple now carries HEAP_HOT_UPDATED and t_ctid → v1."),
+      cap:`<b>First HOT update.</b> v0 is marked HEAP_HOT_UPDATED with t_ctid pointing at v1; v1 carries HEAP_ONLY_TUPLE. No index_insert happened — index_1's entry is still valid because line pointer #6 hasn't moved, only what it ultimately leads to.` },
+    { stage: page([{cls:"normal",t:"#6"}], [{cls:"dead",t:"v0",sub:"dead, HOT_UPDATED"},{cls:"dead",t:"v1",sub:"dead, HOT_UPDATED"},{cls:"hotchain",t:"v2 (heap-only)",sub:"xmin=103, live"}],
+        "chain length now 3. Any index lookup via #6 must walk v0 → v1 → v2 to find the live version."),
+      cap:`<b>Second HOT update — chain grows to length 3.</b> Still zero index writes, but notice the cost shifting: a lookup arriving via #6 must now walk two dead versions before reaching v2. This is HOT's deferred cost from §6 made concrete.` },
+    { stage: page([{cls:"redirect",t:"#6→v2"}], [{cls:"hotchain",t:"v2 (heap-only)",sub:"now the ONLY tuple stored"}],
+        "heap_page_prune() ran: v0 and v1's storage reclaimed (LP_UNUSED), #6 rewritten to LP_REDIRECT straight at v2."),
+      cap:`<b>heap_page_prune() fires</b> — triggered opportunistically by a backend visiting this page, no VACUUM invoked. v0 and v1's tuple storage is reclaimed; #6 becomes LP_REDIRECT pointing directly at v2. Index_1's entry is <i>still</i> #6 — it never had to change — and a lookup now resolves in one hop again.` }
+  ]);
+})();
+
+/* ============================================================
+   6. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  pd_lower:{ n:"pd_lower / pd_upper", f:"include/storage/bufpage.h", r:"Page-header offsets bounding the free-space gap between the growing line-pointer array (from the front) and the growing tuple data area (from the back). PageGetHeapFreeSpace() is just upper minus lower, minus bookkeeping — this is what condition 2 of the HOT decision actually measures.", l:"Updated on every insert/update/prune that touches this page.", d:"If a page reports zero free space, every future update needing that space (HOT or not) is forced onto a different page or into the full index-write path." },
+  lp_normal:{ n:"LP_NORMAL line pointer", f:"include/storage/itemid.h", r:"The ordinary state: lp_off points at a live tuple's byte offset, lp_len its length. Every index TID ultimately resolves to a line pointer, never directly to a tuple's bytes — that indirection is precisely what makes redirection possible without touching the index.", l:"Set at insert; can transition to LP_REDIRECT or LP_DEAD via pruning, or LP_UNUSED via vacuum.", d:"None on its own — it's the default, healthy state of a slot." },
+  lp_redirect:{ n:"LP_REDIRECT line pointer", f:"include/storage/itemid.h", r:"The root of a pruned HOT chain: instead of pointing at tuple bytes, lp_off is reinterpreted as the offset number of the current live heap-only tuple on this SAME page. This is the mechanism's whole trick — indexes keep referencing this slot forever; only what it redirects to changes.", l:"Created by heap_page_prune() when a chain's tail survives but earlier members don't.", d:"Can itself become LP_DEAD if the entire remaining chain later dies, or LP_UNUSED once VACUUM confirms no index references it anymore." },
+  lp_dead:{ n:"LP_DEAD line pointer", f:"include/storage/itemid.h", r:"A stub: no tuple storage behind it, but the slot itself is preserved because an index somewhere may still hold a TID pointing at this offset. Reclaiming the storage is safe immediately; reclaiming the SLOT is not, until index cleanup confirms no index still references it.", l:"Set by heap_page_prune() when an entire HOT chain is dead, or (older tuples generally) by ordinary vacuum scanning.", d:"VACUUM's index-cleanup phase visits every index, removes entries pointing at LP_DEAD TIDs, then downgrades the line pointer to LP_UNUSED." },
+  lp_unused:{ n:"LP_UNUSED line pointer", f:"include/storage/itemid.h", r:"A genuinely free slot — no tuple, no index anywhere references it, safe to hand out to the next INSERT/UPDATE that lands on this page.", l:"Reached either directly from pruning (interior HOT-chain members, which no index ever pointed at) or from VACUUM downgrading a former LP_DEAD.", d:"None — this is the fully-reclaimed end state." },
+  infomask2:{ n:"t_infomask2 bits", f:"include/access/htup_details.h", r:"Low 11 bits: natts (attribute count). High bits repurposed by HOT: HEAP_HOT_UPDATED (0x4000) means 'follow t_ctid, a newer version exists'; HEAP_ONLY_TUPLE (0x8000) means 'no index anywhere names this tuple directly'.", l:"Set at the moment heap_update() commits to the HOT path; read on every visibility check thereafter.", d:"A tuple with HEAP_ONLY_TUPLE set must never be reached except by chain traversal from its root — that invariant is what heap_prune_chain() and index-scan chain-following both depend on." },
+  tctid:{ n:"t_ctid forward pointer", f:"include/access/htup_details.h", r:"Normally a tuple's OWN TID. Repurposed for a HOT-updated tuple to mean 'here is my successor' — the mechanism a HOT chain is literally built from, one t_ctid link at a time.", l:"Rewritten at each HOT update on the old version; the newest chain member's t_ctid still points at itself.", d:"Chains never cross pages — t_ctid's page component always matches the root's page for a HOT chain, by construction." },
+  fillfactor:{ n:"fillfactor reserved space", f:"access/common/reloptions.c (storage param) · used throughout heapam.c", r:"A per-table percentage (default 100 for heap tables) telling bulk-load and INSERT operations to stop filling a page early, leaving the remainder empty on purpose so future UPDATEs have somewhere to place a HOT version.", l:"Applied at INSERT/COPY time, not retroactively — existing full pages need natural churn (or CLUSTER/VACUUM FULL) before they gain headroom.", d:"At fillfactor=100 (the heap default), a freshly loaded table has zero HOT headroom; the very first UPDATE on any page must fall back to the full index-write path regardless of which column changed." },
+  prune:{ n:"heap_page_prune()", f:"access/heap/pruneheap.c", r:"Single-page, opportunistic reclamation: walks every HOT chain on the page via heap_prune_chain(), classifies members with HeapTupleSatisfiesVacuum(), and rewrites line pointers to LP_REDIRECT/LP_DEAD/LP_UNUSED as appropriate — no VACUUM invocation required.", l:"Triggered whenever a backend visits a page and PageIsPrunable() suggests it's worthwhile (usually when free space is needed).", d:"Emits one compact PRUNE WAL record per invocation, not one per reclaimed tuple; on a crash, the record is simply replayed to reach the same page state." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">EDGE CASES</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("lp_redirect");
+
+/* ============================================================
+   7. FILLFACTOR PAGE WIDGET (§8b)
+   ============================================================ */
+(function(){
+  function render(){
+    const ff = +el("ff-slider").value;
+    el("ff-val").textContent = ff + "%";
+    const used = ff; const free = 100-ff;
+    const nTup = 6;
+    let html = "";
+    for (let i=0;i<nTup;i++) html += `<div class="tup" style="min-width:${Math.max(40, 380*used/100/nTup)}px">row ${i+1}</div>`;
+    html += `<div class="hp-free" style="flex:${Math.max(free,2)}">reserved: ${free}% — empty on purpose</div>`;
+    el("ff-page").innerHTML = html;
+    let note;
+    if (ff===100) note = `At fillfactor <b style="color:var(--bad)">100%</b> (the heap default), this page is packed edge-to-edge at load time. The very FIRST update to any row here — no matter how small — has nowhere to place a HOT version and must fall back to writing every index. You are choosing HOT-never for this table's initial data.`;
+    else note = `At fillfactor <b style="color:var(--pg)">${ff}%</b>, ${free}% of every page is left empty at load time — pure insurance. That space earns its keep the moment a row on this page gets its first UPDATE: with room to spare, condition 2 of the HOT decision (§8a) passes, and the update skips every index. Lower fillfactor buys more HOT headroom per page at the cost of ${free}% less data per page in the buffer cache.`;
+    el("ff-note").innerHTML = note;
+  }
+  el("ff-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. AGE / THRESHOLD WIDGET (§8d)
+   ============================================================ */
+(function(){
+  const PINS = [
+    { at:50000000, name:"vacuum_freeze_min_age", c:"var(--pg)" },
+    { at:150000000, name:"vacuum_freeze_table_age → aggressive scan", c:"var(--purple)" },
+    { at:200000000, name:"autovacuum_freeze_max_age → forced autovacuum", c:"var(--warn)" },
+    { at:2000000000-10000000, name:"xidWarnLimit → WARNING logged", c:"var(--warn)" },
+    { at:2000000000-1000000, name:"xidStopLimit → writes refused", c:"var(--bad)" }
+  ];
+  function render(){
+    const age = +el("age-slider").value;
+    el("age-val").textContent = age.toLocaleString();
+    el("age-pins").innerHTML = PINS.map(p=>`<div class="pin ${age>=p.at?'on':''}">${p.name}<span style="display:block;font-size:9.5px;color:var(--dim)">${p.at.toLocaleString()}</span></div>`).join("");
+    let note;
+    if (age < 50000000) note = `Below vacuum_freeze_min_age. Ordinary VACUUMs skip freezing tuples this young — nothing to do yet.`;
+    else if (age < 150000000) note = `Past vacuum_freeze_min_age: any VACUUM that touches this table WILL freeze eligible old tuples it encounters, but it isn't yet forced to visit every page.`;
+    else if (age < 200000000) note = `Past vacuum_freeze_table_age: the next VACUUM on this table upgrades to an AGGRESSIVE scan — every page, not just ones flagged dirty in the visibility map — specifically so no tuple can dodge freezing.`;
+    else if (age < 2000000000-10000000) note = `Past autovacuum_freeze_max_age (200M): autovacuum now launches a mandatory freeze on this table. It cannot be skipped, throttled off, or deferred by per-table autovacuum_enabled=off — the wraparound protection overrides table-level opt-outs.`;
+    else if (age < 2000000000-1000000) note = `Inside the warning band. Every new transaction now logs: WARNING: database "..." must be vacuumed within ${(2000000000-age).toLocaleString()} transactions. This is not yet an outage — it is the last loud chance to intervene manually.`;
+    else note = `Past xidStopLimit — 1,000,000 transactions from the theoretical 2^31 wrap point. GetNewTransactionId() now refuses every new XID: "ERROR: database is not accepting commands to avoid wraparound data loss." The only way out is a single-user-mode VACUUM FREEZE.`;
+    el("age-note").innerHTML = note;
+  }
+  el("age-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   9. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let hotOn = true, tight = false;
+  el("perf-hot").onclick = ()=>{ hotOn = !hotOn; el("perf-hot").classList.toggle("on", hotOn); render(); };
+  el("perf-tight").onclick = ()=>{ tight = !tight; el("perf-tight").classList.toggle("on", tight); render(); };
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function model(n, hot, tight){
+    const base = 12000; // baseline single-heap-write tps
+    if (tight) hot = false; // zero headroom forces fallback regardless of toggle
+    if (!hot) return base / (1 + n*0.85);
+    return base / (1 + n*0.02); // HOT path barely notices index count
+  }
+  function render(){
+    const N = +el("perf-idx").value;
+    el("perf-idx-val").textContent = N;
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=0;x<=12;x++) xs.push(x);
+    const maxY = model(0,true,false);
+    const X = n => PAD + (n/12)*(W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [0,3,6,9,12].forEach(n=>{ ctx.beginPath(); ctx.moveTo(X(n),10); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText(n, X(n)-3, H-6); });
+    function curve(hot,color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((n,i)=>{ const y = H-24 - (model(n,hot,tight)/maxY)*(H-44); i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y); });
+      ctx.stroke();
+    }
+    curve(true, "#60a5fa");
+    curve(false, "#f25c54");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(N),10); ctx.lineTo(X(N),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const hotT = model(N,true,tight), coldT = model(N,false,tight);
+    el("perf-note").innerHTML = tight
+      ? `With zero page headroom simulated, EVERY update falls back to the full index-write path regardless of the HOT toggle — at ${N} indexes, throughput ≈ <b style="color:var(--bad)">${coldT.toFixed(0)}</b> relative tps either way. This is §6's warning made visible: HOT's advantage is conditional on fillfactor headroom actually existing.`
+      : `At <b>${N}</b> indexes: HOT-eligible ≈ <b style="color:var(--pg)">${hotT.toFixed(0)}</b> relative tps vs non-HOT ≈ <b style="color:var(--bad)">${coldT.toFixed(0)}</b> — a <b>${(hotT/coldT).toFixed(1)}×</b> gap that widens as you add indexes, because the non-HOT path pays for every one of them and the HOT path pays for none.`;
+  }
+  el("perf-idx").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   10. INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A table has 5 indexes. Why doesn't an UPDATE that changes one non-indexed column cost 5 index insertions in a well-tuned PostgreSQL schema?", hint:"what does the index entry actually reference, and does that address change?",
+    a:"Because HOT applies: heap_update() checks that no indexed column changed and that the new tuple fits in free space already on the same page. If both hold, the new version is written on that page and marked HEAP_ONLY_TUPLE; the old version is marked HEAP_HOT_UPDATED with t_ctid pointing at it. Every index's existing entry — which only ever pointed at the page's line pointer, not at the tuple's bytes directly — remains valid, because the line pointer either still points at a live tuple or gets redirected by a later prune. Zero index_insert() calls happen. This only fails to apply if an indexed column changed, or the page had no free space, in which case you're back to full-price index writes on all 5." },
+  { lvl:"SENIOR", q:"You lower fillfactor from 100 to 70 on a heavily-updated table. What do you gain and what do you immediately lose?", hint:"what's sitting in that reserved 30%, and where does it live in RAM?",
+    a:"You gain HOT headroom: 30% of every page is left empty at load/insert time specifically so future UPDATEs on rows in that page have somewhere to write a same-page version, making HOT eligible far more often. You lose data density: the table occupies roughly 1/0.7 ≈ 1.43× the disk space it would at fillfactor 100 for the same row count, and — more importantly for hot workloads — the buffer cache now holds 30% fewer live rows per 8KB page it caches, meaning more distinct pages (and more cache misses) to scan the same amount of live data. It's a real tradeoff, not a free lunch: you're pre-paying cache/disk footprint to avoid paying index-write amplification later." },
+  { lvl:"STAFF", q:"Walk through exactly what happens on disk and in shared buffers when heap_page_prune() converts a 3-tuple HOT chain into a single LP_REDIRECT.", hint:"which line pointers change, which storage is reclaimed, what's WAL-logged?",
+    a:"heap_prune_chain() walks from the root offset following t_ctid while HEAP_HOT_UPDATED is set, classifying each member via HeapTupleSatisfiesVacuum(). If the root and one intermediate version are DEAD but the newest is live: the intermediate member's line pointer becomes LP_UNUSED (its storage reclaimed — no index ever pointed at a heap-only tuple directly, so nothing else needs updating), and the ROOT's line pointer is rewritten from LP_NORMAL to LP_REDIRECT, its lp_off field repurposed to hold the offset number of the surviving live tuple. A single compact PRUNE WAL record covers the whole page-level change — not one record per reclaimed tuple — and on replay the same rewiring is reapplied deterministically. Crucially, no index page is touched anywhere in this process." },
+  { lvl:"STAFF", q:"Why does a dead HOT chain's root become LP_DEAD rather than immediately LP_UNUSED, while its interior members go straight to LP_UNUSED?", hint:"who else might be holding a TID pointing at that offset?",
+    a:"Every index on the table may hold an entry whose TID points at the root's line pointer offset — that's the only offset any index was ever told about. If heap_page_prune() recycled that slot immediately (LP_UNUSED), a subsequent unrelated INSERT could reuse the same offset for a completely different row, and a stale index entry would then silently resolve to the wrong tuple — a correctness bug, not just bloat. Interior heap-only tuples, by contrast, were never referenced by any index (that's the definition of HEAP_ONLY_TUPLE), so their slots can be reclaimed the instant they're confirmed dead. Only VACUUM's index-cleanup phase, which physically visits every index and removes entries pointing at LP_DEAD TIDs, is allowed to downgrade a root to LP_UNUSED — this is the precise reason VACUUM still matters on a HOT-heavy table." },
+  { lvl:"STAFF", q:"age(relfrozenxid) on your busiest table is 190,000,000 and climbing about 2,000,000/day. autovacuum_freeze_max_age is the default 200,000,000. What happens in exactly 5 days, and is that a problem?", hint:"is a forced autovacuum an emergency, or the system working as designed?",
+    a:"In 5 days age crosses 200,000,000 and autovacuum launches an unconditional freeze on that table — this is the system working exactly as designed, not an incident. Whether it's a PROBLEM depends entirely on whether that forced vacuum can complete before age reaches the much later xidStopLimit (roughly 2^31 minus 1,000,000, i.e. billions of transactions away at this growth rate) — if the table is enormous, if autovacuum keeps getting cancelled by conflicting locks, or if something else (a long transaction, a stale replication slot) is separately pinning OldestXmin so freezing can't actually advance relfrozenxid even once the scan runs, THEN the forced autovacuum becomes the first domino in a real wraparound incident. The number crossing 200M by itself is a scheduled, harmless event; the risk is entirely in whether anything is preventing that autovacuum from finishing and from actually advancing the frozen horizon." },
+  { lvl:"PRINCIPAL", q:"Steelman keeping 32-bit XIDs forever vs moving to 64-bit. Which wins for a fleet of thousands of small managed-Postgres instances?", hint:"who pays the storage-doubling cost, and who pays the wraparound-monitoring cost?",
+    a:"32-bit: xmin/xmax are 4 bytes each in every tuple header — doubling to 8 bytes each inflates every table's heap footprint (and every WAL record referencing an XID) by real, permanent percentages, forever, on every row ever written, in exchange for removing a risk that's fully mitigatable with correct freezing and monitoring. 64-bit: eliminates an entire, recurring operational failure mode (this chapter's incidents) and the cognitive load of reasoning about a circular counter at all, at a one-time migration cost plus permanent storage tax. For a hyperscaler running thousands of instances, the storage tax is multiplied across the whole fleet and paid every day regardless of whether any single instance is near wraparound; the wraparound risk, by contrast, is rare per-instance and fully preventable with automation (freeze-age alerting, mandatory replication-slot TTLs). That argues for staying 32-bit and investing in tooling — which is the position the project has actually taken for two decades, treating this as an operational-maturity problem rather than a storage-format one." },
+  { lvl:"PRINCIPAL", q:"Design the single alert you'd add to prevent every incident in §11 from recurring, and justify why it beats alerting on autovacuum activity directly.", hint:"what's the one number that's true regardless of WHY the horizon is stuck?",
+    a:"Alert on max(age(datfrozenxid)) across all databases (and, per-table, max(age(relfrozenxid))) crossing a threshold well below autovacuum_freeze_max_age — say 100,000,000 — rather than alerting on 'is autovacuum running' or 'did autovacuum complete recently.' The reason: every incident in §11 has a DIFFERENT immediate cause (contention starving vacuum, a stuck long transaction, an abandoned replication slot) but the SAME observable symptom — age climbing despite autovacuum nominally being enabled and even nominally running. An alert tied to autovacuum's activity or completion status would have stayed green in the replication-slot case, because autovacuum was running and 'succeeding,' just making zero progress on the frozen horizon because it correctly refused to remove anything the slot might need. Age is the one metric that integrates over every possible root cause and can't be fooled by a vacuum process that runs but can't advance anything." }
+]);
+
+/* ============================================================
+   11. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"An UPDATE changes a column that no index references. Which of these still forces a real index insertion?",
+    opts:[ "The page the row lives on has zero free space left",
+           "The transaction is running under REPEATABLE READ",
+           "The table has more than 3 indexes",
+           "The row was inserted more than 50,000,000 transactions ago" ],
+    a:0,
+    why:"HOT needs BOTH conditions: no indexed column changed AND the new version fits on the same page. Even with the first condition satisfied, a full page forces the new tuple elsewhere, which invalidates every index's TID and requires real index_insert() calls. Isolation level (B) is orthogonal to HOT entirely. Index count (C) changes how much you'd SAVE with HOT, not whether it applies. Tuple age (D) is a freezing concern, unrelated to the HOT decision made at update time." },
+  { q:"Where do the HEAP_HOT_UPDATED and HEAP_ONLY_TUPLE flags actually live?",
+    opts:[ "t_infomask", "t_infomask2", "A separate hot_flags field added specifically for HOT", "The line pointer's lp_flags bits" ],
+    a:1,
+    why:"Both HOT flags are high bits of t_infomask2, whose low 11 bits hold the tuple's attribute count (natts). t_infomask (A) holds a different, older set of flags (null bitmap presence, xmin/xmax commit status, etc.) predating HOT. There is no separate hot_flags field (C) — the whole point was reusing existing header real estate. lp_flags (D) encodes LP_NORMAL/LP_REDIRECT/LP_DEAD/LP_UNUSED, a related but distinct piece of state living in the line pointer, not the tuple header." },
+  { q:"heap_page_prune() finds a HOT chain where the root and one middle version are dead, but the newest version is still visible to some snapshot. What does it do to the root's line pointer?",
+    opts:[ "Marks it LP_UNUSED immediately — the tuple is dead, reclaim it now",
+           "Leaves it LP_NORMAL but shrinks the tuple in place",
+           "Rewrites it to LP_REDIRECT pointing at the surviving live tuple's offset",
+           "Marks it LP_DEAD and leaves the chain otherwise untouched" ],
+    a:2,
+    why:"Because the chain still has a live tail, the root becomes LP_REDIRECT so future lookups (via the index, which still only knows the root's offset) resolve straight to the current live version. LP_UNUSED (A) would be wrong and dangerous — indexes still reference this offset. LP_NORMAL-in-place (B) doesn't reflect that the root's own tuple bytes are gone. LP_DEAD (D) is reserved for the case where the ENTIRE chain is dead, not just its root — that's a different, more terminal outcome this same function also handles, just not in this scenario." },
+  { q:"TransactionIdPrecedes(id1, id2) is implemented as (int32)(id1 - id2) < 0. Why does this comparison ever give the WRONG answer for two real XIDs?",
+    opts:[ "It never does — the modulo comparison is always correct by construction",
+           "If id1 and id2 are more than 2^31 apart, the circular ordering flips relative to their true chronological order",
+           "It only works correctly for XIDs below FirstNormalTransactionId",
+           "Subtraction overflow always triggers a CPU exception, crashing the backend" ],
+    a:1,
+    why:"The whole comparison is a bet that any two XIDs you'd ever legitimately compare are within 2^31 of each other — under that assumption, signed-subtraction-and-sign-check correctly recovers 'which one is earlier.' The bet fails exactly when a stored xmin has aged past that window without being frozen: the same arithmetic now reports the OLDER transaction as being 'in the future' relative to the newer one, silently inverting a visibility decision. That is precisely the wraparound danger this chapter exists to prevent — freezing is the mechanism that keeps every stored xmin inside the window where the comparison is guaranteed correct." },
+  { q:"autovacuum_freeze_max_age is crossed on a table where autovacuum_enabled=false was set at the table level. What happens?",
+    opts:[ "Nothing — the table-level setting disables ALL autovacuum activity on that table, including forced freezes",
+           "Autovacuum launches a mandatory freeze on that table anyway, overriding the per-table opt-out",
+           "The database refuses new connections until the setting is changed",
+           "PostgreSQL silently raises autovacuum_freeze_max_age for that table instead" ],
+    a:1,
+    why:"Wraparound protection is deliberately NOT subject to the same opt-outs as routine bloat-driven autovacuum — a forced freeze fires regardless of autovacuum_enabled on that table, precisely because the alternative (an ignored table quietly approaching the 2^31 boundary) is a cluster-wide risk, not a per-table performance tuning decision. Option A describes routine autovacuum for bloat control, which DOES respect the flag; the freeze-max-age override is the specific exception. C and D don't reflect any real PostgreSQL behavior." },
+  { q:"A replication slot's consumer was decommissioned three months ago without dropping the slot. autovacuum is enabled, running, and completing normally on every table. What is most likely still true?",
+    opts:[ "Nothing is wrong — a completed autovacuum run guarantees the frozen horizon is advancing",
+           "age(relfrozenxid) on affected tables is stuck near its value from three months ago, because the slot's xmin still pins OldestXmin",
+           "The slot automatically expires after a fixed timeout and stops pinning anything",
+           "Only logical replication slots can pin xmin this way — physical slots have no effect on vacuum" ],
+    a:1,
+    why:"A slot's xmin/catalog_xmin tells vacuum 'this XID range might still be needed,' and vacuum correctly honors that regardless of whether the consumer is actually still reading — it has no way to know the consumer is gone unless the slot is dropped. 'Autovacuum completing normally' (A) is compatible with zero progress on the frozen horizon: the run succeeds, it just finds nothing safe to freeze past the pinned point. There is no default slot expiration (C) unless you've explicitly configured max_slot_wal_keep_size/inactive-slot timeouts on recent versions, and physical slots (D) pin xmin exactly as effectively as logical ones — the slot type doesn't change this mechanism." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; heap_page_prune() would be proud.":correct>=4?"solid mental model; re-read the explanations you missed.":"re-run §8's decks, then try the simulator — the mechanism clicks fast once you drive it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Table loaded at fillfactor=100; every page packed full",
+    "First UPDATE on any row: no headroom → falls back to full index-write path",
+    "Table's fillfactor lowered, natural churn creates per-page headroom",
+    "Later UPDATEs on unindexed columns qualify as HOT — index writes stop",
+    "HOT chains lengthen across repeated updates to the same rows",
+    "heap_page_prune() opportunistically collapses dead chain members to LP_REDIRECT",
+    "age(relfrozenxid) still climbs regardless — HOT doesn't touch XID consumption",
+    "autovacuum_freeze_max_age exceeded — mandatory freeze forced regardless of bloat",
+    "If a long transaction or stale replication slot pins OldestXmin, freezing can't advance the horizon",
+    "xidStopLimit reached — GetNewTransactionId() refuses new XIDs, writes halted"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real timeline</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 7 will show that Read Committed takes a NEW snapshot for every statement, while Repeatable Read takes ONE snapshot for the whole transaction. Using this chapter's xmin/xmax vocabulary, predict: which isolation level's snapshot logic depends more directly on freezing being correct, and why might that be surprising?",
+    a:"Both depend on freezing equally at the mechanism level — every visibility check, regardless of isolation level, ultimately asks 'is this tuple's xmin/xmax before or after my snapshot's cutoff,' via the same TransactionIdPrecedes() this chapter examined. What changes between isolation levels is HOW OFTEN and against WHAT cutoff that check runs, not whether it depends on the XIDs being trustworthy. The surprising part: a long-running REPEATABLE READ transaction is exactly the kind of thing that pins OldestXmin and stalls freezing (§8d's callout) — so the isolation level chapter 7 teaches you to reach for, for correctness, is also a direct contributor to this chapter's wraparound risk if held open too long." },
+  { lvl:"THINK", q:"A HOT chain can only exist because MVCC keeps multiple versions of a row simultaneously visible to different transactions. Predict: what does a LONG HOT chain (dozens of unpruned versions) do to a concurrent transaction's view of 'which version is mine,' and why might that matter for chapter 7's anomaly definitions?",
+    a:"Nothing changes about correctness — each transaction's visibility check still walks (or is handed, via the line pointer) to whichever specific version its own snapshot says is visible, exactly as MVCC promises regardless of chain length. What changes is COST: a long unpruned chain means more versions to walk past before finding the one a given snapshot can see, which chapter 7 will connect to the general cost of long-running transactions holding old snapshots open — the same transactions whose xmin pins vacuum's horizon (this chapter) are also the ones most likely to be looking at the tail of a long, unpruned HOT chain." },
+  { lvl:"THINK", q:"This chapter showed PostgreSQL choosing to REFUSE writes outright (xidStopLimit) rather than risk silent corruption. Chapter 7's Serializable Snapshot Isolation also has to choose between correctness and availability under contention. Predict what SSI's equivalent 'refuse rather than corrupt' move looks like.",
+    a:"SSI aborts one of the transactions in a detected 'dangerous structure' (two consecutive rw-antidependency edges through a pivot transaction) rather than allowing a serialization anomaly like write skew to commit silently — trading a loud, retryable 'could not serialize access due to concurrent update' error for the alternative of a database that looks correct but has quietly violated a business invariant. It's the same design philosophy as this chapter's wraparound stop-limit: given a choice between an operational inconvenience (a failed transaction, a paused cluster) and an invisible correctness violation, PostgreSQL consistently chooses the loud failure." }
+]);
+
+/* ============================================================
+   12. SIMULATOR (§15) — HOT LAB + WRAPAROUND COUNTDOWN
+   ============================================================ */
+(function(){
+  el("tab-hot").onclick = ()=>{ el("pane-hot").style.display=""; el("pane-xid").style.display="none";
+    el("tab-hot").classList.add("primary"); el("tab-xid").classList.remove("primary"); el("sim-phase").textContent="HOT LAB"; };
+  el("tab-xid").onclick = ()=>{ el("pane-hot").style.display="none"; el("pane-xid").style.display="";
+    el("tab-hot").classList.remove("primary"); el("tab-xid").classList.add("primary"); el("sim-phase").textContent="WRAPAROUND COUNTDOWN"; };
+  el("tab-hot").classList.add("primary");
+
+  /* ---------- HOT LAB ---------- */
+  const HS = { chain:[], ff:90, cntHot:0, cntIdx:0, cntPrune:0, gen:0 };
+  const hlog = el("hot-log");
+  function hlogf(lv,msg){ const d=document.createElement("div"); d.className="lv-"+lv; d.textContent=(lv==="OK"?"":lv+":  ")+msg; hlog.appendChild(d); while(hlog.children.length>60) hlog.removeChild(hlog.firstChild); hlog.scrollTop=hlog.scrollHeight; }
+  function resetPage(){
+    HS.chain = [{ v:0, xid:100+HS.gen, live:true, root:true }];
+    HS.gen++;
+    renderHot();
+  }
+  function budget(){ return HS.ff; } // higher fillfactor = less room; simulate: room left = 100-ff, chain can grow while room>0
+  function renderHot(){
+    el("hot-ff-val").textContent = HS.ff + "%";
+    const room = 100 - HS.ff;
+    const chainAlive = HS.chain.filter(t=>t.live);
+    const rootIsRedirect = HS.chain.length>1 && chainAlive.length===1 && chainAlive[0]!==HS.chain[0];
+    el("hot-lps").innerHTML = `<div class="lp ${rootIsRedirect?'redirect':'normal'}">#6${rootIsRedirect?'→v'+chainAlive[0].v:''}</div>`;
+    el("hot-slots").innerHTML = HS.chain.map((t,i)=>{
+      const cls = !t.live ? "dead" : (i===HS.chain.length-1 ? "hotchain" : "root");
+      return `<div class="tup ${cls}">v${t.v}${t.root?" (root)":""}<span class="tf">xid=${t.xid} ${t.live?"live":"dead, HOT_UPDATED"}</span></div>`;
+    }).join("");
+    el("hot-index").textContent = `index_1: (key) → line pointer #6   [unchanged across ${HS.cntHot} HOT update(s)]`;
+    el("hot-insp").innerHTML = `<div class="i-t">CHAIN LENGTH</div><div>${HS.chain.length} version(s) stored · fillfactor room ≈ ${room}% · ${chainAlive.length>1?'<span style="color:var(--warn)">unpruned dead members present</span>':'clean'}</div>`;
+    el("hot-cnt-hot").textContent = HS.cntHot;
+    el("hot-cnt-idx").textContent = HS.cntIdx;
+    el("hot-cnt-prune").textContent = HS.cntPrune;
+  }
+  el("hot-update").onclick = ()=>{
+    const room = 100 - HS.ff;
+    if (room <= 0){
+      HS.cntIdx++;
+      hlogf("WARN", "fillfactor=100%, zero page headroom — falls back to full path: index_1 gets a new entry even though no indexed column changed");
+    } else {
+      HS.chain.forEach(t=>t.live=false);
+      HS.chain[HS.chain.length-1].root=false;
+      HS.chain.push({ v:HS.chain.length, xid:100+HS.gen, live:true, root:false });
+      HS.gen++;
+      HS.cntHot++;
+      hlogf("OK", `HOT update: v${HS.chain.length-1} written same-page, HEAP_ONLY_TUPLE set — index_1 untouched`);
+    }
+    renderHot();
+  };
+  el("hot-update-idx").onclick = ()=>{
+    HS.cntIdx++;
+    HS.chain.forEach(t=>t.live=false);
+    HS.chain.push({ v:HS.chain.length, xid:100+HS.gen, live:true, root:false });
+    HS.gen++;
+    hlogf("WARN", "UPDATE touched an INDEXED column — condition 1 fails regardless of free space. index_1 gets a new entry pointing at the new TID.");
+    renderHot();
+  };
+  el("hot-prune").onclick = ()=>{
+    const before = HS.chain.length;
+    const alive = HS.chain.filter(t=>t.live);
+    if (alive.length === before){ hlogf("LOG","heap_page_prune(): nothing dead to reclaim."); return; }
+    HS.chain = alive.length ? [alive[alive.length-1]] : [];
+    if (HS.chain.length) HS.chain[0].root = false;
+    HS.cntPrune++;
+    hlogf("OK", `heap_page_prune(): reclaimed ${before-HS.chain.length} dead member(s), root line pointer now LP_REDIRECT → v${HS.chain[0]?HS.chain[0].v:'-'}`);
+    renderHot();
+  };
+  el("hot-reset").onclick = ()=>{ HS.cntHot=0; HS.cntIdx=0; HS.cntPrune=0; hlogf("LOG","page reset."); resetPage(); };
+  el("hot-ff").oninput = e=>{ HS.ff = +e.target.value; renderHot(); };
+  hlogf("OK","page initialized — 1 tuple, 1 index, fillfactor 90%.");
+  resetPage();
+
+  /* ---------- WRAPAROUND COUNTDOWN ---------- */
+  const WRAP = 2147483648; // 2^31
+  const WARN_AT = WRAP - 10000000;
+  const STOP_AT = WRAP - 1000000;
+  const XS = { age:10000000, rate:2000000, av:"on", pins:0, longtxn:false, slot:false, paused:false, phase:"ok" };
+  const xlog = el("xid-log");
+  function xlogf(lv,msg){ const d=document.createElement("div"); d.className="lv-"+lv; d.textContent=(lv==="OK"?"":lv+":  ")+msg; xlog.appendChild(d); while(xlog.children.length>70) xlog.removeChild(xlog.firstChild); xlog.scrollTop=xlog.scrollHeight; }
+  const xc = el("xid-canvas"), xctx = xc.getContext("2d");
+  function drawClock(){
+    const W=xc.width,H=xc.height,cx=W/2,cy=H/2,r=100;
+    xctx.clearRect(0,0,W,H);
+    const frac = Math.min(XS.age/WRAP, 1);
+    // background bands
+    const bands = [[0,50000000,"#1c2330"],[50000000,150000000,"#243050"],[150000000,200000000,"rgba(167,139,250,.35)"],
+      [200000000,WARN_AT,"rgba(255,159,67,.3)"],[WARN_AT,STOP_AT,"rgba(255,159,67,.55)"],[STOP_AT,WRAP,"rgba(242,92,84,.65)"]];
+    bands.forEach(([a,b,c])=>{
+      xctx.beginPath(); xctx.moveTo(cx,cy);
+      xctx.arc(cx,cy,r,-Math.PI/2 + (a/WRAP)*2*Math.PI, -Math.PI/2 + (b/WRAP)*2*Math.PI);
+      xctx.closePath(); xctx.fillStyle=c; xctx.fill();
+    });
+    xctx.beginPath(); xctx.arc(cx,cy,r*0.55,0,7); xctx.fillStyle="#07090d"; xctx.fill();
+    // needle
+    const ang = -Math.PI/2 + frac*2*Math.PI;
+    xctx.strokeStyle = frac> (STOP_AT/WRAP) ? "#f25c54" : frac>(WARN_AT/WRAP) ? "#ff9f43" : "#60a5fa";
+    xctx.lineWidth=3; xctx.beginPath(); xctx.moveTo(cx,cy); xctx.lineTo(cx+Math.cos(ang)*r*0.85, cy+Math.sin(ang)*r*0.85); xctx.stroke();
+    xctx.fillStyle="#8b94a7"; xctx.font="10px monospace"; xctx.textAlign="center";
+    xctx.fillText("relfrozenxid", cx, cy-4);
+    xctx.fillText("age →", cx, cy+10);
+  }
+  function phaseFor(age){
+    if (age >= STOP_AT) return "stop";
+    if (age >= WARN_AT) return "crit";
+    if (age >= 200000000) return "warn";
+    return "ok";
+  }
+  function render(){
+    el("xid-rate-val").textContent = XS.rate.toLocaleString();
+    el("xid-cnt-age").textContent = (XS.age/1e6).toFixed(1)+"M";
+    el("xid-cnt-remain").textContent = ((WRAP-XS.age)/1e9).toFixed(2)+"B";
+    el("xid-cnt-pins").textContent = (XS.longtxn?1:0)+(XS.slot?1:0);
+    const ph = phaseFor(XS.age);
+    const label = {ok:"HEALTHY",warn:"AGING — FORCED FREEZE ZONE",crit:"WARNING — VACUUM NOW",stop:"STOPPED — READ-ONLY"}[ph];
+    const cls = {ok:"ok",warn:"warn",crit:"crit",stop:"stop"}[ph];
+    el("xid-phase").textContent = label;
+    el("xid-phase").className = "xid-phase " + cls;
+    if (ph !== XS.phase){
+      XS.phase = ph;
+      if (ph==="warn") xlogf("WARN","age(relfrozenxid) passed autovacuum_freeze_max_age (200,000,000) — a freeze autovacuum is now mandatory on this table, opt-outs ignored.");
+      if (ph==="crit") xlogf("WARN", `database "prod" must be vacuumed within ${(WRAP-XS.age).toLocaleString()} transactions`);
+      if (ph==="stop") xlogf("FATAL","database is not accepting commands to avoid wraparound data loss in database \"prod\"");
+    }
+    drawClock();
+  }
+  el("xid-rate").oninput = e=>{ XS.rate = +e.target.value; render(); };
+  el("xid-av-on").onclick = ()=>{ XS.av="on"; el("xid-av-on").classList.add("on"); el("xid-av-slow").classList.remove("on"); xlogf("LOG","autovacuum: normal cost limits restored."); };
+  el("xid-av-slow").onclick = ()=>{ XS.av="slow"; el("xid-av-slow").classList.add("on"); el("xid-av-on").classList.remove("on"); xlogf("WARN","autovacuum throttled — cost-limit delays mean freezing can no longer keep pace with this transaction rate."); };
+  el("xid-longtxn").onclick = ()=>{ XS.longtxn = !XS.longtxn; el("xid-longtxn").classList.toggle("good", XS.longtxn); xlogf(XS.longtxn?"WARN":"LOG", XS.longtxn ? "opened a long-running transaction — its snapshot's xmin now pins OldestXmin; freezing cannot advance past it." : "long-running transaction closed — horizon released."); };
+  el("xid-slot").onclick = ()=>{ XS.slot = !XS.slot; el("xid-slot").classList.toggle("good", XS.slot); xlogf(XS.slot?"WARN":"LOG", XS.slot ? "opened a replication slot with no consumer reading it — its xmin pins the horizon exactly like an open transaction, with zero visible client connections." : "replication slot dropped — horizon released."); };
+  el("xid-clearpins").onclick = ()=>{ XS.longtxn=false; XS.slot=false; el("xid-longtxn").classList.remove("good"); el("xid-slot").classList.remove("good"); xlogf("OK","all horizon pins cleared."); };
+  el("xid-pause").onclick = ()=>{ XS.paused = !XS.paused; el("xid-pause").textContent = XS.paused?"▶ resume":"⏸ pause"; };
+  el("xid-restart").onclick = ()=>{ XS.age=10000000; XS.phase="ok"; xlogf("OK","LOG:  database system is ready to accept connections — clock reset after single-user VACUUM FREEZE."); render(); };
+
+  setInterval(()=>{
+    if (XS.paused) return;
+    if (XS.phase === "stop") return; // frozen until restart
+    const pinned = XS.longtxn || XS.slot;
+    let reclaim = 0;
+    if (!pinned){
+      if (XS.av === "on") reclaim = Math.min(XS.rate*0.9, 1800000);
+      else reclaim = Math.min(XS.rate*0.25, 500000);
+    } else {
+      reclaim = 0; // horizon pinned: vacuum can run, but can't advance relfrozenxid
+    }
+    XS.age = Math.max(0, Math.min(WRAP, XS.age + XS.rate - reclaim));
+    render();
+  }, 400);
+  render();
+})();
+
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-06"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-05.html"><span>←</span><span><span class="cn-lbl">PREV · CH 05</span><span class="cn-ttl">MVCC I: Tuple Versions, Snapshots & Visibility</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html" selected>CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">06 / 21</span></div><a class="cn-btn" href="pg-07.html"><span><span class="cn-lbl">NEXT · CH 07</span><span class="cn-ttl">Transactions & Isolation: From Read Committed to SSI</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

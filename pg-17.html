@@ -1,0 +1,1776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-17 · The Executor: Volcano Model, Parallel Query & JIT — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  table.cmp tr.win td{background:rgba(74,222,128,.05)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:560px}
+  @media(max-width:900px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:900px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .sim-ctl .slider-row{margin:6px 0}
+  .sim-ctl .slider-row label{min-width:0;flex:1;font-size:10.5px}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:160px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* executor-specific widgets */
+  .plantree{display:flex;flex-direction:column;align-items:center;gap:8px;padding:6px 0}
+  .ptrow{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .ptnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 13px;
+    font-family:var(--mono);font-size:11px;text-align:center;transition:all .25s;min-width:120px;cursor:pointer}
+  .ptnode .pts{display:block;font-size:9px;color:var(--dim);margin-top:3px}
+  .ptnode.active{border-color:var(--pg);color:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.18)}
+  .ptnode.pulling{border-color:var(--warn);color:var(--warn)}
+  .ptnode.win{border-color:var(--ok);color:var(--ok)}
+  .ptedge{width:2px;height:14px;background:var(--border-hi)}
+  .ptedge.flow{background:var(--pg);box-shadow:0 0 8px var(--pg)}
+  .formula{font-family:var(--mono);font-size:12.5px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:10px;padding:13px 15px;line-height:2;color:#cdd6e4;margin:12px 0;overflow-x:auto;white-space:pre}
+  .formula b{color:var(--pg)}
+  .formula .fterm{color:var(--warn)}
+  .buckets{display:flex;flex-wrap:wrap;gap:4px;max-width:400px;margin:8px auto}
+  .bucket{width:24px;height:24px;border:1px solid var(--border-hi);border-radius:6px;display:flex;align-items:center;
+    justify-content:center;font-family:var(--mono);font-size:9px;color:var(--dim);background:var(--panel-2);transition:all .2s}
+  .bucket.fill{background:var(--pg-dim);border-color:var(--pg);color:var(--pg)}
+  .bucket.skew{background:rgba(167,139,250,.15);border-color:var(--purple);color:var(--purple)}
+  .bucket.hit{background:rgba(74,222,128,.15);border-color:var(--ok);color:var(--ok)}
+  .runbar{height:16px;border-radius:4px;background:var(--panel-2);border:1px solid var(--border-hi);overflow:hidden;
+    display:flex;margin:3px 0}
+  .runbar .seg2{height:100%}
+  .workerlane{border:1px solid var(--border-hi);border-radius:8px;padding:7px 11px;font-family:var(--mono);
+    font-size:10.5px;color:var(--muted);margin-bottom:6px;transition:all .2s}
+  .workerlane.busy{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.05)}
+  .jitbar-row{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .jitbar-row label{font-family:var(--mono);font-size:10.5px;color:var(--muted);min-width:90px}
+  .jitbar{height:20px;border-radius:5px;transition:width .3s}
+  .slot{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:8px;padding:6px 10px;
+    font-family:var(--mono);font-size:10.5px;color:var(--muted);display:inline-block;margin:2px}
+  .slot.hot{border-color:var(--pg);color:var(--pg)}
+
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 17 / 21</b> · THE EXECUTOR</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>The Volcano Model</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 17</div>
+  <h1>The Executor: Volcano Model,<br><span class="grad">Parallel Query & JIT</span></h1>
+  <p class="lead">Chapter 16 ended with a single, committed <code>Plan</code> tree — the planner's chosen bet, priced in
+  cost units, waiting to be run. This chapter is about the machine that actually runs it: a tree of operators that
+  each speak the same three-function language, pulling one tuple at a time from the root down to the leaves and
+  back up. You will derive why that pull-based shape won, what it costs on modern CPUs, and then go inside the
+  operators that matter most — sort, hash join, nested loop — before extending the same model across processes
+  (parallel query) and finally past interpretation entirely (JIT-compiled expression evaluation).</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain why every plan node implements open/next/close, and trace a tuple's pull-then-return path through a real plan tree.</div>
+    <div class="obj"><b>You will understand</b>Exactly when a sort or hash join spills to disk, and what happens to correctness (never) and performance (a lot) when it does.</div>
+    <div class="obj"><b>You will predict</b>Why vectorized engines beat PostgreSQL on scans and aggregates, and why JIT sometimes makes a query slower, not faster.</div>
+    <div class="obj"><b>You will simulate</b>A live executor stepper — click "next tuple" and watch the pull propagate down a hash-join-over-sort plan tree, with work_mem, parallelism, and JIT as live toggles.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A tree of arbitrary operators, one uniform way to run it</h2>
+  <p class="lead">The planner (chapter 16) hands the executor a <code>Plan</code> tree that can be almost any shape:
+  a lone sequential scan, or a six-level tree mixing scans, hash joins, sorts, aggregates, and a <code>LIMIT</code>
+  on top. The executor's job is to actually produce rows from that tree — correctly, in whatever order the plan
+  specifies, without knowing in advance how many rows the caller actually wants, and without special-casing every
+  possible combination of node types. That last constraint is the hard part: a hash join's <i>output</i> is a sort
+  node's <i>input</i> is an aggregate's <i>input</i>, and none of those three should need to know anything about
+  which specific node feeds it or consumes from it.</p>
+  <p>This is a general problem in systems that compose: how do you let independently-implemented components connect
+  in arbitrary trees without writing <code>O(n²)</code> glue code for every pair? The database answer, and the
+  answer this chapter derives from scratch, is a uniform <b>protocol</b> every node obeys regardless of its internal
+  complexity — and the specific shape of that protocol (pull, one tuple at a time) has consequences that show up in
+  <code>EXPLAIN ANALYZE</code>'s timings, in why <code>LIMIT</code> queries return instantly, and in why an entire
+  category of database engines (DuckDB, ClickHouse) exists specifically to do something else instead.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE REST OF THE COURSE</div>
+    <p>Every node type you will ever read about — <code>SeqScan</code>, <code>HashJoin</code>, <code>Sort</code>,
+    <code>Agg</code>, <code>Gather</code> — is an implementation of exactly the same three-function interface this
+    chapter derives in §5 and details in §8. Once you understand the interface, reading a new node's source file is
+    a matter of understanding what state it keeps between calls, not learning a new execution model. That is
+    precisely why <code>src/backend/executor/</code> has over forty <code>node*.c</code> files and almost no
+    node-to-node special-case code connecting them.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From System R's "get next" to Volcano to vectorized engines</h2>
+  <p>The pull-based iterator model predates PostgreSQL and even predates its formal name. Click through the events that shaped what <code>execProcnode.c</code> looks like today.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from RSS "next" calls to LLVM-compiled expressions</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY "VOLCANO"</div>
+    <p>Goetz Graefe and William McKenna's Volcano project (Colorado State/Oregon, published 1990-1993) wasn't
+    primarily about the iterator interface itself — <code>open()</code>/<code>next()</code>/<code>close()</code>
+    already existed in System R's access-method layer over a decade earlier. Volcano's real contribution was showing
+    that this interface generalizes cleanly to <i>parallel</i> execution via an "exchange" operator that could sit
+    between any two nodes and fan work across processes — which is exactly the shape PostgreSQL's <code>Gather</code>
+    node (§8g) takes twenty-plus years later. The name stuck to the whole iterator paradigm because Volcano's paper
+    was the one that made the model's extensibility legible enough to build a research industry on top of.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: materialize every stage completely</h2>
+  <p>The simplest possible execution strategy: run each operator to completion, writing its <i>entire</i> output
+  into memory (or a temp file) before the next operator starts reading. A five-stage plan becomes five fully
+  materialized intermediate results, connected in sequence — no interleaving, no partial results, just batch after
+  batch.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>materialize_everything.c — the strawman, annotated</span></div>
+    <pre><span class="k">Tuple</span> **
+<span class="f">run_seqscan_fully</span>(Relation rel) {
+    <span class="k">Tuple</span> **out = <span class="f">palloc</span>(<span class="k">sizeof</span>(Tuple*) * <span class="f">estimate_rows</span>(rel));
+    <span class="k">int</span> n = <span class="n">0</span>;
+    <span class="k">while</span> (<span class="f">has_more_pages</span>(rel))
+        out[n++] = <span class="f">read_next_tuple</span>(rel);   <span class="c">/* the WHOLE table, in memory */</span>
+    <span class="k">return</span> out;                          <span class="c">/* only NOW does the caller get anything */</span>
+}
+
+<span class="k">Tuple</span> **
+<span class="f">run_hashjoin_fully</span>(<span class="k">Tuple</span> **outer, <span class="k">int</span> n_outer, <span class="k">Tuple</span> **inner, <span class="k">int</span> n_inner) {
+    HashTable *ht = <span class="f">build_hash_table</span>(inner, n_inner);   <span class="c">/* fully materialized input */</span>
+    <span class="k">Tuple</span> **out = <span class="f">palloc</span>(<span class="k">sizeof</span>(Tuple*) * n_outer * <span class="n">2</span>);  <span class="c">/* guess capacity */</span>
+    <span class="k">int</span> n = <span class="n">0</span>;
+    <span class="k">for</span> (<span class="k">int</span> i = <span class="n">0</span>; i &lt; n_outer; i++)
+        n += <span class="f">probe_and_append</span>(ht, outer[i], out, n);
+    <span class="k">return</span> out;                          <span class="c">/* the WHOLE join result, in memory */</span>
+}</pre>
+  </div>
+
+  <p>This gets one thing unambiguously right: it is <i>trivially</i> easy to reason about — every operator has a
+  clean, total function signature (array in, array out), no partial state to track across calls, no protocol to
+  implement beyond "return everything." It is also, not coincidentally, how a first-year systems course would
+  naturally implement a pipeline of transformations, and how many batch ETL tools genuinely operate stage by stage
+  on purpose.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Two failures, quantified: memory and latency</h2>
+  <p>Take a five-stage plan — <code>SeqScan → HashJoin → Sort → Agg → Limit 10</code> — over a table with
+  10,000,000 rows at roughly 200 bytes/row once projected. Full materialization means:</p>
+  <ul class="plain">
+    <li><b>Memory:</b> the scan's output alone is <code>10,000,000 × 200 bytes ≈ 2 GB</code>, held in memory (or spilled
+      to a temp file, which is its own I/O cost) <i>before the hash join even starts consuming it</i>. The hash
+      join's own output, plus the sort's materialized input and output, plus the aggregate's input, can easily
+      multiply that 2&nbsp;GB by 3-4× of simultaneously-live intermediate state for one single query — and PostgreSQL
+      runs this multiplied by however many backends have a similar query in flight (chapter 16's peak-memory
+      equation, again).</li>
+    <li><b>Latency to first row:</b> the final <code>LIMIT 10</code> only needs ten rows. Under full materialization,
+      it cannot receive <i>any</i> of them until the aggregate has finished, which cannot finish until the sort has
+      finished, which cannot finish until the hash join has fully drained the scan — meaning the client waits for
+      the <i>entire</i> 10,000,000-row scan and join to complete before seeing row one, even though the true answer
+      only needed a handful of rows and could, in principle, stop almost immediately.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>If each of the five stages needs even 200&nbsp;ms to fully materialize its output at this scale, full
+    materialization's time-to-first-row is the <i>sum</i>: on the order of a second before the client sees anything,
+    for a query whose true answer (10 rows, after a selective join) might be producible in a small fraction of that
+    if the executor could stop early and never fully materialize any stage. And that's the <i>good</i> case — many
+    real plans have a <code>LIMIT</code> or an <code>EXISTS</code> semantics that could, correctly, stop after the
+    very first row, turning a full 2GB-plus materialization into pure waste.</p>
+  </div>
+  <p>The failure isn't that materialization is a bad computational strategy in general — Postgres's own hash join
+  <i>does</i> materialize its inner side (§8d) precisely because that specific case needs it. The failure is
+  materializing <b>every</b> stage <b>unconditionally</b>, when most stages should be able to hand off one tuple at
+  a time and let the consumer decide how many it actually needs.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · THE VOLCANO MODEL</div>
+  <h2 class="sec">Push vs pull vs the naive batch — and why pull wins</h2>
+  <p>Two live alternatives to full materialization exist, and the design question is which direction data flows and who's in control. Step through them.</p>
+
+  <div class="widget deck" id="deckModel">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Choosing the execution model</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>The winning shape is the one PostgreSQL has used since its first executor: every node implements
+  <b><code>open()</code>/<code>next()</code>/<code>close()</code></b> — in PostgreSQL's actual naming,
+  <code>ExecInitNode()</code>, <code>ExecProcNode()</code>, <code>ExecEndNode()</code>. A parent calls its child's
+  <code>next()</code> whenever <i>it</i> needs one more tuple; the child recurses into its own children exactly the
+  same way; a leaf scan node satisfies the call from a buffer or disk read. The whole tree is driven from the top by
+  demand, one tuple at a time, and no node needs to know anything about which specific node types are above or below
+  it — only that whatever is below answers <code>next()</code> with one tuple or an end-of-data signal, and whatever
+  is above will eventually call <code>next()</code> again.</p>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">One function call per tuple per node is not free</h2>
+  <p>Pulling one tuple through <i>n</i> nodes means <i>n</i> function calls per tuple — and modern CPUs are
+  extremely good at processing data but comparatively bad at unpredictable control flow. Three concrete costs
+  follow directly from the tuple-at-a-time granularity:</p>
+  <ul class="plain">
+    <li><b>Call overhead multiplies by row count.</b> A five-node plan over ten million rows is <b>fifty million</b>
+      function calls, each with its own stack frame setup, return address, and (for virtual/polymorphic dispatch)
+      an indirect branch the CPU's branch predictor has to guess. That overhead is <i>pure tax</i> — it does no
+      useful work, and it scales with row count regardless of how simple each node's per-row logic actually is.</li>
+    <li><b>Poor instruction-cache locality.</b> Each call jumps to a different node's code — <code>ExecScan</code>,
+      then <code>ExecHashJoin</code>, then <code>ExecSort</code> — and back, repeatedly, for every single tuple.
+      The CPU's instruction cache is constantly evicting one node's code to fetch another's, instead of staying hot
+      on one tight loop the way a single-operator batch pass would.</li>
+    <li><b>No SIMD.</b> Because each node processes exactly one tuple's worth of data per call, there is no
+      opportunity to apply a single vector instruction across many rows at once — the fundamental enabling
+      condition for SIMD is having a <i>batch</i> of homogeneous data in hand at once, which the pure per-tuple
+      Volcano model never provides.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">WHY THIS IS EXACTLY WHY VECTORIZED ENGINES EXIST</div>
+    <p>DuckDB, ClickHouse, and the broader "vectorized execution" family (tracing back to MonetDB/X100) process
+    tuples in <b>batches</b> — typically hundreds to a couple thousand at a time — per node call, not one at a time.
+    A single call to a vectorized filter operator applies its predicate across an entire batch using a tight,
+    SIMD-friendly loop, amortizing the call overhead across the whole batch and keeping the CPU in one hot code path
+    far longer. For scan- and aggregate-heavy analytical workloads, this routinely produces order-of-magnitude
+    throughput differences over a pure per-tuple Volcano executor — not because Postgres's executor is badly
+    written, but because tuple-at-a-time is a structurally different point on the same tradeoff curve this section
+    derives, optimized for something else (see below).</p>
+  </div>
+  <p>PostgreSQL's actual mitigation is narrower but real: <b><code>ExecProcNode</code> function-pointer
+  specialization</b>. Rather than dispatching every call through one large <code>switch</code> over node tag values
+  (a branch the CPU would have to re-predict every time, across every node type in the plan),
+  <code>ExecInitNode()</code> sets each <code>PlanState</code>'s <code>ExecProcNode</code> field directly to the
+  concrete function for its node type once, at initialization. Every subsequent call is then a direct indirect call
+  to a function the branch predictor can specialize per call site, rather than a re-dispatched switch — a real,
+  measurable win that costs nothing in generality, but one that only removes the <i>dispatch</i> overhead, not the
+  fundamental one-tuple-per-call granularity vectorized engines avoid entirely.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The executor's moving parts</h2>
+  <p>A running executor is a <code>PlanState</code> tree mirroring the <code>Plan</code> tree, plus a handful of
+  supporting abstractions that make the per-tuple protocol cheap. Click any component.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Executor architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">THE PROTOCOL</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="protocol">ExecInitNode / ExecProcNode / ExecEndNode</div>
+        </div>
+        <div class="arch-row-label">THE DATA CARRIER</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="slot">TupleTableSlot</div>
+          <div class="acard" data-p="expr">ExprState (expression evaluation)</div>
+        </div>
+        <div class="arch-row-label">KEY OPERATOR NODES</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="sort">Sort</div>
+          <div class="acard" data-p="hashjoin">Hash Join</div>
+          <div class="acard" data-p="nestloop">Nested Loop</div>
+          <div class="acard" data-p="memoize">Memoize / Materialize</div>
+        </div>
+        <div class="arch-row-label">CROSSING PROCESS BOUNDARIES</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="gather">Gather / Gather Merge</div>
+        </div>
+        <div class="arch-row-label">PAST INTERPRETATION</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="jit">JIT (LLVM)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE KEY INVARIANT</div>
+    <p>Every box above answers the same three calls the same way, no matter how different its internals are. A
+    <code>Gather</code> node's <code>next()</code> pulls from a shared-memory tuple queue instead of a child node
+    directly, and a JIT-compiled expression's evaluator is native machine code instead of a tree-walking
+    interpreter — but from the parent's point of view, both still just return one tuple or end-of-data. This is the
+    Volcano model's actual payoff: parallelism and JIT were both bolted on <i>without changing the protocol</i>,
+    decades after the protocol itself was fixed.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The real protocol, the real spill logic, the real parallelism</h2>
+  <p>Eight pieces: <b>(a)</b> the protocol itself, <b>(b)</b> the tuple carrier, <b>(c)</b> Sort and its external
+  merge, <b>(d)</b> Hash Join and multi-batch spilling, <b>(e)</b> Nested Loop and rescan, <b>(f)</b> Materialize
+  and Memoize, <b>(g)</b> parallel query, <b>(h)</b> JIT.</p>
+
+  <h3>(a) The protocol: ExecInitNode / ExecProcNode / ExecEndNode</h3>
+  <p>Every node type registers three functions. <code>ExecInitNode()</code> (<code>execProcnode.c</code>) walks the
+  <code>Plan</code> tree once, top-down, allocating a matching <code>PlanState</code> for each <code>Plan</code>
+  node, recursively initializing children first, and — critically — assigning that node's concrete
+  <code>ExecProcNode</code> function pointer (the specialization from §6). <code>ExecProcNode(PlanState*)</code> is
+  then the single call site used everywhere in the executor to pull one tuple from any node, regardless of type —
+  it simply invokes whatever function pointer <code>ExecInitNode</code> installed. <code>ExecEndNode()</code> tears
+  down each node's private state (closing scan descriptors, freeing hash tables) in the same recursive shape,
+  bottom-up. This three-function shape is the entire contract; everything else in this chapter is one node type's
+  private implementation of it.</p>
+
+  <h3>(b) TupleTableSlot: carrying a tuple without copying it</h3>
+  <p>A <b><code>TupleTableSlot</code></b> is the object every <code>next()</code> call returns — not the raw bytes
+  of a tuple, but a reference-counted, reusable container that can hold a tuple in one of several physical forms,
+  chosen for whichever is cheapest at that point in the plan: a <b>virtual</b> slot holds a plain array of
+  already-deconstructed Datum/isnull pairs (no on-disk tuple format at all — cheapest when a node just computed
+  values directly); a <b>heap</b> slot wraps a full on-disk-format <code>HeapTuple</code>, typically pointing
+  straight into a shared buffer page without copying; a <b>minimal</b> slot is a heap tuple stripped of some header
+  fields, used for tuples that will only ever be looked at internally (e.g. as a hash join's stored inner tuples)
+  and never need to look like a real on-disk row. Deferring the choice of physical form — and, within a heap tuple,
+  deferring <i>column deforming</i> (parsing the tuple's byte layout into individual Datums) until a specific
+  column is actually referenced — is what keeps a wide table with a narrow <code>WHERE</code> clause cheap: columns
+  nobody asks for are never parsed out of the tuple at all.</p>
+
+  <h3>(c) Sort: quicksort in memory, external merge on disk</h3>
+  <p><code>tuplesort.c</code> starts by accumulating incoming tuples in memory and sorting them with an in-memory
+  quicksort (specifically an introsort variant, falling back to heapsort to bound worst-case behavior) whenever the
+  full input fits within <code>work_mem</code>. When it doesn't, <code>tuplesort.c</code> switches to <b>external
+  merge sort</b>: tuples are accumulated up to the memory limit, sorted in memory, and written out as one <i>sorted
+  run</i> to a temp file; this repeats until the whole input has been consumed as a sequence of sorted runs on disk;
+  then a <b>k-way merge</b> — using a binary heap keyed on each run's current head tuple — merges all runs
+  simultaneously, always emitting the globally smallest remaining tuple next, in a single sequential pass over
+  every run's data. This is why sort spilling is a graceful, not catastrophic, degradation: the I/O pattern is
+  sequential writes followed by a sequential (heap-driven) merge read, not random access, and the algorithm's
+  correctness is completely unaffected by whether it took the in-memory or external path — only its speed changes.</p>
+  <p><b>Incremental Sort</b> (PostgreSQL 13+) exploits input that's already sorted on a <i>prefix</i> of the required
+  sort key — for example, an index scan delivering rows sorted by <code>(tenant_id, created_at)</code> when the
+  query needs <code>ORDER BY tenant_id, amount</code>. Rather than sorting the whole input as one undifferentiated
+  batch, it sorts each <code>tenant_id</code> group independently, as soon as that group is fully seen, which both
+  reduces the working set that needs to be resident at once and lets rows start flowing to the parent node long
+  before the entire input has been read — the streaming, incremental spirit of the Volcano model, applied inside a
+  single node that would otherwise be a full blocking materialization point.</p>
+
+  <h3>(d) Hash Join: build, probe, and the multi-batch spill</h3>
+  <p><code>nodeHashjoin.c</code> runs in two phases. <b>Build:</b> <code>MultiExecHash()</code> pulls every tuple
+  from the inner (typically smaller) child to completion — this is the one place a hash join fully materializes its
+  input, deliberately, because a hash table needs every key present before any probe can be trusted to be
+  complete — hashing each tuple's join key and inserting it into an in-memory hash table sized against
+  <code>work_mem</code>. <b>Probe:</b> the outer child is then pulled one tuple at a time, in true Volcano fashion;
+  each outer tuple's join key is hashed and looked up in the same hash table, emitting one output tuple per match.</p>
+  <p>When the inner side's estimated (or actual) size doesn't fit <code>work_mem</code>, PostgreSQL doesn't fail —
+  it goes <b>multi-batch</b>: both the inner and outer sides are partitioned by additional bits of the same hash
+  value into <i>N</i> batch files up front, such that any two tuples that could possibly join are guaranteed to land
+  in the same batch (their join keys hash identically on the partitioning bits). Batch 0 is handled in memory
+  immediately; batches 1..N-1 are processed afterward, one at a time, each repeating the same build-then-probe
+  logic against its own slice of the data, small enough to fit — trading one pass of extra partitioning I/O for
+  bounded memory regardless of how badly the size estimate was wrong.</p>
+
+  <div class="widget deck" id="deckHashJoin">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Hash join, build to probe to (maybe) multi-batch</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE SKEW OPTIMIZATION</div>
+    <p>Hash collisions are unavoidable in principle, but PostgreSQL specifically defends against the common,
+    <i>predictable</i> case of a heavily skewed join key: before the main build phase, it consults the outer
+    relation's <code>pg_statistic</code> MCV list (chapter 16's machinery, reused here) and preloads dedicated
+    <b>skew buckets</b> for the handful of most common outer values, sized generously so those specific hot values
+    never trigger a costly bucket-chain walk or (worse) push the table into multi-batch territory on their own. It
+    is a direct, small-scale reuse of the planner's own statistics infrastructure inside the executor — a rare case
+    of the two systems this course splits across two chapters actually sharing a data structure at runtime.</p>
+  </div>
+
+  <h3>(e) Nested Loop: parameterized inner scans and ExecReScan</h3>
+  <p>A nested loop with an indexed inner side is the one join method that never materializes anything extra: for
+  every outer tuple, the executor re-invokes the inner side as a <b>parameterized</b> path — the inner index scan's
+  search key is bound to the current outer tuple's join column, and the inner node is asked to restart. That
+  restart runs through <code>ExecReScan()</code>: rather than a full <code>ExecEndNode()</code>/<code>ExecInitNode()</code>
+  cycle (expensive — it would reopen files, rebuild state), <code>ExecReScan</code> resets only what changed (the
+  new parameter value, the scan's position) and reuses everything else (open relations, allocated buffers). This is
+  what makes nested loop with a good inner index the cheapest possible join for a small outer side: <code>O(N × log
+  M)</code> or better, with no build phase and no extra memory, at the cost of re-paying the inner scan's per-call
+  overhead <i>N</i> times — the classic tradeoff that makes it disastrous when <i>N</i> (the outer row count) is
+  badly underestimated, exactly as chapter 16's independence-assumption incidents describe.</p>
+
+  <h3>(f) Materialize and Memoize: caching a subplan's output</h3>
+  <p><b>Materialize</b> is the executor's explicit, opt-in version of the naive strawman from §3: it fully buffers
+  its child's output the first time through, specifically so that a repeated rescan (typically the inner side of a
+  nested loop that doesn't have a usable index, or a merge join's inner side) can be replayed from memory instead of
+  recomputing an expensive child subplan from scratch on every outer iteration. <b>Memoize</b> (PostgreSQL 14) is a
+  more targeted version of the same idea: rather than caching one subplan's entire output, it caches
+  <i>parameterized</i> results keyed by the actual parameter value bound on each nested-loop iteration, with an
+  LRU-style eviction policy bounded by <code>work_mem</code> — so when a nested loop repeatedly probes the same
+  small set of distinct outer values (a common pattern once <code>DISTINCT</code>/skewed foreign keys are involved),
+  Memoize turns what would have been <i>N</i> full inner-scan re-executions into a handful of real executions plus
+  many cheap cache hits, without materializing the entire inner relation the way a plain Materialize node would.</p>
+
+  <h3>(g) Parallel query: the same protocol, across processes</h3>
+  <p>A <b><code>Gather</code></b> node is the boundary between serial and parallel execution: everything below it
+  in the plan tree can run concurrently across multiple <span class="term" data-def="Ordinary backend processes spawned specifically to run one query's parallel portion, then exit — distinct from the long-lived auxiliary processes chapter 1 covered.">background workers</span>;
+  everything above it (including <code>Gather</code> itself) runs serially in the original backend, now called the
+  <b>leader</b>. The leader launches workers via <b>dynamic shared memory</b> (a DSM segment created fresh for this
+  query, distinct from the cluster's permanent shared memory segment), into which it serializes the plan subtree,
+  parameter values, and a shared coordination structure each worker needs to reconstruct its own copy of the
+  relevant <code>PlanState</code> tree independently.</p>
+  <p>A <b>Parallel Seq Scan</b>'s workers share a single atomic block-number counter in that DSM segment: each worker
+  claims the next unclaimed block, scans it, and goes back for another — a self-balancing work distribution with no
+  static partitioning and no coordinator overhead beyond one atomic increment per block claimed. <b>Parallel Hash
+  Join</b> (PostgreSQL 11+) goes further: rather than each worker building its own private copy of the inner hash
+  table (wasteful — the same work repeated <i>N</i> times), all workers cooperatively build <i>one shared hash
+  table</i> in the DSM segment, synchronized via barriers so that probing only begins once every worker agrees the
+  build phase is complete.</p>
+  <p>Tuples flow from workers back to the leader through <b><code>shm_mq</code></b> — fixed-size shared-memory ring
+  buffers, one per worker, with the reading and writing sides coordinating via <b>latches</b> (PostgreSQL's
+  cross-process condition-variable-like primitive built on a signal-plus-<code>poll</code>/<code>epoll</code> wait):
+  a worker blocked because its queue is full, or a leader blocked because every queue is empty, sleeps on a latch
+  rather than spinning, and is woken the instant the other side makes progress. The leader itself plays a dual role
+  it must budget for correctly: it is both the <i>coordinator</i> draining worker queues and, if the plan allows,
+  a full participant that executes a share of the parallel portion itself rather than sitting idle waiting on workers
+  it spawned. <b>Gather Merge</b> is the ordered variant of <code>Gather</code>: when each worker's output arrives
+  pre-sorted (typically because the parallel portion ends in a per-worker sort or an index scan), Gather Merge
+  performs a k-way merge across the workers' streams — the exact same heap-driven merge idea from §8c's external
+  sort, just merging across processes instead of across temp files.</p>
+  <p>Not every function can safely run this way: a function is <b>parallel-unsafe</b> if it reads or writes
+  session-local or transaction-local state a worker wouldn't share correctly with the leader (sequence advancement
+  semantics, temp table access in some contexts, certain non-reentrant C library calls) — such functions force the
+  planner to keep the plan (or the relevant subtree) fully serial, silently forfeiting parallelism the moment one
+  is present anywhere in the parallel portion, which is exactly §11's third incident.</p>
+
+  <h3>(h) JIT: past interpretation entirely</h3>
+  <p>Ordinary expression evaluation (a <code>WHERE</code> clause, a projection, an aggregate transition function
+  call) runs through <code>ExecInterpExpr()</code> — a generic tree-walking interpreter that dispatches through
+  each expression step at runtime, one step at a time, for every single tuple. For a simple predicate evaluated
+  once, that overhead is negligible; for a complex expression evaluated across a hundred million rows in an
+  analytic query, the interpreter's per-step dispatch and generic tuple-deforming logic becomes a measurable
+  fraction of total query time.</p>
+  <p>PostgreSQL 11+ can instead <b>JIT-compile</b> a query's expression evaluation and tuple deforming into native
+  machine code via <b>LLVM</b> (<code>src/backend/jit/llvm/</code>): at plan execution start, PostgreSQL emits LLVM
+  IR (intermediate representation) specific to that query's actual expressions and column layout, and LLVM compiles
+  it down to native instructions — specialized for exactly this query, with no generic dispatch loop left at all.
+  Small, frequently-called internal C functions (a type's comparison function, a cast) can even be <b>inlined
+  directly from bitcode PostgreSQL ships alongside its binaries</b>, eliminating a real function-call boundary that
+  the interpreter would otherwise have paid on every tuple.</p>
+  <p>This isn't free, so it's gated by <code>jit_above_cost</code> (only engage JIT once the planner's own total
+  cost estimate exceeds a threshold) and separate, higher thresholds for the more expensive inlining and
+  optimization passes (<code>jit_inline_above_cost</code>, <code>jit_optimize_above_cost</code>) — LLVM's own
+  compilation and optimization work takes real, non-trivial time, and for a query that turns out to execute quickly
+  despite a high cost estimate (chapter 16's misestimation problem, again), <b>the classic JIT failure mode</b> is
+  compilation time exceeding the entire execution time it was meant to save — a query that would have finished in
+  50&nbsp;ms interpreted instead spends 200&nbsp;ms compiling code for itself before running in 10&nbsp;ms, net
+  slower. This is precisely why JIT's cost thresholds exist and why some production workloads with many short,
+  frequently-executed queries but occasionally high cost estimates disable it outright (§11's second incident).</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">work_mem threshold — when sort and hash join spill</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>work_mem</label><input type="range" id="wm-slider" min="0" max="9" value="3" step="0.2"><span class="val" id="wm-val"></span></div>
+      <div class="slider-row"><label>operator input size</label><input type="range" id="wm-rows" min="4" max="8" value="6.3" step="0.05"><span class="val" id="wm-rows-val"></span></div>
+      <div class="arch-row-label">SORT</div>
+      <div id="wm-sort-box"></div>
+      <div class="arch-row-label">HASH JOIN (build side)</div>
+      <div id="wm-hash-box"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="wm-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Same protocol, five different bets on granularity</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>EXECUTION MODEL</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>Pure Volcano — tuple-at-a-time pull, whole tree; JIT for the interpreter's hot path only</td>
+      <td><span class="pill g">uniform, simple node interface</span> <span class="pill g">excellent for OLTP + mixed workloads</span></td>
+      <td><span class="pill b">per-tuple call overhead</span> <span class="pill b">no native SIMD across the executor</span></td></tr>
+    <tr><td>DuckDB / vectorized engines</td><td>Batch-at-a-time pull — each next() call returns ~1024 rows, not one</td>
+      <td><span class="pill g">amortized call overhead</span> <span class="pill g">SIMD-friendly tight loops</span></td>
+      <td><span class="pill y">worse fit for row-at-a-time OLTP point lookups and tiny result sets</span></td></tr>
+    <tr><td>ClickHouse</td><td>Vectorized + column-at-a-time storage, similar batch pull philosophy</td>
+      <td><span class="pill g">exceptional scan/aggregate throughput</span></td>
+      <td><span class="pill y">optimized overwhelmingly for append-heavy analytics, not transactional updates</span></td></tr>
+    <tr><td>Apache Spark (Tungsten)</td><td>Whole-stage code generation — compiles a chain of operators into ONE generated function, removing virtual calls between them entirely</td>
+      <td><span class="pill g">removes per-operator call overhead structurally, not just per-tuple</span></td>
+      <td><span class="pill y">codegen and JIT compile latency per query stage; complexity of the generator itself</span></td></tr>
+    <tr><td>SQL Server</td><td>Row-mode iterator (classic) plus a separate batch-mode executor for columnstore indexes</td>
+      <td><span class="pill g">picks per-query which granularity fits the data</span></td>
+      <td><span class="pill y">two executor code paths to maintain and reason about</span></td></tr>
+    <tr><td>MonetDB / X100 lineage</td><td>Column-at-a-time, fully materializing intermediate columns between operators (the historical root of vectorization)</td>
+      <td><span class="pill g">extremely simple operator code, maximal cache-friendly access</span></td>
+      <td><span class="pill b">intermediate materialization cost the Volcano model was invented to avoid, reintroduced deliberately</span></td></tr>
+  </table>
+  <p>Spark's whole-stage codegen is worth dwelling on: it takes the same observation §6 makes — per-tuple,
+  per-node function calls are the tax — and attacks it from the opposite direction PostgreSQL's JIT does.
+  PostgreSQL JIT-compiles individual <i>expressions</i> within a node but keeps the Volcano node-to-node call
+  structure intact; Tungsten instead <i>fuses multiple operators</i> into one generated function so there is no
+  inter-node call at all for the fused portion of the plan. Both are legitimate answers to the same diagnosis; they
+  differ in how much of the classic Volcano structure they're willing to give up for it.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Where the executor's time actually goes</h2>
+  <ul class="plain">
+    <li><b>Per-tuple overhead</b> is <code>O(1)</code> per node per tuple in the best case — but that constant
+      includes an indirect function call, slot management, and (pre-JIT) interpreted expression dispatch, which
+      dominates for narrow, simple-predicate queries over many rows exactly as §6 derived.</li>
+    <li><b>Sort:</b> in-memory quicksort is the familiar <code>O(n log n)</code> comparisons; external merge sort
+      adds <code>O(n)</code> sequential I/O for the initial run-writing pass plus <code>O(n log k)</code> for the
+      k-way merge (with a binary heap of size <i>k</i>, the run count) — the I/O pattern is fully sequential in both
+      directions, which is exactly why sort spilling degrades gracefully on both spinning disks and SSDs rather
+      than falling off a cliff.</li>
+    <li><b>Hash join:</b> single-batch is <code>O(N + M)</code> — build the inner in <code>O(M)</code>, probe the
+      outer in <code>O(N)</code>, both with small constants as long as the hash table's working set stays resident.
+      Once it doesn't, cache misses on bucket-chain walks turn "small constant" into "cache-miss-dominated," and
+      multi-batch adds a full extra sequential read-and-write pass over both inputs for the partitioning step.</li>
+    <li><b>Nested loop:</b> <code>O(N × M)</code> in the worst case (no usable inner index), collapsing to roughly
+      <code>O(N × log M)</code> with one, and to near <code>O(N)</code> amortized when Memoize's cache hit rate is
+      high against a skewed parameter distribution — three very different performance regimes hiding behind one
+      node name, which is exactly why <code>EXPLAIN ANALYZE</code>'s loop count matters as much as its row count.</li>
+    <li><b>Parallel query</b> trades per-worker CPU time for wall-clock time, bounded by Amdahl's law on whatever
+      portion of the plan sits above the <code>Gather</code> and must run serially in the leader, plus real
+      coordination overhead (DSM setup, latch wakeups, tuple-queue serialization) that makes parallelism a net loss
+      below some data-size threshold — which is exactly why the planner (chapter 16) costs parallel paths explicitly
+      rather than always preferring them.</li>
+  </ul>
+  <p>Drag row width and predicate complexity below to see interpreted vs JIT-compiled expression evaluation cross
+  over — and where JIT's own compile time can eat the win:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interpreted vs JIT — where the crossover sits</span><span class="w-sub">DRAG</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>rows processed</label><input type="range" id="jc-rows" min="2" max="8" value="5" step="0.05"><span class="val" id="jc-rows-val"></span></div>
+      <div class="slider-row"><label>expression complexity</label><input type="range" id="jc-complex" min="1" max="10" value="4" step="1"><span class="val" id="jc-complex-val"></span></div>
+      <div class="chartbox"><canvas id="jc-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> interpreted total time</span>
+        <span><span style="color:var(--ok)">━</span> JIT total time (compile + run)</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="jc-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents, one executor each</h2>
+
+  <h3>Incident 1: work_mem tuned globally, spilling under concurrency</h3>
+  <p>A team raises <code>work_mem</code> cluster-wide from 4&nbsp;MB to 256&nbsp;MB to fix a slow reporting query's
+  external sort. The reporting query gets faster. Two weeks later, a burst of concurrent OLTP connections each runs
+  a query with two or three sort/hash nodes, and the backend fleet's <i>total</i> in-flight <code>work_mem</code>
+  commitment — chapter 16's peak-memory equation, <code>active_backends × plan_nodes × work_mem</code> — blows past
+  physical RAM, and the OOM killer starts choosing victims (chapter 1's crash protocol, triggered from here).
+  <b>Fix:</b> <code>work_mem</code> is a per-operation, per-backend budget, not a global one — set it conservatively
+  at the cluster level and raise it per-session (<code>SET work_mem</code>) only for the specific reporting
+  connections that need it, exactly the surgical fix the original problem actually called for.</p>
+
+  <h3>Incident 2: JIT compilation time exceeding the query it was meant to speed up</h3>
+  <p>After upgrading to a PostgreSQL version with JIT enabled by default, a team notices a class of short, frequent
+  queries — individually cheap to execute, but with a planner cost estimate that happens to sit just above
+  <code>jit_above_cost</code> because of a wide <code>SELECT *</code> projection — get measurably slower, not
+  faster. <code>EXPLAIN (ANALYZE, BUFFERS)</code> reveals a JIT block reporting real but substantial "Functions" and
+  "Inlining"/"Optimization" time that exceeds the query's own execution time by several multiples: the query was
+  fast enough that LLVM never got a chance to earn back its own compilation cost. <b>Fix:</b> raise
+  <code>jit_above_cost</code> (and, separately, <code>jit_inline_above_cost</code>/<code>jit_optimize_above_cost</code>)
+  well above this workload's typical cost estimates, or disable JIT entirely (<code>jit=off</code>) for connection
+  pools serving predominantly short OLTP-shaped queries, reserving it for genuinely long-running analytic
+  connections where the amortization actually works in JIT's favor.</p>
+
+  <h3>Incident 3: a parallel-unsafe function silently serializes an entire report</h3>
+  <p>A reporting query that used to run in parallel across eight workers suddenly runs serially after a schema
+  change adds a new computed column backed by a small PL/pgSQL helper function that reads a session-local
+  configuration setting via <code>current_setting()</code> in a way the planner cannot prove is parallel-safe. No
+  error is raised — the planner simply stops generating parallel paths for any portion of the plan that would need
+  to call this function, and the query silently reverts to a single-process, wall-clock-bound execution that takes
+  eight times as long as it used to, with no log message pointing at the cause. <b>Fix:</b> mark genuinely safe
+  functions explicitly with <code>PARALLEL SAFE</code> (the conservative default is <code>UNSAFE</code> for any
+  function PostgreSQL cannot prove otherwise), and audit newly added function calls in hot report queries with
+  <code>EXPLAIN</code>'s worker count whenever a previously-parallel query's plan shape changes after a schema or
+  function update.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the executor at a whiteboard?</h2>
+  <p>Think before you reveal.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: execProcnode.c, nodeHashjoin.c, tuplesort.c</h2>
+  <p>Files marked <span style="color:var(--warn)">●</span> are core reading for this chapter.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/executor/</span></div>
+<div>├── <span class="fhl">● execMain.c</span> <span class="fnote">— ExecutorStart/Run/Finish/End: the four-phase lifecycle every query goes through</span></div>
+<div>├── <span class="fhl">● execProcnode.c</span> <span class="fnote">— ExecInitNode/ExecProcNode/ExecEndNode: the protocol itself</span></div>
+<div>├── <span class="fhl">● nodeHashjoin.c</span> <span class="fnote">— build/probe phases, batch files, skew buckets</span></div>
+<div>├── nodeSort.c <span class="fnote">— thin wrapper calling into tuplesort.c</span></div>
+<div>├── nodeNestloop.c <span class="fnote">— parameterized inner rescans</span></div>
+<div>├── nodeMaterial.c · nodeMemoize.c <span class="fnote">— subplan output caching, two strategies</span></div>
+<div>├── <span class="fhl">● nodeGather.c</span> <span class="fnote">— the serial/parallel boundary; nodeGatherMerge.c for ordered output</span></div>
+<div>└── <span class="fhl">● execParallel.c</span> <span class="fnote">— DSM setup, plan/param serialization, worker launch</span></div>
+<div><span class="dir">src/backend/utils/sort/</span><span class="fhl">● tuplesort.c</span> <span class="fnote">— quicksort, external merge, incremental sort (~6k lines)</span></div>
+<div><span class="dir">src/backend/jit/llvm/</span> <span class="fnote">— llvmjit.c, llvmjit_expr.c: LLVM IR emission and compilation</span></div>
+  </div></div>
+
+  <p>First, the dispatch mechanism §6 described — installed once, called everywhere:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>execProcnode.c — ExecInitNode() installs the specialized pointer</span></div>
+    <pre><span class="k">PlanState</span> *
+<span class="f">ExecInitNode</span>(Plan *node, EState *estate, <span class="k">int</span> eflags)
+{
+    PlanState *result;
+    <span class="k">switch</span> (<span class="f">nodeTag</span>(node)) {
+        <span class="k">case</span> T_HashJoin:
+            result = (PlanState *) <span class="f">ExecInitHashJoin</span>((HashJoin *) node, estate, eflags);
+            <span class="k">break</span>;
+        <span class="k">case</span> T_SeqScan:
+            result = (PlanState *) <span class="f">ExecInitSeqScan</span>((SeqScan *) node, estate, eflags);
+            <span class="k">break</span>;
+        <span class="c">/* ... one case per node type ... this switch runs ONCE per node,
+         * not once per tuple -- that's the whole point.              */</span>
+    }
+    <span class="c">/* Every node type's Init function sets its OWN ExecProcNode
+     * pointer directly, e.g.: */</span>
+    <span class="c">// hjstate-&gt;js.ps.ExecProcNode = ExecHashJoin;</span>
+    <span class="k">return</span> result;
+}
+
+<span class="c">/* The ONLY call site the rest of the executor ever uses to pull
+ * a tuple, regardless of node type: */</span>
+<span class="k">static inline</span> TupleTableSlot *
+<span class="f">ExecProcNode</span>(PlanState *node)
+{
+    <span class="k">if</span> (node-&gt;chgParam != <span class="n">NULL</span>)
+        <span class="f">ExecReScan</span>(node);          <span class="c">/* parameters changed since last pull */</span>
+    <span class="k">return</span> node-&gt;ExecProcNode(node);  <span class="c">/* direct call -- no switch, no re-dispatch */</span>
+}</pre>
+  </div>
+
+  <p>Now the hash join's probe loop, where build/probe and the batch/skew logic in §8d actually live:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>nodeHashjoin.c — ExecHashJoin(), simplified</span></div>
+    <pre><span class="k">static TupleTableSlot</span> *
+<span class="f">ExecHashJoin</span>(PlanState *pstate)
+{
+    HashJoinState *node = (HashJoinState *) pstate;
+
+    <span class="k">if</span> (!node-&gt;hj_HashTable) {
+        <span class="c">/* First call: fully drain the inner child ONCE. */</span>
+        node-&gt;hj_HashTable = <span class="f">ExecHashTableCreate</span>(...);
+        <span class="f">MultiExecHash</span>((HashState *) innerPlanState(node));  <span class="c">/* the one blocking phase */</span>
+    }
+
+    <span class="k">for</span> (;;) {
+        <span class="k">if</span> (!node-&gt;hj_MatchedOuter) {
+            TupleTableSlot *outer = <span class="f">ExecProcNode</span>(outerPlanState(node)); <span class="c">/* pull, Volcano-style */</span>
+            <span class="k">if</span> (TupIsNull(outer)) {
+                <span class="k">if</span> (!<span class="f">ExecParallelHashJoinNewBatch</span>(node))  <span class="c">/* more batch files to process? */</span>
+                    <span class="k">return</span> <span class="n">NULL</span>;                        <span class="c">/* truly done */</span>
+                <span class="k">continue</span>;                              <span class="c">/* start next batch's build+probe */</span>
+            }
+            node-&gt;hj_CurTuple = <span class="f">ExecHashGetHashValue</span>(outer);
+        }
+        <span class="k">if</span> (<span class="f">ExecScanHashBucket</span>(node, econtext)) {
+            <span class="k">return</span> <span class="f">ExecProject</span>(node-&gt;js.ps.ps_ProjInfo); <span class="c">/* one match -&gt; one tuple up */</span>
+        }
+        <span class="c">/* no more matches for this outer tuple; loop back for another */</span>
+    }
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Dispatch once, not per tuple.</b> The <code>switch</code> in <code>ExecInitNode</code> runs a number of
+    times proportional to plan node <i>count</i>, not row count — moving the branch-heavy work off the hot,
+    per-tuple path entirely. <b>2. Blocking phases are explicit and rare.</b> Hash join's build phase is the one
+    deliberate exception to pure streaming in this whole chapter, and the code makes that exception structurally
+    visible (a one-time <code>if</code> guard) rather than hiding it inside a general-purpose "materialize
+    everything" abstraction — precisely the naive strawman §3 rejected, used surgically instead of universally.
+    <b>3. Batch/skew logic reuses existing machinery rather than inventing new structures</b> — batch files are
+    ordinary temp files, skew buckets reuse the planner's own MCV statistics — minimizing the amount of genuinely
+    new, unproven code in a path this performance-critical.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the executor in your head</h2>
+  <p>Six questions, then a sequencing challenge.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — one hash join, start to finish</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur for a single-batch hash join. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The executor stepper</h2>
+  <p>A real plan shape: <code>Sort → Hash Join → (Seq Scan orders, Seq Scan customers)</code>. Tuple counts are kept
+  small on purpose — illustrating the mechanism, standing in for the millions a real plan would move. Click
+  "next tuple" (or press play) and watch the pull propagate down the tree while a tuple travels back up. Toggle
+  <code>work_mem</code> to force the hash join into multiple batches and the sort into an external merge; toggle
+  parallel workers to fan the scan out; toggle JIT to compare compile time against the time it saves.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Plan tree executor — live</span><span class="w-sub" id="sim-phase">IDLE</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="plantree" id="sim-tree"></div>
+          <div class="arch-row-label">HASH TABLE (build side — customers)</div>
+          <div class="buckets" id="sim-buckets"></div>
+          <div class="arch-row-label">SORT BUFFER / EXTERNAL RUNS</div>
+          <div id="sim-sortbox"></div>
+          <div class="arch-row-label" id="sim-workers-label" style="display:none">PARALLEL WORKERS</div>
+          <div id="sim-workers" style="display:none"></div>
+          <div class="arch-row-label">JIT: COMPILE VS EXECUTION TIME</div>
+          <div class="jitbar-row"><label>interpreted</label><div class="jitbar" id="jit-bar-interp" style="background:var(--pg)"></div></div>
+          <div class="jitbar-row"><label>JIT (compile+run)</label><div class="jitbar" id="jit-bar-jit" style="background:var(--ok)"></div></div>
+          <p style="font-size:11.5px;color:var(--muted)" id="jit-note"></p>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">STEPPING</div>
+            <div class="btns">
+              <button class="btn primary" id="sc-next">next tuple →</button>
+              <button class="btn good" id="sc-play">▶ play</button>
+              <button class="btn" id="sc-reset">↺ reset</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">MEMORY</div>
+            <div class="slider-row"><label>work_mem</label><input type="range" id="sim-wm" min="0" max="9" value="6" step="1"><span class="val" id="sim-wm-val"></span></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">PARALLELISM</div>
+            <div class="btns">
+              <button class="chip" id="sim-par-0">0 workers</button>
+              <button class="chip on" id="sim-par-2">2 workers</button>
+              <button class="chip" id="sim-par-4">4 workers</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">JIT</div>
+            <div class="btns">
+              <button class="chip" id="sim-jit-off">JIT off</button>
+              <button class="chip on" id="sim-jit-on">JIT on</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-build">0</div><div class="cl">built</div></div>
+            <div class="scounter"><div class="cv" id="cnt-probe">0</div><div class="cl">probed</div></div>
+            <div class="scounter"><div class="cv" id="cnt-out">0</div><div class="cl">emitted</div></div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-batch" style="color:var(--purple)">1</div><div class="cl">batch</div></div>
+            <div class="scounter"><div class="cv" id="cnt-runs" style="color:var(--warn)">0</div><div class="cl">sort runs</div></div>
+            <div class="scounter"><div class="cv" id="cnt-mode" style="color:var(--ok);font-size:11px">single</div><div class="cl">hash mode</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Drop <code>work_mem</code> until "hash mode" flips to multi-batch — watch the build phase restart
+    for a second batch. <b>2.</b> Drop it further until sort runs appear — watch external-merge runs accumulate
+    before a merge step. <b>3.</b> Set workers to 4 and step through — watch build+probe happen across worker lanes
+    simultaneously instead of one tuple at a time. <b>4.</b> Toggle JIT on early versus late — notice the compile
+    cost is paid once regardless, so it only pays off once enough tuples flow through to amortize it.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 18: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer, then reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 17 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now trace a tuple's pull-then-return path through any
+    plan tree, explain exactly when sort and hash join spill to disk and why that's safe, reason about parallel
+    query's process-crossing tuple queues, and predict when JIT helps versus hurts. Chapter 18 turns to how a
+    committed change survives a crash and reaches a replica — the write-ahead log this whole executor has been
+    quietly relying on every time a tuple was inserted, updated, or deleted.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="pg-18.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-18: WAL & Replication →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+/* MARK-0 */
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1976", l:"System R's RSS", d:"<b>System R's Relational Storage System</b> already exposes access paths through a get-next-record interface — the conceptual ancestor of open/next/close, though not yet formalized as a general query-processing paradigm." },
+  { yr:"1987", l:"POSTGRES executor", d:"<b>POSTGRES's own executor</b> is built on the same pull model from its first implementation, independently of any formal Volcano terminology — a tree of C functions, each pulling from its children on demand." },
+  { yr:"1990", l:"“Volcano” paper", d:"<b>Goetz Graefe & William McKenna</b> publish the Volcano query evaluation system, formalizing open()/next()/close() as THE standard iterator interface and — more importantly — showing it generalizes cleanly to parallel execution via an exchange operator. The name becomes the field's standard vocabulary for this whole paradigm." },
+  { yr:"1993-94", l:"Graefe's survey", d:"<b>Graefe's “Query Evaluation Techniques for Large Databases”</b> cements the iterator model as the default mental model taught in every database course since — including this one." },
+  { yr:"~2005", l:"MonetDB/X100", d:"<b>MonetDB and the X100 project</b> argue the tuple-at-a-time iterator model wastes CPU on function-call overhead and forfeits SIMD, proposing column-at-a-time and vectorized batch processing instead — the intellectual root of DuckDB and ClickHouse's execution model (§6, §9)." },
+  { yr:"2016", l:"Parallel Query (9.6)", d:"<b>PostgreSQL 9.6 ships Gather</b> — the executor's first multi-process parallelism, extending the same protocol across a process boundary rather than replacing it (§8g)." },
+  { yr:"2017", l:"Parallel Hash Join + JIT (11)", d:"<b>PostgreSQL 11</b> ships both Parallel Hash Join's shared build phase and the first JIT expression compilation via LLVM — two independent extensions of the executor bolted on without changing the underlying node interface." },
+  { yr:"2020-21", l:"Incremental Sort, Memoize", d:"<b>PostgreSQL 13's Incremental Sort</b> and <b>PostgreSQL 14's Memoize</b> both push the model further toward streaming and caching partial work — refining the same tree, decades after its shape was fixed." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+/* MARK-1 */
+
+/* ============================================================
+   2. DECK: choosing the execution model (§5)
+   ============================================================ */
+(function(){
+  function card(title, body, verdict, cls){
+    return `<div style="border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:16px 18px">
+      <div style="font-family:var(--mono);font-size:12px;color:var(--pg);margin-bottom:8px;letter-spacing:.05em">${title}</div>
+      <div style="font-size:13.5px;line-height:1.7;color:#c6cddb;margin-bottom:10px">${body}</div>
+      <div class="pill ${cls}" style="font-size:11px;padding:3px 10px">${verdict}</div>
+    </div>`;
+  }
+  stepper("deckModel", [
+    { stage: card("BASELINE · full materialization", "Every stage runs to completion before the next starts, as in §3. Simple, but pays memory and latency costs unconditionally (§4).", "REJECTED as the default", "b"),
+      cap:`<b>Where we start.</b> Correct and simple, but §4 already quantified the memory and time-to-first-row cost.` },
+    { stage: card("CANDIDATE B · push-based dataflow", "Each operator proactively pushes its output downstream the instant it's produced — the consumer never asks, it just reacts, similar in spirit to reactive streams or callback-driven pipelines.", "REJECTED for a general-purpose executor", "b"),
+      cap:`<b>Genuinely used elsewhere (streaming systems), awkward here.</b> A pure push model struggles with exactly the case a database cares most about: a consumer (a LIMIT, an EXISTS, a nested loop that only wants a few matches) that wants to STOP early. Under push, the producer has to be explicitly told to stop and may have already done wasted work by the time that signal arrives; under pull, stopping is simply "don't call next() again" — no signal needed, no wasted work possible by construction.` },
+    { stage: card("CANDIDATE C · pull-based iterator (Volcano) ✓", "Every node implements open()/next()/close(). A parent calls next() on a child only when it actually needs another tuple; the call recurses all the way down and one tuple flows back up per call.", "ADOPTED", "g"),
+      cap:`<b>The winning shape, for three concrete reasons.</b> <b>(1) LIMIT is free</b> — the consumer just stops calling next(), and no node below it does one bit of unnecessary work. <b>(2) Pipelining without materialization</b> — a tuple can flow all the way from a leaf scan to the client without ever being written to an intermediate array, for any plan shape that doesn't have a genuine blocking operator (a sort, a hash join's build phase) in it. <b>(3) A uniform interface</b> — every node, however different internally, looks identical to its parent and its children, which is exactly what let parallel query and JIT (§8g, §8h) get bolted on decades later without redesigning anything.` },
+    { stage: card("THE EXCEPTION, MADE EXPLICIT", "Some operators (hash join's build side, sort) genuinely NEED to see all of their input before producing any output — that's not a design failure, it's the operator's actual semantics.", "Blocking is scoped, not universal", "y"),
+      cap:`<b>The Volcano model doesn't forbid materialization — it scopes it.</b> A hash join blocks on its <i>inner</i> child only, and only once, precisely when correctness requires it (§8d); everything else in the same plan still streams. This is the crucial difference from §3's strawman: materialization becomes a deliberate, local, operator-specific decision instead of a universal default paid by every stage of every query.` }
+  ]);
+})();
+/* MARK-2 */
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  protocol:{ n:"ExecInitNode / ExecProcNode / ExecEndNode", f:"executor/execProcnode.c", r:"The universal three-function protocol every plan node implements: initialize state once, produce one tuple (or end-of-data) per call, tear down once. ExecInitNode installs each node's own concrete ExecProcNode function pointer at init time.", l:"Init and End each run once per node, top-down then bottom-up. ExecProcNode runs once per tuple, per node, for the whole query.", d:"There's no failure mode for the protocol itself — it's the invariant everything else in this section is built on top of." },
+  slot:{ n:"TupleTableSlot", f:"executor/execTuples.c, tuptable.h", r:"The reusable container every next() call returns, in one of several physical forms (virtual, heap, minimal, buffer) chosen for whichever is cheapest at that point — deferring both physical representation and column-deforming until actually needed.", l:"Allocated per node at init; reused (not reallocated) for every tuple that node produces.", d:"Choosing the wrong slot type for a given node would force unnecessary copies — this is a real, if narrow, source of executor overhead when custom nodes get it wrong." },
+  expr:{ n:"ExprState", f:"executor/execExpr.c, execExprInterp.c", r:"Compiled representation of a WHERE clause, projection, or aggregate transition — a flat array of 'steps' either walked by a generic interpreter (ExecInterpExpr) or compiled to native code by LLVM (§8h).", l:"Built once per query from the expression tree, evaluated once per tuple thereafter.", d:"The interpreter's generic per-step dispatch is exactly the overhead JIT compilation exists to remove for expensive, frequently-evaluated expressions." },
+  sort:{ n:"Sort", f:"executor/nodeSort.c → utils/sort/tuplesort.c", r:"Fully materializes and sorts its input — quicksort in memory, external k-way merge on disk once work_mem is exceeded. The one universally blocking node in this list, by necessity.", l:"First next() call triggers the full sort; subsequent calls stream sorted output one tuple at a time.", d:"Spilling to disk degrades performance, never correctness — the merge algorithm is agnostic to whether its inputs came from memory or temp files." },
+  hashjoin:{ n:"Hash Join", f:"executor/nodeHashjoin.c", r:"Build phase fully materializes the inner side into a hash table; probe phase streams the outer side one tuple at a time. Multi-batch spilling partitions both sides by hash bits when the table doesn't fit work_mem.", l:"Build runs once per batch; probe streams per batch; batches after the first are only visited if memory forced a spill.", d:"An underestimated inner size (chapter 16's misestimation problem) causes an unplanned mid-execution spill to multi-batch — real I/O the chosen plan's cost never budgeted for." },
+  nestloop:{ n:"Nested Loop", f:"executor/nodeNestloop.c", r:"For every outer tuple, re-invokes a parameterized inner scan via ExecReScan — no build phase, no extra memory, at the cost of re-paying the inner scan's overhead once per outer tuple.", l:"Rescans the inner side once per outer tuple pulled.", d:"Catastrophic when the outer row count is badly underestimated — this is the exact mechanism behind most 'why is this simple join so slow' incidents." },
+  memoize:{ n:"Memoize / Materialize", f:"executor/nodeMemoize.c, nodeMaterial.c", r:"Materialize buffers an entire subplan's output for cheap rescans. Memoize (PG14) instead caches parameterized results keyed by bind value, with LRU eviction bounded by work_mem — a targeted cache rather than a full buffer.", l:"Materialize fills once, on first rescan; Memoize fills incrementally, evicting under memory pressure.", d:"Memoize's hit rate depends entirely on how skewed/repeated the actual parameter distribution is — a uniform, never-repeating parameter stream gets no benefit from it at all." },
+  gather:{ n:"Gather / Gather Merge", f:"executor/nodeGather.c, nodeGatherMerge.c, execParallel.c", r:"The serial/parallel boundary. Launches background workers via dynamic shared memory, collects their output through shm_mq tuple queues coordinated by latches; Gather Merge additionally k-way-merges pre-sorted worker streams.", l:"Workers launched once at Gather's first next() call; live for the query's parallel portion, then exit.", d:"A parallel-unsafe function anywhere in the parallel portion silently forces a fully serial fallback — no error, just no speedup (§11's third incident)." },
+  jit:{ n:"JIT (LLVM)", f:"jit/llvm/llvmjit.c, llvmjit_expr.c", r:"Compiles a query's expression evaluation and tuple deforming into native machine code via LLVM, replacing the generic tree-walking interpreter for that query's execution.", l:"Compilation happens once, at executor startup, gated by jit_above_cost and related thresholds.", d:"If compile time exceeds the execution time it saves — common for short queries with inflated cost estimates — JIT makes the query slower overall (§11's second incident)." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">FAILURE MODE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("protocol");
+/* MARK-3 */
+
+/* ============================================================
+   4. DECK: hash join build → probe → multi-batch (§8d)
+   ============================================================ */
+(function(){
+  function buckets(filled, total, hot){
+    let h = `<div class="buckets" style="margin:10px auto">`;
+    for (let i=0;i<total;i++){
+      const cls = i<filled ? (hot===i ? "bucket fill" : "bucket fill") : "bucket";
+      h += `<div class="${cls}">${i<filled?"●":""}</div>`;
+    }
+    return h + `</div>`;
+  }
+  function scene(title, body){
+    return `<div style="text-align:center"><div style="font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-bottom:8px">${title}</div>${body}</div>`;
+  }
+  stepper("deckHashJoin", [
+    { stage: scene("BUILD PHASE — inner child pulled to completion", buckets(0,10,-1) + `<p style="font-size:12px;color:var(--dim);margin-top:8px">MultiExecHash() is about to drain the inner (customers) child entirely. Nothing has been probed yet — probing before the build finishes would risk missing matches.</p>`),
+      cap:`<b>Before the first outer tuple is even pulled</b>, the hash join's build phase runs to completion — the one deliberate, scoped exception to streaming in this entire chapter (§5's final card).` },
+    { stage: scene("BUILD PHASE — filling the hash table", buckets(6,10,-1) + `<p style="font-size:12px;color:var(--dim);margin-top:8px">6 of 10 inner tuples hashed and inserted. Each tuple's join key determines its bucket; PostgreSQL also checks pg_statistic's MCV list here to pre-size skew buckets for the outer side's most common values.</p>`),
+      cap:`<b>Every inner tuple, one insert each.</b> This is real work proportional to inner size — which is exactly why hash join is a poor choice when the inner side turns out to be unexpectedly huge (chapter 16's misestimation, again).` },
+    { stage: scene("PROBE PHASE — outer child streamed, Volcano-style", buckets(10,10,-1) + `<p style="font-size:12px;color:var(--dim);margin-top:8px">Hash table complete. Now ExecProcNode() pulls ONE outer (orders) tuple at a time, hashes its key, and scans the matching bucket — true tuple-at-a-time pulling resumes here.</p>`),
+      cap:`<b>The streaming half.</b> Once the (one-time) build cost is paid, probing is pure Volcano: one outer tuple in, zero or more matches out, no further materialization needed for the join itself.` },
+    { stage: scene("MULTI-BATCH — when the inner doesn't fit work_mem", `<div style="display:flex;justify-content:center;gap:20px"><div class="slot hot">batch 0 — in memory now</div><div class="slot">batch 1 — spilled to disk</div></div><p style="font-size:12px;color:var(--dim);margin-top:10px">Both sides partitioned by extra hash bits BEFORE building batch 0's table — any pair that could match is guaranteed to land in the same batch, so no correctness is lost by processing batches one at a time.</p>`),
+      cap:`<b>The graceful-degradation path.</b> If the inner side is bigger than work_mem allows, PostgreSQL doesn't fail — it partitions both sides into N batch files up front, processes batch 0 fully (build+probe, exactly as above), then repeats the whole build-then-probe cycle for batch 1, batch 2, and so on. The §15 simulator lets you trigger this by lowering work_mem directly.` }
+  ]);
+})();
+/* MARK-4 */
+
+/* ============================================================
+   5. WORK_MEM THRESHOLD CALCULATOR (§8h)
+   ============================================================ */
+(function(){
+  function fmtMB(mb){ return mb>=1024 ? (mb/1024).toFixed(1)+" GB" : mb.toFixed(mb<1?2:0)+" MB"; }
+  function fmtRows(r){ return r>=1e6?(r/1e6).toFixed(2)+"M": r>=1e3?(r/1e3).toFixed(1)+"K": Math.round(r); }
+  function render(){
+    const wm = Math.round(Math.pow(2, +el("wm-slider").value));
+    const rows = Math.round(Math.pow(10, +el("wm-rows").value));
+    el("wm-val").textContent = fmtMB(wm);
+    el("wm-rows-val").textContent = fmtRows(rows);
+
+    const avgRowBytes = 150;
+    const neededMB = rows*avgRowBytes/1048576;
+    const fitsSingle = neededMB <= wm;
+
+    if (fitsSingle){
+      el("wm-sort-box").innerHTML = `<div class="runbar"><div class="seg2" style="width:100%;background:var(--pg)"></div></div>
+        <p style="font-size:12px;color:var(--muted);margin-top:4px">In-memory quicksort — ${fmtMB(neededMB)} needed, fits within ${fmtMB(wm)}. No temp files.</p>`;
+      el("wm-hash-box").innerHTML = `<div class="runbar"><div class="seg2" style="width:100%;background:var(--ok)"></div></div>
+        <p style="font-size:12px;color:var(--muted);margin-top:4px">Single-batch hash table — ${fmtMB(neededMB)} needed, fits within ${fmtMB(wm)}.</p>`;
+    } else {
+      const runs = Math.min(Math.ceil(neededMB/wm), 12);
+      let runsHtml = "";
+      for (let i=0;i<runs;i++) runsHtml += `<div class="seg2" style="width:${100/runs}%;background:${i%2?'#8ab8ff':'#60a5fa'}"></div>`;
+      el("wm-sort-box").innerHTML = `<div class="runbar">${runsHtml}</div>
+        <p style="font-size:12px;color:var(--bad);margin-top:4px">External merge sort — ${fmtMB(neededMB)} needed vs ${fmtMB(wm)} available: ${runs} sorted runs written to temp files, then k-way merged.</p>`;
+
+      const batches = Math.min(Math.ceil(neededMB/wm), 16);
+      let batchHtml = "";
+      for (let i=0;i<batches;i++) batchHtml += `<div class="slot ${i===0?'hot':''}">batch ${i}${i===0?' (in mem)':''}</div>`;
+      el("wm-hash-box").innerHTML = `<div>${batchHtml}</div>
+        <p style="font-size:12px;color:var(--bad);margin-top:4px">Multi-batch hash join — inner partitioned into ${batches} batches so each fits ${fmtMB(wm)}; batch 0 processes immediately, the rest spill to disk and process afterward.</p>`;
+    }
+    el("wm-note").innerHTML = `At ${fmtRows(rows)} rows (${fmtMB(neededMB)} of hash/sort state) against <code>work_mem=${fmtMB(wm)}</code>: ${fitsSingle ? "everything stays in memory — cheapest possible execution for both nodes." : "both nodes are forced to spill — correctness is unaffected, but real extra I/O (writing + re-reading partitioned data) is now part of the actual runtime the planner's cost estimate may not have fully anticipated if the row count itself was misestimated (chapter 16)."}`;
+  }
+  el("wm-slider").oninput = render;
+  el("wm-rows").oninput = render;
+  render();
+})();
+/* MARK-5 */
+
+/* ============================================================
+   6. INTERPRETED VS JIT CHART (§10)
+   ============================================================ */
+(function(){
+  const COMPILE_BASE = 15; // ms, roughly constant per query regardless of row count
+  function interpTime(rows, complexity){ return rows * (0.00004 * complexity); }
+  function jitTime(rows, complexity){ return COMPILE_BASE * (1 + complexity*0.15) + rows * (0.000006 * complexity); }
+  const cv = el("jc-chart"), ctx = cv.getContext("2d");
+  function render(){
+    const N = Math.round(Math.pow(10, +el("jc-rows").value));
+    const C = +el("jc-complex").value;
+    el("jc-rows-val").textContent = N>=1e6?(N/1e6).toFixed(1)+"M":N>=1e3?(N/1e3).toFixed(0)+"K":N;
+    el("jc-complex-val").textContent = C;
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let e=2; e<=8; e+=0.15) xs.push(Math.round(Math.pow(10,e)));
+    const interpVals = xs.map(n=>interpTime(n,C));
+    const jitVals = xs.map(n=>jitTime(n,C));
+    const maxV = Math.max(...interpVals, ...jitVals);
+    const X = n => PAD + (Math.log10(n)-2)/(8-2) * (W-PAD-14);
+    const Y = v => H-24 - (v/maxV) * (H-44);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [100,10000,1000000,100000000].forEach(n=>{ ctx.beginPath(); ctx.moveTo(X(n),10); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText(n>=1e6?(n/1e6)+"M":n, X(n)-10, H-6); });
+    function curve(vals, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((n,i)=>{ const y = Y(vals[i]); i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y); });
+      ctx.stroke();
+    }
+    curve(interpVals, "#60a5fa");
+    curve(jitVals, "#4ade80");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(N),10); ctx.lineTo(X(N),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here_i = interpTime(N,C), here_j = jitTime(N,C);
+    const winner = here_j < here_i ? "JIT" : "interpreted";
+    el("jc-note").innerHTML = `At ${N.toLocaleString()} rows and complexity ${C}: interpreted ≈ <b style="color:var(--pg)">${here_i.toFixed(1)} ms</b>, JIT ≈ <b style="color:var(--ok)">${here_j.toFixed(1)} ms</b> (of which ~${(COMPILE_BASE*(1+C*0.15)).toFixed(1)} ms is compile time paid regardless of row count). <b>${winner}</b> wins here. ${winner==="interpreted" ? "This is the classic JIT failure mode: too few rows to amortize a roughly fixed compile cost — exactly why jit_above_cost exists to avoid engaging JIT on cheap queries." : "Enough rows are flowing through this expression that the fixed compile cost is a small fraction of total time — JIT's per-row speedup dominates."}`;
+  }
+  el("jc-rows").oninput = render;
+  el("jc-complex").oninput = render;
+  render();
+})();
+/* MARK-6 */
+
+/* ============================================================
+   7. INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Explain, precisely, why LIMIT 10 can make a query return almost instantly under the Volcano model but not under a fully-materializing executor.", hint:"who decides when to stop calling next()?",
+    a:"Under Volcano, the LIMIT node simply stops calling next() on its child after receiving 10 tuples — every node below it, all the way to the leaf scans, only ever does exactly as much work as was demanded, and demand stops the instant 10 tuples have flowed up. Under a fully-materializing executor, every stage below the limit must run to completion and produce its ENTIRE output before the limit node can even begin filtering, because there is no mechanism to signal 'stop early' partway through a stage's batch materialization — the limit is applied only after all the wasted work is already done." },
+  { lvl:"SENIOR", q:"A hash join's build phase is a deliberate exception to the streaming model. Why is it necessary, and why doesn't the same necessity apply to the probe phase?", hint:"what does a probe need to be sure about before it can trust a miss?",
+    a:"To correctly report whether a given outer tuple has NO match, the hash table must already contain every possible matching inner tuple — if the table were only partially built, a genuine match sitting in an unprocessed portion of the inner relation would be missed, silently producing wrong results. The probe phase has no equivalent requirement: each outer tuple only needs the (already-complete) hash table to check itself against, and can be handled entirely independently of every other outer tuple, so there's no correctness reason to buffer the outer side at all — it can stream one tuple at a time exactly as Volcano intends." },
+  { lvl:"STAFF", q:"Why is external merge sort's I/O pattern described as 'graceful degradation' rather than a performance cliff?", hint:"what does the merge phase actually read/write, and in what order?",
+    a:"Both phases are sequential: the run-writing phase does one sequential pass over the input, writing sorted runs sequentially to temp files; the k-way merge phase reads all runs sequentially in lockstep (advancing whichever run's head is smallest, tracked with a binary heap) and writes its merged output sequentially too. There is no random-access I/O pattern anywhere in the algorithm, on spinning disk or SSD — the cost simply scales up smoothly as more runs are needed, rather than falling off a cliff the way, say, a hash table overflowing into random-access disk paging would." },
+  { lvl:"STAFF", q:"Derive why PostgreSQL's skew-bucket optimization in hash join reuses the planner's MCV statistics rather than computing its own skew detection at execution time.", hint:"who already paid for this information, and when?",
+    a:"The planner already computed and stored the outer relation's MCV list in pg_statistic during ANALYZE (chapter 16) — that data already IS a ranked list of the most frequent join-key values, which is exactly what a skew detector would need to compute from scratch at execution time by scanning the data live. Reusing it costs nothing beyond a catalog lookup and avoids duplicating (and re-paying for) sampling work the system already did for an entirely different purpose — a clean example of the planner and executor, split across two chapters, sharing infrastructure rather than each solving the same subproblem independently." },
+  { lvl:"STAFF", q:"Why does ExecReScan avoid a full ExecEndNode/ExecInitNode cycle for a nested loop's inner side, and what would break if it didn't?", hint:"what does init/end actually do that rescan shouldn't repeat?",
+    a:"ExecInitNode/ExecEndNode do genuinely expensive, one-time setup and teardown: opening relations, allocating buffers, building initial state — none of which needs to change just because the inner scan's PARAMETER (the join key bound from the current outer tuple) changed. ExecReScan resets only the state that actually depends on the parameter (the scan's position, cached qualifiers referencing the new bind value) and reuses everything else. If nested loop instead paid the full init/end cost per outer tuple, its already-marginal per-iteration overhead would balloon by orders of magnitude, erasing the entire performance advantage an indexed nested loop is supposed to have over a hash join for a small outer side." },
+  { lvl:"PRINCIPAL", q:"Steelman a fully vectorized (batch-at-a-time) executor replacing PostgreSQL's tuple-at-a-time Volcano model outright. What would PostgreSQL actually lose?", hint:"who is PostgreSQL's median workload, and does that workload have batches to vectorize?",
+    a:"A vectorized executor would gain substantial throughput on scan- and aggregate-heavy analytical queries by amortizing call overhead and enabling SIMD (§6, §9) — a real, large win for that workload class. But PostgreSQL's median real-world workload includes a huge proportion of OLTP-shaped queries: point lookups, single-row updates, small joins returning a handful of rows — cases where there IS no meaningful batch to vectorize, and where the tuple-at-a-time model's low per-query overhead and excellent LIMIT/early-termination behavior (this whole chapter's central argument) actually matter more than raw scan throughput. A full replacement would also be an enormous engineering undertaking touching every node type and the entire expression evaluation stack — which is exactly why PostgreSQL's actual strategy is targeted, additive (JIT for expressions, not a wholesale batch rewrite) rather than a replacement, consistent with the whole ecosystem's historical caution around touching foundational execution machinery." },
+  { lvl:"PRINCIPAL", q:"Design question: a workload has both a small number of very hot, very short queries and a small number of very expensive analytical ones, on the same connection pool. How would you configure JIT, and why can't one global setting serve both well?", hint:"what does jit_above_cost actually gate on, and is that gate query-shape-aware?",
+    a:"jit_above_cost is a single global threshold compared against each query's own planner cost estimate — it correctly gates JIT off for genuinely cheap queries and on for genuinely expensive ones PROVIDED the cost estimate is trustworthy, but a single connection pool serving both classes has no way to apply a different threshold per query shape through that one GUC alone. The practical answer is per-session or per-role configuration: route the hot, short queries through a role/session with jit=off (or a very high jit_above_cost) explicitly, and let the analytical connections use a lower threshold that engages JIT readily — accepting that this requires the application layer to know which category a given connection belongs to, since PostgreSQL itself has no per-query override short of SET commands issued by the calling code." }
+]);
+/* MARK-7 */
+
+/* ============================================================
+   8. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why does every PostgreSQL executor node implement the same open/next/close interface instead of custom interfaces per node type?",
+    opts:[ "It's required by the SQL standard", "It lets any node type connect to any other as parent or child with no special-case glue code",
+           "It's faster than any alternative for every workload", "Only scan nodes actually need it; joins use a different interface" ],
+    a:1,
+    why:"A uniform protocol means a Sort node's parent doesn't need to know or care whether its child is a HashJoin, a SeqScan, or a Gather — it just calls next() and gets a tuple or end-of-data. This is precisely what let parallel query and JIT get added decades after the interface was fixed, without redesigning the interface itself. It's an engineering choice about composability, not a standard requirement, and it is not universally the fastest option (vectorized engines trade it away deliberately, §6/§9)." },
+  { q:"A hash join's build phase fully materializes its inner child. Why doesn't this contradict the chapter's argument against materialization?",
+    opts:[ "It does contradict it — hash join is considered a design flaw", "Build-phase materialization is scoped to exactly one child, done once, and required for correctness — not a universal default applied to every stage",
+           "PostgreSQL secretly avoids materializing the inner side too", "Only true for multi-batch hash joins, not single-batch ones" ],
+    a:1,
+    why:"§3's naive strawman materialized EVERY stage of EVERY query unconditionally, which is what §4 quantified as wasteful. Hash join's build phase is the opposite: a single, well-understood, semantically necessary exception (you cannot correctly report a non-match until every possible match has been seen) applied to exactly one child of exactly one node type — everything else in the same plan tree still streams." },
+  { q:"work_mem is set very low and a hash join's inner side doesn't fit. What actually happens?",
+    opts:[ "The query fails with an out-of-memory error", "PostgreSQL silently returns incomplete/wrong results to stay within memory",
+           "Both sides are partitioned into multiple batches by hash bits, processed one batch at a time", "The planner is re-invoked mid-execution to choose a different join method" ],
+    a:2,
+    why:"Multi-batch hash join partitions both inputs by extra hash bits before building any table, guaranteeing any pair that could match lands in the same batch — then processes each batch's build-then-probe cycle in turn. Correctness is completely preserved; only performance degrades, via extra sequential partitioning I/O. There is no mid-execution replanning in PostgreSQL — the plan is fixed once at planning time (chapter 16)." },
+  { q:"Why can external merge sort's disk-spilling behavior be called 'graceful' rather than a performance cliff?",
+    opts:[ "It isn't graceful — sort spills are always catastrophic in practice", "Both the run-writing and k-way-merge phases are purely sequential I/O, regardless of how many runs are needed",
+           "PostgreSQL keeps the whole sort in memory no matter what, using swap instead of temp files", "Because sort spilling only happens for ORDER BY, never for other operations" ],
+    a:1,
+    why:"tuplesort.c writes sorted runs sequentially and merges them with a sequential, heap-driven k-way merge — no random access appears anywhere in the algorithm. This is exactly why the cost scales up smoothly with data size relative to work_mem instead of falling off a cliff the way random-access-heavy structures do when they overflow memory." },
+  { q:"A parallel-unsafe function is added to a previously-parallel query. What's the observed behavior?",
+    opts:[ "The query raises an explicit 'parallel unsafe function' error", "The planner silently stops generating parallel paths for the affected portion — no error, just no speedup",
+           "Only that one function's calls run serially while the rest of the query still parallelizes", "PostgreSQL automatically rewrites the function to be parallel-safe" ],
+    a:1,
+    why:"Parallel safety is a static, planning-time property (chapter 16's Path machinery) — a function PostgreSQL cannot prove safe simply removes parallel paths from consideration for any plan portion that would need to call it, with no runtime error and, critically, no log message calling out the cause. This is exactly what makes it a nasty, quiet production incident (§11) rather than an obvious one." },
+  { q:"A short query has an inflated planner cost estimate that pushes it just above jit_above_cost. What's the likely outcome?",
+    opts:[ "JIT engages, compiles the query's expressions, and the query reliably runs faster", "JIT engages, but its roughly fixed compile-time cost may exceed the execution time it saves, making the query slower overall",
+           "JIT is skipped automatically once the ACTUAL execution turns out to be fast", "jit_above_cost only affects parallel queries, not this case" ],
+    a:1,
+    why:"jit_above_cost gates on the ESTIMATED cost, which chapter 16 already established can be wrong. A misestimated-expensive-but-actually-cheap query pays LLVM's compilation cost (roughly fixed regardless of how few rows actually flow through) without enough execution volume to amortize it — the classic JIT regression, and exactly why raising the threshold or disabling JIT for short-query-heavy connection pools is a real, common production fix (§11)." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review a nodeHashjoin.c patch tomorrow.":correct>=4?"solid mental model; re-read the explanations you missed.":"re-run §8's decks and the §15 simulator — the build/probe split clicks fast once you step through it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "ExecutorStart(): ExecInitNode() walks the Plan tree, building matching PlanState nodes top-down",
+    "Top-level caller invokes ExecProcNode() on the root (Sort) node",
+    "Sort's next() pulls from Hash Join's next() — no output yet, Sort must see everything first",
+    "Hash Join's first pull triggers MultiExecHash(): inner (customers) child drained completely into a hash table",
+    "Hash Join begins pulling the outer (orders) child one tuple at a time",
+    "Each outer tuple is hashed, probed against the table, and matches are returned up to Sort one at a time",
+    "Outer child exhausted; Sort has now seen every tuple and performs the sort",
+    "Sort streams its now-ordered output to the caller one tuple per subsequent ExecProcNode() call"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real pull/return sequence</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+/* MARK-8 */
+
+/* ============================================================
+   9. KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 18 turns to the write-ahead log. Every INSERT/UPDATE/DELETE you've traced through this chapter's executor nodes must, before it's considered committed, have a WAL record durably on disk. Predict: at which point in the Volcano pull chain does WAL-logging actually happen, and why there rather than somewhere else?",
+    a:"WAL logging happens inside the specific modifying node (ModifyTable, wrapping the actual insert/update/delete) at the moment it applies a change to a buffer — not at commit time, not at the top of the plan, and not lazily deferred until some later flush decides to catch up. It has to happen exactly there because that's the only point in the whole pull chain where the executor actually mutates shared, persistent state (a heap page in a buffer), and the durability guarantee this course keeps returning to (WAL before data) requires the log record to exist before that specific mutation is allowed to be considered safe — chapter 18 will show this is enforced by a strict ordering rule (the WAL record's LSN must reach disk before the dirty page it describes is allowed to be written out), not by a promise." },
+  { lvl:"THINK", q:"A Parallel Hash Join runs across 4 workers, each independently pulling from a shared block-number counter for the outer Seq Scan. Predict what happens to correctness if two workers happen to grab overlapping block ranges due to a bug in the counter's atomicity — and what property of the counter this chapter implicitly assumed to guarantee that can't happen.",
+    a:"If two workers could read the same block range, at least one output row would be produced twice — a real correctness bug, not just a performance one, since a join's result set would silently contain duplicate output tuples. The property being relied on is that the block-number counter increment is a single atomic operation (hardware-level, not a read-then-write race) — precisely the kind of low-level correctness guarantee that makes 'workers share a counter, no coordinator needed' safe to say as blithely as §8g does; chapter 20's concurrency-primitives material (atomics, memory barriers) is exactly where that guarantee is formally justified rather than assumed." },
+  { lvl:"THINK", q:"Design exercise: sketch, from this chapter's mechanics, why adding a brand-new node type (say, a hypothetical 'ApproxCount' streaming-approximation node) to PostgreSQL would only require implementing three functions — and what would break if someone tried to implement it as a special case bolted onto an existing node instead.",
+    a:"Because every node in the tree only ever interacts with its neighbors through open()/next()/close(), a new node type just needs to implement those three functions correctly — pull from its own children via the same ExecProcNode() call every other node uses, and answer its own parent's next() calls the same way — and it slots into any existing plan tree, any join above or below it, parallel or serial, with zero changes to any OTHER node's code. Bolting new behavior onto an EXISTING node instead (special-casing inside, say, nodeAgg.c) would work only for that one node's specific parents/children, would need to be re-solved for every other node type that might want similar behavior, and would violate exactly the uniform-interface invariant this whole chapter built its case around in §5 and §7." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15) — the executor stepper
+   ============================================================ */
+(function(){
+  const BUILD_KEYS = [1,2,1,3,2,4,1,5,3,2];
+  const PROBE_KEYS = [1,2,3,1,6,4,2,7,5,3,1,2,8,4];
+  const BUCKET_KEYS = [1,2,3,4,5];
+
+  const S = {
+    phase: "idle",       // idle | build | probe | sorting | emit | done
+    buildIdx: 0, probeIdx: 0, batch: 0, batches: 1,
+    built: 0, probed: 0, emitted: 0, sortBuffer: [], runs: 0, sortedOut: [], emitIdx: 0,
+    playing: false, playTimer: null,
+    workers: 2, jit: true, wm: 6
+  };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = `[${lv}] ${msg}`;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+    while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+  }
+
+  function capacity(){ return Math.max(2, Math.round(Math.pow(1.55, S.wm))); }
+
+  function planTree(){
+    const sortLbl = S.phase==="sorting"||S.phase==="emit"||S.phase==="done" ? "active" : "";
+    const hjLbl = S.phase==="build"||S.phase==="probe" ? "active" : "";
+    el("sim-tree").innerHTML = `
+      <div class="ptnode ${sortLbl}">Sort${S.runs>0?` <span class="pts">external merge, ${S.runs} runs</span>`:'<span class="pts">order by amount</span>'}</div>
+      <div class="ptedge ${sortLbl?'flow':''}"></div>
+      <div class="ptnode ${hjLbl}">Hash Join${S.batches>1?` <span class="pts">multi-batch (${S.batches})</span>`:'<span class="pts">single batch</span>'}</div>
+      <div class="ptedge ${S.phase==='probe'?'flow':''}"></div>
+      <div class="ptrow">
+        <div class="ptnode ${S.phase==='probe'?'pulling':''}">Seq Scan orders<span class="pts">outer / probe — ${S.probed}/${PROBE_KEYS.length*S.batches}</span></div>
+        <div class="ptnode ${S.phase==='build'?'pulling':''}">Seq Scan customers<span class="pts">inner / build — ${S.built}/${BUILD_KEYS.length*S.batches}</span></div>
+      </div>`;
+  }
+
+  function renderBuckets(){
+    let h = "";
+    BUCKET_KEYS.forEach(k=>{
+      const count = S.buildSeen ? S.buildSeen.filter(x=>x===k).length : 0;
+      h += `<div class="bucket ${count>0?'fill':''}">${k}${count>0?':'+count:''}</div>`;
+    });
+    el("sim-buckets").innerHTML = h;
+  }
+
+  function renderSort(){
+    const cap = capacity();
+    const n = S.sortBuffer.length;
+    if (S.runs === 0){
+      const pct = Math.min(100, n/cap*100);
+      el("sim-sortbox").innerHTML = `<div class="runbar"><div class="seg2" style="width:${pct}%;background:${pct>=100?'var(--warn)':'var(--pg)'}"></div></div>
+        <p style="font-size:11.5px;color:var(--muted)">${n} tuples buffered / capacity ~${cap}</p>`;
+    } else {
+      let bar = "";
+      for (let i=0;i<S.runs;i++) bar += `<div class="seg2" style="width:${100/S.runs}%;background:${i%2?'#8ab8ff':'#60a5fa'}"></div>`;
+      el("sim-sortbox").innerHTML = `<div class="runbar">${bar}</div>
+        <p style="font-size:11.5px;color:var(--bad)">work_mem exceeded — ${S.runs} sorted runs spilled to temp files, k-way merged on emit.</p>`;
+    }
+  }
+
+  function renderWorkers(){
+    const show = S.workers > 0;
+    el("sim-workers-label").style.display = show ? "" : "none";
+    el("sim-workers").style.display = show ? "" : "none";
+    if (!show) return;
+    let h = "";
+    for (let i=0;i<S.workers;i++){
+      const busy = S.phase==="build"||S.phase==="probe";
+      h += `<div class="workerlane ${busy?'busy':''}">worker ${i+1} — ${busy? (S.phase==="build"?"hashing inner slice":"probing outer slice") : "idle"}</div>`;
+    }
+    h += `<div class="workerlane">leader — coordinating Gather${S.phase==="sorting"||S.phase==="emit"?", running Sort":""}</div>`;
+    el("sim-workers").innerHTML = h;
+  }
+
+  function renderJit(){
+    const rowsSoFar = S.built + S.probed;
+    const compile = S.jit ? 15 : 0;
+    const perRowInterp = 0.02, perRowJit = 0.003;
+    const interp = rowsSoFar*perRowInterp;
+    const jitT = compile + rowsSoFar*perRowJit;
+    const maxV = Math.max(interp, jitT, 5);
+    el("jit-bar-interp").style.width = Math.min(100, interp/maxV*100)+"%";
+    el("jit-bar-jit").style.width = Math.min(100, jitT/maxV*100)+"%";
+    el("jit-note").textContent = S.jit
+      ? `JIT: ~${compile.toFixed(0)} units compile (paid once) + ${(rowsSoFar*perRowJit).toFixed(1)} units execution vs ${interp.toFixed(1)} units interpreted — ${jitT<interp?"already ahead":"still amortizing the compile cost"}.`
+      : `JIT off — pure interpreted cost of ${interp.toFixed(1)} units for ${rowsSoFar} tuples processed so far.`;
+  }
+
+  function renderCounters(){
+    el("cnt-build").textContent = S.built;
+    el("cnt-probe").textContent = S.probed;
+    el("cnt-out").textContent = S.emitted;
+    el("cnt-batch").textContent = `${S.batch+1}/${S.batches}`;
+    el("cnt-runs").textContent = S.runs;
+    el("cnt-mode").textContent = S.batches>1 ? "multi-batch" : "single";
+    el("sim-phase").textContent = ({idle:"IDLE",build:"BUILD PHASE",probe:"PROBE PHASE",sorting:"SORTING",emit:"EMITTING SORTED OUTPUT",done:"DONE"})[S.phase];
+  }
+
+  function render(){ planTree(); renderBuckets(); renderSort(); renderWorkers(); renderJit(); renderCounters(); }
+
+  function batchSlice(keys, batchIdx, totalBatches){
+    if (totalBatches===1) return keys;
+    return keys.filter((k,i)=> (k % totalBatches) === batchIdx);
+  }
+
+  function step(){
+    const cap = capacity();
+    S.batches = Math.max(1, Math.min(3, Math.ceil((BUILD_KEYS.length*1.1)/cap)));
+    if (S.phase==="idle"){
+      S.phase="build"; S.buildSeen=[]; S.batch=0;
+      log("LOG","MultiExecHash(): starting build phase for batch 0");
+    }
+    if (S.phase==="build"){
+      const slice = batchSlice(BUILD_KEYS, S.batch, S.batches);
+      const stride = S.workers>0 ? Math.max(1,S.workers) : 1;
+      for (let w=0; w<stride && S.buildIdx<slice.length; w++){
+        S.buildSeen.push(slice[S.buildIdx]); S.buildIdx++; S.built++;
+      }
+      if (S.buildIdx >= slice.length){
+        S.phase="probe"; S.buildIdx=0;
+        log("OK",`build complete for batch ${S.batch} — hash table ready, probing begins`);
+      }
+      render(); return;
+    }
+    if (S.phase==="probe"){
+      const slice = batchSlice(PROBE_KEYS, S.batch, S.batches);
+      const stride = S.workers>0 ? Math.max(1,S.workers) : 1;
+      for (let w=0; w<stride && S.probeIdx<slice.length; w++){
+        const key = slice[S.probeIdx]; S.probeIdx++; S.probed++;
+        if (BUCKET_KEYS.includes(key)){
+          S.sortBuffer.push(key);
+          if (S.sortBuffer.length > capacity() && S.runs===0){ /* will spill, counted at sort time */ }
+        }
+      }
+      if (S.probeIdx >= slice.length){
+        S.batch++;
+        if (S.batch < S.batches){
+          S.phase="build"; S.buildIdx=0; S.probeIdx=0;
+          log("WARN",`batch ${S.batch-1} done — starting batch ${S.batch} (spilled to disk earlier due to work_mem)`);
+        } else {
+          S.phase="sorting";
+          const cap2 = capacity();
+          if (S.sortBuffer.length > cap2){
+            S.runs = Math.min(6, Math.ceil(S.sortBuffer.length/cap2));
+            log("WARN",`Sort: input exceeds work_mem — writing ${S.runs} sorted runs to temp files`);
+          }
+          S.sortedOut = [...S.sortBuffer].sort((a,b)=>a-b);
+          log("OK","Sort: all input seen — sort complete, ready to emit");
+        }
+      }
+      render(); return;
+    }
+    if (S.phase==="sorting"){
+      S.phase="emit"; render(); return;
+    }
+    if (S.phase==="emit"){
+      if (S.emitIdx < S.sortedOut.length){
+        S.emitIdx++; S.emitted++;
+      }
+      if (S.emitIdx >= S.sortedOut.length){
+        S.phase="done";
+        log("OK","query complete — all matching, sorted tuples emitted to the client");
+        stopPlay();
+      }
+      render(); return;
+    }
+  }
+
+  function stopPlay(){ S.playing=false; el("sc-play").textContent="▶ play"; if (S.playTimer) clearInterval(S.playTimer); }
+  function reset(){
+    stopPlay();
+    Object.assign(S, { phase:"idle", buildIdx:0, probeIdx:0, batch:0, batches:1, built:0, probed:0, emitted:0,
+      sortBuffer:[], runs:0, sortedOut:[], emitIdx:0, buildSeen:[] });
+    logEl.innerHTML = "";
+    log("LOG","executor reset — plan: Sort(HashJoin(SeqScan orders, SeqScan customers))");
+    render();
+  }
+
+  el("sc-next").onclick = ()=>{ if (S.phase!=="done") step(); };
+  el("sc-reset").onclick = reset;
+  el("sc-play").onclick = ()=>{
+    if (S.playing){ stopPlay(); return; }
+    S.playing = true; el("sc-play").textContent = "⏸ pause";
+    S.playTimer = setInterval(()=>{ if (S.phase==="done"){ stopPlay(); return; } step(); }, 260);
+  };
+  el("sim-wm").oninput = ()=>{ S.wm = +el("sim-wm").value; el("sim-wm-val").textContent = Math.round(Math.pow(1.55,S.wm))+" (illustrative units)"; render(); };
+  function setWorkers(n){
+    S.workers = n;
+    ["sim-par-0","sim-par-2","sim-par-4"].forEach(id=>el(id).classList.remove("on"));
+    el("sim-par-"+n).classList.add("on");
+    render();
+  }
+  el("sim-par-0").onclick = ()=>setWorkers(0);
+  el("sim-par-2").onclick = ()=>setWorkers(2);
+  el("sim-par-4").onclick = ()=>setWorkers(4);
+  function setJit(on){
+    S.jit = on;
+    el("sim-jit-on").classList.toggle("on", on);
+    el("sim-jit-off").classList.toggle("on", !on);
+    render();
+  }
+  el("sim-jit-on").onclick = ()=>setJit(true);
+  el("sim-jit-off").onclick = ()=>setJit(false);
+
+  S.wm = 6; el("sim-wm-val").textContent = Math.round(Math.pow(1.55,S.wm))+" (illustrative units)";
+  reset();
+})();
+/* MARK-9 */
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-17"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-16.html"><span>←</span><span><span class="cn-lbl">PREV · CH 16</span><span class="cn-ttl">Query Pipeline II: The Cost-Based Planner</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html" selected>CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">17 / 21</span></div><a class="cn-btn" href="pg-18.html"><span><span class="cn-lbl">NEXT · CH 18</span><span class="cn-ttl">Replication: Streaming, Logical & Slots</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

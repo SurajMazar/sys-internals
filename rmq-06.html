@@ -1,0 +1,1964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMQ-06 · Quorum Queues: Raft Inside the Broker — RabbitMQ Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#ff9f43; --pg-dim:rgba(255,159,67,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa; --amber:#ffd166;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(255,159,67,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(255,159,67,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(255,159,67,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(255,159,67,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(255,159,67,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(255,159,67,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ---------- chapter-specific: Raft replica cards (§15) ---------- */
+.rnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:10px 12px;
+  min-width:190px;flex:1;max-width:230px;font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer}
+.rnode:hover{transform:translateY(-2px)}
+.rnode.leader{border-color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.18)}
+.rnode.candidate{border-color:var(--amber);box-shadow:0 0 12px rgba(255,209,102,.16)}
+.rnode.dead{opacity:.32;filter:grayscale(1);cursor:default}
+.rnode.dead:hover{transform:none}
+.rnode.minority{border-style:dashed}
+.rnode .rn-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
+.rnode .rn-role{font-weight:700;font-size:11.5px}
+.rnode .rn-role.leader{color:var(--pg)}
+.rnode .rn-role.follower{color:var(--muted)}
+.rnode .rn-role.candidate{color:var(--amber)}
+.rnode .rn-term{color:var(--dim);font-size:10px}
+.rnode .rn-log{display:flex;flex-wrap:wrap;gap:3px;min-height:26px;margin:6px 0;align-content:flex-start}
+.logchip{border:1px solid var(--border-hi);border-radius:4px;padding:1px 4px;font-size:9px;color:var(--muted)}
+.logchip.committed{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.08)}
+.logchip.pending{border-color:var(--warn);color:var(--warn);background:rgba(255,159,67,.06)}
+.logchip.snap{border-color:var(--purple);color:var(--purple);background:rgba(167,139,250,.08)}
+.rnode .rn-meta{color:var(--dim);font-size:9.5px;line-height:1.6}
+.rnode .rn-meta b{color:var(--muted)}
+.naive-node{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:10px 12px;
+  min-width:170px;flex:1;max-width:210px;font-family:var(--mono);font-size:11px}
+.naive-node.master{border-color:var(--bad)}
+.naive-node.dead{opacity:.32;filter:grayscale(1)}
+.naive-node .nn-role{font-weight:700;font-size:11px}
+.naive-node.master .nn-role{color:var(--bad)}
+.naive-node .nn-meta{color:var(--dim);font-size:9.5px;margin-top:5px;line-height:1.6}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-rabbitmq.html">← RabbitMQ Internals</a>
+  <span class="crumb">RABBITMQ INTERNALS · <b>CH 06 / 12</b> · QUORUM QUEUES</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Raft Consensus</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 06</div>
+  <h1>Quorum Queues:<br><span class="grad">Raft Inside the Broker</span></h1>
+  <p class="lead">Chapter 1 named the moment RabbitMQ stopped trusting mirrored queues: a GitHub cluster partition
+  in 2014 that let both sides of a split brain keep serving writes. This chapter is the fix. Classic mirrored
+  queues replicated a queue's bytes without ever agreeing on <i>who is allowed to write</i> — <b>quorum queues</b>
+  replace that with an actual Raft cluster, running RabbitMQ's own <code>ra</code> library underneath a state
+  machine called <code>rabbit_fifo</code>. Every publish, every ack, every redelivery becomes a command appended
+  to a replicated log and applied only once a majority has durably persisted it. That single sentence explains
+  every property this chapter derives — the durability, the latency, the odd replica counts, and exactly which
+  failures a quorum queue survives that a mirrored queue could not.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain precisely why mirrored queues could silently diverge during a network partition, in terms of the guaranteed-multicast layer they were built on.</div>
+    <div class="obj"><b>You will understand</b>Raft's term/log/commit/safety model well enough to say why a quorum queue's publisher confirm is a genuine durability guarantee, not a hopeful one.</div>
+    <div class="obj"><b>You will predict</b>Why 3 or 5 replicas is correct and 4 is actively worse, and why memory tracks unacked messages, not queue depth.</div>
+    <div class="obj"><b>You will simulate</b>A live Raft cluster: elections, partitions, snapshots — and the same failure replayed against a mirrored queue to see exactly what it would have lost.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Why mirrored queues had to die</h2>
+  <p class="lead">RabbitMQ's original answer to "what happens to a queue's messages if the node hosting it dies"
+  was <b>queue mirroring</b>: an HA policy that replicated a classic queue's state to one or more mirror nodes,
+  designating one copy the <b>master</b> and the rest <b>slaves</b>. It shipped early, it was simple to reason
+  about in the common case, and it survived in production for the better part of a decade. It is also, in
+  hindsight, an object lesson in why "replicate the data" and "reach consensus about who owns the data" are not
+  the same problem — and why only the second one is actually safe.</p>
+  <p>Mirroring replicated a queue's operations to every mirror over Erlang's own inter-node messaging, using a
+  broadcast primitive (<code>gm</code>, guaranteed multicast) that gives you a strong, useful property: every
+  mirror in the group either sees an operation or the group's membership view changes to exclude whoever missed
+  it. What it does <i>not</i> give you is anything resembling <b>consensus</b>. There is no term number. There is
+  no concept of "a majority of the group agreed this write happened before any client saw it acknowledged." Each
+  side of a network partition simply keeps its own view of who's in the group and carries on — which is exactly
+  the shape of bug that stays dormant for years and then costs you a very bad day.</p>
+  <ul class="plain">
+    <li><b>No consensus, so a partition could produce two masters.</b> If the cluster splits and both halves still
+      have a live queue process willing to call itself the master (the original master on one side, a promoted
+      slave on the other), <i>both sides keep accepting publishes</i>. There is no majority check anywhere in the
+      protocol to stop this, because the protocol was never designed to need one.</li>
+    <li><b><code>ha-sync-mode=automatic</code> blocked the queue entirely.</b> When a new or rejoining mirror
+      needed to catch up, the master would synchronise the <i>entire</i> message backlog to it — and while that
+      sync ran, the master queue process blocked all other operations. A multi-gigabyte backlog turned "a mirror
+      rejoined" into "the queue stopped answering for minutes."</li>
+    <li><b>Promotion of an unsynchronised mirror silently lost messages.</b> If the master died before a given
+      mirror finished syncing, and that mirror was promoted anyway (a real, supported configuration —
+      <code>ha-promote-on-failure=always</code>), whatever the old master had that the new one didn't simply
+      never existed as far as any client could tell. No error, no dead-letter, no log line a consumer would ever
+      see — the messages were just gone.</li>
+    <li><b>Failure modes were data-dependent and impossible to reason about in advance.</b> Whether a given
+      partition or crash lost messages, blocked the queue, or (in the lucky, common case) did neither depended on
+      exactly which mirror was synced to what point when the fault happened — not something you could compute
+      ahead of time from the topology alone.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE VERSION HISTORY THAT MATTERS</div>
+    <p>Mirrored classic queues were <b>deprecated in RabbitMQ 3.9</b> (2021) and <b>removed entirely in 4.0</b>
+    (2024). That is not a routine feature sunset — it is the RabbitMQ team concluding, in public, that the
+    underlying algorithm could not be patched into safety. The replacement, <b>quorum queues</b> (introduced in
+    <b>3.8</b>, 2019), doesn't tweak the replication mechanism. It replaces it with a different algorithm class
+    entirely: each quorum queue <i>is</i> a Raft cluster, its state machine is <code>rabbit_fifo</code>, and it
+    runs on <code>ra</code> — RabbitMQ's own general-purpose Raft library, built specifically because no amount of
+    engineering on top of unreplicated-consensus mirroring could close the split-brain gap. Everything from here
+    to the end of this course assumes that lesson: <b>replication without a majority quorum is not durability,
+    it's a race condition with good uptime most of the time.</b></p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a telecom-switch broadcast primitive to a borrowed Stanford dissertation</h2>
+  <p>The road from "replicate the queue" to "run a Raft cluster per queue" runs through a genuinely famous paper
+  and a public postmortem that RabbitMQ users still cite a decade later. Click through — several of these events
+  are the direct reason specific config keys and defaults exist today.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from mirroring to Raft</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY RAFT AND NOT PAXOS</div>
+    <p>Diego Ongaro and John Ousterhout titled their 2014 paper <i>"In Search of an Understandable Consensus
+    Algorithm"</i> — understandability was the explicit design goal, not an accident. Multi-Paxos is provably
+    equivalent in the guarantees it can offer, but its leader election is a separate concern bolted on to a
+    voting protocol that is notoriously easy to implement subtly wrong; production-grade Paxos systems (Chubby,
+    Spanner's underlying layer) are famous for the gap between "the paper" and "the system that actually
+    works." Raft decomposes into three named, separately-understandable sub-problems — leader election, log
+    replication, safety — specifically so that a team implementing it from scratch has a fighting chance of
+    getting it right the first time. RabbitMQ's <code>ra</code> library is exactly that: an from-scratch Erlang
+    implementation the team could build, test, and trust because the algorithm was designed to be buildable.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">The design mirrored queues actually shipped with</h2>
+  <p>It's worth looking at the strawman honestly, because it isn't a strawman someone invented for this chapter —
+  it is, in simplified form, the real logic classic mirrored queues ran for years. Promote "the oldest mirror,"
+  optionally block on a full resync, and hope no two nodes ever do this at the same time on opposite sides of a
+  network fault.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>naive_ha_promotion.erl — mirrored queues, annotated</span></div>
+    <pre><span class="k">handle_master_down</span>(Mirrors, HaSyncMode) -&gt;
+    <span class="c">%% Pick "the oldest" mirror and promote it. No term number, no vote,</span>
+    <span class="c">%% no check that some OTHER node isn't doing the exact same thing</span>
+    <span class="c">%% right now on the other side of a partition.</span>
+    [Oldest | _Rest] = Mirrors,
+    <span class="f">promote_to_master</span>(Oldest),
+
+    <span class="k">case</span> HaSyncMode <span class="k">of</span>
+        automatic -&gt;
+            <span class="c">%% The ENTIRE backlog copies over before this queue answers</span>
+            <span class="c">%% anything else. A 4 GB backlog is a multi-minute outage.</span>
+            <span class="f">block_all_queue_ops</span>(),
+            <span class="f">sync_full_backlog_from</span>(Oldest),
+            <span class="f">unblock_queue</span>();
+        manual -&gt;
+            <span class="c">%% Oldest may simply be missing messages the dead master had.</span>
+            <span class="c">%% Nobody is notified. There is no error. They are just gone.</span>
+            <span class="f">unblock_queue</span>()
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <p>This isn't incompetence — it's what "replicate the data" looks like when you don't also solve "agree on who's
+  allowed to accept new data." The stepper below plays the exact failure out: a 3-node mirrored queue, a
+  partition, and the two decisions (promote, sync-or-don't) that turn a network blip into permanent, silent data
+  loss.</p>
+
+  <div class="widget deck" id="deckMirrorFail">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A mirrored queue during a network partition, step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Quantifying the blast radius</h2>
+  <p>Formalize what the deck just showed, because "it can lose messages" undersells how mechanically inevitable
+  that was once you write the two decisions down as an algorithm.</p>
+  <ul class="plain">
+    <li><b>Split-brain is not a rare edge case, it's the default outcome of a symmetric partition.</b> If a
+      3-node mirrored group splits 2-vs-1 (or, worse, roughly 1.5-vs-1.5 during a flaky link where both sides
+      intermittently see each other), <i>each side independently runs the same promotion logic</i>. There is no
+      shared state that would let one side know the other is doing the same thing — by construction, because
+      <code>gm</code>'s guaranteed multicast is a per-group broadcast, not a majority vote.</li>
+    <li><b>The blocking window during <code>ha-sync-mode=automatic</code> scales with backlog size, not with
+      anything the operator controls in the moment.</b> A queue holding 2 GB of unconsumed messages at the moment
+      a mirror needs to (re)sync will block for however long copying 2 GB over the cluster network takes — often
+      minutes — during which <i>every</i> publisher and consumer of that queue is stalled, not just the syncing
+      mirror.</li>
+    <li><b>Silent loss on promotion is proportional to replication lag, and replication lag is unbounded.</b> If
+      the promoted mirror was one heartbeat behind the dead master, you lose a handful of messages. If it had
+      just joined and was mid-sync, you can lose the entire backlog the master held. The failure mode is
+      <i>data-dependent</i>: identical topology, identical crash, wildly different blast radius depending on
+      timing you don't control.</li>
+    <li><b>None of this shows up until the fault actually happens.</b> A healthy mirrored queue under normal
+      operation looks and behaves identically whether it's one dropped connection away from splitting brains or
+      not — there's no metric that tells you "this cluster's mirroring design cannot survive the partition it's
+      about to have."</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE GITHUB 2014 NUMBERS, REVISITED</div>
+    <p>Chapter 1 introduced GitHub's public 2014 postmortem of a RabbitMQ cluster partition as evidence Erlang's
+    process model doesn't prevent operational incidents by itself. The mechanism behind that incident is exactly
+    this section's math: nodes disagreed about membership during a network fault, and depending on
+    <code>cluster_partition_handling</code> configuration (<code>ignore</code>, <code>autoheal</code>,
+    <code>pause_minority</code>), mirrored queues on each side of the split could diverge before anyone could
+    intervene. <code>pause_minority</code> is itself a workaround, not a fix — it makes the minority side stop
+    serving entirely, trading availability to avoid divergence, because the mirroring protocol has no cheaper way
+    to guarantee safety. A real consensus protocol gets you that same safety <i>and</i> keeps the majority side
+    serving, for free, as a consequence of the algorithm rather than an operator's configuration choice.</p>
+  </div>
+  <p>So the fix has to be a different algorithm, not a tuned version of the same one. §5 walks the candidates that
+  were actually on the table, and why Raft — specifically because of the paper's stated goal of being
+  understandable enough to implement correctly — is the one RabbitMQ built on.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Replication that requires a majority to agree before anything is "done"</h2>
+
+  <h3>Candidate A: patch <code>gm</code> with a majority check bolted on afterward</h3>
+  <p>The tempting minimal fix: keep the existing guaranteed-multicast broadcast, and just refuse to promote a
+  mirror unless it can see "enough" of the group. The problem is that <code>gm</code>'s per-side view updates
+  happen independently and there is no shared, monotonically increasing <b>term</b> number anywhere in the
+  design to let two independently-promoted masters recognize that the other is stale once the partition heals.
+  Bolting a majority check onto a protocol that was never built to carry the metadata a majority check needs
+  isn't a patch — by the time you've added terms, log indices, and a rule for resolving conflicting histories,
+  you've built Raft with extra steps. <b>Rejected: not actually smaller than doing it properly.</b></p>
+
+  <h3>Candidate B: primary/backup with an external fencing coordinator</h3>
+  <p>Systems like some SQL HA setups solve this by handing the "who's allowed to be primary" decision to an
+  external coordinator (a ZooKeeper ensemble, a STONITH fencing device) that can forcibly kill a demoted primary
+  before a new one takes writes. This works, but it reintroduces exactly the kind of mandatory external
+  dependency RabbitMQ has always avoided — a cluster of RabbitMQ nodes is supposed to be self-contained, and
+  "you also need to correctly operate a separate consensus system just to make queues safe" is a worse
+  operational story than solving consensus inside the broker. <b>Rejected: solves safety, reintroduces an
+  external dependency.</b></p>
+
+  <h3>Candidate C: (Multi-)Paxos</h3>
+  <p>Paxos offers the same fundamental guarantee — a value is chosen only once a majority of acceptors agree —
+  and has decades of production use (Chubby, Spanner's underlying log). But Paxos as originally specified doesn't
+  include leader election as part of the core protocol; production systems layer it on separately, and the
+  resulting systems are notorious for the gap between "the algorithm on paper" and "a correct from-scratch
+  implementation," precisely because the paper is famously subtle to reason about. For a team building a Raft-
+  class library from scratch inside Erlang, that implementation risk was judged too high. <b>Rejected: same
+  guarantee, materially higher risk of getting the implementation wrong.</b></p>
+
+  <h3>Candidate D: Raft ✓</h3>
+  <p>Raft gives you the identical safety property — an entry is committed only once a strict majority of the
+  cluster has durably stored it — but decomposes the problem into three named pieces designed to be understood
+  and implemented independently: <b>leader election</b> (exactly one leader per <b>term</b>, chosen by
+  randomized-timeout elections so at most one candidate can win a given term), <b>log replication</b> (the leader
+  is the only node that accepts new entries; it replicates them to followers in order), and <b>safety</b> (a
+  committed entry can never be lost or overwritten, proven via the log's structure rather than asserted). RabbitMQ
+  built <b><code>ra</code></b> — a general-purpose Raft library in Erlang — specifically to get this right, and
+  quorum queues are <code>rabbit_fifo</code>, a state machine running on top of it.</p>
+
+  <div class="widget deck" id="deckRaftBasics">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Raft, for engineers who half-know it</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE SAFETY ARGUMENT, IN ONE PARAGRAPH</div>
+    <p>A log entry is <b>committed</b> once the leader has replicated it to a majority of the cluster and each of
+    those replicas has durably persisted it (fsync'd) to its own log. Because any two majorities of the same
+    cluster must overlap by at least one member (that's just arithmetic on "more than half"), any future leader —
+    elected only if a majority of the cluster voted for it, and Raft refuses to vote for a candidate whose log is
+    behind the voter's own — is guaranteed to already hold every previously committed entry. A committed entry
+    therefore survives as long as a majority of the cluster survives, full stop, independent of which specific
+    nodes crash or when.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Consensus is not free, and pretending otherwise is how you get surprised in production</h2>
+  <p>Every cost below is a direct, physical consequence of requiring a majority to agree before anything is
+  durable — understanding them is what lets you use quorum queues where they earn their keep instead of
+  everywhere by default.</p>
+  <ul class="plain">
+    <li><b>Every operation costs a majority round trip plus an fsync.</b> A classic queue's publish can be
+      acknowledged as soon as the local queue process (and, if durable, the local disk) accepts it. A quorum
+      queue's publish is not durably committed until a majority of replicas — not just the leader — have written
+      it to disk. That's real network latency to at least one remote node, every single publish, that a
+      single-node queue simply doesn't pay.</li>
+    <li><b>A minority partition can make zero progress, by design — and "by design" doesn't make it free to
+      operate around.</b> If a network fault leaves a quorum queue's leader (or any subset of replicas) unable to
+      reach a majority, that side of the cluster correctly refuses to commit new writes rather than risk
+      divergence. That's exactly the safety property you wanted, but it means publishers on the wrong side of a
+      partition see failures or timeouts, not degraded-but-working — your application has to handle that.</li>
+    <li><b>Log compaction (snapshotting) is background work you now operate.</b> An ever-growing Raft log would
+      make both disk usage and restart-time replay unbounded, so <code>ra</code> periodically snapshots
+      <code>rabbit_fifo</code>'s state and truncates the log before it — real CPU and disk I/O that a classic
+      queue's simpler on-disk format doesn't need to do.</li>
+    <li><b>Replica placement and network topology now matter in a way they didn't for a single-process queue.</b>
+      Cross-AZ or cross-region round-trip time is added directly to every commit's latency, because "majority"
+      means "wait for the slower of however many remote acks you need," not "wait for local disk."</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE HONEST TRADE</div>
+    <p>None of this is an argument against quorum queues — it's the actual price of the safety that eliminated
+    §4's split-brain and silent-loss failure modes. A classic queue is faster precisely because it never pays a
+    network round trip to decide whether a write happened; a quorum queue is slower precisely because it refuses
+    to call a write "done" until a majority could survive losing any one member. §9 makes this trade quantitative
+    against other systems; §7 first nails down exactly which components host that trade inside the broker.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">A quorum queue, as objects you can click</h2>
+  <p>A quorum queue is not one process the way a classic queue is — it's a small distributed system: one
+  <code>ra</code> server process per replica, a shared state machine definition (<code>rabbit_fifo</code>) that
+  every replica runs identically, a replicated log each maintains independently on disk, and a client-facing
+  module (<code>rabbit_quorum_queue</code>) that makes the whole cluster look like one AMQP queue to a producer or
+  consumer who never needs to know how many replicas exist. Click through the pieces.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">CLIENT-FACING (AMQP SIDE)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="qqueue">rabbit_quorum_queue</div>
+          <div class="acard" data-p="fifoclient">rabbit_fifo_client</div>
+        </div>
+        <div class="arch-row-label">RAFT CLUSTER — ONE ra SERVER PER REPLICA</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="leader">ra server — leader</div>
+          <div class="acard" data-p="follower">ra server — follower</div>
+        </div>
+        <div class="arch-row-label">STATE MACHINE &amp; LOG (RUNS IDENTICALLY ON EVERY REPLICA)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="fifosm">rabbit_fifo (state machine)</div>
+          <div class="acard" data-p="ralog">ra_log (write-ahead log)</div>
+          <div class="acard" data-p="rasnap">ra_snapshot</div>
+        </div>
+        <div class="arch-row-label">CROSS-CUTTING</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="deliverylimit">x-delivery-limit — per-message redelivery counter tracked inside rabbit_fifo itself</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHAT "THE QUEUE" ACTUALLY MEANS NOW</div>
+    <p>When a client declares a quorum queue, RabbitMQ doesn't create one Erlang process — it creates an
+    <code>x-quorum-initial-group-size</code>-member <code>ra</code> cluster (default 3), each member running on a
+    node chosen by the queue's leader-locator policy, each holding an identical copy of the replicated log and an
+    identical <code>rabbit_fifo</code> state machine derived from replaying it. A producer's <code>Basic.Publish</code>
+    doesn't talk to "the queue" as a single thing — it talks to whichever replica the channel believes is
+    currently the leader, via <code>rabbit_fifo_client</code>, which also handles finding a new leader
+    automatically if that guess turns out to be stale.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Every operation is a command; every command is a Raft log entry</h2>
+  <p>This is the idea the whole chapter has been building to, stated precisely: <b>publish, consume (checkout),
+  ack (settle), requeue (return), and reject (discard) are not queue-process state mutations — they are commands
+  appended to a Raft log and applied to <code>rabbit_fifo</code> only after that command's log index is
+  committed.</b> That single design decision is why a quorum queue's ack means something a classic queue's ack
+  never quite could, and it's why the queue is slower — you're paying for that guarantee on every operation, not
+  just the ones you'd intuitively call "important."</p>
+
+  <h3>(a) The log entry: term, index, command</h3>
+  <p>Every entry in a quorum queue's Raft log is, conceptually, a triple: the <b>term</b> during which it was
+  appended (a monotonically increasing epoch number — Raft's mechanism for letting any node recognize a stale
+  leader without ambiguity), its <b>index</b> (a strictly increasing position in the log), and a
+  <b>command</b> — a <code>rabbit_fifo</code> protocol record describing exactly one queue operation:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang (simplified)</span><span>rabbit_fifo.erl — the command shapes that become log entries</span></div>
+    <pre><span class="c">%% Every one of these, once appended at some {Term, Index}, is what</span>
+<span class="c">%% "the log" actually contains. Nothing is applied to queue state</span>
+<span class="c">%% directly -- only via one of these going through commit first.</span>
+-record(enqueue,  {pid, seq, msg}).                 <span class="c">%% a publish</span>
+-record(checkout, {consumer_id, spec, meta}).       <span class="c">%% a consumer wants messages</span>
+-record(settle,   {consumer_id, msg_ids}).          <span class="c">%% an ack</span>
+-record(<span class="t">return</span>,    {consumer_id, msg_ids}).          <span class="c">%% a nack/requeue</span>
+-record(discard,  {consumer_id, msg_ids}).          <span class="c">%% reject, no requeue</span></pre>
+  </div>
+
+  <p>The stepper below walks one publish through the entire consensus round, phase by phase — this is the
+  mechanism, not a simplification of it.</p>
+
+  <div class="widget deck" id="deckConsensusRound">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">One publish, from Basic.Publish to durable</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) Snapshots: why the log can't just grow forever</h3>
+  <p>A log that only ever grows would eventually make two things unbounded: disk usage, and the time it takes a
+  restarted or newly-joined replica to catch up by replaying every entry since the beginning of time. <code>ra</code>
+  fixes this the way every serious consensus implementation does — it periodically has <code>rabbit_fifo</code>
+  serialize its <i>entire current state</i> into a snapshot, records the log index that snapshot covers, and then
+  discards every log entry at or before that index. A replica that falls far enough behind that the leader has
+  already discarded the entries it needs is caught up with an <b>InstallSnapshot</b> transfer — the whole current
+  state in one shot — rather than replaying history that no longer exists on disk anywhere.</p>
+
+  <div class="callout deep">
+    <div class="co-t">WHY MEMORY TRACKS UNACKED MESSAGES, NOT QUEUE DEPTH</div>
+    <p>Here's the detail that catches people who assume a quorum queue behaves like a classic one: snapshotting
+    only discards log <i>entries</i> for commands that are fully resolved — an enqueue whose message has since
+    been acked can be compacted away, because the snapshot itself no longer needs to represent it. A message that
+    is still sitting in the queue unconsumed, or has been delivered to a consumer but not yet acked, is <i>still
+    live state</i> — it has to be part of every snapshot until it's settled, because a new leader elected after a
+    crash needs to know it exists. So a million already-acked messages that flowed through cleanly cost you
+    almost nothing once compacted; ten thousand messages stuck unacked because a consumer stalled cost you real,
+    persistent memory on every single replica, for as long as they stay unacked. <code>x-max-in-memory-length</code>
+    and <code>x-max-in-memory-bytes</code> exist specifically to cap this: past the configured threshold, message
+    <i>bodies</i> are pushed out to disk-only storage while <code>rabbit_fifo</code> keeps just enough metadata in
+    memory to still track and redeliver them — bounding memory growth independent of how deep the backlog gets.</p>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Memory model — queue depth vs. unacked backlog</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>total queue depth</label><input type="range" id="q8-total" min="0" max="6" value="4" step="1"><span class="val" id="q8-total-val">50,000</span></div>
+      <div class="slider-row"><label>unacked / checked-out</label><input type="range" id="q8-unacked" min="0" max="6" value="1" step="1"><span class="val" id="q8-unacked-val">200</span></div>
+      <div class="toggle-row"><button class="chip on" id="q8-inmem">x-max-in-memory-length: 2,000</button></div>
+      <div class="memlegend" id="q8-legend"></div>
+      <div class="memmap" id="q8-memmap"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="q8-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) <code>x-delivery-limit</code>: poison-message protection built into the state machine</h3>
+  <p>Chapter 5 covered the classic-queue reality: detecting a "poison message" — one that a consumer keeps
+  nacking or crashing on, forever — required application-level bookkeeping, because a classic queue's redelivery
+  count is not durably, centrally tracked anywhere the queue itself can act on. <code>rabbit_fifo</code> fixes
+  this structurally: every message carries a <code>delivery_count</code> that the state machine itself increments
+  on every redelivery, as part of the same committed log entry that performs the redelivery. Once
+  <code>delivery_count</code> would exceed the queue's configured <code>x-delivery-limit</code>, the checkout
+  command that would have redelivered the message instead drops it (or routes it to the queue's dead-letter
+  exchange, if one is configured) — automatically, durably, and identically on every replica, with zero
+  application code required.</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang (simplified)</span><span>rabbit_fifo.erl — delivery-limit enforcement inside apply/3</span></div>
+    <pre><span class="f">checkout_one</span>(Msg = #msg{delivery_count = Count}, Limit, State) <span class="k">when</span> Limit =/= undefined, Count &gt; Limit -&gt;
+    <span class="c">%% The state machine itself refuses to redeliver -- this decision</span>
+    <span class="c">%% is made identically by every replica once THIS command commits,</span>
+    <span class="c">%% not by whichever consumer happens to be connected right now.</span>
+    <span class="k">case</span> State#state.dlx <span class="k">of</span>
+        undefined -&gt; {<span class="f">drop</span>(Msg, State), {<span class="t">reason</span>, delivery_limit_exceeded}};
+        _DlxCfg    -&gt; {<span class="f">dead_letter</span>(Msg, delivery_limit_exceeded, State), ok}
+    <span class="k">end</span>;
+<span class="f">checkout_one</span>(Msg = #msg{delivery_count = Count}, _Limit, State) -&gt;
+    {<span class="f">deliver</span>(Msg#msg{delivery_count = Count + 1}, State), ok}.</pre>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Replicated durability, priced eight different ways</h2>
+  <p>Every system that replicates queue or log state chooses how strict its commit rule is, and that choice is
+  the whole tradeoff. Read the table as a spectrum from "no consensus at all" to "strict majority on every write":</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>REPLICATION / COMMIT RULE</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>RabbitMQ quorum queue</td><td>Raft — every op is a log entry, committed on strict majority + fsync</td>
+      <td><span class="pill g">provably safe under partition</span> <span class="pill g">built-in poison-message limit</span></td>
+      <td><span class="pill b">majority round trip + fsync per op</span> <span class="pill b">minority partition halts writes</span></td></tr>
+    <tr><td>RabbitMQ classic mirrored queue (removed 4.0)</td><td>Guaranteed multicast, no majority concept, no term</td>
+      <td><span class="pill y">lower latency while healthy</span></td>
+      <td><span class="pill b">split-brain under partition</span> <span class="pill b">silent loss on bad promotion</span></td></tr>
+    <tr><td>Apache Kafka</td><td>ISR (in-sync replica set); <code>acks=all</code> waits for the current ISR, not a fixed majority</td>
+      <td><span class="pill g">tunable via <code>min.insync.replicas</code></span> <span class="pill g">very high sequential throughput</span></td>
+      <td><span class="pill y">ISR can shrink to 1 and still accept writes unless configured not to — a weaker default safety floor than Raft's fixed majority</span></td></tr>
+    <tr><td>Apache Pulsar (BookKeeper)</td><td>Ledger writes use write-quorum / ack-quorum settings — majority-style quorum, decoupled from the broker</td>
+      <td><span class="pill g">storage scales independently of brokers</span></td>
+      <td><span class="pill b">two systems to operate (broker + BookKeeper)</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Also Raft — JetStream's own clustered streams use a Raft implementation for replication</td>
+      <td><span class="pill g">same majority-commit safety as quorum queues</span> <span class="pill g">very low base latency</span></td>
+      <td><span class="pill y">same majority round-trip cost as any Raft system</span></td></tr>
+    <tr><td>Amazon SQS</td><td>Fully managed, replication mechanism opaque to the user</td>
+      <td><span class="pill g">zero operational burden</span></td>
+      <td><span class="pill b">no visibility into, or control over, the actual consistency mechanism</span></td></tr>
+    <tr><td>ActiveMQ Artemis</td><td>Primary/backup replication; a "pluggable quorum vote" for split-brain protection typically needs an external coordinator</td>
+      <td><span class="pill g">JMS-familiar operational model</span></td>
+      <td><span class="pill y">safe split-brain handling isn't self-contained the way Ra's is</span></td></tr>
+    <tr><td>Redis Streams</td><td>Asynchronous primary→replica replication by default; failover via Sentinel/Cluster epochs</td>
+      <td><span class="pill g">very low write latency</span></td>
+      <td><span class="pill b">acknowledged writes can be lost on failover — the replication window is async, not majority-confirmed</span></td></tr>
+  </table>
+  <p>Read the RabbitMQ row against the Redis row and the point of this whole chapter is right there: an
+  acknowledged write is only as durable as the weakest link in how it got replicated. Async replication (Redis
+  Streams' default, and what classic mirroring effectively was) can always lose an acknowledged write to a badly
+  timed failover. Majority-quorum replication (quorum queues, Kafka with a floor on ISR size, Pulsar's
+  BookKeeper, NATS JetStream) cannot — not "rarely," <i>cannot</i>, as a mathematical consequence of requiring
+  overlap between any two majorities of the same cluster.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">The bill, itemized</h2>
+  <p>Every number here follows directly from "commit requires a majority round trip plus an fsync":</p>
+  <ul class="plain">
+    <li><b>Per-operation cost:</b> O(1) to append to the leader's local log, but O(<i>majority</i>) messages to
+      replicate and O(<i>majority</i>) acks to wait for before the entry is committed — the leader must hear back
+      from ⌈(N+1)/2⌉ − 1 followers (it counts itself), not just fire-and-forget to all N.</li>
+    <li><b>Per-replica process footprint:</b> each replica is its own <code>ra_server</code> Erlang process plus
+      supporting write-ahead-log processes, running the full <code>rabbit_fifo</code> state machine — a quorum
+      queue with N replicas is meaningfully more BEAM processes and more per-node memory than one classic queue
+      process, before you even account for the unacked-message memory model from §8.</li>
+    <li><b>Disk access pattern:</b> sequential appends to each replica's write-ahead log, batched where possible,
+      with an fsync on the durability-critical path for every committed entry — a fundamentally different (and
+      heavier) disk profile than a classic queue's simpler message-store-plus-index layout.</li>
+    <li><b>Leader election cost:</b> O(N) vote-request messages, bounded in time by the randomized election
+      timeout range — the mechanism that guarantees at most one leader per term without a fixed, brittle timing
+      assumption about the network.</li>
+    <li><b>Throughput scales across queues, not within one queue.</b> A single quorum queue's ceiling is set by
+      how fast a majority can round-trip and fsync; getting more aggregate throughput on quorum queues means
+      spreading load across more queues (and therefore more independent Raft clusters, ideally with staggered
+      leaders across nodes), not expecting one queue to get faster by adding replicas — more replicas raises the
+      majority size, if anything adding latency, not throughput.</li>
+  </ul>
+  <p>The chart below models commit latency as a function of network round-trip time between replicas — the
+  variable that dominates once you're off a single LAN rack — for a 3-replica vs. a 5-replica cluster, against a
+  classic (unreplicated) queue's latency floor as a reference line.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Commit latency vs. inter-replica RTT</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>inter-replica RTT</label><input type="range" id="perf-rtt" min="0" max="50" value="4" step="1"><span class="val" id="perf-rtt-val">4 ms</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-n3">3 replicas (majority = 2)</button>
+        <button class="chip" id="perf-n5">5 replicas (majority = 3)</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> quorum queue commit latency</span>
+        <span><span style="color:#5b6475">┅</span> classic queue (local fsync only)</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch of the <i>shape</i> of the tradeoff, tuned to make the mechanism visible,
+    not a benchmark result: quorum-queue latency is modeled as a fixed local fsync cost plus the RTT to however
+    many followers a majority requires, while the classic-queue reference line pays only the local fsync. Real
+    numbers depend heavily on disk hardware, batching, and RabbitMQ version — but the qualitative result is
+    structural and won't change: a quorum queue's floor latency can never be lower than one network round trip to
+    a majority of its replicas, because that round trip is not an implementation inefficiency, it's the mechanism
+    that makes the durability guarantee true.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three stories from the mirrored-to-quorum migration</h2>
+
+  <h3>Story 1: the GitHub 2014 partition, revisited from the fix's side</h3>
+  <p>Chapter 1 covered GitHub's publicly documented 2014 incident, where network flakiness between clustered
+  RabbitMQ nodes caused a partition and, depending on <code>cluster_partition_handling</code> configuration,
+  divergent mirrored-queue state on each side. It's one of the most-cited real-world justifications operators
+  give for moving critical queues onto quorum queues — not because Raft would have made the network flakier link
+  behave better, but because a quorum queue's minority side <i>mechanically cannot</i> accept writes during the
+  same fault, which converts "silent divergence discovered later" into "visible, immediate write failures on one
+  side" — a strictly easier failure to detect, alert on, and reason about.</p>
+
+  <h3>Story 2: hosted-RabbitMQ providers documenting the sync-blocking problem in public</h3>
+  <p>CloudAMQP, one of the larger hosted-RabbitMQ providers, has published operator-facing guidance comparing
+  classic mirrored queues to quorum queues that calls out exactly the <code>ha-sync-mode=automatic</code>
+  blocking behavior this chapter derived in §1 and §4 as a top reason for migrating: a mirror rejoining after a
+  restart or a rebalance could stall an entire queue's traffic for the duration of a full backlog copy, on
+  customer-facing production queues, with no way to make it non-blocking short of switching mechanisms entirely.
+  Teams running large mirrored-queue fleets (a pattern reported across multiple large-scale RabbitMQ deployments
+  in this era, including in financial services) hit this repeatedly enough that it became a standard line item in
+  "why we migrated" writeups industry-wide, well before mirrored queues were formally deprecated.</p>
+
+  <h3>Story 3: quorum-queue memory growth from stalled consumers — a recurring operational surprise</h3>
+  <p>§8's memory model — quorum queue memory tracks unacked messages, not total queue depth — is not a corner
+  case operators read about and file away; it is a recurring class of production incident. A consumer that stalls
+  (a deploy gone wrong, a downstream dependency timing out, a bug that stops acking) doesn't just build up a
+  backlog the way it would on a classic queue — it holds an ever-growing set of "still live" state resident across
+  every replica, because none of it can be snapshotted away while unsettled. Operators who assume "queue depth
+  looks fine, so memory must be fine" have been caught by exactly this gap, which is why
+  <code>x-max-in-memory-length</code>/<code>x-max-in-memory-bytes</code> and per-queue memory alerting on unacked
+  count (not just queue depth) are now standard advice in quorum-queue operational runbooks, and why
+  <code>x-delivery-limit</code> — capping how long a message can stay "unsettled but repeatedly redelivered" — is
+  recommended as a default rather than an opt-in.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend "why Raft, specifically" at a whiteboard?</h2>
+  <p>Think before revealing — this is Staff/Principal-interview depth, the kind of question that separates "I've
+  used quorum queues" from "I understand what they're actually doing."</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>ra</code> and <code>rabbit_fifo</code></h2>
+  <p>Where this chapter's concepts physically live in the codebase. Files marked
+  <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">deps/rabbit/src/</span></div>
+<div>├── <span class="fhl">● rabbit_quorum_queue.erl</span> <span class="fnote">— AMQP-facing queue API; translates Basic.* into rabbit_fifo commands via ra</span></div>
+<div>├── <span class="fhl">● rabbit_fifo.erl</span> <span class="fnote">— the Raft state machine: init/1, apply/3, snapshot hooks (this chapter's core)</span></div>
+<div>├── <span class="fhl">● rabbit_fifo_client.erl</span> <span class="fnote">— client-side helper: finds the current leader, retries on stale-leader errors</span></div>
+<div>├── rabbit_fifo_dlx.erl <span class="fnote">— dead-lettering integration for delivery_limit and DLX-configured quorum queues</span></div>
+<div>└── rabbit_quorum_queue_periodic_metrics.erl <span class="fnote">— exposes commit index, term, and replica lag to the management API</span></div>
+<div><span class="dir">deps/ra/src/</span> <span class="fnote">— the general-purpose Raft library (open-sourced, not quorum-queue-specific)</span></div>
+<div>├── <span class="fhl">● ra_server.erl</span> <span class="fnote">— the gen_statem: candidate/follower/leader states, vote and AppendEntries handling</span></div>
+<div>├── <span class="fhl">● ra_log.erl</span> <span class="fnote">— the replicated log's read/write API over the on-disk segments</span></div>
+<div>├── ra_log_wal.erl <span class="fnote">— the write-ahead log writer process; batches and fsyncs entries</span></div>
+<div>├── <span class="fhl">● ra_snapshot.erl</span> <span class="fnote">— snapshot lifecycle: trigger, serialize state machine, truncate the log</span></div>
+<div>└── ra_machine.erl <span class="fnote">— the behaviour every state machine (rabbit_fifo included) implements</span></div>
+  </div></div>
+
+  <p>Simplified but structurally faithful Erlang. First, the behaviour contract every Raft-backed state machine —
+  <code>rabbit_fifo</code> included — must implement:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>ra_machine.erl — the behaviour contract, simplified</span></div>
+    <pre><span class="c">%% Every ra_machine callback module (rabbit_fifo is one) implements this.</span>
+<span class="c">%% Note what's absent: no networking, no persistence code, no leader</span>
+<span class="c">%% election logic. The state machine only ever sees ALREADY-COMMITTED</span>
+<span class="c">%% commands -- ra guarantees that by the time apply/3 runs.</span>
+-callback <span class="f">init</span>(Config) -&gt; State.
+-callback <span class="f">apply</span>(Meta, Command, State) -&gt; {State, Reply, Effects}.
+-callback <span class="f">state_enter</span>(RaftState, State) -&gt; Effects.  <span class="c">%% e.g. becoming leader</span></pre>
+  </div>
+
+  <p>Second, the shape of <code>rabbit_fifo</code>'s <code>apply/3</code> for an enqueue — this is what "the
+  command is only applied after commit" looks like as code:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_fifo.erl — apply/3 for an enqueue, simplified</span></div>
+    <pre><span class="f">apply</span>(_Meta, #enqueue{pid = Pid, seq = Seq, msg = Msg}, State0) -&gt;
+    <span class="c">%% This function only ever runs once ra has already determined the</span>
+    <span class="c">%% entry containing this command is committed -- majority-persisted,</span>
+    <span class="c">%% fsync'd, on every replica that's reachable. There is no "maybe"</span>
+    <span class="c">%% left by the time this line executes.</span>
+    State1 = <span class="f">dedupe_by_seq</span>(Pid, Seq, State0),      <span class="c">%% idempotent re-application on replay</span>
+    State2 = <span class="f">enqueue_message</span>(Msg, State1),
+    Effects = <span class="f">maybe_deliver_to_waiting_consumer</span>(State2),
+    {State2, ok, Effects}.</pre>
+  </div>
+
+  <p>Third, the safety-critical part of leader election — a candidate is only granted a vote if its log is at
+  least as up to date as the voter's own, which is the mechanism §5's safety argument actually depends on:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>ra_server.erl — vote handling, simplified</span></div>
+    <pre><span class="f">handle_vote_request</span>(#request_vote{term = Term, last_log_index = CandIdx,
+                                   last_log_term = CandTerm}, State) -&gt;
+    MyLastTerm  = <span class="f">last_log_term</span>(State),
+    MyLastIndex = <span class="f">last_log_index</span>(State),
+    <span class="c">%% "At least as up to date" -- compare TERM first, then INDEX.</span>
+    <span class="c">%% This is the entire mechanism that stops a candidate who's</span>
+    <span class="c">%% missing committed entries from ever becoming leader.</span>
+    LogIsOk = (CandTerm &gt; MyLastTerm) <span class="k">orelse</span>
+              (CandTerm =:= MyLastTerm <span class="k">andalso</span> CandIdx &gt;= MyLastIndex),
+    <span class="k">case</span> Term &gt;= <span class="f">current_term</span>(State) <span class="k">andalso</span> LogIsOk <span class="k">andalso</span> <span class="f">not_voted_yet</span>(State, Term) <span class="k">of</span>
+        true  -&gt; {<span class="f">grant_vote</span>(State, Term), vote_granted};
+        false -&gt; {State, vote_denied}
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Separate "is this committed" from "what does this command do."</b> <code>ra_server</code> owns
+    every question about terms, votes, and log replication; <code>rabbit_fifo</code>'s <code>apply/3</code> never
+    has to think about consensus at all — by the time it runs, the answer to "did a majority agree to this" is
+    already yes. This is the same instinct as separating a supervisor's restart policy from a worker's business
+    logic (ch. 1): keep the hard, general problem in one reusable layer, and let the specific state machine be
+    almost boring. <b>2. Make the state machine's apply function pure and idempotent.</b> Because a replica might
+    replay its log from a snapshot after a restart, or a leader might resend an entry a follower already has,
+    <code>apply/3</code> is written to tolerate being called again with a command it already processed
+    (<code>dedupe_by_seq</code> above) — essential for a function that <i>will</i> be re-run during recovery, not
+    an edge case someone forgot. <b>3. Build the general-purpose consensus library first, the queue second.</b>
+    <code>ra</code> is deliberately not RabbitMQ-specific — it's a reusable Raft implementation that
+    <code>rabbit_fifo</code> happens to be the first major consumer of (Khepri, RabbitMQ's newer metadata store,
+    is the second). Investing in a correct, general Raft library once and building multiple features on it is a
+    direct rejection of the "patch the existing thing" instinct that produced mirrored queues' original design.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> — read them, they encode the
+  chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — mirroring to Raft, in order</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click these events in chronological order, then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The Raft stepper: watch a quorum queue reach consensus</h2>
+  <p>A live Ra cluster — 3 or 5 replicas, each with its own log, term, and role. <b>Publish</b> queues a client
+  operation; <b>step</b> advances the consensus round one phase at a time (append → replicate → persist → ack →
+  commit → apply), or hit <b>play</b> to run it continuously. Then break things: kill the leader and watch a
+  randomized election timeout fire a new one with an incremented term; split the cluster into a majority and a
+  minority and watch the minority fail to elect anyone or commit anything; kill followers one at a time and watch
+  the exact moment a bare majority stops being enough. Toggle the comparison panel to replay the identical failure
+  against a simulated classic mirrored queue.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">quorum queue "orders" — <span id="raft-clustertitle">3-member Ra cluster</span></span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body">
+      <div class="sim-wrap" style="grid-template-columns:1fr 300px">
+        <div class="sim-stage">
+          <div class="toggle-row">
+            <button class="chip on" id="rs-size3">3 replicas</button>
+            <button class="chip" id="rs-size5">5 replicas</button>
+            <button class="chip" id="rs-compare">☐ compare: mirrored queue (no consensus)</button>
+          </div>
+          <div id="raft-phase-banner" style="font-family:var(--mono);font-size:11px;color:var(--pg);margin:10px 0 4px;min-height:16px"></div>
+          <div id="raft-nodes" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center"></div>
+          <div id="raft-mirror-wrap" style="display:none;margin-top:18px;border-top:1px dashed var(--border-hi);padding-top:14px">
+            <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px;text-align:center">SAME FAILURE, MODELED AS A CLASSIC MIRRORED QUEUE</div>
+            <div id="raft-mirror-nodes" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center"></div>
+            <div id="raft-mirror-verdict" style="text-align:center;font-family:var(--mono);font-size:11.5px;margin-top:10px;color:var(--muted)"></div>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">CLIENT</div>
+            <div class="btns">
+              <button class="btn primary" id="rs-publish">publish message</button>
+              <button class="btn good" id="rs-ack">ack oldest delivered</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">CONSENSUS CLOCK</div>
+            <div class="btns">
+              <button class="btn" id="rs-step">step →</button>
+              <button class="btn" id="rs-play">▶ play</button>
+            </div>
+            <div class="slider-row" style="margin-top:8px"><label>speed</label><input type="range" id="rs-speed" min="1" max="3" value="2" step="1"><span class="val" id="rs-speed-val">normal</span></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">FAILURE INJECTION</div>
+            <div class="btns">
+              <button class="btn danger" id="rs-kill-leader">kill leader</button>
+              <button class="btn danger" id="rs-kill-follower">kill a follower</button>
+              <button class="btn warn" id="rs-partition">split: majority | minority</button>
+              <button class="btn good" id="rs-heal">heal / revive all</button>
+            </div>
+          </div>
+          <div class="inspector" id="raft-insp"><div class="i-t">INSPECTOR</div><div style="color:var(--dim)">click a replica…</div></div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="rs-cnt-term">1</div><div class="cl">term</div></div>
+            <div class="scounter"><div class="cv" id="rs-cnt-commit">0</div><div class="cl">commit idx</div></div>
+            <div class="scounter"><div class="cv" id="rs-cnt-snap">0</div><div class="cl">snapshots</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="raft-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Publish a few messages, then step through one full round slowly — read each log line, it names
+    the exact Raft mechanism firing. <b>2.</b> Kill the leader mid-stream and press play — watch a follower's
+    election timeout fire, request votes, and win with an incremented term. <b>3.</b> Split into majority |
+    minority, then try to publish on the minority side — it can append locally but can never commit, and any
+    node there that tries to become a candidate can never reach a majority of votes. Heal it and watch the
+    minority's leaderless nodes fall in line. <b>4.</b> On a 3-replica cluster, kill one follower — the queue
+    keeps committing on the bare 2-of-3 majority. Kill the second follower — it stops entirely, because the
+    leader alone is 1 of 3. <b>5.</b> Turn on the mirrored-queue comparison, then kill the leader/master while
+    partitioned — watch both sides promote independently and diverge, then see exactly what gets discarded on
+    heal.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 7: three questions, no options</h2>
+  <p>No multiple choice here. Form a full answer in your head, then reveal. If a reveal surprises you, re-run the
+  relevant simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 06 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now explain exactly why mirrored queues were unsafe,
+    trace a publish through a full Raft consensus round inside <code>rabbit_fifo</code>, and reason about replica
+    counts, snapshots, and <code>x-delivery-limit</code> from first principles instead of memorized defaults.
+    Chapter 7 stays inside replication but changes the workload shape entirely: streams, an append-only log built
+    for throughput and replay rather than per-message competing-consumer semantics.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="rmq-07.html" style="text-decoration:none;display:inline-flex;align-items:center">RMQ-07: Streams — The Log Comes to RabbitMQ →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"~2010", l:"mirroring ships", d:"<b>RabbitMQ ships queue mirroring (HA policies).</b> A classic queue's operations replicate to mirror nodes over <code>gm</code>, Erlang's guaranteed-multicast broadcast — every mirror sees an operation, or its membership view changes. No term, no majority vote, no concept of a stale leader; the protocol was never designed to need one." },
+  { yr:"2014", l:"the Raft paper", d:"<b>Diego Ongaro and John Ousterhout publish 'In Search of an Understandable Consensus Algorithm'</b> at USENIX ATC — Raft. Understandability is the explicit design goal: decompose consensus into leader election, log replication, and safety, each provable and implementable on its own, instead of one dense proof the way Paxos reads." },
+  { yr:"2014", l:"the GitHub partition", d:"<b>GitHub publicly documents a RabbitMQ cluster-partition incident.</b> Network flakiness between clustered nodes causes disagreement about membership; mirrored queues on each side of the split risk diverging depending on <code>cluster_partition_handling</code>. It becomes one of the most-cited real-world cases for mirrored queues' missing consensus layer." },
+  { yr:"2017–18", l:"ra is built", d:"<b>The RabbitMQ team builds <code>ra</code></b>, a general-purpose Raft consensus library written in Erlang, designed to be reusable well beyond queues — reflecting the lesson that a correct, general consensus layer built once beats patching consensus semantics onto an existing broadcast primitive." },
+  { yr:"2019", l:"quorum queues (3.8)", d:"<b>RabbitMQ 3.8 ships quorum queues</b>: a genuinely Raft-replicated queue type, its state machine <code>rabbit_fifo</code> running atop <code>ra</code>. Every publish, ack, and redelivery becomes a command appended to a replicated log and applied only after a majority commits it." },
+  { yr:"2020", l:"x-delivery-limit", d:"<b><code>x-delivery-limit</code> ships</b>, giving quorum queues a per-message redelivery counter tracked directly inside <code>rabbit_fifo</code> — poison-message protection built into the state machine, rather than bolted on as application-level bookkeeping the way classic queues required (chapter 5)." },
+  { yr:"2021", l:"mirrored queues deprecated (3.9)", d:"<b>RabbitMQ 3.9 formally deprecates mirrored classic queues</b> and recommends migrating durable, replicated workloads to quorum queues. Hosted-RabbitMQ providers and large operators publish migration guides citing exactly the split-brain and sync-blocking failure modes this chapter derives." },
+  { yr:"2023", l:"Khepri technical preview", d:"<b>Khepri, a Raft-based metadata store built on the same <code>ra</code> library</b>, arrives as a technical preview — proof the investment in a general-purpose consensus library paid off beyond queues: cluster membership and topology metadata get the same safety guarantees quorum queues already had." },
+  { yr:"2024", l:"4.0: mirrored queues removed", d:"<b>RabbitMQ 4.0 removes mirrored classic queues entirely.</b> Quorum queues (and streams, chapter 7) are the only replicated, durable queue-shaped options left — the migration this timeline traces is complete, not just recommended." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===4 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[4].d;
+
+/* ============================================================
+   2. DECK: mirrored queue under partition (§3)
+   ============================================================ */
+(function(){
+  const node = (lbl, role, dead) => `<div class="naive-node ${role==='master'?'master':''} ${dead?'dead':''}">
+      <div class="nn-role">${lbl}</div><div class="nn-meta">${role}${dead?' · UNREACHABLE':''}</div></div>`;
+  const row = (...xs) => `<div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckMirrorFail", [
+    { stage: row(node("node A","master",false), node("node B","slave (synced)",false), node("node C","slave (synced)",false)),
+      cap:`<b>Normal operation.</b> Node A is master; B and C are fully synced slaves. All three agree, because <code>gm</code>'s broadcast delivered every operation to all three — this is the case mirroring handles fine.` },
+    { stage: row(node("node A","master",false), node("node B","slave (synced)",false)) +
+             `<div style="text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--bad);margin-top:10px">⚡ network partition: {A,B} can no longer reach C</div>` +
+             row(node("node C","slave — isolated",false)),
+      cap:`<b>A network partition splits the cluster 2-vs-1.</b> A and B can still reach each other; C can reach neither. There is no shared "term" or majority check anywhere in <code>gm</code> to tell any side what the other is doing.` },
+    { stage: row(node("node A","master (still serving)",false), node("node B","slave (synced)",false)) +
+             `<div style="text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--bad);margin:10px 0">meanwhile, isolated side:</div>` +
+             row(node("node C","PROMOTED TO MASTER",false)),
+      cap:`<b>Both sides keep going.</b> A keeps serving as master on its side. C, seeing no master reachable and <code>ha-promote-on-failure=always</code> configured, promotes itself locally. Two masters now accept independent, diverging writes — nothing in the protocol prevented this.` },
+    { stage: row(node("node A","master — has msgs 1-40",false), node("node C","master — has msgs 1-22, 41'-46'",false)),
+      cap:`<b>Partition heals.</b> A's master has 40 messages including ones C's side never saw; C's master has its own 22 shared messages plus 5 that only ever existed on its side. One side's history must be discarded. Whichever it is, those messages are gone — silently, with no error a client ever saw.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: Raft basics (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckRaftBasics", [
+    { stage: wrap(box("TERM", cell("a monotonically increasing epoch number","#ff9f43","rgba(255,159,67,.08)"))),
+      cap:`<b>Everything is stamped with a term.</b> Time is divided into terms, each with at most one leader. If a node ever sees a higher term than its own, it immediately knows whatever it believed about "who's leader" is stale — this single number is what a partition-based mirrored queue never had.` },
+    { stage: wrap(box("LEADER ELECTION", cell("follower's election timeout expires (randomized, e.g. 150-300ms range)","#ffd166") + cell("becomes candidate, increments term, votes for self, requests votes","#ffd166") + cell("wins if a MAJORITY of the cluster grants a vote","#4ade80"))),
+      cap:`<b>Randomized timeouts make split votes rare, not impossible.</b> Every follower waits a randomly-jittered timeout before trying to become a candidate; jitter means it's unlikely two followers time out at the exact same instant, so most elections resolve in one round. A candidate wins only with votes from a strict majority of the whole cluster.` },
+    { stage: wrap(box("LOG REPLICATION", cell("leader appends new entries to its own log first","#60a5fa") + cell("sends AppendEntries to every follower, in log order","#60a5fa") + cell("log matching: if two logs agree at one index+term, every earlier entry is identical","#60a5fa"))),
+      cap:`<b>Only the leader accepts new entries.</b> It replicates them to followers strictly in order, and the log-matching property means a follower can trust an entry's history just by trusting that one entry — it never has to diff entire histories.` },
+    { stage: wrap(box("COMMIT & SAFETY", cell("entry is committed once a MAJORITY has durably persisted it (fsync)","#4ade80","rgba(74,222,128,.08)") + cell("any two majorities of the same cluster must overlap","#4ade80") + cell("so a committed entry survives as long as a majority survives — full stop","#4ade80","rgba(74,222,128,.08)"))),
+      cap:`<b>This is the whole safety argument.</b> Because any future leader is elected only with votes from a majority, and Raft refuses to elect a candidate whose log is behind a voter's, every future leader is guaranteed to already hold every entry a past majority committed. No split-brain scenario can un-commit it.` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  qqueue:{ n:"rabbit_quorum_queue", f:"deps/rabbit/src/rabbit_quorum_queue.erl", r:"The AMQP-facing module: translates Basic.Publish/Consume/Ack into rabbit_fifo commands and submits them via rabbit_fifo_client, hiding the fact that 'the queue' is actually N replicas behind one interface.", l:"Created when a quorum queue is declared; wraps the underlying ra cluster for the queue's entire lifetime.", d:"If the node hosting this module's process dies, the ra cluster itself is unaffected on other nodes — a surviving replica's leader keeps serving; only clients connected to the dead node need to reconnect." },
+  fifoclient:{ n:"rabbit_fifo_client", f:"deps/rabbit/src/rabbit_fifo_client.erl", r:"Client-side helper library: tracks which replica is believed to be the current leader, submits commands to it, and transparently retries against a different member if it gets a 'not leader' redirect.", l:"Lives inside the channel process making the request; stateless across requests beyond its leader cache.", d:"A stale leader guess just costs one extra round trip to find the real leader — never a lost or duplicated command, because commands carry sequence numbers rabbit_fifo deduplicates on (ch. 13's apply/3 walkthrough)." },
+  leader:{ n:"ra server — leader", f:"deps/ra/src/ra_server.erl (gen_statem, state=leader)", r:"The only replica allowed to accept new log entries this term. Appends locally, replicates to followers via AppendEntries, and advances the commit index once a majority acks.", l:"Elected by majority vote for a term; steps down immediately on seeing a higher term from any message.", d:"If it crashes or is partitioned away, it simply stops being leader from the cluster's perspective — a election timeout on a follower elsewhere fires and a new leader is elected in a higher term, with zero coordinator involvement." },
+  follower:{ n:"ra server — follower", f:"deps/ra/src/ra_server.erl (gen_statem, state=follower)", r:"Persists AppendEntries it receives (subject to the log-matching check), applies committed entries to its own rabbit_fifo copy, and votes in elections when asked.", l:"Default state for every replica that isn't currently leader; becomes a candidate only after its election timeout expires with no heartbeat.", d:"A dead or partitioned-away follower simply stops acking — it does not block the leader from committing as long as a majority of the whole cluster (not just currently-reachable members) is still available." },
+  fifosm:{ n:"rabbit_fifo", f:"deps/rabbit/src/rabbit_fifo.erl", r:"The state machine: apply/3 turns a committed command (enqueue, checkout, settle, return, discard) into a new queue state plus any side effects (e.g. deliver a message to a waiting consumer). It never touches the network or the log directly — ra guarantees it only sees already-committed commands.", l:"Instantiated identically by every replica from the same replicated log (or from a snapshot); this is what makes replicas convergent.", d:"A bug here would corrupt state identically on every replica that applies it — this is why apply/3 is written to be pure and carefully tested, unlike the crash-and-restart tolerance classic queue processes rely on (ch. 1)." },
+  ralog:{ n:"ra_log", f:"deps/ra/src/ra_log.erl + ra_log_wal.erl", r:"Owns each replica's on-disk replicated log: appending new entries, fsyncing them, and serving reads during replay or when a leader needs to send a follower entries it's missing.", l:"One instance per replica, entirely local to that node — there is no shared disk between replicas.", d:"Disk corruption or loss on one replica's log doesn't lose committed data cluster-wide — the entry still exists, fsync'd, on every other replica that acked it; the damaged replica is simply rebuilt from its peers." },
+  rasnap:{ n:"ra_snapshot", f:"deps/ra/src/ra_snapshot.erl", r:"Periodically serializes rabbit_fifo's full current state, records the log index it covers, and truncates the log before that index — bounding both disk usage and restart replay time.", l:"Triggered on a size/interval policy per replica, independently — replicas don't have to snapshot in lockstep.", d:"A replica that's fallen too far behind for normal log replay (its needed entries were already truncated elsewhere) is caught up via an InstallSnapshot transfer of the whole current state instead." },
+  deliverylimit:{ n:"x-delivery-limit enforcement", f:"deps/rabbit/src/rabbit_fifo.erl — inside the checkout path of apply/3", r:"A per-message delivery_count field, incremented by the state machine itself on every redelivery; once it exceeds the configured limit, the checkout command drops or dead-letters the message instead of redelivering it.", l:"Lives as part of each message's record inside rabbit_fifo's state — travels with the message through snapshots exactly like any other field.", d:"Because the check happens inside apply/3, every replica reaches the identical drop/dead-letter decision independently and deterministically — no race between replicas about whether a message has 'used up' its redeliveries." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON FAILURE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("fifosm");
+
+/* ============================================================
+   5. DECK: one publish through consensus (§8)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckConsensusRound", [
+    { stage: wrap(box("1. CLIENT", cell("Basic.Publish → rabbit_quorum_queue → rabbit_fifo_client","#8b94a7") + cell("becomes an #enqueue{} command, sent to the believed leader","#60a5fa"))),
+      cap:`<b>The command is formed client-side.</b> rabbit_fifo_client tags it with a sequence number (for dedup on replay) and sends it to whichever replica it currently believes is the leader.` },
+    { stage: wrap(box("2. LEADER APPENDS", cell("leader writes #enqueue{} to its own log at the next index","#ff9f43","rgba(255,159,67,.08)") + cell("entry is UNCOMMITTED — pending","#ff9f43"))),
+      cap:`<b>The leader appends locally first.</b> This entry exists now, but only on one node — it is not yet safe, and rabbit_fifo has not applied it to queue state.` },
+    { stage: wrap(box("3. REPLICATE", cell("leader → every follower: AppendEntries(term, prevIdx, prevTerm, [entry], leaderCommit)","#60a5fa"))),
+      cap:`<b>AppendEntries goes out in parallel.</b> Each follower checks the log-matching property against prevIdx/prevTerm before accepting — if it doesn't match, the follower rejects and the leader backs up and retries with an earlier index.` },
+    { stage: wrap(box("4. PERSIST + ACK", cell("each follower appends the entry to its OWN on-disk log (fsync)","#a78bfa") + cell("follower replies: success, matchIndex = this entry's index","#a78bfa"))),
+      cap:`<b>Followers durably persist before acking.</b> This fsync is exactly the cost §6 named — every follower in the eventual majority pays a real disk flush, not just the leader.` },
+    { stage: wrap(box("5. COMMIT", cell("leader counts acks: itself + acking followers ≥ majority?","#4ade80") + cell("YES → commitIndex advances to this entry's index","#4ade80","rgba(74,222,128,.08)"))),
+      cap:`<b>Commit is a leader-side count, not a broadcast.</b> The moment a majority (including the leader) has the entry durably stored, it's committed — permanently, regardless of what happens to any single node afterward.` },
+    { stage: wrap(box("6. APPLY", cell("rabbit_fifo:apply/3 runs the #enqueue{} command","#ff9f43") + cell("message now exists in queue state — durably, on a majority","#4ade80") + cell("Basic.Ack returned to the publisher","#4ade80","rgba(74,222,128,.08)"))),
+      cap:`<b>Only now does the message "exist."</b> The publisher's confirm fires after this step, not after step 2 — which is exactly why a quorum queue's ack is a genuine durability guarantee: it was never sent until a majority already had the data safely on disk.` }
+  ]);
+})();
+
+/* ============================================================
+   6. MEMORY MODEL (§8) — unacked vs total depth
+   ============================================================ */
+(function(){
+  const TOTALS = [0, 500, 5000, 20000, 50000, 200000, 1000000];
+  const UNACKED = [0, 50, 200, 1000, 5000, 20000, 80000];
+  const INMEM_LIMIT = 2000;
+  let inmemOn = true;
+  function fmt(n){ return n>=1000000 ? (n/1000000).toFixed(1)+"M" : n.toLocaleString(); }
+  function render(){
+    const total = TOTALS[+el("q8-total").value];
+    const unacked = Math.min(total || UNACKED[+el("q8-unacked").value], UNACKED[+el("q8-unacked").value]);
+    el("q8-total-val").textContent = fmt(total);
+    el("q8-unacked-val").textContent = fmt(unacked);
+    el("q8-inmem").textContent = "x-max-in-memory-length: " + (inmemOn ? "2,000" : "unlimited");
+    el("q8-inmem").classList.toggle("on", inmemOn);
+    // model: acked-and-compacted messages cost ~nothing (snapshot already discarded their log entries).
+    // unacked messages cost real memory per message; past the in-memory limit, only small metadata stays resident.
+    const cappedUnackedForBody = inmemOn ? Math.min(unacked, INMEM_LIMIT) : unacked;
+    const overflowUnacked = Math.max(0, unacked - cappedUnackedForBody);
+    const bodyCostKB = cappedUnackedForBody * 1.2;      // full message metadata+body resident
+    const metaCostKB = overflowUnacked * 0.05;          // only small metadata resident, body paged to disk
+    const baseKB = 40 + Math.log10(Math.max(10,total))*8; // small footprint that scales weakly with total depth
+    const segs = [
+      ["baseline (log/index overhead, weak fn. of total depth)", baseKB, "#5b6475"],
+      ["unacked, in-memory bodies", bodyCostKB, "#ff9f43"],
+      ["unacked beyond x-max-in-memory-length (metadata only)", metaCostKB, "#a78bfa"]
+    ];
+    const total_ = segs.reduce((s,x)=>s+x[1],0);
+    el("q8-memmap").innerHTML = segs.map(([lbl,v,c])=>
+      `<div class="seg" style="background:${c};width:${Math.max(2,(v/total_*100)).toFixed(2)}%" title="${lbl}: ${v.toFixed(0)} KB">${v>=total_*0.08?(v.toFixed(0)+" KB"):""}</div>`).join("");
+    el("q8-legend").innerHTML = segs.map(([lbl,v,c])=>`<span><span class="sw" style="background:${c}"></span>${lbl}</span>`).join("");
+    el("q8-note").innerHTML = `Queue depth of <b style="color:var(--pg)">${fmt(total)}</b> messages with
+      <b style="color:var(--pg)">${fmt(unacked)}</b> unacked: modeled resident memory ≈
+      <b style="color:var(--pg)">${total_.toFixed(0)} KB</b>. Notice how weakly the total-depth slider moves this bar —
+      already-acked messages were compacted out of the log by the last snapshot and cost almost nothing. The unacked
+      slider is what actually drives memory, ${inmemOn ? "and x-max-in-memory-length is capping the growth past 2,000 by paging bodies to disk-only storage." : "with no in-memory cap applied — this is the unbounded-growth scenario operators get burned by."}`;
+  }
+  el("q8-total").oninput = render;
+  el("q8-unacked").oninput = render;
+  el("q8-inmem").onclick = ()=>{ inmemOn = !inmemOn; render(); };
+  render();
+})();
+
+/* ============================================================
+   7. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Why couldn't classic mirrored queues simply add a 'majority check' before promoting a mirror, without a full rewrite?", hint:"what metadata does a majority check actually need?",
+    a:"A majority check needs a shared, monotonically increasing epoch (Raft's term) so that any two nodes can agree on which of two conflicting histories is newer, plus a log structure precise enough to compare 'how up to date' two replicas are. gm's guaranteed multicast has neither — it's a broadcast primitive with per-side membership views, not a versioned log. Adding the metadata a majority check needs, plus the rules for resolving conflicting histories once you have it, is not a small patch — it's building the log-index-plus-term structure Raft already specifies. At that point you've built consensus, just without calling it that." },
+  { lvl:"SENIOR", q:"A quorum queue publisher confirm is described as 'a genuine durability guarantee.' What exactly makes it more than a classic queue's ack?", hint:"when, precisely, does the confirm fire?",
+    a:"The confirm only fires after the enqueue command has been committed — meaning a majority of replicas have durably fsync'd it to their own logs — and then applied to rabbit_fifo. A classic queue's ack can be returned once the local queue process (and, if durable, local disk) accepts the message, with mirror replication happening asynchronously and best-effort over gm; a crash before replication catches up can lose an already-acked message. A quorum queue's confirm cannot fire until the majority-durability condition is already true, so there is no window where the client believes a message is safe but it actually only exists on one node." },
+  { lvl:"STAFF", q:"Explain precisely why a quorum queue's memory usage tracks unacknowledged messages rather than total queue depth.", hint:"what does a snapshot actually discard?",
+    a:"A snapshot serializes rabbit_fifo's current live state and lets ra discard log entries at or before the snapshot index — but a message that's still unconsumed or delivered-but-unacked is still part of 'live state' by definition, so it has to be represented in every snapshot until it's settled. Fully acked messages, by contrast, are fully resolved: their enqueue-and-settle pair of commands doesn't need to appear in future snapshots at all, so compaction removes their footprint almost entirely. A huge total queue depth of fully-flowing, quickly-acked messages therefore costs very little resident memory, while a comparatively small number of stuck unacked messages costs real, persistent memory on every replica for as long as they stay unsettled." },
+  { lvl:"STAFF", q:"How does x-delivery-limit avoid the redelivery-race problems a manual, consumer-side poison-message counter would have?", hint:"where does the counter live, and who updates it?",
+    a:"delivery_count lives inside rabbit_fifo's own state, as a field on the message record, and is only ever incremented as part of the same committed log entry that performs a redelivery — so every replica reaches the identical count via the identical apply/3 call, with no possibility of two different consumers (or two different replicas) disagreeing about how many times a message has been redelivered. A manual, application-level counter (chapter 5's classic-queue approach) has to be tracked outside the queue's own consistency boundary — typically in a message header a consumer increments and republishes — which is inherently racy if multiple consumer instances or retries are involved, and provides no guarantee the broker itself will ever act on the count." },
+  { lvl:"STAFF", q:"Why must a quorum queue have an odd number of replicas, and what specifically goes wrong with 4 rather than just 'wasteful'?", hint:"compute majority for N=3 and N=4, then think about a 2-vs-2 partition.",
+    a:"Majority is floor(N/2)+1. For N=3 that's 2 (tolerates 1 failure); for N=4 that's also 3 — wait, floor(4/2)+1=3, meaning N=4 tolerates only 1 failure too, identical fault tolerance to N=3, for the cost of an extra replica's storage, network, and CPU with zero benefit. It gets actively worse under certain partitions: a 4-replica cluster split exactly 2-vs-2 leaves neither side with a majority (each side has 2, majority needs 3), so the entire queue halts — whereas a 3-replica cluster can only split 2-vs-1, and the 2-side keeps a majority and keeps operating. Odd replica counts are chosen specifically so a roughly-even network split still leaves one side with strictly more than half." },
+  { lvl:"PRINCIPAL", q:"Contrast Raft's strict-majority commit rule with Kafka's ISR-and-acks=all model. Which is 'more available,' and what's the actual risk being traded?", hint:"what happens to Kafka's ISR when replicas fail one after another?",
+    a:"Raft's majority is fixed at cluster-configuration time — a 3-node Raft cluster always needs 2 acks, and if it can't get them, it correctly refuses to commit, full stop. Kafka's ISR is dynamic: as replicas fall behind or become unreachable, they're removed from the ISR, and by default acks=all only waits for the current (possibly shrunk) ISR — meaning a topic configured naively can keep accepting writes acknowledged by a single remaining in-sync replica, which is more 'available' in the sense of never refusing writes, but reintroduces exactly the single-point-of-truth risk Raft's fixed majority is designed to prevent. Kafka gives you the safety back only if you explicitly set min.insync.replicas above 1 and pair it with acks=all — at which point you've manually reconstructed something closer to a majority requirement, at the cost of Kafka also refusing writes when the floor isn't met." },
+  { lvl:"PRINCIPAL", q:"A queue is publish-heavy, single-node-hot, and almost always empty within milliseconds of a publish. Make the case for keeping it a classic queue rather than converting it 'for consistency' with the rest of a quorum-queue fleet.", hint:"what does a majority round trip actually buy you if there's rarely anything to lose?",
+    a:"Quorum queues pay a majority round trip plus an fsync on every operation specifically to guarantee that an acknowledged write survives a crash of any minority of replicas. That guarantee is valuable in direct proportion to how much you'd lose if it weren't there — and a queue that's essentially always empty within milliseconds has, by construction, very little ever at risk: a crash at any given instant has a message or two in flight, not a meaningful backlog. Converting it anyway means paying quorum queues' full latency and replica-count overhead — on the hottest, highest-throughput queue in the fleet, where that latency is most visible — to protect an amount of data that was never large to begin with. 'Consistency' with the rest of the fleet is an operational-simplicity argument, not a correctness one, and it should lose to a queue that needs raw single-node throughput more than it needs replicated durability." }
+]);
+
+/* ============================================================
+   8. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why could classic mirrored queues end up with two independent masters during a network partition?",
+    opts:[ "Because ha-mode was misconfigured as 'exactly' instead of 'all'",
+           "Because gm's guaranteed multicast updates group membership per-side with no term number or majority vote, so each side of a partition can independently keep serving or promote a mirror",
+           "Because RabbitMQ clustering only supports two nodes at a time",
+           "Because classic queues cannot be marked durable" ],
+    a:1,
+    why:"gm delivers a totally-ordered broadcast within whatever group each side currently believes exists — it has no concept of a majority, and no term/epoch to let two sides recognize a conflicting promotion after the fact. That's a protocol-level gap, not a misconfiguration; ha-mode and durability are unrelated to it." },
+  { q:"What made ha-sync-mode=automatic operationally painful in production?",
+    opts:[ "It silently dropped messages older than 24 hours",
+           "It required a manual rabbitmqctl command to complete",
+           "It blocked ALL operations on the master queue for the duration of a full backlog copy to the syncing mirror",
+           "It only worked with the fanout exchange type" ],
+    a:2,
+    why:"While a mirror synchronised its full backlog, the master queue process blocked every other operation — publishes and consumes alike — until the sync completed, which for a large backlog could mean minutes of a stalled queue. This is exactly the blocking behavior real operators (CloudAMQP among others) cite as a top migration driver." },
+  { q:"Why is a quorum queue's publisher confirm a stronger durability guarantee than a classic queue's ack?",
+    opts:[ "It isn't stronger, just slower",
+           "The confirm only fires after the command commits — durably persisted (fsync'd) on a majority of replicas — whereas a classic queue's ack can precede asynchronous, best-effort mirror replication",
+           "Quorum queues don't support publisher confirms at all",
+           "Because quorum queues always use 5 replicas" ],
+    a:1,
+    why:"rabbit_fifo only returns the confirm after the enqueue command's log entry has been committed (majority-durable) and applied. Classic queue mirroring replicated asynchronously over gm, so an ack could precede full replication — a crash in that window could lose an already-acknowledged message. Quorum queues default to 3 replicas, not 5, and do support confirms." },
+  { q:"Quorum queue memory usage is best predicted by:",
+    opts:[ "Total number of messages ever published to the queue",
+           "The number of bindings on the exchange that routes to it",
+           "The number of unacknowledged (checked-out but unsettled) messages, not total queue depth",
+           "The number of consumers connected, regardless of ack state" ],
+    a:2,
+    why:"Snapshotting compacts the log for fully-resolved (acked) messages almost entirely, so a large total depth of quickly-acked messages costs little. Unacked messages must remain part of live state until settled, so they're what actually drives resident memory — which is why a stalled consumer, not a deep-but-flowing queue, is the classic quorum-queue memory incident." },
+  { q:"Why must a quorum queue's replica count be odd (3 or 5), not even (e.g. 4)?",
+    opts:[ "Ra's implementation only accepts prime numbers of replicas",
+           "Majority is floor(N/2)+1; an even N buys no extra fault tolerance over N-1 for the cost of an extra replica, and a symmetric split can leave neither side with a majority",
+           "Even numbers of Erlang processes deadlock the BEAM scheduler",
+           "Odd numbers are required so a single node can always be designated queue_master_locator" ],
+    a:1,
+    why:"N=4's majority is 3 — identical fault tolerance to N=3's majority of 2 tolerating one failure, for a wasted extra replica — and a 2-vs-2 partition of a 4-node cluster leaves neither side able to reach 3, halting the queue entirely, a strictly worse outcome than a 3-node cluster's only possible 2-vs-1 split. There's no BEAM scheduler constraint or Erlang-numerics reason involved." },
+  { q:"What does x-delivery-limit change about poison-message handling compared to the classic-queue approach from chapter 5?",
+    opts:[ "It disables redelivery entirely after the first nack",
+           "It requires a separate dead-letter exchange to be configured or the feature does nothing",
+           "It tracks a per-message delivery_count inside rabbit_fifo's own state, incremented and enforced by the state machine itself, rather than needing consumer-side or application-level tracking",
+           "It only limits how many consumers may be attached to a queue" ],
+    a:2,
+    why:"delivery_count is a field on the message record inside rabbit_fifo, incremented as part of the same committed apply/3 call that performs a redelivery, so every replica enforces the limit identically without any application code. It works with or without a DLX configured (dropping the message if none is set), and has nothing to do with consumer count limits." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review a ra pull request.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5's and §8's decks, then the simulator — Raft clicks fast once you watch a term increment yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "RabbitMQ ships queue mirroring (HA policies) built on the gm guaranteed-multicast module",
+    "Ongaro & Ousterhout publish the Raft consensus paper at USENIX ATC",
+    "GitHub's public postmortem documents a RabbitMQ cluster partition causing mirrored-queue divergence risk",
+    "The RabbitMQ team builds and open-sources ra, a general-purpose Raft library in Erlang",
+    "RabbitMQ 3.8 ships quorum queues, built on ra and the rabbit_fifo state machine",
+    "x-delivery-limit ships, giving quorum queues built-in poison-message protection",
+    "RabbitMQ 3.9 deprecates mirrored classic queues and recommends migrating to quorum queues",
+    "Khepri, a Raft-based metadata store built on ra, arrives as a technical preview",
+    "RabbitMQ 4.0 removes mirrored classic queues entirely"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real timeline</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Quorum queues pay a majority round trip plus an fsync on every single operation. Chapter 7's streams are built for very high throughput. Predict: given that a stream is an append-only, immutable log rather than a queue with competing consumers, acks, and requeues, what replication strategy might streams use to avoid paying a full consensus round trip on every append?",
+    a:"Because a stream never needs to support 'take this message away from other consumers once delivered' or 'redeliver it if nacked' — every consumer just reads forward from an offset it tracks itself — the hard problem quorum queues solve (agreeing on delivery/ack/requeue state across replicas) mostly doesn't exist for a pure append-only log. That opens the door to a lighter-weight replication design: a single writer per stream segment appending sequentially, followers fetching and persisting those bytes as a simple, high-throughput replication feed rather than running full per-entry Raft consensus with vote-weighted commit on every append. You'll see chapter 7's actual mechanism, and exactly which safety properties it keeps versus quorum queues, directly." },
+  { lvl:"THINK", q:"rabbit_fifo tracks delivery_count centrally for every message, as this chapter covered. Streams have no equivalent per-message 'delivery count' or acknowledgement at all. Predict why that concept doesn't apply, given what a stream consumer actually tracks instead of an ack.",
+    a:"delivery_count only means something because a quorum queue removes a message from circulation once it's acked and can redeliver it to a different consumer if it isn't — that's the competing-consumers, single-delivery model chapters 1-6 have been building on. A stream consumer doesn't 'take' a message away from anyone; it reads from an offset in an immutable, replayable log and advances that offset itself, the way a Kafka consumer tracks an offset rather than acking individual records. There's nothing to redeliver because nothing was ever removed — the log is still sitting there at whatever offset a slow or crashed consumer needs to resume from. 'Poison message' protection in that model has to mean something different too, which chapter 7 will define precisely." },
+  { lvl:"THINK", q:"Both quorum queues and streams replicate data across a cluster. Predict one concrete operational difference between 'add a replica to a quorum queue' and 'add a replica to a stream,' given that a quorum queue has to preserve live unacked-message state while a stream is just an ordered, append-only log.",
+    a:"Adding a quorum queue replica means bringing a new ra cluster member up to date with rabbit_fifo's full live state — including every currently unacked, in-flight message — typically via an InstallSnapshot transfer of that entire state before it can vote or serve. Adding a stream replica is closer to 'start tailing the log from some offset and copy forward' — there's no in-flight consumer-ack state to reconstruct, just immutable bytes at known offsets, so a new replica can, at least in principle, be bootstrapped by copying already-written segments directly rather than replaying a state machine's exact command history. Chapter 7 will show whether that intuition holds up against the real mechanism." }
+]);
+
+/* ============================================================
+   9. SIMULATOR (§15) — Raft stepper for a quorum queue
+   ============================================================ */
+(function(){
+  const RS = {
+    n: 3,
+    members: [],
+    phaseIdx: 0,
+    phases: ["idle","append","replicate","persist","ack","commit","apply"],
+    pending: [],           // queued client ops not yet appended
+    playing: false,
+    playTimer: null,
+    compareOn: false,
+    nextEnqueueId: 1,
+    snapCount: 0,
+    naive: { nodes: [] }
+  };
+  const PHASE_LABEL = {
+    idle:"idle — waiting for a publish or a step",
+    append:"PHASE 1/6 · leader appends new entry to its own log (uncommitted)",
+    replicate:"PHASE 2/6 · leader sends AppendEntries to reachable followers",
+    persist:"PHASE 3/6 · followers persist the entry to their own on-disk log (fsync)",
+    ack:"PHASE 4/6 · followers reply success; leader records matchIndex",
+    commit:"PHASE 5/6 · leader checks for majority ack, advances commitIndex",
+    apply:"PHASE 6/6 · rabbit_fifo:apply/3 runs on newly-committed entries"
+  };
+  const logEl = () => el("raft-log");
+  function log(lv, msg){
+    const L = logEl(); if(!L) return;
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    L.appendChild(d);
+    while (L.children.length > 100) L.removeChild(L.firstChild);
+    L.scrollTop = L.scrollHeight;
+  }
+  function majority(){ return Math.floor(RS.n/2)+1; }
+  function alive(m){ return m.alive; }
+  function leaderMember(){ return RS.members.find(m=>m.role==="leader" && m.alive); }
+  function reachable(m, leader){ return m.alive && leader && m.group===leader.group; }
+
+  function initCluster(n){
+    RS.n = n;
+    RS.members = [];
+    const ids = n===3 ? ["n1","n2","n3"] : ["n1","n2","n3","n4","n5"];
+    ids.forEach((id,i)=>{
+      RS.members.push({
+        id, role: i===0 ? "leader":"follower", term:1, alive:true, group:"A",
+        log:[], commitIndex:0, appliedIndex:0, snapIndex:0,
+        electionTimer: 4 + Math.floor(Math.random()*5), votedTerm:0
+      });
+    });
+    RS.phaseIdx = 0; RS.pending = []; RS.snapCount = 0;
+    el("raft-clustertitle").textContent = n+"-member Ra cluster";
+    RS.naive.nodes = ids.map((id,i)=>({ id, isMaster: i===0, alive:true, group:"A", msgs:0 }));
+    log("OK", `ra cluster initialised — ${n} members, majority = ${majority()}`);
+    render();
+  }
+
+  function pushOp(kind){
+    if (!leaderMember()){ log("WARN","no reachable leader — operation cannot be accepted right now"); return; }
+    RS.pending.push({ kind, id: RS.nextEnqueueId++ });
+    log("LOG", `client: ${kind==="enqueue"?"Basic.Publish":"Basic.Ack"} → rabbit_fifo_client → queued for leader`);
+    if (RS.compareOn){
+      const naiveMaster = RS.naive.nodes.find(x=>x.isMaster && x.alive);
+      if (naiveMaster){ naiveMaster.msgs++; }
+      const otherMasters = RS.naive.nodes.filter(x=>x.isMaster && x.alive && x!==naiveMaster);
+      otherMasters.forEach(m=>{ m.msgs++; });
+    }
+    render();
+  }
+
+  function electionTick(){
+    const leader = leaderMember();
+    RS.members.filter(alive).forEach(m=>{
+      if (m.role==="leader") return;
+      const heardFromLeader = leader && m.group===leader.group;
+      if (heardFromLeader){ m.electionTimer = 4+Math.floor(Math.random()*5); m.role="follower"; return; }
+      m.electionTimer--;
+      if (m.electionTimer <= 0){
+        // becomes candidate
+        m.role = "candidate";
+        m.term = Math.max(m.term, ...RS.members.map(x=>x.term)) + 1;
+        m.votedTerm = m.term;
+        log("WARN", `${m.id}: election timeout (randomized) — becomes candidate, term → ${m.term}, requests votes`);
+        const voters = RS.members.filter(v=> v.alive && v.group===m.group);
+        const votes = 1 + voters.filter(v=>v.id!==m.id).length; // simplification: reachable same-group peers grant vote if not already leader this term
+        if (votes >= majority()){
+          RS.members.forEach(x=>{ if (x!==m && x.group===m.group) { x.role="follower"; x.term=m.term; } else if (x!==m) { /* unreachable, unaffected */ } });
+          m.role = "leader"; m.term = m.term;
+          log("OK", `${m.id}: won election with ${votes}/${RS.n} votes (majority=${majority()}) — new leader, term ${m.term}`);
+        } else {
+          log("BAD" in {} ? "WARN":"WARN", `${m.id}: only reached ${votes}/${RS.n} votes — cannot reach majority (${majority()}) while partitioned; will retry`);
+          m.electionTimer = 3+Math.floor(Math.random()*5);
+        }
+      }
+    });
+  }
+
+  function doPhase(){
+    const leader = leaderMember();
+    const phase = RS.phases[RS.phaseIdx];
+    el("raft-phase-banner").textContent = PHASE_LABEL[phase] || "";
+    if (phase === "idle"){
+      if (leader && RS.pending.length){ RS.phaseIdx = 1; doPhase(); return; }
+      return;
+    }
+    if (!leader){ log("FATAL","no leader currently reachable — consensus round paused"); RS.phaseIdx = 0; return; }
+    if (phase === "append"){
+      const op = RS.pending.shift();
+      const idx = leader.log.length + leader.snapIndex + 1;
+      leader.log.push({ i: idx, t: leader.term, kind: op.kind, committed:false, applied:false });
+      log("LOG", `${leader.id} (leader, term ${leader.term}): appends {${op.kind}} at index ${idx} — uncommitted`);
+      RS.phaseIdx = 2;
+    } else if (phase === "replicate"){
+      const peers = RS.members.filter(m=>m!==leader && reachable(m, leader));
+      log("LOG", `${leader.id} → [${peers.map(p=>p.id).join(", ")||"none reachable"}]: AppendEntries(term=${leader.term})`);
+      RS.phaseIdx = 3;
+    } else if (phase === "persist"){
+      const peers = RS.members.filter(m=>m!==leader && reachable(m, leader));
+      const lastEntry = leader.log[leader.log.length-1];
+      peers.forEach(p=>{
+        if (lastEntry && !p.log.find(e=>e.i===lastEntry.i)){
+          p.log.push({ ...lastEntry });
+          p.term = leader.term;
+          log("LOG", `${p.id}: persists entry idx ${lastEntry.i} to disk (fsync)`);
+        }
+      });
+      RS.phaseIdx = 4;
+    } else if (phase === "ack"){
+      const peers = RS.members.filter(m=>m!==leader && reachable(m, leader));
+      peers.forEach(p=>{ log("LOG", `${p.id} → ${leader.id}: AppendEntries success, matchIndex=${p.log.length+p.snapIndex}`); });
+      RS.phaseIdx = 5;
+    } else if (phase === "commit"){
+      const lastEntry = leader.log[leader.log.length-1];
+      if (lastEntry){
+        const acked = RS.members.filter(m=> m.alive && reachable(m, leader) && m.log.find(e=>e.i===lastEntry.i)).length;
+        if (acked >= majority()){
+          leader.commitIndex = lastEntry.i;
+          RS.members.forEach(m=>{ if (reachable(m, leader)) m.commitIndex = lastEntry.i; });
+          log("OK", `commitIndex advances to ${lastEntry.i} (acked by ${acked}/${RS.n}, majority=${majority()})`);
+        } else {
+          log("WARN", `only ${acked}/${RS.n} acked — majority (${majority()}) not reached, entry ${lastEntry.i} stays UNCOMMITTED`);
+        }
+      }
+      RS.phaseIdx = 6;
+    } else if (phase === "apply"){
+      RS.members.filter(m=>reachable(m, leader) || m===leader).forEach(m=>{
+        m.log.forEach(e=>{
+          if (!e.applied && e.i <= m.commitIndex){ e.applied = true; e.committed = true; }
+        });
+        m.appliedIndex = m.commitIndex;
+      });
+      if (leader.log.some(e=>e.committed)) log("OK", `rabbit_fifo:apply/3 runs — state machine updated on all replicas that hold the commit`);
+      // snapshot trigger
+      if (leader.log.length - leader.snapIndex - (leader.log.length - (leader.commitIndex - leader.snapIndex)) >= 0 &&
+          (leader.commitIndex - leader.snapIndex) >= 6){
+        const upto = leader.commitIndex;
+        RS.members.filter(m=>reachable(m, leader) || m===leader).forEach(m=>{
+          m.log = m.log.filter(e=> e.i > upto);
+          m.snapIndex = upto;
+        });
+        RS.snapCount++;
+        log("HINT", `ra_snapshot: log compacted through index ${upto} — entries before it discarded on every synced replica`);
+      }
+      RS.phaseIdx = 0;
+    }
+  }
+
+  function step(){
+    electionTick();
+    doPhase();
+    render();
+  }
+
+  function killLeader(){
+    const leader = leaderMember();
+    if (!leader){ log("WARN","no leader currently alive to kill"); return; }
+    leader.alive = false;
+    log("WARN", `${leader.id}: killed (was leader, term ${leader.term}) — cluster now leaderless until an election fires`);
+    render();
+  }
+  function killFollower(){
+    const cands = RS.members.filter(m=>m.alive && m.role!=="leader");
+    if (!cands.length){ log("WARN","no alive follower to kill"); return; }
+    const f = cands[Math.floor(Math.random()*cands.length)];
+    f.alive = false;
+    const aliveCount = RS.members.filter(alive).length;
+    log("WARN", `${f.id}: killed — ${aliveCount}/${RS.n} replicas alive now`);
+    if (aliveCount >= majority()) log("OK", `${aliveCount}/${RS.n} is still ≥ majority (${majority()}) — the queue keeps committing`);
+    else log("FATAL", `${aliveCount}/${RS.n} is below majority (${majority()}) — no new entry can ever commit until a replica returns`);
+    render();
+  }
+  function partitionCluster(){
+    const leader = leaderMember() || RS.members.find(alive);
+    const minoritySize = RS.n===3 ? 1 : 2;
+    const minority = RS.members.filter(alive).filter(m=>m!==leader).slice(0, minoritySize);
+    RS.members.forEach(m=>m.group = minority.includes(m) ? "B" : "A");
+    log("WARN", `network partition: majority side {${RS.members.filter(m=>m.group==="A").map(m=>m.id).join(",")}} | minority side {${RS.members.filter(m=>m.group==="B").map(m=>m.id).join(",")}}`);
+    render();
+  }
+  function healAll(){
+    RS.members.forEach(m=>{
+      if (!m.alive){ log("OK", `${m.id}: revived — InstallSnapshot + log replay to catch up`); }
+      m.alive = true; m.group = "A";
+    });
+    RS.naive.nodes.forEach(n=>{ n.alive = true; n.group="A"; });
+    // resolve exactly one leader if none/ multiple
+    const leaders = RS.members.filter(m=>m.role==="leader");
+    if (leaders.length !== 1){
+      RS.members.forEach(m=>m.role="follower");
+      RS.members[0].role = "leader";
+      log("LOG", `${RS.members[0].id}: designated leader after heal for this model's simplicity`);
+    }
+    log("OK", "partition healed — all replicas reachable again");
+    render();
+  }
+
+  function renderReplica(m){
+    const cls = ["rnode", m.role, m.alive?"":"dead", m.group==="B"?"minority":""].join(" ").trim();
+    const chips = [];
+    if (m.snapIndex>0) chips.push(`<span class="logchip snap">SNAP@${m.snapIndex}</span>`);
+    m.log.slice(-8).forEach(e=>{
+      chips.push(`<span class="logchip ${e.committed?"committed":"pending"}">${e.i}:${e.t}</span>`);
+    });
+    return `<div class="${cls}" data-id="${m.id}">
+      <div class="rn-head"><span class="rn-role ${m.role}">${m.id} · ${m.alive? m.role : "dead"}</span><span class="rn-term">term ${m.term}</span></div>
+      <div class="rn-log">${chips.join("")||'<span style="color:var(--dim);font-size:9px">empty log</span>'}</div>
+      <div class="rn-meta">commit ${m.commitIndex} · applied ${m.appliedIndex}${m.group==="B"?" · <span style=\"color:var(--bad)\">MINORITY</span>":""}</div>
+    </div>`;
+  }
+  function renderNaive(n){
+    return `<div class="naive-node ${n.isMaster?"master":""} ${n.alive?"":"dead"}">
+      <div class="nn-role">${n.id} · ${n.alive ? (n.isMaster?"MASTER":"mirror") : "dead"}</div>
+      <div class="nn-meta">msgs: ${n.msgs}${n.group==="B"?" · isolated side":""}</div>
+    </div>`;
+  }
+
+  function render(){
+    el("sim-phase").textContent = leaderMember() ? "RUNNING" : "LEADERLESS";
+    el("sim-phase").style.color = leaderMember() ? "var(--ok)" : "var(--bad)";
+    el("raft-nodes").innerHTML = RS.members.map(renderReplica).join("");
+    RS.members.forEach(m=>{
+      const node = el("raft-nodes").querySelector(`[data-id="${m.id}"]`);
+      if (node) node.onclick = ()=>{ showInspector(m); };
+    });
+    const leader = leaderMember();
+    el("rs-cnt-term").textContent = Math.max(...RS.members.map(m=>m.term));
+    el("rs-cnt-commit").textContent = leader ? leader.commitIndex : Math.max(0,...RS.members.map(m=>m.commitIndex));
+    el("rs-cnt-snap").textContent = RS.snapCount;
+
+    el("raft-mirror-wrap").style.display = RS.compareOn ? "block" : "none";
+    if (RS.compareOn){
+      el("raft-mirror-nodes").innerHTML = RS.naive.nodes.map(renderNaive).join("");
+      const masters = RS.naive.nodes.filter(n=>n.isMaster && n.alive);
+      if (masters.length > 1){
+        const counts = masters.map(m=>m.msgs);
+        const diverged = new Set(counts).size > 1;
+        el("raft-mirror-verdict").innerHTML = diverged
+          ? `<span style="color:var(--bad)">⚠ SPLIT BRAIN: ${masters.length} masters accepting writes independently — msg counts [${counts.join(", ")}] have already diverged. Healing must discard one side.</span>`
+          : `<span style="color:var(--warn)">⚠ ${masters.length} masters exist simultaneously right now — no divergence yet, but nothing is preventing it.</span>`;
+      } else if (masters.length === 1){
+        el("raft-mirror-verdict").textContent = "exactly one master — safe, for now.";
+      } else {
+        el("raft-mirror-verdict").innerHTML = `<span style="color:var(--bad)">no master at all — mirrored queue is fully down.</span>`;
+      }
+    }
+  }
+  function showInspector(m){
+    el("raft-insp").innerHTML = `<div class="i-t">INSPECTOR</div>
+      <div><b class="i-pid">${m.id}</b> · role: ${m.role} · alive: ${m.alive}<br>
+      term ${m.term} · commitIndex ${m.commitIndex} · appliedIndex ${m.appliedIndex}<br>
+      log entries resident: ${m.log.length} (snapshot through ${m.snapIndex})<br>
+      group: ${m.group}${m.group==="B"?" (isolated / minority side)":""}</div>`;
+  }
+
+  el("rs-size3").onclick = ()=>{ el("rs-size3").classList.add("on"); el("rs-size5").classList.remove("on"); initCluster(3); };
+  el("rs-size5").onclick = ()=>{ el("rs-size5").classList.add("on"); el("rs-size3").classList.remove("on"); initCluster(5); };
+  el("rs-compare").onclick = ()=>{
+    RS.compareOn = !RS.compareOn;
+    el("rs-compare").textContent = (RS.compareOn?"☑":"☐") + " compare: mirrored queue (no consensus)";
+    el("rs-compare").classList.toggle("on", RS.compareOn);
+    render();
+  };
+  el("rs-publish").onclick = ()=> pushOp("enqueue");
+  el("rs-ack").onclick = ()=> pushOp("settle");
+  el("rs-step").onclick = step;
+  el("rs-play").onclick = ()=>{
+    RS.playing = !RS.playing;
+    el("rs-play").textContent = RS.playing ? "⏸ pause" : "▶ play";
+    if (RS.playing){
+      const speedMs = {1:900,2:500,3:250}[+el("rs-speed").value];
+      RS.playTimer = setInterval(step, speedMs);
+    } else {
+      clearInterval(RS.playTimer);
+    }
+  };
+  el("rs-speed").oninput = ()=>{
+    el("rs-speed-val").textContent = {1:"slow",2:"normal",3:"fast"}[+el("rs-speed").value];
+    if (RS.playing){ clearInterval(RS.playTimer); RS.playTimer = setInterval(step, {1:900,2:500,3:250}[+el("rs-speed").value]); }
+  };
+  el("rs-kill-leader").onclick = ()=>{
+    killLeader();
+    if (RS.compareOn){
+      const naiveMaster = RS.naive.nodes.find(n=>n.isMaster && n.alive);
+      if (naiveMaster){
+        naiveMaster.alive = false;
+        const groups = [...new Set(RS.naive.nodes.map(n=>n.group))];
+        groups.forEach(g=>{
+          const side = RS.naive.nodes.filter(n=>n.group===g && n.alive);
+          if (side.length && !side.some(n=>n.isMaster)){
+            side[0].isMaster = true;
+            log("WARN", `naive model: group ${g} promotes ${side[0].id} → master with no majority check`);
+          }
+        });
+        render();
+      }
+    }
+  };
+  el("rs-kill-follower").onclick = ()=>{
+    killFollower();
+    if (RS.compareOn){
+      const mirrors = RS.naive.nodes.filter(n=>n.alive && !n.isMaster);
+      if (mirrors.length){ mirrors[0].alive = false; log("LOG", `naive model: mirror ${mirrors[0].id} killed`); render(); }
+    }
+  };
+  el("rs-partition").onclick = ()=>{
+    partitionCluster();
+    if (RS.compareOn){
+      const bGroup = RS.members.filter(m=>m.group==="B").map(m=>m.id);
+      RS.naive.nodes.forEach(n=>{ n.group = bGroup.includes(n.id) ? "B" : "A"; });
+      render();
+    }
+  };
+  el("rs-heal").onclick = healAll;
+
+  initCluster(3);
+  log("HINT","Try: publish → step through all 6 phases once. Then kill leader → play, and watch the election. Then split → try publishing on the minority side.");
+})();
+
+/* ============================================================
+   10. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["rmq-06"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#ff9f43"><a class="cn-btn" href="rmq-05.html"><span>←</span><span><span class="cn-lbl">PREV · CH 05</span><span class="cn-ttl">Delivery: ACK, NACK, Confirms & Prefetch</span></span></a><div class="cn-mid"><a class="cn-home" href="course-rabbitmq.html">☰ RabbitMQ Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="rmq-01.html">CH 01 · Genesis: AMQP & Why Erlang</option><option value="rmq-02.html">CH 02 · Connections, Channels & the Frame Protocol</option><option value="rmq-03.html">CH 03 · Exchanges, Bindings & Routing Algorithms</option><option value="rmq-04.html">CH 04 · Classic Queues: The Queue Process Internals</option><option value="rmq-05.html">CH 05 · Delivery: ACK, NACK, Confirms & Prefetch</option><option value="rmq-06.html" selected>CH 06 · Quorum Queues: Raft Inside the Broker</option><option value="rmq-07.html">CH 07 · Streams: The Log Comes to RabbitMQ</option><option value="rmq-08.html">CH 08 · Dead Lettering, TTL & Priority Queues</option><option value="rmq-09.html">CH 09 · Flow Control & Memory Management</option><option value="rmq-10.html">CH 10 · Clustering, Federation & Shovel</option><option value="rmq-11.html">CH 11 · Persistence, Disk Layout & Recovery</option><option value="rmq-12.html">CH 12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</option></select><span class="cn-prog">06 / 12</span></div><a class="cn-btn" href="rmq-07.html"><span><span class="cn-lbl">NEXT · CH 07</span><span class="cn-ttl">Streams: The Log Comes to RabbitMQ</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

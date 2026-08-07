@@ -1,0 +1,1960 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-11 · Checkpoints & Crash Recovery — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* process tree in sim */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+  .strunk{width:2px;height:14px;background:var(--border-hi);margin:0 auto}
+  .saux{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0 10px}
+  .snode.aux{font-size:9.5px;padding:5px 8px;color:var(--muted);cursor:default}
+  .snode.aux.off{opacity:.25}
+  .snode.aux.busy{border-color:var(--warn);color:var(--warn)}
+  .sbe-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:8px 0 6px;text-align:center}
+  .sbe{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;min-height:64px;align-content:flex-start}
+  .snode.be{animation:framein .25s}
+  .snode.be.idle{color:var(--muted)}
+  .snode.be.active{border-color:var(--ok);color:var(--ok)}
+  .snode.be.long{border-color:var(--warn);color:var(--warn)}
+  .snode.be.startup{border-color:var(--purple);color:var(--purple)}
+  .snode.be.crash{border-color:var(--bad);background:rgba(242,92,84,.15);color:var(--bad);animation:shake .35s}
+  .snode.be.sigq{border-color:var(--warn);opacity:.5}
+  .snode.be.sel{box-shadow:0 0 0 2px var(--pg)}
+  .sim-shm{margin:12px auto 0;max-width:430px}
+  .sim-shm .shm{text-align:center}
+  .waitq{font-family:var(--mono);font-size:10px;color:var(--warn);text-align:center;margin-top:8px;min-height:14px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- PG-11 additions: buffer pool grid, linked meters, WAL strip ---------- */
+  .bufgrid{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin:12px 0}
+  .bufcell{aspect-ratio:1;border-radius:4px;background:var(--border-hi);border:1px solid var(--border);
+    transition:background .2s,transform .15s;cursor:default}
+  .bufcell.dirty{background:var(--warn)}
+  .bufcell.flushing{background:var(--pg);box-shadow:0 0 8px rgba(96,165,250,.7);transform:scale(1.12)}
+  .bufcell.replay-applied{background:var(--ok);transform:scale(1.18);box-shadow:0 0 8px rgba(74,222,128,.6)}
+  .bufcell.replay-skip{background:var(--panel-2);outline:2px solid var(--muted)}
+  .bufcell.replay-fpi{background:var(--purple);transform:scale(1.18);box-shadow:0 0 8px rgba(167,139,250,.6)}
+  .buflegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--muted);margin:2px 0 4px}
+  .buflegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .linkmeters{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0}
+  .linkmeters .lm{flex:1;min-width:190px}
+  .wal-strip{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:flex;gap:5px;overflow-x:auto;
+    padding:9px 0;min-height:34px}
+  .wal-rec{border:1px solid var(--border-hi);border-radius:6px;padding:4px 8px;white-space:nowrap;background:var(--panel-2);flex:0 0 auto}
+  .wal-rec.cur{border-color:var(--pg);color:var(--pg);box-shadow:0 0 10px rgba(96,165,250,.35)}
+  .wal-rec.done-applied{opacity:.55;border-color:var(--ok);color:var(--ok)}
+  .wal-rec.done-skip{opacity:.45;text-decoration:line-through}
+  .wal-rec.done-fpi{opacity:.55;border-color:var(--purple);color:var(--purple)}
+  .pipe{display:flex;flex-direction:column;gap:8px;max-width:580px;margin:0 auto}
+  .sim-phase-tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 11 / 21</b> · CHECKPOINTS &amp; RECOVERY</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Fuzzy Checkpoints</a>
+  <a href="#s6"><span class="n">06</span>The Pacing Problem</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 11</div>
+  <h1>Checkpoints &<br><span class="grad">Crash Recovery</span></h1>
+  <p class="lead">Chapter 10 gave you WAL: every change is durable the instant its record is flushed, long before
+  the data file itself is touched. That leaves two problems completely unsolved. First, if recovery always had to
+  replay WAL from the beginning of time, restart after a crash would take as long as the cluster's entire history.
+  Second, if no WAL segment could ever be deleted, <code>pg_wal</code> would grow forever. Checkpoints are the
+  single mechanism that solves both — and understanding them precisely is what lets you predict recovery time,
+  diagnose "checkpoints are occurring too frequently," and never again delete a <code>backup_label</code> file.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>State precisely what a checkpoint's REDO pointer guarantees, and prove it from WAL-before-data ordering.</div>
+    <div class="obj"><b>You will understand</b>Why every redo function must be idempotent, and how <code>PageGetLSN</code> makes replaying WAL forever safe.</div>
+    <div class="obj"><b>You will predict</b>How checkpoint frequency trades steady-state I/O against worst-case recovery time — with numbers, not vibes.</div>
+    <div class="obj"><b>You will simulate</b>A live buffer pool under checkpoint pressure, crash it mid-checkpoint, and single-step WAL redo record by record.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A durable log is not the same thing as a fast restart</h2>
+  <p class="lead">By the end of chapter 10 you accepted a specific bargain: a backend never has to fsync a data
+  page to be durable — it only has to get its <code>XLogRecord</code> flushed. Dirty pages sit in
+  <code>shared_buffers</code> for as long as the buffer manager likes, written back lazily, opportunistically, whenever
+  it's convenient. That bargain is what makes commits cheap. It is also what creates this chapter's problem.</p>
+  <p>If the server is killed at an arbitrary instruction — <code>kill -9</code>, a power cut, an OOM SIGKILL — every
+  byte of <code>shared_buffers</code> is gone. The only surviving truth is whatever made it to the WAL and whatever
+  made it to the data files before the crash, and those two are wildly out of sync with each other: some committed
+  changes exist only in WAL, some in-memory pages are ahead of what's on disk, and there is no flag anywhere saying
+  which is which. <b>Recovery's job is to replay WAL forward until the data files catch up to what WAL proves was
+  durable.</b> Two questions immediately matter more than anything else in this chapter:</p>
+  <ul class="plain">
+    <li><b>Where does replay start?</b> If you don't know, you must start at the very first WAL record the cluster
+      ever wrote — which means recovery time is unbounded and grows with the age of the installation, not with how
+      long ago the crash happened.</li>
+    <li><b>When can WAL be deleted?</b> Every WAL segment is a real file on real disk. If nothing ever certifies that
+      a segment's changes are no longer needed for recovery, <code>pg_wal</code> grows without limit until the disk
+      fills — a data-corrupting event in its own right, since PostgreSQL cannot durably commit anything once it can't
+      write WAL.</li>
+  </ul>
+  <p>A <b>checkpoint</b> answers both questions with one artifact: a promise, stamped with a single Log Sequence
+  Number. <b>"Every change with an earlier LSN than this is already sitting in the data files. Redo may start here,
+  and WAL before here may be discarded."</b> Everything else in this chapter — the algorithm, the pacing, the
+  <code>pg_control</code> file, the entire redo loop — exists to make that one sentence true, cheaply, without ever
+  stopping the database to say it.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT 10 CHAPTERS</div>
+    <p>Every operational fact you know about PostgreSQL crash behavior traces back to this chapter: why restart
+    after a crash sometimes takes seconds and sometimes takes twenty minutes; why <code>max_wal_size</code> is a
+    disk-space knob <i>and</i> a recovery-time knob at once; why physical backups ship a file called
+    <code>backup_label</code> and why deleting it is one of the most quietly destructive things an operator can do.
+    Chapter 12 assumes you have this model cold before it can explain why vacuum's freezing behavior can't simply be
+    "eventually consistent."</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From ARIES to checkpoint_completion_target=0.9</h2>
+  <p>PostgreSQL's recovery design is a direct, if simplified, descendant of a single 1992 IBM paper — and almost
+  every subsequent change to it has been about making the checkpoint itself less disruptive, not about changing the
+  fundamental redo contract. Click through; each event is a knob or a file you still touch today.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from ARIES to PG 15's xlogrecovery.c</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY NO UNDO?</div>
+    <p>ARIES is a redo/undo algorithm: because it overwrites rows in place, an aborted transaction's changes must be
+    physically rolled back during recovery, using compensation log records to make even the undo pass idempotent.
+    PostgreSQL never overwrites a row in place — MVCC (chapter 5) always creates a new tuple version — so an
+    aborted transaction simply has no committed transaction ID pointing at its tuples; nothing needs to be undone on
+    disk, ever. PostgreSQL borrowed ARIES's redo machinery (the LSN-guarded, idempotent replay you'll study in §8)
+    and discarded the entire undo half, because MVCC already does that job for free. This is the single biggest
+    simplification separating PostgreSQL's recovery from the textbook algorithm it's taught alongside.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: never checkpoint, just replay everything</h2>
+  <p>Derive it honestly, the way chapter 10 derived WAL. If you already have a durable, ordered log of every change
+  since the cluster was created, the simplest possible recovery algorithm requires no new machinery at all:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>naive_recovery.c — the strawman</span></div>
+    <pre><span class="k">void</span> <span class="f">RecoverDatabase</span>(<span class="k">void</span>)
+{
+    <span class="c">/* Start of time. Literally: WAL segment 1, byte 0.
+     * No pg_control, no "last checkpoint" bookkeeping needed —
+     * there is nothing to look up.                            */</span>
+    XLogRecPtr replayFrom = <span class="n">FIRST_WAL_RECORD_EVER_WRITTEN</span>;
+
+    <span class="k">for</span> (<span class="k">record</span> = <span class="f">ReadRecord</span>(replayFrom); <span class="k">record</span>; <span class="k">record</span> = <span class="f">ReadRecord</span>(<span class="n">NULL</span>))
+        <span class="f">ApplyRecordToDataFiles</span>(<span class="k">record</span>);  <span class="c">/* every insert, update,
+                                                    * delete, index split,
+                                                    * since the cluster
+                                                    * was initdb'd         */</span>
+
+    <span class="f">OpenForBusiness</span>();
+}
+
+<span class="c">/* And the corollary: because we might need ANY WAL segment ever
+ * written to recover, none may ever be deleted.                  */</span>
+<span class="k">void</span> <span class="f">RemoveOldXlogFiles</span>(<span class="k">void</span>) { <span class="c">/* no-op, forever */</span> }</pre>
+  </div>
+
+  <p>This is not a joke architecture — it is correct, and it is the honest baseline every real design must beat.
+  There are no redo-point subtleties to get wrong, no pacing to tune, no <code>pg_control</code> format to keep
+  stable across versions. If you initdb a cluster and crash it five minutes later, this works fine. The naive design
+  fails for exactly the reason chapter 10's iterative server failed: it looks great until the workload accumulates,
+  and then the cost is unbounded.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Two unbounded quantities, and neither one is optional</h2>
+  <p>Quantify both failures precisely — they are the two axes every checkpoint tuning decision in this chapter
+  ultimately balances.</p>
+  <ul class="plain">
+    <li><b>Recovery time grows with cluster age, not with outage duration.</b> A cluster that has been running for
+      three years and generates 50&nbsp;GB of WAL/day has accumulated on the order of <b>54&nbsp;terabytes</b> of WAL.
+      Replaying all of it — even at a generous, fully-sequential 300&nbsp;MB/s single-process redo rate — is
+      <b>~50 hours</b>. A crash that happened ten seconds ago now costs two days of downtime to recover from. This is
+      not a tuning problem to fix later; it makes the naive design operationally unusable past the first few weeks
+      of any real deployment.</li>
+    <li><b>Disk grows without bound, deterministically.</b> With <code>RemoveOldXlogFiles()</code> a permanent
+      no-op, <code>pg_wal</code> accumulates every segment the cluster has ever written. At 16&nbsp;MB per segment
+      and any sustained write rate, this is not a slow leak — it is a guaranteed, calendar-predictable disk-full
+      event, and PostgreSQL cannot accept new commits once it cannot allocate a new WAL segment. The naive design
+      turns "the database is durable" into "the database will eventually refuse all writes," on a schedule you can
+      compute from disk size and write rate alone.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE MATH THAT MOTIVATES EVERYTHING BELOW</div>
+    <p>Recovery time is not proportional to how long the server was down. It is proportional to
+    <b>WAL volume since the last point recovery is allowed to start from</b>. Shrink that distance and you shrink
+    recovery time, on a schedule you control. That single insight — bound the redo distance — is the entire reason
+    checkpoints exist. Everything from here to §8 is about how to advance that starting point <i>without</i>
+    periodically freezing the whole database to do it.</p>
+  </div>
+  <p>So we need a mechanism that periodically certifies "recovery may start here" and lets old WAL go. The obvious
+  next question is <i>how</i> you make that certification true — and the honest answer takes three attempts to get
+  right.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three ways to advance the recovery start point</h2>
+  <p>Step through the candidates in the order an architect would actually consider them. Each one fixes the
+  previous one's fatal flaw and introduces a smaller, survivable one — which is exactly the shape of the real
+  algorithm you'll meet in §7–§8.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Bounding recovery distance — candidates</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE SHAPE OF THE REAL ANSWER</div>
+    <p>PostgreSQL's checkpoint is candidate D: fuzzy (writers never stop) <i>and</i> paced (the flush is deliberately
+    slowed down to spread across most of the interval until the next one). Correctness comes from a single sharp
+    trick — capturing the REDO pointer <i>before</i> touching a single buffer — which §8 derives in full. Everything
+    else is scheduling.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · THE PACING PROBLEM</div>
+  <h2 class="sec">Fuzzy checkpoints are correct immediately — and expensive immediately after</h2>
+  <p>Candidate C from §5 is correct the moment you accept the redo-pointer trick: writers never stop, and recovery
+  still has a valid, provable starting point. But "flush every currently-dirty buffer as fast as the storage will
+  go" has a cost that has nothing to do with correctness: for however long that flush takes, it is competing with
+  every foreground backend for the same disk bandwidth and the same I/O queue depth. On spinning disks this was
+  brutal; on SSDs and network-attached storage it is gentler but still very real, especially against a background of
+  synchronous commits waiting on <code>fsync()</code> to the same device.</p>
+  <p>PostgreSQL's answer is <code>checkpoint_completion_target</code>: instead of writing dirty buffers as fast as
+  possible, the checkpointer deliberately paces itself to finish at roughly <code>target</code> fraction of the way
+  through the interval until the <i>next</i> checkpoint is expected. The default was <code>0.5</code> for most of the
+  project's history and was changed to <b>0.9</b> in <b>PostgreSQL 14</b> — spreading the same total I/O across
+  nearly the entire interval instead of just half of it, on the reasoning that finishing "early" buys you nothing
+  (the next checkpoint can't start any sooner) but finishing in a burst hurts foreground latency measurably.</p>
+  <h3>What actually triggers a checkpoint</h3>
+  <p>A checkpoint is not purely a clock. Four independent triggers exist, and in practice the first two do almost
+  all of the work:</p>
+  <ul class="plain">
+    <li><b><code>checkpoint_timeout</code></b> (default 5 minutes) — a pure wall-clock ceiling: no more than this
+      long may elapse between checkpoints, regardless of write volume.</li>
+    <li><b><code>max_wal_size</code></b> — a WAL-volume ceiling: once WAL generated since the last checkpoint
+      approaches this size, a checkpoint is forced early, because letting WAL grow further would blow past the disk
+      budget you've allotted it.</li>
+    <li><b>An explicit <code>CHECKPOINT</code> command</b> — synchronous, runs immediately, mostly used by
+      administrators before a planned shutdown or a filesystem-level backup step.</li>
+    <li><b>A clean shutdown</b> — writes a <code>XLOG_CHECKPOINT_SHUTDOWN</code> record so the next startup needs no
+      recovery at all.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">"CHECKPOINTS ARE OCCURRING TOO FREQUENTLY" — WHAT IT ACTUALLY MEANS</div>
+    <p>This warning fires specifically when checkpoints are being forced by the <b>WAL-volume trigger</b>
+    (<code>max_wal_size</code>) more often than <code>checkpoint_warning</code> seconds apart (default 30s) — i.e.
+    write volume is outrunning the size budget you configured, not the time budget. The fix that actually addresses
+    the cause is raising <code>max_wal_size</code> (letting more WAL accumulate between checkpoints), possibly paired
+    with more <code>pg_wal</code> disk headroom to hold it. Frequent checkpoints are not merely "extra work" — §10
+    shows they also inflate WAL volume itself, because <code>full_page_writes</code> re-arms after every single one.</p>
+  </div>
+  <p>So the real mechanism has two knobs pulling in opposite directions: how <i>often</i> you checkpoint, and how
+  <i>gently</i> each one spreads its I/O. Both matter, and §15's simulator lets you feel both at once. First, meet
+  the whole architecture these knobs live inside.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The checkpoint's anatomy, end to end</h2>
+  <p>A checkpoint is not one function call — it is a small constellation of artifacts that must all agree with each
+  other: a pointer, a WAL record, a control file, a request queue, and (only at restore time) two more files that
+  override the normal story. Click any component to see its role, its real source location, and what happens if it
+  lies.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Checkpoint & recovery explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">THE PROMISE</div>
+        <div class="arch-grid"><div class="acard" data-p="redo">REDO pointer</div></div>
+        <div class="arch-row-label">WAL SIDE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="ckptrecord">checkpoint record</div>
+          <div class="acard" data-p="walrecycle">WAL segment recycling</div>
+        </div>
+        <div class="arch-row-label">DATA SIDE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="bufscan">dirty buffer scan + sorted write</div>
+          <div class="acard" data-p="fsyncq">fsync request queue</div>
+        </div>
+        <div class="arch-row-label">PERSISTED STATE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="pgcontrol">pg_control</div>
+          <div class="acard" data-p="backuplabel">backup_label</div>
+        </div>
+        <div class="arch-row-label">DIVERGENT FUTURES</div>
+        <div class="arch-grid"><div class="acard" data-p="timeline">timeline ID + .history</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE INVARIANT THAT MAKES ALL OF THIS SAFE</div>
+    <p>Every one of these pieces exists to protect one sentence: <b>a page is never allowed to reach disk before the
+    WAL record describing the change that produced it.</b> <code>FlushBuffer()</code> enforces this directly — it
+    calls <code>XLogFlush()</code> up to the buffer's LSN before the write, every time. The REDO pointer, the sorted
+    buffer scan, the fsync queue, and <code>pg_control</code> are all just bookkeeping built on top of that one
+    ordering rule. §8 shows exactly where in the code this happens.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">CreateCheckPoint(), the redo loop, and the LSN guard</h2>
+  <p>Now the mechanism at the level you'd need to patch it. Three pieces: <b>(a)</b> the checkpoint algorithm step by
+  step, <b>(b)</b> how its I/O is paced, and <b>(c)</b> the recovery redo loop that consumes what the checkpoint
+  produced.</p>
+
+  <h3>(a) CreateCheckPoint(), step by step</h3>
+  <p>Step through the real sequence from <code>src/backend/access/transam/xlog.c</code>, simplified but faithful.
+  Step 2 is the one subtlety worth re-reading twice.</p>
+
+  <div class="widget deck" id="deckCkptAlgo">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">CreateCheckPoint() → CheckPointGuts()</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>xlog.c — CreateCheckPoint(), simplified</span></div>
+    <pre><span class="k">void</span>
+<span class="f">CreateCheckPoint</span>(<span class="k">int</span> flags)
+{
+    <span class="f">LWLockAcquire</span>(CheckpointLock, LW_EXCLUSIVE);
+
+    <span class="c">/* THE SUBTLE STEP. Captured BEFORE a single buffer is
+     * flushed. WAL-before-data ordering (FlushBuffer() never
+     * writes a page whose LSN hasn't reached disk yet) means
+     * every buffer this checkpoint is about to write is already
+     * covered by WAL at or after this exact point.             */</span>
+    checkPoint.redo = <span class="f">GetInsertRecPtr</span>();
+
+    <span class="f">LogCheckpointStart</span>(flags, <span class="k">false</span>);
+
+    <span class="c">/* Flush every dirty buffer, sorted for locality, paced by
+     * checkpoint_completion_target. See CheckPointBuffers().   */</span>
+    <span class="f">CheckPointGuts</span>(checkPoint.redo, flags);
+
+    <span class="c">/* Every file touched above has a pending fsync request in
+     * the checkpointer's queue. Drain it now — this is where
+     * durability for THIS checkpoint's writes actually happens. */</span>
+    <span class="f">ProcessSyncRequests</span>();
+
+    <span class="c">/* Only now write the checkpoint record. Its own LSN is NOT
+     * checkPoint.redo — redo is a FIELD inside it, pointing
+     * backward to step 1.                                       */</span>
+    recptr = <span class="f">XLogInsert</span>(RM_XLOG_ID, XLOG_CHECKPOINT_ONLINE);
+    <span class="f">XLogFlush</span>(recptr);
+
+    <span class="c">/* Persist the new frontier. Only after this line is a crash
+     * recoverable from THIS checkpoint instead of the previous
+     * one.                                                       */</span>
+    <span class="f">UpdateControlFile</span>();
+
+    <span class="c">/* WAL strictly before checkPoint.redo can never be needed
+     * again.                                                     */</span>
+    <span class="f">RemoveOldXlogFiles</span>(checkPoint.redo, ...);
+
+    <span class="f">LWLockRelease</span>(CheckpointLock);
+}</pre>
+  </div>
+
+  <h3>(b) Pacing: CheckpointWriteDelay()</h3>
+  <p><code>BufferSync()</code> (in <code>src/backend/storage/buffer/bufmgr.c</code>) tags every currently-dirty
+  buffer <code>BM_CHECKPOINT_NEEDED</code> — so a buffer dirtied <i>after</i> the scan starts is correctly left for
+  the <i>next</i> checkpoint, not confused with this one — sorts the tagged list by tablespace/relfilenode/block
+  (turning a scan of scattered dirty pages into long, mostly-sequential per-file runs), and writes them out one at a
+  time. Between writes, <code>CheckpointWriteDelay()</code> compares how far through the buffer list it is against
+  how far through the paced interval it should be, and sleeps only when it's ahead of schedule. Drag the target and
+  watch the same total work stretch or compress:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Checkpoint I/O pacing — same buffers, different shape</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>checkpoint_completion_target</label><input type="range" id="pace-slider" min="10" max="95" value="90" step="5"><span class="val" id="pace-val">0.90</span></div>
+      <div class="chartbox"><canvas id="pace-chart" width="740" height="220" style="width:100%"></canvas></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="pace-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) Recovery: the redo loop that consumes it</h3>
+  <p>At every boot, the startup process finds a starting checkpoint (§7's <code>pg_control</code>/<code>backup_label</code>
+  logic), then runs one loop, forever, until it runs out of valid WAL:</p>
+
+  <div class="widget deck" id="deckRedoLoop">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">PerformWalRecovery() — the redo loop</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout bad">
+    <div class="co-t">WHY IDEMPOTENCE IS NOT OPTIONAL</div>
+    <p>Recovery may replay a record whose effect is <i>already</i> on the page — for two completely ordinary
+    reasons, not just corruption scenarios. First, the redo point is <b>conservative by construction</b>: it's
+    captured before the flush, so some of the records after it describe buffers that the checkpoint (or the
+    background writer, opportunistically) already wrote out before the crash happened. Second, recovery itself can
+    crash and restart — the second attempt replays from the same starting point and must re-apply records the first
+    attempt already finished. Every redo function therefore follows the same rule: <code>if (PageGetLSN(page) >=
+    record's LSN) skip</code> — the change is already durably reflected, and applying it again would corrupt the
+    page or double-apply the delta. This single guard, checked by every resource manager's <code>rm_redo</code>,
+    is what makes "redo from the same point twice" a safe operation instead of a corruption bug.</p>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">FULL-PAGE WRITES SIDESTEP THE PROBLEM ENTIRELY</div>
+    <p>If a record carries a <b>full-page image</b> — captured the first time a page is touched after each
+    checkpoint, specifically to survive a torn page (a partial 8&nbsp;KB write split across a crash, at the OS or
+    storage layer) — redo doesn't even check the page's LSN. A torn page's own header, including its LSN, might
+    itself be garbage; the only safe move is to reinstall the entire page unconditionally from the WAL-embedded
+    image. This is also precisely why frequent checkpoints inflate WAL volume: every checkpoint re-arms
+    "first write since redo," forcing the next touch to every hot page to pay for a full image again.</p>
+  </div>
+
+  <p>End-of-WAL detection deserves its own sentence because it surprises people: when <code>XLogReadRecord()</code>
+  hits a record whose header doesn't validate — usually because it's reading all-zero bytes that were never
+  written — that is not corruption. It is <b>the expected, normal shape of the end of the log</b>, and recovery
+  simply stops there, treating that position as the new insertion point.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Every log-structured system reinvents this checkpoint</h2>
+  <p>The "advance a durable frontier, discard what's behind it" shape recurs everywhere logs meet storage. What
+  differs is what triggers the advance and what it costs to compute:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>CHECKPOINT SHAPE</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>Fuzzy, paced online checkpoint; redo-only (MVCC removes undo)</td>
+      <td><span class="pill g">no stop-the-world</span> <span class="pill g">bounded recovery</span> <span class="pill g">simple redo-only recovery</span></td>
+      <td><span class="pill b">full-page-write amplification per checkpoint</span> <span class="pill b">pacing is a live tuning art</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td>Continuous fuzzy checkpoint tracked by the redo log's oldest-dirty-page LSN; doublewrite buffer instead of full-page images</td>
+      <td><span class="pill g">smoother, near-continuous I/O</span> <span class="pill g">no per-checkpoint WAL image bloat</span></td>
+      <td><span class="pill b">fixed-size circular redo log can force emergency checkpoints under bursts</span> <span class="pill b">extra doublewrite write</span></td></tr>
+    <tr><td>Oracle</td><td>Incremental checkpoint via DBWn, tracked by low RBA/SCN; multiplexed online redo logs</td>
+      <td><span class="pill g">very fine-grained tuning (<code>fast_start_mttr_target</code>)</span></td>
+      <td><span class="pill y">redo log switch/archival management is its own operational discipline</span></td></tr>
+    <tr><td>SQLite (WAL mode)</td><td>Periodic copy-back of the WAL file into the main database file ("checkpoint" = a literal copy, not a redo-pointer scheme)</td>
+      <td><span class="pill g">trivial single-writer implementation</span></td>
+      <td><span class="pill b">long-running readers can block truncation of the WAL file</span></td></tr>
+    <tr><td>RocksDB / LSM engines</td><td>No in-place page checkpoint at all: WAL + memtable flush to immutable SSTables; the flush point is the "checkpoint"</td>
+      <td><span class="pill g">flush is just serializing an immutable structure</span> <span class="pill g">no torn-page problem — SSTs are write-once</span></td>
+      <td><span class="pill b">recovery unit is per-column-family, not per-page</span></td></tr>
+    <tr><td>Cassandra</td><td>Commit log + memtable flush, same LSM shape as RocksDB</td>
+      <td><span class="pill g">same flush-based simplicity</span></td>
+      <td><span class="pill b">replaying several un-flushed commit log segments after a crash can be slow</span></td></tr>
+  </table>
+  <p>Read this as proof by exhaustion, the way §9 of chapter 1 read the process-model table: <b>every system pays
+  for "recovery starts near now" somewhere</b> — either in WAL volume (PostgreSQL's full-page images), in a hard
+  ceiling that forces emergency work under load (InnoDB's redo log size), or in giving up in-place updates entirely
+  (LSM engines). PostgreSQL's choice — redo-only recovery, fuzzy checkpoints, tunable pacing — is the one that keeps
+  ordinary heap and btree access patterns simple, at the cost of a WAL-volume tax you can see directly in
+  <code>pg_stat_bgwriter</code> and tune directly with <code>checkpoint_completion_target</code>.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Recovery time and checkpoint cost, from first principles</h2>
+  <p>Two Big-O statements you can derive without benchmarking anything:</p>
+  <ul class="plain">
+    <li><b>Recovery time is O(WAL bytes since the last completed checkpoint's redo pointer)</b> — not O(downtime),
+      not O(database size). A 50&nbsp;TB database that crashed 30 seconds after its last checkpoint recovers in
+      roughly the time to replay 30 seconds of WAL. A 50&nbsp;GB database that hasn't checkpointed in an hour under
+      heavy write load can recover slower than the giant, freshly-checkpointed one.</li>
+    <li><b>Checkpoint wall-clock cost is O(dirty buffers at scan time) for the write, and O(distinct files touched)
+      for fsyncs</b> — not O(shared_buffers). A mostly-read workload with a huge buffer pool but few dirty pages
+      checkpoints almost instantly; a small buffer pool under constant heavy writes churns through its entire
+      contents every checkpoint.</li>
+  </ul>
+  <p>Two second-order effects worth internalizing: the initial buffer scan touches every <code>BufferDesc</code> in
+  the pool (~64 bytes each) linearly — at 64&nbsp;GB of <code>shared_buffers</code> and 8&nbsp;KB pages that's roughly
+  8 million descriptors, a single sequential sweep run by one process (the checkpointer), so it doesn't thrash other
+  backends' CPU caches directly but does compete for memory bandwidth. And sorting dirty buffers by
+  tablespace/relfilenode/block before writing converts what would otherwise be effectively random 8&nbsp;KB writes
+  scattered across the whole pool into long runs per file — a bigger win on rotational media, but still meaningfully
+  reduces the number of distinct fsync targets (and OS write-back queue entries) even on SSD and network storage.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Recovery time vs. checkpoint frequency</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>avg WAL write rate</label><input type="range" id="perf-rate" min="5" max="400" value="60" step="5"><span class="val" id="perf-rate-val">60 MB/s</span></div>
+      <div class="slider-row"><label>checkpoint interval</label><input type="range" id="perf-interval" min="1" max="60" value="5" step="1"><span class="val" id="perf-interval-val">5 min</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--bad)">━</span> worst-case recovery time (min)</span>
+        <span><span style="color:var(--pg)">━</span> relative steady-state I/O overhead</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch — recovery ≈ (WAL since redo)/(assumed single-process replay throughput),
+    overhead ≈ an inverse function of interval driven by full-page-write re-arming and buffer re-flush frequency —
+    tuned to match the qualitative shape operators actually observe. Real replay throughput depends heavily on
+    storage, page-cache warmth, and which resource managers dominate your WAL stream; treat this as intuition-
+    building, and validate any real RTO target by actually crashing a replica under representative load.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents you will eventually meet</h2>
+
+  <h3>Incident 1: "checkpoints are occurring too frequently"</h3>
+  <p>A batch ingestion job starts loading years of historical data at high throughput. Within minutes, the logs fill
+  with <code>LOG: checkpoints are occurring too frequently (14 seconds apart)</code> followed by
+  <code>HINT: Consider increasing the configuration parameter "max_wal_size"</code>. The write volume is blowing past
+  the WAL-size trigger far faster than <code>checkpoint_timeout</code> would ever have fired on its own — every
+  checkpoint completes only to immediately re-trigger, each one re-arming full-page writes on the same hot pages
+  the batch job keeps touching, multiplying WAL volume on top of an already WAL-heavy workload. <b>Fix:</b> raise
+  <code>max_wal_size</code> (and provision the <code>pg_wal</code> disk headroom to match it) so checkpoints space
+  out to something closer to <code>checkpoint_timeout</code>'s cadence during bulk operations; some teams
+  additionally raise it only for the duration of known bulk-load windows.</p>
+
+  <h3>Incident 2: an hour of recovery nobody budgeted for</h3>
+  <p>A team running a write-heavy analytics ingestion pipeline set <code>checkpoint_timeout</code> to 60 minutes and
+  a very large <code>max_wal_size</code> specifically to minimize steady-state I/O overhead — a reasonable-looking
+  choice under §10's model, if you only look at the I/O curve. A host-level fault killed the primary roughly 50
+  minutes into a checkpoint interval. Recovery had to replay 50 minutes of a high-volume WAL stream, and the
+  contractual failover SLA was 5 minutes. <b>Root cause:</b> the team tuned for steady-state throughput and never
+  computed the other half of §10's tradeoff — worst-case WAL-since-redo at their write rate. <b>Fix:</b> derive
+  <code>max_wal_size</code>/<code>checkpoint_timeout</code> from the RTO backward (§12 walks the exact calculation),
+  then validate by actually crashing a non-production replica under peak load and timing the real replay.</p>
+
+  <h3>Incident 3: deleting backup_label "to fix a stuck recovery"</h3>
+  <p>An operator restores a physical base backup, PostgreSQL starts up and reports it is in recovery, and — reading
+  it as stuck rather than working as designed — the operator deletes <code>backup_label</code> from the data
+  directory to "let it start normally." The server does start, quickly, and appears healthy. Weeks later, checksum
+  failures and unreadable index blocks start surfacing, seemingly at random. <b>Root cause:</b> without
+  <code>backup_label</code>, the startup process falls back to trusting <code>pg_control</code>'s own last-checkpoint
+  pointer — but that file was copied as part of the backup and can describe a checkpoint that completed
+  <i>after</i> the backup started copying files, which is later than the true point recovery needed to start from.
+  Recovery silently skipped WAL the backup actually required to fix up pages that were mid-write when they were
+  copied — classic torn-page corruption, invisible until the affected block is actually read. <b>Fix:</b> never
+  manually delete <code>backup_label</code>; if recovery genuinely appears stuck, diagnose the actual redo target and
+  WAL availability instead of removing the file that makes the restore correct.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is the level of detail a Staff interview (or a pgsql-hackers reply)
+  expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: xlog.c, xlogrecovery.c, checkpointer.c</h2>
+  <p>Where everything from this chapter lives. Files marked <span style="color:var(--warn)">●</span> are this
+  chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/access/transam/</span></div>
+<div>├── <span class="fhl">● xlog.c</span> <span class="fnote">— CreateCheckPoint(), UpdateControlFile(), WAL insert/flush machinery (~9k lines)</span></div>
+<div>├── <span class="fhl">● xlogrecovery.c</span> <span class="fnote">— PerformWalRecovery(), ReadRecord(), recovery targets, timelines (split out of xlog.c in PG 15)</span></div>
+<div>├── xlogreader.c <span class="fnote">— XLogReadRecord(): generic record-decoding state machine, shared with pg_waldump</span></div>
+<div>├── xlogutils.c <span class="fnote">— XLogReadBufferForRedo(): the page-LSN guard every redo function calls through</span></div>
+<div>└── rmgr.c <span class="fnote">— RmgrTable[]: resource-manager ID → rm_redo() dispatch table</span></div>
+<div><span class="dir">src/backend/postmaster/</span></div>
+<div>└── <span class="fhl">● checkpointer.c</span> <span class="fnote">— CheckpointerMain(): timeout/volume triggers, absorbs backend fsync requests</span></div>
+<div><span class="dir">src/backend/storage/</span></div>
+<div>├── buffer/bufmgr.c <span class="fnote">— BufferSync(), CheckPointBuffers(): the sorted dirty-buffer write-out</span></div>
+<div>└── sync/sync.c <span class="fnote">— RegisterSyncRequest(), ProcessSyncRequests(): the shared fsync request queue</span></div>
+<div><span class="dir">src/include/catalog/</span></div>
+<div>└── <span class="fhl">● pg_control.h</span> <span class="fnote">— ControlFileData, CheckPoint, DBState: the on-disk contract read at every boot</span></div>
+  </div></div>
+
+  <p>The dirty-buffer scan and its pacing, simplified from <code>bufmgr.c</code>:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>bufmgr.c — BufferSync() + CheckpointWriteDelay()</span></div>
+    <pre><span class="k">static void</span>
+<span class="f">BufferSync</span>(<span class="k">int</span> flags)
+{
+    <span class="c">/* Snapshot which buffers are dirty NOW. Tag them so a
+     * buffer dirtied by a backend AFTER this scan starts is
+     * left for the NEXT checkpoint, not confused with this one. */</span>
+    <span class="k">for</span> (buf_id = <span class="n">0</span>; buf_id &lt; NBuffers; buf_id++)
+        <span class="k">if</span> (buf_state &amp; BM_DIRTY)
+        {
+            buf_state |= BM_CHECKPOINT_NEEDED;
+            CkptBufferIds[num_to_scan++] = (buf, tsId, relNode, blockNum);
+        }
+
+    <span class="c">/* Sort by tablespace/relfilenode/block: turns a scattered
+     * scan into long per-file runs — locality, not randomness.  */</span>
+    <span class="f">qsort</span>(CkptBufferIds, num_to_scan, <span class="k">sizeof</span>(CkptSortItem),
+          ckpt_buforder_comparator);
+
+    <span class="k">for</span> (i = <span class="n">0</span>; i &lt; num_to_scan; i++)
+    {
+        <span class="f">SyncOneBuffer</span>(CkptBufferIds[i].buf_id, ...);
+        <span class="f">CheckpointWriteDelay</span>(flags, (<span class="k">double</span>) i / num_to_scan);
+    }
+}
+
+<span class="k">static void</span>
+<span class="f">CheckpointWriteDelay</span>(<span class="k">int</span> flags, <span class="k">double</span> progress)
+{
+    <span class="c">/* progress: fraction of THIS checkpoint's buffer list done.
+     * Compare against fraction of the PACED INTERVAL elapsed
+     * (elapsed_time / (checkpoint_timeout * completion_target)).
+     * Behind schedule → write immediately, no sleep. Ahead →
+     * sleep a little. That comparison IS the pacing algorithm.  */</span>
+    <span class="k">if</span> (progress &lt; elapsed_fraction_of_target)
+        <span class="k">return</span>;
+    <span class="f">pg_usleep</span>(...);
+}</pre>
+  </div>
+
+  <p>The recovery redo loop, simplified from <code>xlogrecovery.c</code>, and the LSN guard every redo function
+  goes through via <code>xlogutils.c</code>:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>xlogrecovery.c + xlogutils.c — redo loop and the LSN guard</span></div>
+    <pre><span class="k">void</span>
+<span class="f">PerformWalRecovery</span>(<span class="k">void</span>)
+{
+    record = <span class="f">ReadRecord</span>(xlogreader, InvalidXLogRecPtr, LOG, <span class="k">false</span>);
+
+    <span class="k">while</span> (record != <span class="n">NULL</span>)
+    {
+        RmgrTable[record-&gt;xl_rmid].rm_redo(xlogreader);
+        LastRec = ReadPtr;
+        record = <span class="f">ReadRecord</span>(xlogreader, InvalidXLogRecPtr, LOG, <span class="k">false</span>);
+    }
+    <span class="c">/* record == NULL is NOT corruption — it's an unparseable
+     * header, exactly what unwritten WAL looks like. THIS is
+     * end of log.                                               */</span>
+    EndOfLog = LastRec;
+}
+
+XLogRedoAction
+<span class="f">XLogReadBufferForRedo</span>(XLogReaderState *record, <span class="k">uint8</span> block_id, Buffer *buf)
+{
+    <span class="k">if</span> (<span class="f">XLogRecHasBlockImage</span>(record, block_id))
+    {
+        <span class="c">/* torn page's own LSN can't be trusted — don't even
+         * check it, just reinstall the full image.              */</span>
+        *buf = <span class="f">RestoreBlockImage</span>(record, block_id);
+        <span class="k">return</span> BLK_RESTORED;
+    }
+
+    *buf = <span class="f">ReadBufferForRedo</span>(record, block_id);
+    page = <span class="f">BufferGetPage</span>(*buf);
+
+    <span class="k">if</span> (<span class="f">PageGetLSN</span>(page) &gt;= record-&gt;EndRecPtr)
+        <span class="k">return</span> BLK_DONE;         <span class="c">/* already durable — SKIP */</span>
+
+    <span class="k">return</span> BLK_NEEDS_REDO;      <span class="c">/* apply the delta */</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Push the fsync decision out of the backend.</b> A backend that writes a dirty buffer never calls
+    <code>fsync()</code> itself — it registers a request with the checkpointer, which de-duplicates requests against
+    the same file from many backends into one <code>fsync()</code> call. This is the same "flags, not work, in the
+    hot path" instinct chapter 1's signal handlers used, applied to I/O instead of signals. <b>2. Make the
+    correctness argument a pointer comparison, not a distributed protocol.</b> <code>PageGetLSN(page) >=
+    record's LSN</code> is a single integer comparison that replaces an entire class of "did this already happen?"
+    coordination problems — because LSNs are monotonically increasing and every page remembers the last one applied
+    to it. <b>3. Discard undo entirely rather than port ARIES faithfully.</b> The team could have implemented
+    compensation log records and a real undo pass; instead they leaned on MVCC (already required for concurrency)
+    to make aborted-transaction cleanup a non-problem for recovery. Simpler code, fewer bugs, at the cost of relying
+    on vacuum (chapter 12) to eventually reclaim what undo would have removed immediately.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — boot to "ready to accept connections"</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur during a crash-recovery boot, from reading pg_control to the postmaster opening the doors. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Crash & replay, live</h2>
+  <p>Run a workload against a small visualized buffer pool, watch checkpoints sweep through it, then <b>crash the
+  server at whatever moment you like</b> — mid-checkpoint if you time it right — and single-step recovery one WAL
+  record at a time, watching each one get marked <b>APPLIED</b>, <b>SKIPPED</b>, or <b>RESTORED</b> (full-page
+  image) as the buffer pool comes back to life.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">buffer pool & WAL — live cluster</span><span class="w-sub sim-phase-tag" id="sim-phase">RUNNING</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="buflegend">
+            <span><span class="sw" style="background:var(--border-hi)"></span>clean</span>
+            <span><span class="sw" style="background:var(--warn)"></span>dirty (in memory only)</span>
+            <span><span class="sw" style="background:var(--pg)"></span>flushing now</span>
+            <span><span class="sw" style="background:var(--ok)"></span>redo applied</span>
+            <span><span class="sw" style="background:var(--purple)"></span>redo restored (FPI)</span>
+            <span><span class="sw" style="background:var(--panel-2);outline:2px solid var(--muted)"></span>redo skipped</span>
+          </div>
+          <div class="bufgrid" id="sim-bufgrid"></div>
+          <div class="wal-strip" id="sim-walstrip"></div>
+          <div class="sim-shm"><div class="shm" id="sim-shm-box">shared memory — REDO 0 · last checkpoint 0</div></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">WORKLOAD</div>
+            <div class="btns">
+              <button class="btn good" id="sc-run">⏸ pause workload</button>
+              <button class="btn" id="sc-ckpt">force CHECKPOINT</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">FAILURE INJECTION</div>
+            <div class="btns">
+              <button class="btn danger" id="sc-crash">💥 crash now</button>
+              <button class="btn primary" id="sc-step" disabled>step redo →</button>
+              <button class="btn" id="sc-runall" disabled>▶▶ run all redo</button>
+              <button class="btn" id="sc-reset">↺ reset</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">CONFIG</div>
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">completion_target</label><span class="val" id="sim-ct-val" style="min-width:34px">0.90</span></div>
+            <input type="range" id="sim-ct" min="10" max="95" value="90" step="5" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:10px 0 4px"><label style="min-width:0;flex:1">checkpoint frequency</label><span class="val" id="sim-int-val" style="min-width:60px">frequent</span></div>
+            <input type="range" id="sim-int" min="20" max="200" value="80" step="10" style="width:100%;accent-color:var(--pg)">
+            <div class="linkmeters">
+              <div class="lm"><div class="meter"><div class="m-l"><span>steady-state I/O</span><span id="m-io-v">0%</span></div><div class="m-bar"><div class="m-fill" id="m-io"></div></div></div></div>
+              <div class="lm"><div class="meter"><div class="m-l"><span>worst-case recovery</span><span id="m-rec-v">0%</span></div><div class="m-bar"><div class="m-fill" id="m-rec"></div></div></div></div>
+            </div>
+          </div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">LAST REDO EVENT</div>
+            <div style="color:var(--dim)">crash the server, then step redo…</div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-writes">0</div><div class="cl">buffers written</div></div>
+            <div class="scounter"><div class="cv" id="cnt-ckpt">0</div><div class="cl">checkpoints</div></div>
+            <div class="scounter"><div class="cv" id="cnt-dirty">0</div><div class="cl">dirty now</div></div>
+          </div>
+          <div style="padding:0 15px 11px">
+            <div class="chartbox"><canvas id="io-chart" width="255" height="90" style="width:100%"></canvas></div>
+            <p style="font-family:var(--mono);font-size:9.5px;color:var(--dim);margin-top:4px">I/O rate per tick — storm vs. spread</p>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Drag <code>completion_target</code> to 0.1 and watch the I/O chart spike into bursts; drag it to
+    0.9 and watch the same total writes smooth into a trickle. <b>2.</b> Crash mid-checkpoint (watch the buffer grid
+    for blue "flushing" cells, then hit crash) — notice recovery still starts from the <i>previous completed</i>
+    checkpoint, not the interrupted one. <b>3.</b> Step through redo and find a <b>SKIPPED</b> record — that's a
+    page the background writer or a completed checkpoint already flushed before the crash. <b>4.</b> Slide checkpoint
+    frequency to its most infrequent setting, run the workload a while, then crash — watch "worst-case recovery"
+    climb and count how many more redo steps it takes to reach the end of WAL.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 12: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head (or out loud — it's better), <i>then</i>
+  reveal. If any reveal surprises you, re-run the relevant simulator experiment.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 11 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now state exactly what a checkpoint's REDO pointer
+    guarantees, trace <code>CreateCheckPoint()</code> from redo capture to <code>pg_control</code>, and explain why
+    every redo function is idempotent and LSN-guarded. Chapter 12 turns from making crashes survivable to making
+    transaction IDs survive forever: vacuum, freezing, and the wraparound clock that never stops ticking — the
+    mechanism that decides what happens to all those aborted-transaction tuples recovery just faithfully redid.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="pg-12.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-12: Vacuum &amp; Wraparound →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* small helper: vertical pipeline visual for the two algorithm decks in §8 */
+function pipeline(items, hot){
+  return `<div class="pipe">` + items.map((s,i)=>{
+    const cls = i===hot ? "hot" : "";
+    const op = i<hot ? "opacity:.45" : i>hot ? "opacity:.7" : "";
+    return `<div class="frame ${cls}" style="${op}"><span class="ff">${i+1}. ${s}</span></div>`;
+  }).join("") + `</div>`;
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1992", l:"ARIES", d:"<b>Mohan, Haderle, Lindsay, Pirahesh & Schwarz publish ARIES</b> (IBM Research), the algorithm nearly every WAL-based database's recovery is judged against: redo-then-undo recovery driven by log sequence numbers, with idempotent, LSN-guarded redo. PostgreSQL adopts the redo half almost exactly — and, as the deep-context callout above explains, discards the undo half entirely because MVCC already makes it unnecessary." },
+  { yr:"2001", l:"WAL (7.1)", d:"<b>Vadim Mikheev lands write-ahead logging</b> in PostgreSQL 7.1. Before this release, PostgreSQL fsynced data pages directly on commit — there was no true redo log, and crash safety depended on those synchronous data-file writes alone. WAL makes commits cheap (flush a small log record, not whole pages) and, as a side effect, creates this chapter's entire subject: now there's a log that must eventually be checkpointed and recycled." },
+  { yr:"2008", l:"spread checkpoints (8.3)", d:"<b>checkpoint_completion_target introduced.</b> Before this, a checkpoint wrote its dirty buffers essentially as fast as the storage would allow — correct, but capable of saturating I/O bandwidth for the whole flush duration. Spreading writes across a target fraction of the inter-checkpoint interval becomes the standard way to trade checkpoint duration for foreground latency." },
+  { yr:"2012", l:"checkpointer split (9.2)", d:"<b>The checkpointer becomes its own process.</b> Previously the background writer (bgwriter) handled both routine LRU dirty-page dribbling AND full checkpoints — meaning checkpoint I/O and ordinary buffer write-back competed inside one process's scheduling. Splitting them lets each be tuned and paced independently, and is the reason the architecture explorer in §7 lists 'checkpointer' as its own component." },
+  { yr:"2016", l:"max_wal_size (9.5)", d:"<b>checkpoint_segments (a raw WAL segment count) is replaced by max_wal_size / min_wal_size</b> — a size in bytes/MB, independent of the underlying WAL segment size. A more intuitive knob for the exact tradeoff §6 walks through: how much WAL may accumulate before its volume alone forces an early checkpoint." },
+  { yr:"2018", l:"configurable WAL segment size (11)", d:"<b>--wal-segsize becomes an initdb-time option.</b> The WAL segment size — previously a fixed, compile-time 16 MB — can now be chosen per-cluster, letting high-throughput installations use larger segments (fewer files, fewer segment-boundary overheads) without a custom build." },
+  { yr:"2020", l:"recovery.conf removed (12)", d:"<b>recovery.conf is deleted as a concept.</b> Recovery parameters (recovery_target_*, primary_conninfo, and friends) become ordinary entries in postgresql.conf, and whether a server starts in standby or crash-recovery-then-PITR mode is signaled by the mere presence of standby.signal or recovery.signal trigger files in the data directory — a simplification of exactly the boot-time state machine this chapter's §7/§8 describe." },
+  { yr:"2021", l:"completion_target → 0.9 (14)", d:"<b>The default changes from 0.5 to 0.9.</b> Two decades of production experience converged on the same conclusion §6 derives: finishing a checkpoint's writes 'early' (at 50% of the interval) buys nothing — the next checkpoint can't start any sooner regardless — while finishing in a tighter burst measurably hurts foreground I/O latency. Spreading across nearly the whole interval is strictly better once you accept that." },
+  { yr:"2022", l:"xlogrecovery.c (15)", d:"<b>Recovery code is split out of the monolithic xlog.c into its own file, xlogrecovery.c</b> (part of a broader Heikki Linnakangas-led WAL subsystem refactor). A pure code-organization change, but a telling one: by 2022 the checkpoint/recovery machinery had grown complex and stable enough to deserve its own file boundary — the exact split reflected in this chapter's §13 source walkthrough." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[1].d;
+
+/* ============================================================
+   2. DECK: candidates for bounding recovery distance (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:12px;max-width:560px;margin:0 auto;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:6px 9px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  stepper("deckCandidates", [
+    { stage: box("CANDIDATE A — fsync every page on every write", cell("write() → fsync() → write() → fsync() …","#8b94a7") + cell("recovery: nothing to redo, disk is always current","#4ade80","rgba(74,222,128,.05)") + cell("throughput: capped at random-write fsync latency, per write","#f25c54","rgba(242,92,84,.1)")),
+      cap:`<b>Rejected outright — it un-invents WAL.</b> If every write is synchronously durable on disk, recovery genuinely needs zero redo. But this is precisely the design chapter 10's WAL replaced: it turns every write into a synchronous random I/O, throwing away the entire benefit of a buffer pool and a sequential log. Not "fails under load" — fails immediately, by construction.` },
+    { stage: box("CANDIDATE B — stop-the-world checkpoint", cell("PAUSE all writers","#ff9f43","rgba(255,159,67,.08)") + cell("flush every dirty buffer to disk","#60a5fa") + cell("write checkpoint record","#60a5fa") + cell("RESUME writers","#ff9f43","rgba(255,159,67,.08)")),
+      cap:`<b>Correctness is trivial — availability is not.</b> With writers paused, there's no concurrent dirtying to reason about: one clean redo point, no subtlety. But pause duration scales with how much of the buffer pool is dirty, which can be seconds to minutes on a large, write-heavy <code>shared_buffers</code> — repeated on a schedule. An OLTP system with any latency SLA cannot accept a periodic full stop.` },
+    { stage: box("CANDIDATE C — fuzzy checkpoint, unpaced", cell("writers keep running throughout","#4ade80","rgba(74,222,128,.05)") + cell("capture REDO pointer BEFORE flushing (the trick)","#a78bfa","rgba(167,139,250,.08)") + cell("flush dirty buffers AS FAST AS POSSIBLE","#f25c54","rgba(242,92,84,.08)")),
+      cap:`<b>Correctness solved, a new cost appears.</b> The REDO-pointer trick (§7/§8) makes this correct even though writers never stop — "fuzzy" means the checkpoint and ordinary traffic overlap in time. But "as fast as possible" saturates disk bandwidth for the whole flush, competing with every foreground backend's I/O — the burst §6 calls the storm.` },
+    { stage: box("CANDIDATE D — fuzzy + paced ✓", cell("writers keep running throughout","#4ade80","rgba(74,222,128,.05)") + cell("REDO pointer captured up front (same trick)","#a78bfa","rgba(167,139,250,.08)") + cell("flush deliberately SPREAD via checkpoint_completion_target","#60a5fa","rgba(96,165,250,.08)")),
+      cap:`<b>What PostgreSQL actually does.</b> Same correctness as C — the redo pointer doesn't care how slowly you flush, only that you eventually finish before the WAL you're relying on gets recycled. Add deliberate pacing (§6, §8) and the same total I/O spreads across most of the interval instead of bursting, trading a longer checkpoint duration for a much gentler foreground impact.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: CreateCheckPoint() step-by-step (§8a)
+   ============================================================ */
+(function(){
+  const STEPS = [
+    "LogCheckpointStart() — log the trigger reason: time / xlog volume / immediate / shutdown",
+    "Capture the REDO pointer = current WAL insert LSN, BEFORE touching any buffer",
+    "Scan the entire buffer pool; tag every dirty buffer BM_CHECKPOINT_NEEDED",
+    "Sort the tagged buffers by tablespace / relfilenode / block for I/O locality",
+    "Write each buffer out, paced by checkpoint_completion_target (CheckpointWriteDelay)",
+    "Drain the fsync request queue — ProcessSyncRequests() fsyncs every touched file exactly once",
+    "Insert the checkpoint record into WAL, containing the REDO pointer as a field",
+    "UpdateControlFile() persists the new checkpoint LSN; WAL before REDO becomes recyclable"
+  ];
+  const CAPS = [
+    `Every checkpoint starts by writing down <i>why</i> it started — timeout, WAL volume, an explicit <code>CHECKPOINT</code> command, or a clean shutdown. This line is what you grep for when diagnosing "checkpoints are occurring too frequently."`,
+    `<b>The one step to re-read twice.</b> Nothing has been flushed yet. Because <code>FlushBuffer()</code> always flushes a page's WAL up through its LSN before writing it, any buffer this checkpoint is about to write is already covered by WAL at or after this exact point — captured <i>first</i>, guaranteed correct by construction, not by luck.`,
+    `A linear pass over every <code>BufferDesc</code> in <code>shared_buffers</code>. The tag matters as much as the flush: a buffer some backend dirties <i>after</i> this scan starts is correctly left for the <i>next</i> checkpoint, keeping this pass's bookkeeping exact even while writers never stop.`,
+    `Turns whatever scattered subset of the pool happens to be dirty into long, mostly-sequential runs per file — the same locality trick a merge sort or an external sort uses, applied to write-back instead of comparison.`,
+    `The pacing derived in §8b: instead of writing as fast as storage allows, the checkpointer compares how far through the buffer list it is against how far through the paced interval it should be, and only writes at full speed when it's behind schedule.`,
+    `Every buffer written above left a pending fsync request in the checkpointer's own shared-memory queue (possibly merged with requests other backends left earlier). This step is where the checkpoint's writes actually become durable, not merely written to the OS page cache.`,
+    `Only now does the checkpoint record itself get written — and its own LSN is <i>not</i> the REDO pointer. REDO is a field carried <i>inside</i> this record, pointing all the way back to step 2.`,
+    `The last step that matters for crash safety: until this write lands, a crash falls back to whatever checkpoint pg_control already recorded — always safe, just possibly slower to recover from. After it lands, WAL strictly before the new REDO pointer is free to be recycled.`
+  ];
+  stepper("deckCkptAlgo", STEPS.map((s,i)=>({ stage: pipeline(STEPS,i), cap: CAPS[i] })));
+})();
+
+/* ============================================================
+   4. DECK: redo loop step-by-step (§8c)
+   ============================================================ */
+(function(){
+  const STEPS = [
+    "Startup process reads pg_control: DBState (clean shutdown vs. crash) and the last checkpoint's LSN",
+    "If backup_label exists, its REDO location overrides pg_control's own checkpoint pointer",
+    "Read the checkpoint record at that LSN; extract the true REDO pointer field",
+    "XLogReadRecord() decodes the next record; RmgrTable dispatches it to that resource manager's rm_redo()",
+    "The redo function compares PageGetLSN(page) to the record's LSN — apply if behind, skip if already durable",
+    "If the record carries a full-page image, restore it unconditionally — no LSN check at all",
+    "Repeat until XLogReadRecord() hits an unparseable record header — the normal end of WAL, not corruption",
+    "Write an end-of-recovery checkpoint, open a new timeline if this was PITR/promotion, accept connections"
+  ];
+  const CAPS = [
+    `<code>DBState</code> tells the startup process whether it's looking at an orderly shutdown (<code>DB_SHUTDOWNED</code> — recovery can be nearly a no-op) or an interruption (<code>DB_IN_CRASH_RECOVERY</code> territory), and gives it the starting checkpoint's LSN from <code>ControlFileData.checkPoint</code>.`,
+    `The one override in the whole system: a physical base backup ships its own record of the true starting point, because pg_control was itself copied mid-backup and may already describe a <i>later</i> checkpoint than the backup actually needs (§11's incident 3 is what happens when you delete this file).`,
+    `The checkpoint record found here is the one from §8a's step 7 — it carries the real REDO pointer as a field, which is where the redo loop's very first <code>ReadRecord()</code> call actually begins.`,
+    `The generic decode/dispatch loop: <code>XLogReadRecord()</code> doesn't know or care what a record means — it hands the raw record to whichever resource manager (heap, btree, GIN, transaction status, …) registered that record type, via a plain function-pointer table.`,
+    `The idempotence guard from the callout above, executing for real: equal-or-greater means this exact change (or something later) is already reflected, so re-applying would corrupt or duplicate it.`,
+    `Full-page images sidestep the guard entirely rather than passing it — a torn page's own LSN might be nonsense, so the only safe move is an unconditional full overwrite.`,
+    `This is the step people mistake for corruption. An invalid record header is exactly what unwritten WAL bytes look like, and it is how recovery has always detected "there is nothing more to replay" — on every single ordinary restart, not just crashes.`,
+    `Recovery closes with its own checkpoint (so a subsequent crash doesn't have to redo everything just replayed), and — only if this recovery ended at an earlier point than the original WAL stream's end (PITR, promotion) — a new timeline ID and .history file record that a divergent future has begun.`
+  ];
+  stepper("deckRedoLoop", STEPS.map((s,i)=>({ stage: pipeline(STEPS,i), cap: CAPS[i] })));
+})();
+
+/* ============================================================
+   5. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const CKPT = {
+  redo:{ n:"REDO pointer", f:"xlog.c — checkPoint.redo / RedoRecPtr", r:"The single LSN a checkpoint is built around: the current WAL insert position, captured before a single dirty buffer is flushed. WAL-before-data ordering guarantees everything the checkpoint is about to write to disk already has WAL at or beyond this point.", l:"Captured once per checkpoint, at the very start of CreateCheckPoint(). Read back out of pg_control at every subsequent boot as recovery's starting point.", d:"If the machine dies before this checkpoint's own record and pg_control update land, recovery simply falls back to the PREVIOUS checkpoint's redo pointer — always safe, only ever costs extra replay time, never correctness." },
+  ckptrecord:{ n:"Checkpoint record", f:"xlog.c — XLOG_CHECKPOINT_ONLINE / XLOG_CHECKPOINT_SHUTDOWN", r:"A WAL record inserted AFTER all buffers are flushed and fsynced, carrying a full copy of the CheckPoint struct: the redo pointer, next XID/OID/MultiXact counters, timeline ID, and the oldest-XID bookkeeping chapter 12's wraparound math depends on.", l:"One per completed checkpoint; the _SHUTDOWN variant is written on clean shutdown so the next start needs no recovery at all.", d:"If redo ever encounters this record type, it simply updates its notion of the latest checkpoint seen and continues — it carries no page changes to apply." },
+  walrecycle:{ n:"WAL segment recycling", f:"xlog.c — RemoveOldXlogFiles()", r:"Once a checkpoint's redo pointer has advanced past a segment boundary, WAL strictly before it can never be needed for crash recovery again — segments are renamed for reuse or removed outright, subject to archive_command completion, replication slots, and wal_keep_size.", l:"Runs at the end of every completed checkpoint.", d:"The ONLY mechanism that bounds pg_wal's disk usage. If checkpoints stop completing — a wedged checkpointer, or a replication slot holding segments back — pg_wal grows without limit, exactly like §4's naive design." },
+  bufscan:{ n:"Dirty buffer scan & sorted write", f:"bufmgr.c — BufferSync() / CheckPointBuffers()", r:"Walks the entire shared buffer array, tags every currently-dirty buffer BM_CHECKPOINT_NEEDED, sorts by tablespace/relfilenode/block for locality, then writes them out one at a time, paced by CheckpointWriteDelay().", l:"The bulk of a checkpoint's wall-clock time; scales with dirty buffer count, not shared_buffers' total size.", d:"Doesn't hold any single lock for its whole duration — buffers are locked individually and briefly, which is exactly what makes the checkpoint 'fuzzy': ordinary backends keep reading and dirtying pages throughout." },
+  fsyncq:{ n:"fsync request queue", f:"storage/sync/sync.c — RegisterSyncRequest() / ProcessSyncRequests()", r:"When any process writes a dirty buffer to the OS, it doesn't call fsync() itself — it registers a request in a shared-memory queue. The checkpointer de-duplicates these (many backends touching the same file collapse to one fsync) and calls fsync() once per file during ProcessSyncRequests().", l:"Filled continuously by every process that writes buffers; drained by the checkpointer as part of every checkpoint.", d:"If the queue itself were ever to overflow under extreme write concurrency, the checkpointer falls back to a full fsync of every known file — a deliberately conservative escape hatch, not a correctness gap." },
+  pgcontrol:{ n:"pg_control", f:"src/include/catalog/pg_control.h — ControlFileData", r:"A small, fixed-format file (data/global/pg_control) holding the cluster's ground truth: DBState (clean-shutdown vs. crashed), the LSN of the latest checkpoint record, a full copy of that checkpoint's CheckPoint struct, the current timeline ID, and initdb-time constants (block size, WAL segment size, catalog version, alignment) a differently-built binary must match exactly to open this data directory.", l:"Rewritten at the end of every checkpoint and on every clean shutdown/startup state transition.", d:"Corruption or loss is catastrophic — pg_resetwal can rebuild a plausible one to make the cluster bootable again, at the cost of discarding the ability to correctly redo WAL that might actually still be needed. A last-resort tool, not a fix." },
+  backuplabel:{ n:"backup_label", f:"xlogrecovery.c — ReadBackupLabelFile()", r:"Written into the data directory by pg_backup_start() at the moment a physical base backup begins, recording the TRUE starting REDO location for that specific backup — which may be earlier than whatever checkpoint pg_control itself describes, because pg_control was copied mid-backup and can reflect a checkpoint that completed after copying began.", l:"Present only in a freshly restored base backup; consumed and removed by the startup process on first recovery from that backup.", d:"Deleting it manually 'to unstick recovery' is one of the most reliable ways to introduce silent data corruption — recovery falls back to pg_control's own, too-late checkpoint pointer and skips WAL the backup actually needed (§11, incident 3)." },
+  timeline:{ n:"Timeline ID & .history files", f:"xlogrecovery.c — readTimeLineHistory(), pg_wal/*.history", r:"Every WAL segment filename encodes a timeline ID. A new timeline begins whenever recovery ends earlier than the original WAL stream's end (point-in-time recovery, or a standby promotion), so the replayed-and-diverged future is never confused with the original. A .history file records each switch: parent timeline, exact switch LSN, and reason.", l:"TLI increments by exactly one at every promotion/PITR completion; .history files accumulate, one per switch, for the cluster's lifetime.", d:"Without this, two different 'futures' written after the same LSN — the original primary continuing, and a promoted standby continuing from that same point — would be indistinguishable streams of WAL. The history file is what lets a later process detect and refuse to conflate them." }
+};
+const arch2Detail = el("arch-detail");
+function showCkpt(key){
+  const a = CKPT[key];
+  arch2Detail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">IF IT LIES</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showCkpt(c.dataset.p));
+showCkpt("redo");
+
+/* ============================================================
+   6. PACING WIDGET (§8b)
+   ============================================================ */
+(function(){
+  const cv = el("pace-chart"), ctx = cv.getContext("2d");
+  function render(){
+    const target = +el("pace-slider").value / 100;
+    el("pace-val").textContent = target.toFixed(2);
+    const W = cv.width, H = cv.height, PAD = 30;
+    ctx.clearRect(0,0,W,H);
+    const D = 4000; // total "bytes" of dirty buffers to write, constant
+    const spread = Math.max(0.05, target); // fraction of interval used
+    // height of the write-rate pulse so that area (rate * spread * fullwidth) stays constant
+    const rate = D / spread;
+    const maxRate = D / 0.05;
+    ctx.strokeStyle = "#1c2330"; ctx.lineWidth = 1;
+    for (let gx=0; gx<=1; gx+=0.25){ const x=PAD+gx*(W-PAD-10); ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,H-22); ctx.stroke(); }
+    ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.textAlign="center";
+    ["0%","25%","50%","75%","100%"].forEach((lbl,i)=>{ const x=PAD+(i*0.25)*(W-PAD-10); ctx.fillText(lbl, x, H-6); });
+    ctx.textAlign="left"; ctx.fillText("← checkpoint interval until next checkpoint →", PAD, H-6);
+    const y0 = H-24;
+    const barH = Math.min(1, rate/maxRate) * (H-44);
+    ctx.fillStyle = target < 0.35 ? "#f25c54" : target < 0.65 ? "#ff9f43" : "#60a5fa";
+    const barW = spread*(W-PAD-10);
+    ctx.fillRect(PAD, y0-barH, Math.max(2,barW), barH);
+    ctx.strokeStyle = ctx.fillStyle; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(PAD, y0-barH); ctx.lineTo(W-10, y0-barH); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#c6cddb"; ctx.font="11px monospace";
+    ctx.fillText("write rate this checkpoint", PAD, 24);
+    const shape = target < 0.35 ? "a short, intense burst" : target < 0.65 ? "a moderate, half-interval push" : "a gentle trickle across nearly the whole interval";
+    el("pace-note").innerHTML = `Same total dirty-buffer volume every time — only the SHAPE changes. At <b style="color:var(--pg)">${target.toFixed(2)}</b>, the checkpointer paces itself to finish in ${shape}. Note the area under the curve is constant: pacing doesn't reduce total I/O, it only redistributes WHEN it happens — which is exactly why it costs checkpoint duration to buy foreground latency.`;
+  }
+  el("pace-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  const REPLAY_MBPS = 250; // assumed single-process sequential redo throughput
+  function model(rateMBs, intervalMin){
+    const walSinceCkpt = rateMBs * intervalMin * 60; // MB accumulated by worst-case crash timing
+    const recoveryMinutes = walSinceCkpt / REPLAY_MBPS / 60;
+    const ioOverheadPct = Math.min(97, 6 + 3200 / (intervalMin * Math.max(rateMBs,1) + 40));
+    return { recoveryMinutes, ioOverheadPct };
+  }
+  function render(){
+    const rate = +el("perf-rate").value, interval = +el("perf-interval").value;
+    el("perf-rate-val").textContent = rate + " MB/s";
+    el("perf-interval-val").textContent = interval + " min";
+    const W = cv.width, H = cv.height, PAD = 36;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let m=1; m<=60; m++) xs.push(m);
+    let maxR=0, maxO=0;
+    const pts = xs.map(m=>{ const r = model(rate,m); maxR=Math.max(maxR,r.recoveryMinutes); maxO=Math.max(maxO,r.ioOverheadPct); return r; });
+    const X = m => PAD + ((m-1)/59)*(W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [1,15,30,45,60].forEach(m=>{ ctx.beginPath(); ctx.moveTo(X(m),10); ctx.lineTo(X(m),H-20); ctx.stroke(); ctx.fillText(m+"m", X(m)-8, H-6); });
+    function curve(get,max,color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((m,i)=>{ const y = H-24 - (get(pts[i])/max)*(H-44); i?ctx.lineTo(X(m),y):ctx.moveTo(X(m),y); });
+      ctx.stroke();
+    }
+    curve(p=>p.recoveryMinutes, maxR, "#f25c54");
+    curve(p=>p.ioOverheadPct, maxO, "#60a5fa");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(interval),10); ctx.lineTo(X(interval),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(rate, interval);
+    el("perf-note").innerHTML = `At <b>${rate} MB/s</b> average WAL write rate with a <b>${interval}-minute</b> checkpoint interval: worst-case recovery ≈ <b style="color:var(--bad)">${here.recoveryMinutes.toFixed(1)} min</b> (WAL since redo ÷ an assumed ${REPLAY_MBPS} MB/s single-process replay rate), steady-state I/O overhead index ≈ <b style="color:var(--pg)">${here.ioOverheadPct.toFixed(0)}</b>. Shrinking the interval moves you left along both curves at once — recovery time falls, overhead rises. There is no interval that minimizes both simultaneously.`;
+  }
+  el("perf-rate").oninput = render;
+  el("perf-interval").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A checkpoint just completed with redo pointer R. Precisely what can you now say is true on disk, and what can you NOT yet say?", hint:"distinguish 'flushed' from 'this checkpoint's own record'",
+    a:"You can say every data-page change with a WAL LSN < R is now present in the on-disk data files, because everything dirty when the checkpoint began has been flushed and fsynced. You cannot say anything about changes with LSN ≥ R — those may or may not be on disk yet, since backends kept writing throughout (that's what 'fuzzy' means). You also can't yet say this checkpoint is durably known to a future recovery until UpdateControlFile() has persisted its LSN — if the machine dies between the checkpoint record's XLogFlush and the pg_control write, recovery simply falls back to the previous checkpoint, still safe, just longer." },
+  { lvl:"SENIOR", q:"Why is PostgreSQL's redo entirely without an 'undo' pass, unlike the ARIES algorithm it's inspired by?", hint:"MVCC",
+    a:"ARIES needs undo because it overwrites rows in place and must roll back an aborted transaction's changes during recovery. PostgreSQL never overwrites a row in place — every update creates a new tuple version, and the old one is left for MVCC visibility rules (and eventually vacuum) to handle. An aborted transaction's tuples are simply invisible to everyone because the transaction never shows as committed in clog; there's nothing to undo on disk. Recovery only ever redoes forward, which is exactly why idempotent, LSN-guarded redo functions are sufficient — there's no analog of ARIES's compensation log records." },
+  { lvl:"STAFF", q:"You inherit a cluster where a monitoring script deleted backup_label 'to fix a stuck recovery.' What actually broke, mechanistically?", hint:"which LSN does the startup process now trust?",
+    a:"With backup_label gone, the startup process falls back to pg_control's own checkPoint field — but that field describes whatever checkpoint had most recently completed on the SOURCE machine at the moment the data directory was copied, which can be arbitrarily later than the point the backup actually began copying files (backup_label's job is recording that earlier, true start LSN). Recovery then starts replay too late, skipping WAL needed to fix up pages that were mid-write when the backup copied them — classic torn-page corruption that surfaces later as checksum failures or unreadable blocks, not immediately." },
+  { lvl:"STAFF", q:"Derive the pacing formula behind checkpoint_completion_target: given N dirty buffers and a target fraction t of the checkpoint interval, how does the checkpointer decide whether to sleep before the next buffer?", hint:"two progress ratios",
+    a:"The checkpointer tracks two ratios that should stay in lockstep: buffer-progress = (buffers written so far)/N, and time-progress = elapsed-time / (checkpoint_interval * t). CheckpointWriteDelay() checks: if buffer-progress is behind time-progress, write the next buffer immediately with no sleep (catching up); if buffer-progress is ahead, sleep briefly before the next write. All N buffers finish almost exactly at time = checkpoint_interval * t — t=0.9 spreads writes across 90% of the gap until the next checkpoint; a low t crams the same N writes into a short burst." },
+  { lvl:"STAFF", q:"Two checkpoints, same shared_buffers, same workload, but a table gets bulk-loaded right after each checkpoint completes. Why does checkpoint frequency affect WAL volume, not just I/O timing?", hint:"full_page_writes",
+    a:"full_page_writes forces the FIRST WAL record touching any page after a checkpoint's redo point to carry a complete image of that page, specifically to protect against torn pages. Every checkpoint resets which pages count as 'first touched since redo' — so more frequent checkpoints mean more pages re-earn a full-page image more often, inflating total WAL bytes for the same logical amount of change. This is a second, independent cost of frequent checkpoints beyond I/O pacing, and it's why 'just checkpoint more often to shrink recovery time' isn't free." },
+  { lvl:"PRINCIPAL", q:"You must pick checkpoint_timeout / max_wal_size for a service with a contractual 5-minute RTO after any crash. Walk through the reasoning, including what you'd measure in production to validate the choice.", hint:"recovery time ≈ WAL since redo point ÷ replay rate",
+    a:"Recovery time is roughly (WAL bytes since the last completed checkpoint's redo point) ÷ (achievable single-process replay rate — mostly sequential I/O and no client waits, but not parallelized the way ordinary writes are across many backends). To hit a 5-minute RTO, bound WAL-since-redo to (5 min × measured replay throughput), then set max_wal_size to roughly that bound, with checkpoint_timeout as a time-based backstop for low-volume periods. Validate by actually killing -9 a non-production replica under peak write load and timing real recovery — the formula is a starting point, not a substitute for measurement, since replay rate depends on storage, page-cache warmth, and which resource managers dominate the WAL stream." },
+  { lvl:"PRINCIPAL", q:"Steelman making checkpoints even MORE eager (near-continuous, InnoDB-style) versus PostgreSQL's current periodic model. What would you need to change, and who actually needs this?", hint:"InnoDB's fuzzy/continuous checkpoint",
+    a:"A near-continuous checkpoint — the redo/checkpoint LSN creeping forward continuously rather than in discrete events — would shrink worst-case recovery time toward zero and smooth I/O into a constant trickle instead of periodic waves, attractive for very tight RTO SLAs or storage with poor burst tolerance. The cost: full-page-write protection would need redesigning, since 'first write since the last checkpoint' stops being meaningful when checkpoints never really end (InnoDB instead uses a doublewrite buffer, not per-checkpoint full images), and you'd need per-page durability tracking finer than one global redo pointer advancing in discrete jumps. This matters most for very large, very write-heavy OLTP systems with strict availability SLAs — most workloads are far better served tuning the existing knobs than by this kind of architectural change, which is exactly why nobody's seriously proposed it for PostgreSQL." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A checkpoint completes with redo pointer R. What does that completion actually guarantee?",
+    opts:[ "Every transaction that committed before the checkpoint finished is durable",
+           "Every data-file change whose WAL record has an LSN earlier than R is already reflected in the on-disk data files",
+           "Every WAL segment older than the checkpoint has already been deleted from pg_wal",
+           "The buffer pool contains no dirty buffers at the moment the checkpoint record is written" ],
+    a:1,
+    why:"The checkpoint's entire job is certifying a starting point for redo: anything with an LSN earlier than R is guaranteed on disk. Option A conflates this with commit durability, which WAL flush at commit already guarantees independent of checkpoints. Option C describes a downstream consequence (recycling becomes possible), not the guarantee itself, and recycling isn't instantaneous or guaranteed to happen immediately. Option D is false by design — a 'fuzzy' checkpoint means backends keep dirtying buffers throughout; the pool is never guaranteed clean." },
+  { q:"Why must the REDO pointer be captured before dirty buffers are flushed, not after?",
+    opts:[ "To reduce lock contention while scanning the buffer pool",
+           "Because any buffer flushed during the checkpoint might carry changes with LSNs at or after the captured point, and WAL-before-data ordering guarantees that WAL is already durable for anything the checkpoint touches — capturing it later could miss changes made mid-flush and leave a gap redo can't cover",
+           "To let the checkpoint record be written before the buffers are flushed, saving I/O",
+           "PostgreSQL actually captures it after flushing; the 'before' framing is incorrect" ],
+    a:1,
+    why:"This is the single sharp trick behind the whole design: capturing the pointer BEFORE the flush means every buffer this checkpoint is about to write is provably already covered by WAL. Capturing it after would mean buffers modified during the flush interval, but written before the (later) capture, could contain changes recovery would have no way to know needed replaying — a correctness gap, not just an efficiency one." },
+  { q:"During redo, a record's target page currently has PageGetLSN(page) exactly equal to the record's LSN. What should happen?",
+    opts:[ "Apply the change again, since it hasn't been explicitly marked done",
+           "Skip it — LSN ≥ record's LSN means this exact change (or something later) is already reflected; re-applying would corrupt or duplicate it",
+           "Panic — this configuration should be structurally impossible",
+           "Always restore from the record's full-page image instead" ],
+    a:1,
+    why:"The guard is explicitly '>=': equal counts as already durable. Re-applying a delta that's already reflected would double-apply it (e.g. inserting the same row twice, or corrupting a byte range). This situation is completely ordinary — it happens whenever the buffer was already flushed by a completed checkpoint or the background writer before a crash — not a sign of a bug." },
+  { q:"Your logs show 'checkpoints are occurring too frequently.' What is actually happening, and what's the standard fix?",
+    opts:[ "checkpoint_timeout is set too low; lower max_connections instead",
+           "WAL volume is hitting max_wal_size faster than checkpoint_timeout would trigger a checkpoint anyway; raise max_wal_size",
+           "The checkpointer process is crash-looping; restart the whole cluster",
+           "Autovacuum is running too often; disable autovacuum" ],
+    a:1,
+    why:"This warning specifically fires when checkpoints are being forced by the WAL-volume trigger well under checkpoint_warning seconds apart — write volume is outrunning the size budget, not the time budget. Raising max_wal_size lets more WAL accumulate between checkpoints, directly addressing the cause; it also needs matching pg_wal disk headroom. Restarting the cluster (C) does nothing to the underlying volume, and autovacuum (D) is an unrelated subsystem." },
+  { q:"Why does backup_label take precedence over pg_control's own last-checkpoint pointer when starting from a physical base backup?",
+    opts:[ "backup_label is always more recent than pg_control",
+           "pg_control was copied as part of the backup and may describe a checkpoint from BEFORE the backup's actual start; backup_label records the true REDO location the backup needs",
+           "pg_control is deliberately excluded from base backups for security reasons",
+           "backup_label is only relevant for logical backups (pg_dump), not physical ones" ],
+    a:1,
+    why:"pg_control is a snapshot taken mid-copy; the checkpoint it names can postdate the true start of the backup. backup_label exists specifically to record the earlier, correct REDO location for that backup so recovery doesn't skip WAL the copied files actually need. It has nothing to do with logical backups, which don't involve WAL replay at all." },
+  { q:"What ends a redo replay loop under normal operation, with no corruption involved?",
+    opts:[ "A record whose CRC fails validation, whenever full_page_writes is off",
+           "XLogReadRecord() encountering an unparseable/invalid record header — the expected shape of 'nothing written here yet,' treated as end-of-WAL rather than an error",
+           "The redo loop always runs for exactly checkpoint_timeout seconds, then stops",
+           "The startup process reads a dedicated 'END OF WAL' record type written by the shutdown checkpoint" ],
+    a:1,
+    why:"An invalid record header is exactly what unwritten WAL bytes look like, and this is how recovery has always detected 'nothing more to replay' — on every ordinary restart, not only crashes. There is no dedicated end-marker record type, no fixed time duration, and CRC failure specifically due to full_page_writes being off isn't the general end-of-log mechanism at all." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; pg_control itself would trust you.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks, then crash the §15 simulator mid-checkpoint — it clicks fast once you've caused it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Startup process reads pg_control: DBState and the last checkpoint's LSN",
+    "If backup_label is present, its REDO location overrides pg_control's own checkpoint pointer",
+    "The checkpoint record at the REDO pointer is read from WAL",
+    "XLogReadRecord() decodes each subsequent record in turn",
+    "RmgrTable dispatches each record to its resource manager's rm_redo() function",
+    "Each redo function compares PageGetLSN(page) to the record's LSN before applying anything",
+    "Redo continues until an invalid record header signals the end of written WAL",
+    "The startup process writes an end-of-recovery checkpoint and the postmaster accepts connections"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real boot path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Recovery replays every WAL record at or after the redo pointer and skips nothing based on transaction outcome — an aborted transaction's inserts get redone just like a committed one's. Predict: what mechanism must then be responsible for making an aborted transaction's rows invisible, and where does that live?",
+    a:"clog (transaction status) plus MVCC visibility rules, from chapter 5: a redone insert exists physically on the page regardless of the transaction's fate, but it's only VISIBLE to a scan if its inserting XID shows committed in clog. Redo doesn't need to know or care about commit/abort — that's a read-time decision. Chapter 12 will show how vacuum eventually reclaims those dead rows physically, and why transaction ID wraparound forces that reclamation to happen on a hard deadline, not as a courtesy." },
+  { lvl:"THINK", q:"Every completed checkpoint lets old WAL be discarded. Predict what would happen to pg_wal's disk usage if you created a physical replication slot, disconnected that replica, and never dropped the slot.",
+    a:"A replication slot holds back WAL removal at the primary independent of checkpoints — the primary must retain everything the slot's remembered position might still need to send, even once every checkpoint since then has completed. pg_wal grows without bound, on top of and orthogonal to the checkpoint mechanism this chapter describes — a preview of the replication-slot bookkeeping a later chapter covers in full." },
+  { lvl:"THINK", q:"This chapter's redo functions are idempotent and safe to replay unboundedly many times. Predict: is vacuum's work (removing dead tuples, freezing old transaction IDs) also WAL-logged and replayed the same way — and why would inconsistency there be far more dangerous than in ordinary redo?",
+    a:"Yes — vacuum's actions are WAL-logged and redone with the same page-LSN guard as any other change. The forward reference: chapter 12 shows that freezing specifically can't be left to 'eventually get around to it,' because an un-frozen row's transaction ID can wrap around the 32-bit XID counter and appear to be from the future rather than the past — a correctness failure, not a performance one. That's why freezing gets its own aggressive, non-optional trigger independent of ordinary vacuum thresholds." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const NB = 48;
+  const REC_TYPES = ["HEAP_INSERT","HEAP_UPDATE","HEAP_DELETE","BTREE_INSERT","BTREE_SPLIT","HEAP2_VISIBLE"];
+  let SIM;
+  function freshState(){
+    return {
+      buf: Array.from({length:NB}, ()=>({ onDiskLsn:0, memLsn:0, dirty:false })),
+      lsn: 0,
+      walLog: [],
+      lastCompletedRedo: 0,
+      ckpt: { active:false, queue:[], total:0, redo:0, written:0, perTick:1 },
+      ticksSinceCkpt: 0,
+      completionTarget: 0.9,
+      intervalTicks: 80,
+      running: true,
+      crashed: false,
+      recoveryPageLsn: [],
+      redoIdx: 0,
+      ioHistory: [],
+      writes: 0, ckptCount: 0, applied:0, skipped:0, restored:0,
+      flash: {}
+    };
+  }
+  SIM = freshState();
+  let tickTimer = null, runallTimer = null;
+
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function pickType(){ return REC_TYPES[Math.floor(Math.random()*REC_TYPES.length)]; }
+
+  function startCheckpoint(){
+    SIM.ckpt.redo = SIM.lsn;
+    SIM.ckpt.queue = SIM.buf.map((b,i)=>b.dirty?i:-1).filter(i=>i>=0).sort((a,b)=>a-b);
+    SIM.ckpt.total = SIM.ckpt.queue.length;
+    SIM.ckpt.active = SIM.ckpt.total > 0;
+    SIM.ckpt.written = 0;
+    const spreadTicks = Math.max(1, Math.round(SIM.intervalTicks * SIM.completionTarget));
+    SIM.ckpt.perTick = Math.max(1, Math.ceil(Math.max(1,SIM.ckpt.total) / spreadTicks));
+    if (SIM.ckpt.active)
+      log("LOG", `checkpoint starting: redo=${SIM.ckpt.redo}, ${SIM.ckpt.total} dirty buffers queued, ~${SIM.ckpt.perTick}/tick`);
+    else {
+      finishCheckpoint();
+    }
+  }
+
+  function progressCheckpoint(){
+    let n = 0;
+    for (let k=0; k<SIM.ckpt.perTick && SIM.ckpt.queue.length; k++){
+      const i = SIM.ckpt.queue.shift();
+      if (SIM.buf[i].dirty){
+        SIM.buf[i].onDiskLsn = SIM.buf[i].memLsn;
+        SIM.buf[i].dirty = false;
+        n++;
+      }
+      SIM.flash[i] = "flushing";
+      SIM.writes++;
+    }
+    if (SIM.ckpt.queue.length === 0) finishCheckpoint();
+    return n;
+  }
+
+  function finishCheckpoint(){
+    SIM.ckpt.active = false;
+    SIM.lastCompletedRedo = SIM.ckpt.redo;
+    SIM.ticksSinceCkpt = 0;
+    SIM.ckptCount++;
+    SIM.lsn++;
+    SIM.walLog.push({ lsn: SIM.lsn, type:"CHECKPOINT", buf:-1, fpi:false, redo: SIM.ckpt.redo });
+    log("OK", `checkpoint complete — pg_control updated, checkPoint LSN=${SIM.lsn}, redo=${SIM.ckpt.redo}`);
+  }
+
+  function tick(){
+    if (SIM.crashed) return;
+    SIM.flash = {};
+    const nWrites = 1 + Math.floor(Math.random()*3);
+    for (let k=0;k<nWrites;k++){
+      const i = Math.floor(Math.random()*NB);
+      SIM.lsn++;
+      const isFPI = Math.random() < 0.12;
+      SIM.walLog.push({ lsn:SIM.lsn, type: pickType(), buf:i, fpi:isFPI });
+      SIM.buf[i].memLsn = SIM.lsn;
+      SIM.buf[i].dirty = true;
+      if (!SIM.ckpt.active) SIM.flash[i] = SIM.flash[i] || "dirty-touch";
+    }
+    if (Math.random() < 0.08){
+      const dirtyIdx = SIM.buf.map((b,i)=>b.dirty?i:-1).filter(i=>i>=0);
+      if (dirtyIdx.length){
+        const i = dirtyIdx[Math.floor(Math.random()*dirtyIdx.length)];
+        SIM.buf[i].onDiskLsn = SIM.buf[i].memLsn;
+        SIM.buf[i].dirty = false;
+        SIM.writes++;
+        SIM.flash[i] = "flushing";
+      }
+    }
+    SIM.ticksSinceCkpt++;
+    if (!SIM.ckpt.active && SIM.ticksSinceCkpt >= SIM.intervalTicks) startCheckpoint();
+    let writesThisTick = nWrites;
+    if (SIM.ckpt.active) writesThisTick += progressCheckpoint();
+    SIM.ioHistory.push(writesThisTick);
+    if (SIM.ioHistory.length > 90) SIM.ioHistory.shift();
+    renderSim();
+  }
+
+  function crash(){
+    if (SIM.crashed) return;
+    if (tickTimer){ clearInterval(tickTimer); tickTimer = null; }
+    SIM.running = false;
+    SIM.crashed = true;
+    const mid = SIM.ckpt.active;
+    log("PANIC", `simulated crash — process killed${mid ? " MID-CHECKPOINT" : ""}. shared memory discarded.`);
+    if (mid) log("WARN", `in-progress checkpoint's own record was never written — its partial buffer flushes already happened, but the completed-checkpoint pointer stays at the PREVIOUS one`);
+    SIM.recoveryPageLsn = SIM.buf.map(b=>b.onDiskLsn);
+    SIM.ckpt.active = false; SIM.ckpt.queue = [];
+    SIM.redoIdx = SIM.walLog.findIndex(r=>r.lsn >= SIM.lastCompletedRedo);
+    if (SIM.redoIdx < 0) SIM.redoIdx = SIM.walLog.length;
+    log("LOG", `startup process: redo will begin from last COMPLETED checkpoint, redo pointer = ${SIM.lastCompletedRedo}`);
+    el("sc-run").disabled = true; el("sc-ckpt").disabled = true; el("sc-crash").disabled = true;
+    el("sc-step").disabled = false; el("sc-runall").disabled = false;
+    renderSim();
+  }
+
+  function stepRedo(){
+    if (!SIM.crashed) return;
+    if (SIM.redoIdx >= SIM.walLog.length){
+      log("HINT", "XLogReadRecord: invalid record header — normal end of WAL, not corruption. Redo complete.");
+      endRecovery();
+      return;
+    }
+    const rec = SIM.walLog[SIM.redoIdx];
+    SIM.redoIdx++;
+    SIM.flash = {};
+    if (rec.type === "CHECKPOINT"){
+      log("LOG", `redo: RM_XLOG checkpoint record (redo=${rec.redo}) — bookkeeping only, no page change`);
+      setInsp(`CHECKPOINT record<br>redo field = ${rec.redo}<br><span style="color:var(--dim)">no data-page effect</span>`);
+      renderSim();
+      return;
+    }
+    const cur = SIM.recoveryPageLsn[rec.buf];
+    if (rec.fpi){
+      SIM.recoveryPageLsn[rec.buf] = rec.lsn;
+      SIM.flash[rec.buf] = "replay-fpi";
+      SIM.restored++;
+      log("OK", `RESTORED  buf#${rec.buf}  ${rec.type}  lsn=${rec.lsn}  (full-page image — unconditional, LSN not even checked)`);
+      setInsp(`<b style="color:var(--purple)">RESTORED</b> buf#${rec.buf} · ${rec.type}<br>record lsn=${rec.lsn} · full-page image<br><span style="color:var(--dim)">page reinstalled whole; torn-page safe</span>`);
+    } else if (cur >= rec.lsn){
+      SIM.flash[rec.buf] = "replay-skip";
+      SIM.skipped++;
+      log("LOG", `SKIPPED   buf#${rec.buf}  ${rec.type}  lsn=${rec.lsn}  (page lsn ${cur} >= record lsn — already durable)`);
+      setInsp(`<b style="color:var(--muted)">SKIPPED</b> buf#${rec.buf} · ${rec.type}<br>page lsn ${cur} &ge; record lsn ${rec.lsn}<br><span style="color:var(--dim)">already durable — no-op by design</span>`);
+    } else {
+      SIM.recoveryPageLsn[rec.buf] = rec.lsn;
+      SIM.flash[rec.buf] = "replay-applied";
+      SIM.applied++;
+      log("OK", `APPLIED   buf#${rec.buf}  ${rec.type}  lsn=${rec.lsn}  (page lsn was ${cur} — redo function ran)`);
+      setInsp(`<b style="color:var(--ok)">APPLIED</b> buf#${rec.buf} · ${rec.type}<br>page lsn ${cur} &rarr; ${rec.lsn}<br><span style="color:var(--dim)">delta applied by rm_redo</span>`);
+    }
+    renderSim();
+  }
+
+  function setInsp(html){
+    el("sim-insp").innerHTML = `<div class="i-t">LAST REDO EVENT</div><div>${html}</div>`;
+  }
+
+  function endRecovery(){
+    SIM.buf.forEach((b,i)=>{ const v = SIM.recoveryPageLsn[i]; b.onDiskLsn = v; b.memLsn = v; b.dirty=false; });
+    SIM.lastCompletedRedo = SIM.lsn;
+    SIM.crashed = false;
+    log("OK", "end-of-recovery checkpoint written. database system is ready to accept connections.");
+    el("sc-run").disabled = false; el("sc-ckpt").disabled = false; el("sc-crash").disabled = false;
+    el("sc-step").disabled = true; el("sc-runall").disabled = true;
+    if (runallTimer){ clearInterval(runallTimer); runallTimer = null; }
+    if (SIM.running && !tickTimer) tickTimer = setInterval(tick, 260);
+    renderSim();
+  }
+
+  function reset(){
+    if (tickTimer){ clearInterval(tickTimer); tickTimer = null; }
+    if (runallTimer){ clearInterval(runallTimer); runallTimer = null; }
+    const ct = SIM ? SIM.completionTarget : 0.9, iv = SIM ? SIM.intervalTicks : 80;
+    SIM = freshState();
+    SIM.completionTarget = ct; SIM.intervalTicks = iv;
+    el("sc-run").disabled = false; el("sc-ckpt").disabled = false; el("sc-crash").disabled = false;
+    el("sc-step").disabled = true; el("sc-runall").disabled = true;
+    el("sc-run").textContent = "⏸ pause workload";
+    setInsp(`<span style="color:var(--dim)">crash the server, then step redo…</span>`);
+    logEl.innerHTML = "";
+    log("OK", "database system is ready to accept connections");
+    tickTimer = setInterval(tick, 260);
+    renderSim();
+  }
+
+  function drawIOChart(){
+    const cv = el("io-chart"), ctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0,0,W,H);
+    const hist = SIM.ioHistory;
+    if (!hist.length) return;
+    const max = Math.max(4, ...hist);
+    const bw = W / Math.max(hist.length, 40);
+    hist.forEach((v,i)=>{
+      const h = (v/max) * (H-8);
+      ctx.fillStyle = v > max*0.66 ? "#f25c54" : v > max*0.33 ? "#ff9f43" : "#60a5fa";
+      ctx.fillRect(i*bw, H-h-2, Math.max(1,bw-1), h);
+    });
+  }
+
+  function updateMeters(){
+    const clamp = (v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+    const io = Math.round(clamp((220 - SIM.intervalTicks) / 200 * 100, 6, 100));
+    const rec = Math.round(clamp(SIM.intervalTicks / 220 * 100, 6, 100));
+    el("m-io-v").textContent = io+"%";
+    const iof = el("m-io"); iof.style.width = io+"%"; iof.className = "m-fill" + (io>70?" hot":io>40?" warm":"");
+    el("m-rec-v").textContent = rec+"%";
+    const recf = el("m-rec"); recf.style.width = rec+"%"; recf.className = "m-fill" + (rec>70?" hot":rec>40?" warm":"");
+  }
+
+  function renderSim(){
+    el("sim-phase").textContent = SIM.crashed ? "CRASH RECOVERY" : SIM.ckpt.active ? "CHECKPOINTING" : "RUNNING";
+    el("sim-phase").style.color = SIM.crashed ? "var(--bad)" : SIM.ckpt.active ? "var(--warn)" : "var(--ok)";
+    el("sim-bufgrid").innerHTML = SIM.buf.map((b,i)=>{
+      let cls = "bufcell";
+      if (SIM.flash[i] && SIM.flash[i] !== "dirty-touch") cls += " " + SIM.flash[i];
+      else if (b.dirty) cls += " dirty";
+      return `<div class="${cls}" title="buf#${i}  mem=${b.memLsn}  disk=${b.onDiskLsn}"></div>`;
+    }).join("");
+    const stripSrc = SIM.crashed
+      ? SIM.walLog.slice(Math.max(0,SIM.redoIdx-6), SIM.redoIdx+6)
+      : SIM.walLog.slice(-14);
+    el("sim-walstrip").innerHTML = stripSrc.map(r=>{
+      let cls = "wal-rec";
+      if (SIM.crashed){
+        const pos = SIM.walLog.indexOf(r);
+        if (pos === SIM.redoIdx) cls += " cur";
+        else if (pos < SIM.redoIdx){
+          if (r.fpi) cls += " done-fpi";
+          else if (r.type==="CHECKPOINT") cls += "";
+          else {
+            // heuristic: we don't retain per-record verdicts, so just mark as processed
+            cls += " done-applied";
+          }
+        }
+      }
+      const lbl = r.type==="CHECKPOINT" ? "CKPT" : r.type.split("_")[0].slice(0,4);
+      return `<span class="${cls}">${lbl}#${r.lsn}${r.fpi?" 🖼":""}</span>`;
+    }).join("");
+    const shm = el("sim-shm-box");
+    shm.textContent = SIM.crashed
+      ? `shared memory — REBUILDING via REDO (from ${SIM.lastCompletedRedo}, step ${SIM.redoIdx}/${SIM.walLog.length})`
+      : `shared memory — REDO ${SIM.ckpt.active ? SIM.ckpt.redo : SIM.lastCompletedRedo} · last checkpoint LSN ${SIM.lastCompletedRedo}`;
+    el("cnt-writes").textContent = SIM.writes;
+    el("cnt-ckpt").textContent = SIM.ckptCount;
+    el("cnt-dirty").textContent = SIM.buf.filter(b=>b.dirty).length;
+    drawIOChart();
+  }
+
+  el("sc-run").onclick = ()=>{
+    if (SIM.crashed) return;
+    SIM.running = !SIM.running;
+    el("sc-run").textContent = SIM.running ? "⏸ pause workload" : "▶ resume workload";
+    if (SIM.running && !tickTimer) tickTimer = setInterval(tick, 260);
+    else if (!SIM.running && tickTimer){ clearInterval(tickTimer); tickTimer = null; }
+  };
+  el("sc-ckpt").onclick = ()=>{ if (!SIM.crashed && !SIM.ckpt.active){ startCheckpoint(); renderSim(); } };
+  el("sc-crash").onclick = crash;
+  el("sc-step").onclick = stepRedo;
+  el("sc-runall").onclick = ()=>{
+    if (runallTimer) return;
+    runallTimer = setInterval(()=>{ if (!SIM.crashed){ clearInterval(runallTimer); runallTimer=null; return; } stepRedo(); }, 180);
+  };
+  el("sc-reset").onclick = reset;
+  el("sim-ct").oninput = e=>{ SIM.completionTarget = (+e.target.value)/100; el("sim-ct-val").textContent = SIM.completionTarget.toFixed(2); };
+  el("sim-int").oninput = e=>{
+    SIM.intervalTicks = +e.target.value;
+    el("sim-int-val").textContent = SIM.intervalTicks <= 50 ? "frequent" : SIM.intervalTicks <= 130 ? "moderate" : "infrequent";
+    updateMeters();
+  };
+
+  log("OK", "database system is ready to accept connections");
+  log("HINT", "run the workload a while, then crash mid-checkpoint (blue cells) and step through redo.");
+  tickTimer = setInterval(tick, 260);
+  updateMeters();
+  renderSim();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-11"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-10.html"><span>←</span><span><span class="cn-lbl">PREV · CH 10</span><span class="cn-ttl">WAL: The Physics of Durability</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html" selected>CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">11 / 21</span></div><a class="cn-btn" href="pg-12.html"><span><span class="cn-lbl">NEXT · CH 12</span><span class="cn-ttl">VACUUM, Autovacuum & the Anatomy of Bloat</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

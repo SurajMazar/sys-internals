@@ -1,0 +1,242 @@
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   0b. REAL SHA-256 (FIPS 180-4) — shared by the shachain widget
+       and the simulator's HTLC hash-locks. Genuine computation,
+       no fake-looking hex.
+   ============================================================ */
+const SHA256 = (function(){
+  const K = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ]);
+  const H_INIT = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  function rotr(x,n){ return ((x>>>n)|(x<<(32-n)))>>>0; }
+  function hex8(w){ return (w>>>0).toString(16).padStart(8,"0"); }
+  function toBytes(strOrBytes){
+    if (strOrBytes instanceof Uint8Array) return strOrBytes;
+    return new TextEncoder().encode(String(strOrBytes));
+  }
+  function pad(bytes){
+    const bitLenHi = Math.floor(bytes.length / 0x20000000) >>> 0;
+    const bitLenLo = (bytes.length * 8) >>> 0;
+    let total = bytes.length + 1;
+    while (total % 64 !== 56) total++;
+    total += 8;
+    const out = new Uint8Array(total);
+    out.set(bytes, 0);
+    out[bytes.length] = 0x80;
+    const dv = new DataView(out.buffer);
+    dv.setUint32(total-8, bitLenHi, false);
+    dv.setUint32(total-4, bitLenLo, false);
+    return out;
+  }
+  function blockToWords(padded, blockIdx){
+    const off = blockIdx*64;
+    const dv = new DataView(padded.buffer, padded.byteOffset+off, 64);
+    const w = new Uint32Array(16);
+    for (let i=0;i<16;i++) w[i] = dv.getUint32(i*4, false);
+    return w;
+  }
+  function expand(w16){
+    const W = new Uint32Array(64);
+    W.set(w16, 0);
+    for (let t=16;t<64;t++){
+      const s0 = rotr(W[t-15],7) ^ rotr(W[t-15],18) ^ (W[t-15]>>>3);
+      const s1 = rotr(W[t-2],17) ^ rotr(W[t-2],19) ^ (W[t-2]>>>10);
+      W[t] = (W[t-16] + s0 + W[t-7] + s1) >>> 0;
+    }
+    return W;
+  }
+  function compress(H, W){
+    let a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+    for (let t=0;t<64;t++){
+      const S1 = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25);
+      const ch = (e & f) ^ (~e & g);
+      const T1 = (h + S1 + ch + K[t] + W[t]) >>> 0;
+      const S0 = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const T2 = (S0 + maj) >>> 0;
+      h=g; g=f; f=e; e=(d + T1) >>> 0;
+      d=c; c=b; b=a; a=(T1 + T2) >>> 0;
+    }
+    return new Uint32Array([
+      (H[0]+a)>>>0, (H[1]+b)>>>0, (H[2]+c)>>>0, (H[3]+d)>>>0,
+      (H[4]+e)>>>0, (H[5]+f)>>>0, (H[6]+g)>>>0, (H[7]+h)>>>0
+    ]);
+  }
+  function digestHex(input){
+    const padded = pad(toBytes(input));
+    let H = H_INIT.slice();
+    for (let bi=0; bi*64<padded.length; bi++) H = compress(H, expand(blockToWords(padded, bi)));
+    return Array.from(H).map(hex8).join("");
+  }
+  function u32ToBytes(H){
+    const out = new Uint8Array(32); const dv = new DataView(out.buffer);
+    for (let i=0;i<8;i++) dv.setUint32(i*4, H[i], false);
+    return out;
+  }
+  function digestBytes(bytes){
+    const padded = pad(bytes);
+    let H = H_INIT.slice();
+    for (let bi=0; bi*64<padded.length; bi++) H = compress(H, expand(blockToWords(padded, bi)));
+    return u32ToBytes(H);
+  }
+  function bytesToHex(bytes){ return Array.from(bytes).map(b=>b.toString(16).padStart(2,"0")).join(""); }
+  function randomBytes(n){ const b = new Uint8Array(n); crypto.getRandomValues(b); return b; }
+  return { toBytes, digestHex, digestBytes, bytesToHex, randomBytes };
+})();
+(function selfTest(){
+  const got = SHA256.digestHex("abc");
+  const want = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  if (got === want) console.log("%cSHA-256 self-test passed:", "color:#4ade80", got);
+  else console.error("SHA-256 self-test FAILED", got, "expected", want);
+})();
+
+/* ============================================================
+   0c. shachain generate_from_seed — REAL BOLT #3 Appendix D
+       algorithm, parameterized over bit-width so the pedagogical
+       10-bit slider (§8) and the simulator's full 48-bit channel
+       (§15) share one implementation.
+   ============================================================ */
+function generateFromSeed(seedBytes, index, bits, trace){
+  let P = seedBytes.slice();
+  const steps = trace ? [] : null;
+  for (let b = bits-1; b >= 0; b--){
+    if ((index & (1 << b)) !== 0){
+      const byteIdx = 31 - Math.floor(b/8);
+      const bitIdx = b % 8;
+      const before = SHA256.bytesToHex(P);
+      P[byteIdx] ^= (1 << bitIdx);
+      const flipped = SHA256.bytesToHex(P);
+      P = SHA256.digestBytes(P);
+      if (trace) steps.push({ bit:b, before, flipped, after: SHA256.bytesToHex(P) });
+    }
+  }
+  return { result: P, steps };
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2013", l:"nSequence hack", d:"<b>Satoshi's original sketch, revived by Mike Hearn.</b> A refund transaction whose nSequence field is meant to let later, more-generous versions replace earlier ones in miners' mempools before confirmation. Genuinely a payment channel — one-directional, hard-expiring, and dependent on a mempool convention no consensus rule enforces. §3–4 of this chapter derive exactly why it wasn't enough." },
+  { yr:"2015 (Feb)", l:"Poon–Dryja draft", d:"<b>“The Bitcoin Lightning Network: Scalable Off-chain Instant Payments.”</b> Joseph Poon and Thaddeus Dryja circulate the paper that names the network and introduces the two ideas that survive to production: revocable commitment transactions (penalty-based, not replacement-based) and hash-locked multi-hop routing. The malleability problem (chapter 5) is already flagged as a blocker to building real software against it." },
+  { yr:"2015", l:"Duplex channels", d:"<b>Decker & Wattenhofer, independently, publish duplex micropayment channels</b> using an invalidation-tree construction rather than per-state penalties — a different mechanism reaching a similar goal, and a reminder that the penalty/revocation design this chapter teaches was a choice among live alternatives, not the only workable one." },
+  { yr:"2016", l:"BOLT specs begin", d:"<b>The lightning-rfc repository opens.</b> Multiple teams — building what become LND, Core Lightning (then c-lightning), and Eclair — agree to converge on one interoperable wire protocol, the BOLTs (Basis Of Lightning Technology), rather than ship incompatible private networks. This is why a channel between two different implementations works at all." },
+  { yr:"2017 (Aug)", l:"SegWit activates", d:"<b>BIP141 locks in.</b> Chapter 12's fix for transaction malleability removes the two-year blocker: commitment transactions can now safely reference a not-yet-confirmed funding output's witness-restructured txid without it changing underneath them. Lightning's first mainnet channels open within months." },
+  { yr:"2018", l:"Mainnet, and the fee-spike lesson", d:"<b>Early mainnet adoption</b> coincides with a period of extreme on-chain fee volatility. Some channels' fixed-at-signing commitment fees prove too low to confirm a force-close promptly — the direct cause of the anchor-outputs redesign covered in §11." },
+  { yr:"2019 (Jan)", l:"The Lightning Torch", d:"<b>A single payment, passed hand to hand</b> across hundreds of participants worldwide over routed HTLCs, growing slightly each hop — a publicity stunt, but a real one: every hop was a genuine multi-hop hash-locked payment across independently operated nodes, demonstrating the routing layer worked at real, if modest, scale." },
+  { yr:"2020", l:"Anchor outputs", d:"<b>BOLT #3 updated</b> to add small, always-spendable anchor outputs to every commitment transaction, decoupling the fee locked in at signing time from the fee actually needed to confirm during a dispute — the direct fix for the 2018 lesson, detailed in §11." },
+  { yr:"2020", l:"Flood & Loot published", d:"<b>Harris & Zohar's academic disclosure</b> shows mempool congestion can be weaponized against HTLC timeout deadlines — an early, precise formal statement of the pinning family of attacks chapter 11 covers generally." },
+  { yr:"2021 (Nov)", l:"Taproot activates", d:"<b>BIP340–342 lock in.</b> Schnorr signatures and MuSig2 key aggregation (chapter 13) open the door to PTLCs — point-time-locked contracts that could eventually replace hash-locked HTLCs and close the cross-hop correlation leak §8 describes. As of this writing, PTLC support remains experimental." },
+  { yr:"2022–23", l:"Replacement cycling disclosed", d:"<b>Antoine Riard's disclosure</b> shows RBF's replacement rules can be exploited to repeatedly evict a victim's time-sensitive claim transaction from the mempool — directly informing the bitcoin-dev mailing list's full-RBF and mempool-pinning debates. Detailed in §11." },
+  { yr:"ongoing", l:"eltoo, splicing, jamming", d:"<b>Unfinished business.</b> BIP118 (SIGHASH_ANYPREVOUT / “eltoo”) proposes replacing penalty-based revocation with a simpler always-latest-state design — not yet activated on mainnet. Splicing (resizing a channel without closing it) has shipped in major implementations. Channel jamming remains an open, unsolved griefing vector. This chapter teaches the deployed design, not a finished one." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===4 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[4].d;
+
+/* ============================================================
+   2. DECK: symmetric commitments and the cheat (§5)
+   ============================================================ */
+(function(){
+  const bars = (a,b,note)=>`<div class="cbars"><div class="cbar-row"><span class="cb-name">ALICE</span>
+    <div class="cbar-track"><div class="cbar-fill local" style="width:${a*100}%">${a.toFixed(2)}</div></div></div>
+    <div class="cbar-row"><span class="cb-name">BOB</span>
+    <div class="cbar-track"><div class="cbar-fill remote" style="width:${b*100}%">${b.toFixed(2)}</div></div></div></div>
+    ${note?`<p style="text-align:center;color:var(--dim);font-family:var(--mono);font-size:11px;margin-top:10px">${note}</p>`:""}`;
+  const steps = [
+    { stage: bars(0.5,0.5,"C0 — funding confirms, both sign the initial split"),
+      cap: "<b>Funding confirms.</b> Alice and Bob co-sign commitment C0: 0.5/0.5. Both hold an identical, fully valid copy. Either could broadcast it right now and it would settle exactly this split — which is fine, because it's still the true current state." },
+    { stage: bars(0.4,0.6,"C1 — Alice pays Bob 0.1; both sign; C0 is 'discarded'"),
+      cap: "<b>First payment.</b> Alice sends Bob 10,000,000 sats worth off-chain. Both sign C1: 0.4/0.6. They agree, by convention only, that C0 is void. Nothing on-chain reflects that agreement — C0 is still a perfectly valid, fully-signed transaction sitting on both parties' disks." },
+    { stage: bars(0.1,0.9,"C2 — many payments later: 0.1/0.9"),
+      cap: "<b>Months of payments later.</b> The channel now sits at 0.1/0.9. C0 (0.5/0.5) and C1 (0.4/0.6) are both still, individually, valid signed transactions spending the same funding output. Every one of them remains broadcastable forever — signatures don't expire." },
+    { stage: bars(0.5,0.5,"⚠ Alice broadcasts C0 — chain sees a valid 0.5/0.5 split") + `<p style="text-align:center;color:var(--bad);font-family:var(--mono);font-size:12px;margin-top:6px">the chain cannot tell C0 apart from a legitimate current state</p>`,
+      cap: "<b>The exploit.</b> Alice broadcasts C0. Bitcoin's consensus rules check exactly one thing: are both multisig signatures valid for this input? Yes — they were valid the day it was signed and remain valid forever. The transaction confirms. Alice just recovered 0.5 BTC she has no remaining economic claim to, and Bob's only recourse is whatever the two of them agreed to off-chain, which is nothing a court or a script can enforce." }
+  ];
+  stepper("deckSymmetric", steps);
+})();
+
+/* ============================================================
+   3. DECK: 3-hop HTLC payment (§8c)
+   ============================================================ */
+(function(){
+  const hop = (name,state,sub)=>`<div class="hopnode ${state}">${name}<span class="hn-t">${sub}</span></div>`;
+  const row = (...parts)=>`<div class="hoprow">${parts.join('<span class="hoparrow">→</span>')}</div>`;
+  const steps = [
+    { stage: `<p style="text-align:center;margin-bottom:14px">Carol wants to be paid. She has channels with no one Alice can reach directly except through Bob.</p>` + row(hop("ALICE","", "sender"), hop("BOB","","forwarder"), hop("CAROL","","recipient")),
+      cap: "<b>Setup.</b> Alice → Bob → Carol, one channel per edge, no channel Alice–Carol. Carol generates a random 32-byte preimage <code>R</code> and publishes only <code>H = SHA256(R)</code> in a BOLT11 invoice. Nobody but Carol knows R yet." },
+    { stage: row(hop("ALICE","locked","H, timeout=T+144"), hop("BOB","","waiting"), hop("CAROL","","waiting")),
+      cap: "<b>Hop 1: Alice offers Bob an HTLC.</b> An output on Alice–Bob's updated commitment pays Bob if he reveals a preimage of H within 144 blocks, else it reverts to Alice. Bob has not forwarded anything yet — he has only received a conditional promise." },
+    { stage: row(hop("ALICE","locked","H, timeout=T+144"), hop("BOB","locked","H, timeout=T+100"), hop("CAROL","","waiting")),
+      cap: "<b>Hop 2: Bob offers Carol the same hash, a shorter timeout.</b> 100 blocks, not 144 — the cltv_expiry_delta Bob subtracts before forwarding, so he always has a safety margin to claim from Alice after Carol claims from him." },
+    { stage: row(hop("ALICE","locked","H, timeout=T+144"), hop("BOB","locked","H, timeout=T+100"), hop("CAROL","settled","reveals R")),
+      cap: "<b>Carol reveals R.</b> She already knows it — she generated it. Revealing it to claim Bob's HTLC costs her nothing extra; it's the same action as accepting payment." },
+    { stage: row(hop("ALICE","locked","H, timeout=T+144"), hop("BOB","settled","claims with R"), hop("CAROL","settled","paid")),
+      cap: "<b>Bob uses the same R to claim from Alice.</b> He watched Carol's commitment update, extracted R, and immediately uses it against Alice's HTLC — well inside his 44-block margin. Bob never needed to be trusted with anything except correct forwarding: he could not have claimed from Alice without first paying Carol, because he had no other way to learn R." },
+    { stage: row(hop("ALICE","settled","paid out"), hop("BOB","settled","fee earned"), hop("CAROL","settled","received")),
+      cap: "<b>Final state.</b> Alice's commitment with Bob now reflects the payment plus Bob's routing fee; Bob's commitment with Carol reflects the payment minus his fee. No transaction hit the chain. If Bob had gone offline before claiming from Alice, he'd simply lose his forwarding fee at worst — Alice's HTLC would time out at T+144 and revert to her, since Bob never revealed anything to claim it." }
+  ];
+  stepper("deckHtlc", steps);
+})();

@@ -1,0 +1,154 @@
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Scaling payments, five ways: honest comparison</h2>
+  <p>Lightning is one point in a design space every serious scaling proposal occupies. None of these dominate the
+  others — each trades away a property Bitcoin's base layer guarantees, in exchange for throughput or cost:</p>
+  <table class="cmp">
+    <tr><th>APPROACH</th><th>WHAT IT BUYS</th><th>WHAT IT COSTS</th><th>TRUST MODEL</th></tr>
+    <tr><td>On-chain (base layer)</td>
+      <td><span class="pill g">no counterparty, no liveness requirement</span></td>
+      <td><span class="pill b">~7 tx/s ceiling</span> <span class="pill b">10+ min settlement</span></td>
+      <td>Trustless — full validation</td></tr>
+    <tr><td>Lightning channels</td>
+      <td><span class="pill g">instant, high-volume, low-fee payments</span> <span class="pill g">O(1) on-chain footprint per relationship</span></td>
+      <td><span class="pill b">capital locked per channel</span> <span class="pill b">must stay online or delegate (watchtower)</span> <span class="pill y">routing can fail silently</span></td>
+      <td>Trust-minimized — enforced by chain, needs liveness</td></tr>
+    <tr><td>Custodial exchange balances</td>
+      <td><span class="pill g">unlimited internal throughput, zero capital lockup for the user</span></td>
+      <td><span class="pill b">full counterparty trust</span> <span class="pill b">exchange can freeze, lose, or steal funds</span></td>
+      <td>Fully trusted third party</td></tr>
+    <tr><td>Optimistic / ZK rollups (chapter 12 of the Blockchain Fundamentals course)</td>
+      <td><span class="pill g">amortizes many transfers into one settlement</span> <span class="pill g">no per-pair capital lockup</span></td>
+      <td><span class="pill y">withdrawal delay (optimistic) or proving cost (ZK)</span> <span class="pill b">not native to Bitcoin's UTXO model without extra tooling</span></td>
+      <td>Trust-minimized via fraud proofs or validity proofs</td></tr>
+    <tr><td>Statechains</td>
+      <td><span class="pill g">transfers coin ownership without an on-chain transaction</span></td>
+      <td><span class="pill b">relies on a semi-trusted, non-custodial-in-theory operator not colluding with a past owner</span></td>
+      <td>Trust-minimized, but weaker than channel penalties</td></tr>
+  </table>
+  <p>Read the table as confirmation of chapter 12's trilemma, applied one layer up: Lightning buys throughput and
+  speed by requiring capital lockup and liveness — it does not buy anything for free. The honest pitch for
+  Lightning specifically is narrower than "solves Bitcoin's scaling": it is the best-understood mechanism for
+  <i>repeated, bidirectional, small-value transfers between parties who can plan ahead to open a channel</i>. It is
+  a poor fit for a single infrequent large payment to a stranger with no existing route — exactly the case where
+  paying on-chain, once, is still the simpler and often cheaper answer.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE & SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">What you can predict before running a node</h2>
+  <p>Cost and complexity, derived rather than benchmarked:</p>
+  <ul class="plain">
+    <li><b>Per-hop cryptographic cost:</b> one ECDH + two ChaCha20 stream operations (encrypt payload, generate
+      padding) per onion layer — negligible versus network latency, which is why Lightning payments settle in
+      low hundreds of milliseconds across several hops rather than the block-interval timescale of on-chain
+      confirmation.</li>
+    <li><b>Routing search cost:</b> a sender runs shortest-path search (Dijkstra or a variant) over the locally
+      cached channel graph — tens of thousands of channels network-wide as of the mid-2020s, so a full-graph
+      Dijkstra run is milliseconds on ordinary hardware. The expensive part is not computing a route; it's that
+      the computed route might not actually have the liquidity to carry the payment (below).</li>
+    <li><b>Force-close cost:</b> a unilateral close publishes the broadcaster's current commitment transaction plus,
+      for every in-flight HTLC, a separate claim transaction — one on-chain transaction per pending HTLC, at
+      whatever the prevailing feerate is <i>at the moment of the dispute</i>, which is usually the worst possible
+      moment (§11 covers exactly this failure).</li>
+    <li><b>Penalty economics:</b> broadcasting a revoked state is rational only if the expected gain (the balance
+      difference versus the current state) exceeds the near-certain loss of the entire channel to a watching
+      counterparty, plus the fee to claim it. For any channel where the honest party (or their watchtower) checks
+      the chain within the <code>to_self_delay</code> window, expected value of cheating is strongly negative —
+      which is the point.</li>
+    <li><b>Channel reserve:</b> BOLT #2 requires each party to keep a minimum reserve (commonly ~1% of channel
+      capacity) that can never be moved to the other side. This isn't arbitrary — it guarantees both parties always
+      have <i>some</i> balance to justify a force-close's fee and keeps at least one output above the dust limit
+      chapter 6 defined, so a commitment transaction is never left unable to pay for its own eventual settlement.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Base-layer ceiling vs. off-chain volume — why the layer exists</span><span class="w-sub">DRAG + WATCH</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>active channels (millions)</label><input type="range" id="perf-chans" min="0" max="50" value="8" step="1"><span class="val" id="perf-chans-val">8 M</span></div>
+      <div class="slider-row"><label>avg payments / channel / day</label><input type="range" id="perf-txday" min="1" max="200" value="20" step="1"><span class="val" id="perf-txday-val">20</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--bad)">┅</span> on-chain ceiling (~7 tx/s, flat by construction)</span>
+        <span><span style="color:var(--pg)">━</span> effective off-chain payment rate</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">ROUTING FAILURE: THE DOMINANT REAL-WORLD UX PROBLEM</div>
+    <p>The network deliberately does not gossip each channel's <i>directional</i> balance — only its total
+    capacity, and its fee/CLTV policy, are announced (BOLT #7 <code>channel_update</code>). Advertising live
+    balances would leak exactly the transaction-graph information channels exist to hide, and balances change
+    every payment, which would flood the gossip network with updates. The direct consequence: a sender can compute
+    a route that is well-formed and cheap on paper, attempt it, and have it fail at hop 3 of 5 because that
+    specific channel happens to be nearly drained in the needed direction — information no one could have told
+    them in advance. Real implementations compensate with pathfinding heuristics (probabilistic liquidity models
+    updated from past successes/failures), multi-part payments (splitting one payment across several smaller HTLCs
+    over different routes, BOLT #4's MPP), and retry-on-failure — but "will this route work" remains, structurally,
+    a question you answer by trying, not by asking.</p>
+  </div>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Three failures that changed how channels are built and operated</h2>
+
+  <h3>Incident 1: fixed-fee commitments and the stuck force-close (→ Anchor Outputs, 2020)</h3>
+  <p>Original commitment transactions had their fee baked in and signed at commitment-update time, based on
+  whatever feerate looked reasonable then. Bitcoin's fee market (chapter 11) is not stable minute to minute; during
+  the fee spikes of 2017–2018, some channels' pre-signed commitment transactions carried feerates that were
+  reasonable when signed and far too low by the time a force-close actually needed to confirm — and because the
+  transaction was already fully signed by both parties, there was no way to bump its fee without a fresh signature
+  from a counterparty who, in a dispute, might be exactly the party with no incentive to cooperate. <b>Root cause:</b>
+  coupling fee selection to signing time in a construction whose entire premise is that broadcast might happen
+  much later, adversarially, when neither party can be assumed to cooperate. <b>Fix:</b> BOLT #3's anchor outputs
+  update added two small, always-present "anchor" outputs to every commitment transaction, spendable by anyone
+  after a delay, specifically so either party can attach a child transaction and use Child-Pays-For-Parent (chapter
+  11) to bump the commitment's effective feerate at broadcast time, unilaterally, using their own separate funds —
+  decoupling "the fee that was fair when we signed" from "the fee needed to actually confirm."</p>
+
+  <h3>Incident 2: Flood & Loot (Harris & Zohar, 2020)</h3>
+  <p>Academic disclosure, not a live theft, but a precise demonstration of a real structural weakness. The paper
+  showed that an attacker controlling both ends of several routed HTLCs could deliberately let many timeouts
+  converge on the same block height, then flood the mempool with their own competing, low-value transactions right
+  before that height — congesting it enough that honest nodes' timeout-claim transactions (needed to reclaim funds
+  from expiring HTLCs) miss their deadline. Once a timeout is missed, the attacker's own preimage-based claim on
+  the other side of the same HTLC succeeds instead, so the attacker recovers funds that were never economically
+  theirs. <b>Root cause:</b> a fixed, public block-height deadline creates a predictable congestion target, and
+  Bitcoin's fee-priority mempool means congestion is a purchasable resource. <b>Mitigation, and its limit:</b>
+  wider safety margins (larger <code>cltv_expiry_delta</code>) and fee-bumping via anchor outputs both help, but
+  neither eliminates the underlying tension — chapter 11's pinning discussion is the general form of this same
+  problem, and no complete fix exists that doesn't cost either capital efficiency (wider margins tie up funds
+  longer) or added on-chain fee spend.</p>
+
+  <h3>Incident 3: the replacement cycling attack (Antoine Riard, disclosed 2022–2023)</h3>
+  <p>A more targeted descendant of the same family. Bitcoin Core's replace-by-fee rules (BIP125, chapter 11) let a
+  transaction be replaced by a conflicting one paying a higher fee. Riard's disclosure showed that an attacker
+  could construct their <i>own</i> low-value transaction that conflicts with (double-spends an input needed by) a
+  victim's justice or HTLC-claim transaction, then repeatedly replace their own conflicting transaction with a
+  slightly different version of itself — a "replacement cycle" — each cycle evicting the victim's pending
+  transaction from mempools it had just re-entered, without the attacker's transaction ever actually confirming.
+  Cycled for long enough, this pushes the victim's confirmation past their HTLC timeout, letting the attacker claim
+  funds on the other side that should have reverted. <b>Root cause:</b> RBF's replacement rules were designed
+  around single, independent transactions; they did not anticipate an adversary using the ability to replace
+  <i>their own</i> transaction, repeatedly and cheaply, purely to deny mempool space to someone else's
+  time-sensitive transaction. This directly informed the 2023 mempool-policy discussions on the bitcoin-dev mailing
+  list about full-RBF and pinning more broadly — an area chapter 11 flags as still actively evolving.</p>
+
+  <div class="callout warn">
+    <div class="co-t">STILL UNRESOLVED: CHANNEL JAMMING</div>
+    <p>As of this writing, channel jamming has no complete deployed fix. An attacker who controls both ends of a
+    route (or just wants to grief) can send HTLCs that they never intend to settle, holding routing nodes' liquidity
+    locked for up to the maximum timeout (which can be on the order of two weeks for a long route) at negligible
+    cost to themselves — a denial-of-service against routing capacity rather than against funds. Proposed fixes
+    (unconditional forwarding fees charged regardless of success, reputation/stake-based admission, HODL-invoice
+    restrictions) each trade away something — usually fee simplicity or permissionless routing — and none has
+    reached the kind of universal deployment BOLT-level standardization implies. This is a legitimately open
+    problem, not a solved one being explained after the fact.</p>
+  </div>
+</section>

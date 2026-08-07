@@ -1,0 +1,2101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-10 · WAL: The Physics of Durability — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* process tree in sim */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+  .strunk{width:2px;height:14px;background:var(--border-hi);margin:0 auto}
+  .saux{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0 10px}
+  .snode.aux{font-size:9.5px;padding:5px 8px;color:var(--muted);cursor:default}
+  .snode.aux.off{opacity:.25}
+  .snode.aux.busy{border-color:var(--warn);color:var(--warn)}
+  .sbe-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:8px 0 6px;text-align:center}
+  .sbe{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;min-height:64px;align-content:flex-start}
+  .snode.be{animation:framein .25s}
+  .snode.be.idle{color:var(--muted)}
+  .snode.be.active{border-color:var(--ok);color:var(--ok)}
+  .snode.be.long{border-color:var(--warn);color:var(--warn)}
+  .snode.be.startup{border-color:var(--purple);color:var(--purple)}
+  .snode.be.crash{border-color:var(--bad);background:rgba(242,92,84,.15);color:var(--bad);animation:shake .35s}
+  .snode.be.sigq{border-color:var(--warn);opacity:.5}
+  .snode.be.sel{box-shadow:0 0 0 2px var(--pg)}
+  .sim-shm{margin:12px auto 0;max-width:430px}
+  .sim-shm .shm{text-align:center}
+  .waitq{font-family:var(--mono);font-size:10px;color:var(--warn);text-align:center;margin-top:8px;min-height:14px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- PG-10 additions: WAL widgets ---------- */
+  .wal-pipeline{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:700px){.wal-pipeline{grid-template-columns:1fr}}
+  .wal-col{border:1px solid var(--border);border-radius:12px;padding:10px;min-height:190px;background:var(--bg-2);display:flex;flex-direction:column}
+  .wal-col .wc-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px;text-align:center}
+  .wal-col .wc-body{flex:1;overflow-y:auto;max-height:230px}
+  .walrec{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:8px;padding:5px 9px;margin-bottom:5px;
+    font-family:var(--mono);font-size:10.3px;animation:framein .3s ease both;position:relative;cursor:pointer;color:#c6cddb}
+  .walrec .wr-lsn{color:var(--dim);font-size:9px;display:block;margin-top:1px}
+  .walrec.commit{border-color:var(--ok)}
+  .walrec.heap{border-color:var(--pg)}
+  .walrec.btree{border-color:var(--purple)}
+  .walrec.fpw{box-shadow:inset 0 0 0 1px var(--warn)}
+  .walrec.lost{opacity:.35;text-decoration:line-through;border-color:var(--bad)}
+  .walrec.sel{box-shadow:0 0 0 2px var(--pg)}
+  .txn-row{display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;
+    margin-bottom:5px;font-family:var(--mono);font-size:11px;color:#c6cddb}
+  .txn-row .tstatus{margin-left:auto;font-size:9.5px;border-radius:6px;padding:1.5px 7px;flex:0 0 auto}
+  .txn-row .tstatus.pend{color:var(--muted);background:var(--panel-2)}
+  .txn-row .tstatus.buf{color:var(--warn);background:rgba(255,159,67,.1)}
+  .txn-row .tstatus.flush{color:var(--ok);background:rgba(74,222,128,.1)}
+  .txn-row .tstatus.lost{color:var(--bad);background:rgba(242,92,84,.1)}
+  .txn-row .tstatus.ghost{color:var(--bad);background:rgba(242,92,84,.18);font-weight:700}
+  .pcord{width:100%;padding:12px;font-size:14px;font-weight:700;margin-top:10px}
+  .lsn-out{font-family:var(--mono);font-size:12.5px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:10px;padding:12px 14px;line-height:1.9;color:#c6cddb;margin-top:10px}
+  .lsn-out b{color:var(--pg)}
+  .lsn-out .seg{color:var(--warn)}
+  .bytebar{display:flex;height:44px;border-radius:9px;overflow:hidden;border:1px solid var(--border-hi);margin:12px 0 6px}
+  .bytebar .bseg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;
+    color:#04121f;font-weight:700;overflow:hidden;white-space:nowrap;min-width:2px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 10 / 21</b> · WAL &amp; DURABILITY</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Log the Intent</a>
+  <a href="#s6"><span class="n">06</span>The Bill: WAL-Before-Data</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance &amp; fsync Physics</a>
+  <a href="#s11"><span class="n">11</span>Production Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 10</div>
+  <h1>WAL: The Physics<br><span class="grad">of Durability</span></h1>
+  <p class="lead">Every acknowledged commit is a promise that a specific set of bytes will exist tomorrow, even if
+  the machine loses power in the next microsecond. This chapter derives write-ahead logging from that promise alone —
+  why you cannot fsync data pages on every commit, why an append-only log flushed once gives you both speed and
+  durability, and exactly which bytes PostgreSQL writes, in which order, to keep that promise for four decades of
+  workloads.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Decode a real <code>pg_wal</code> segment filename into a byte offset by hand.</div>
+    <div class="obj"><b>You will understand</b>Why a dirty page can sit in the buffer pool for hours and still be perfectly durable.</div>
+    <div class="obj"><b>You will predict</b>Exactly which transactions a crash destroys, for every <code>synchronous_commit</code> level.</div>
+    <div class="obj"><b>You will simulate</b>Pulling the power cord mid-flush and watching acknowledged commits vanish — or not.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A commit is a promise the disk must keep after the power dies</h2>
+  <p class="lead">Durability — the <b>D</b> in ACID — is the least forgiving guarantee a database makes. It does not
+  say "we will probably keep your data." It says: once this backend has told the client <code>COMMIT</code>
+  succeeded, the effects of that transaction survive <i>any</i> subsequent failure — a killed process, a kernel
+  panic, a power cut mid-instruction, a whole rack losing power. There is no partial credit. A database that loses
+  one acknowledged commit in a billion has, for that one transaction, failed at the only job a database has.</p>
+  <p>Now confront the physical shape of the problem. A transaction that updates a handful of rows can dirty pages
+  belonging to the table's heap, one or more B-tree indexes, and the visibility map — pages that are <b>scattered
+  at effectively random byte offsets</b> across gigabytes of files, because rows and index entries for a single
+  transaction have no reason to be physically adjacent. Chapter 9 explained why those dirty pages live in a shared
+  buffer pool and get written back to disk on their own schedule. The naive reading of the durability requirement —
+  <i>force every dirty page to disk before acknowledging the commit</i> — collides head-on with that buffer pool
+  design, and with the physical reality of storage:</p>
+  <ul class="plain">
+    <li><b>Scattered writes are the slowest access pattern any storage device has.</b> A spinning disk pays a seek plus
+      rotational latency per random write; even flash, which has no seek, pays firmware and protocol overhead per
+      synchronous operation that a large sequential write amortizes away.</li>
+    <li><b>An 8&nbsp;KB PostgreSQL page is not an atomic unit of storage.</b> The hardware guarantees atomicity only at
+      the sector level — traditionally 512&nbsp;bytes, now often 4&nbsp;KB. A crash mid-write to a data page can leave a
+      <span class="term" data-def="A page where some of its sectors were physically written with the new content and others still hold the old content — internally inconsistent, and not detectable as 'wrong' without an independent record of what it should contain.">torn page</span>:
+      part new content, part old, silently corrupt. Forcing the write harder doesn't fix this — you need a way to
+      detect and repair it after the fact.</li>
+    <li><b>Commit latency must stay near-constant regardless of how many pages a transaction touched</b>, or every
+      multi-row UPDATE becomes proportionally slower to commit — an unacceptable coupling between logical work done
+      and physical I/O pattern.</li>
+  </ul>
+  <p>So the real requirement is sharper than "write the data before you ack": it is <b>durably record enough
+  information to reconstruct the change, cheaply enough that every commit can afford it, in a way that lets the
+  buffer pool keep writing dirty pages back whenever it wants.</b> That requirement, taken seriously, is what
+  produces the write-ahead log.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT CHAPTERS</div>
+    <p>Everything from here to chapter 19 stands on this one log. Checkpoints (chapter 11) exist to bound how much
+    of it must be replayed after a crash. Streaming replication and logical decoding (chapters 18–19) are, quite
+    literally, processes that read this same byte stream and ship it elsewhere. Point-in-time recovery is "replay
+    the log up to some LSN instead of all of it." If you understand the 24 bytes of an <code>XLogRecord</code>
+    header, you understand the substrate every later chapter builds on.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">1978–2001: the recovery algorithm PostgreSQL borrowed, and the year it finally arrived</h2>
+  <p>Write-ahead logging was not invented for PostgreSQL, and PostgreSQL did not have it from day one. The idea
+  traces to IBM's System R in the late 1970s, was formalized into a complete algorithm — <b>ARIES</b> — by C. Mohan
+  and colleagues in 1992, and did not land in PostgreSQL until version 7.1 in 2001, more than a decade after the
+  POSTGRES project began (chapter 1). Click through the events; each one explains a design choice you still use.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — how the log got here</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY "PHYSIOLOGICAL" LOGGING?</div>
+    <p>ARIES coined a deliberately odd word to name its middle path. <b>Physical</b> logging records raw bytes
+    changed on a page (simple to redo, but a single-row insert near the front of a page can force logging the
+    whole shifted tail). <b>Logical</b> logging records the SQL-level intent ("insert this row") — compact, but
+    replaying it requires re-deriving physical locations, which is unsafe once concurrent structural changes (a
+    B-tree page split) are possible. <b>Physiological</b> logging — what PostgreSQL's <code>XLogRecord</code>
+    actually contains — names a page plus an operation relative to that page ("insert this tuple at this offset on
+    this page"), giving small records like logical logging with the redo-safety of physical logging. You'll see
+    this exact tradeoff again when chapter 14 covers B-tree page splits.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: fsync every dirty page, right at commit</h2>
+  <p>Derive it honestly, the way an engineer would in 1978 before ARIES existed. If durability means "the changed
+  pages must survive a crash," the most direct reading is: <b>before acknowledging COMMIT, force every page this
+  transaction dirtied to stable storage.</b></p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>naive_commit.c — the strawman, annotated</span></div>
+    <pre><span class="k">void</span>
+<span class="f">naive_commit</span>(Transaction *xact)
+{
+    <span class="k">foreach</span> (page <span class="k">in</span> xact-&gt;dirtied_pages)
+    {
+        <span class="c">/* one random-offset write into a possibly multi-GB file */</span>
+        <span class="f">pwrite</span>(page-&gt;fd, page-&gt;buf, BLCKSZ, page-&gt;file_offset);
+
+        <span class="c">/* one round trip to the device, waiting for the platter/NAND
+         * to confirm the bytes are actually durable — not just cached  */</span>
+        <span class="f">fsync</span>(page-&gt;fd);
+    }
+    <span class="f">ack_client</span>();      <span class="c">/* only now is COMMIT allowed to return */</span>
+}</pre>
+  </div>
+
+  <p>This is not a strawman built to be knocked down for sport — it is exactly what you'd ship if asked to make a
+  toy database durable this afternoon, and it is <i>correct</i>: every acknowledged commit really is on disk when
+  the client hears about it. Watch it fail under a completely ordinary workload: a stream of small OLTP updates,
+  each touching a handful of scattered pages across a 20&nbsp;GB table and its indexes.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">fsync-per-commit under load</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Random I/O has a ceiling, and torn pages don't care how careful you were</h2>
+  <p>Two independent failures, and only one of them is about speed.</p>
+  <h3>Failure 1: the commit-rate ceiling is a hardware constant</h3>
+  <p>A 7200&nbsp;RPM disk has an average rotational latency of ~4.2&nbsp;ms plus a seek of several milliseconds — call
+  it <b>~8–10&nbsp;ms per random write</b>, a physical constant of the spinning platter, not something SQL tuning
+  touches. If an average transaction dirties even 3 scattered pages, naive per-commit fsync costs ~24–30&nbsp;ms of
+  pure device latency <i>serialized into the commit path</i> — a hard ceiling around <b>35–40 commits/sec</b> on
+  that one disk, regardless of CPU, regardless of how simple the SQL is. NVMe flash removes the seek, but it does
+  not remove the fundamental shape of the problem: N scattered pages still means N separate durability round trips
+  unless something batches them, and a busy server touches thousands of distinct pages per second across a working
+  set far larger than any write cache.</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>By Little's Law, throughput is capped near <b>1 / (pages_per_txn × device_latency)</b> when every commit
+    pays its own device round trips. At 3 pages × 9&nbsp;ms ≈ 27&nbsp;ms/commit, one disk caps out near <b>37
+    commits/sec</b> — a number that has nothing to do with query complexity and everything to do with the scatter
+    pattern. Worse: this cost <i>scales with transaction size</i>, so a bulk-loading transaction that touches 500
+    pages would need 500 fsyncs before it may return — commit latency proportional to work done is precisely the
+    coupling §1 said we must avoid.</p>
+  </div>
+  <h3>Failure 2: forcing the write doesn't make it atomic</h3>
+  <p>Even granting infinite I/O budget, <code>fsync()</code> guarantees the bytes reach stable storage — it says
+  nothing about <i>whether the write completed as a single, all-or-nothing operation</i>. Storage hardware commits
+  writes atomically only at the sector granularity (512&nbsp;B classically, 4&nbsp;KB on Advanced-Format and most modern
+  SSDs). PostgreSQL's page is 8&nbsp;KB — <b>two to sixteen sectors</b>. A crash mid-write can leave a page with some
+  sectors holding new bytes and others holding old bytes: a <span class="term" data-def="A page whose sectors are a mix of pre- and post-crash content — internally inconsistent in a way no checksum computed from the whole page can even reliably detect as 'this specific byte range is wrong,' only that something is wrong.">torn page</span>.
+  Naive fsync-per-commit has no answer to this at all — it has no independent record of what the page <i>should</i>
+  contain, so there is nothing to repair it with. Any real solution needs both a way to avoid paying full I/O cost
+  per commit <b>and</b> a way to reconstruct a torn page after the fact. One mechanism can solve both.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Don't write the data — log the intent</h2>
+  <p>Step back to the actual requirement: durably record enough to reconstruct a change, cheaply, while leaving the
+  buffer pool free to write dirty pages back on its own schedule. Three shapes were on the table historically.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Three candidates, examined</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: ONE SEQUENTIAL APPEND REPLACES N RANDOM WRITES</div>
+    <p>A write-ahead log turns "durably persist this transaction" into "append a few dozen to a few hundred bytes
+    to the end of a file you're already sequentially writing, then fsync that one file." Sequential appends are the
+    single fastest access pattern any storage device has — no seek, and even on SSDs, a large aligned append plays
+    to every optimization the firmware has. Because the log — not the data page — is what's forced to disk at
+    commit, the buffer pool can write dirty pages back <b>lazily, out of order, batched, whenever it wants</b>: this
+    is ARIES's <b>steal</b> (dirty pages may reach disk before commit) and <b>no-force</b> (committed pages need not
+    reach disk at commit) policy pair, and it is the entire reason chapter 9's background writer and checkpointer
+    are allowed to exist as lazy, best-effort processes instead of commit-path participants.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The bill: one invariant you must never violate, forever</h2>
+  <p>Logging the intent buys speed, but it only buys <i>correctness</i> if one rule is enforced with zero
+  exceptions across the entire codebase: <b>a dirty page must never reach disk before the WAL record describing
+  its change is durably flushed.</b> This is the <b>WAL-before-data</b> rule, and it is the reason the log is
+  called write-<i>ahead</i> — ahead of the data, always, no exceptions.</p>
+  <p>Why is this non-negotiable? Run the counterfactual: if a dirty page reached disk first, and the machine then
+  crashed before the corresponding WAL record was flushed, recovery would replay WAL from the last checkpoint and
+  have no record of a change that is <i>already physically present</i> on disk. For idempotent redo operations this
+  might merely be redundant; but the deeper problem is that the buffer manager's freedom to write pages whenever it
+  likes (steal/no-force, from §5) becomes unsafe the instant "whenever it likes" can mean "before its own
+  justification exists on durable storage." The rule is enforced concretely through the page header: every page
+  carries <code>pd_lsn</code>, the LSN of the last WAL record that modified it. Before <code>FlushBuffer()</code>
+  (<code>src/backend/storage/buffer/bufmgr.c</code>) writes a dirty page — whether triggered by a backend needing a
+  free buffer, by the background writer, or by the checkpointer — it calls <code>XLogFlush()</code> with that
+  page's <code>pd_lsn</code>, which blocks until WAL up to that LSN is confirmed on stable storage. Only then does
+  the page write proceed. Every single page eviction in the system pays this check.</p>
+  <ul class="plain">
+    <li><b>A synchronization point on every eviction.</b> The checkpointer and background writer are not truly
+      "free" to write whenever — they may have to wait on a WAL flush first, coupling two subsystems that otherwise
+      look independent.</li>
+    <li><b>Recovery becomes mandatory, not optional, after any crash.</b> Because pages can lag their WAL by design,
+      the data files alone are not trusted to be self-consistent after an unclean shutdown — WAL replay (chapter 11)
+      is now load-bearing infrastructure, not a fallback.</li>
+    <li><b>The log itself must be durable and bounded.</b> <code>pg_wal</code> becomes a second thing that can fill a
+      disk, corrupt, or need retention policy — durability risk hasn't vanished, it moved.</li>
+  </ul>
+  <div class="callout deep">
+    <div class="co-t">A DELIBERATE DIVERGENCE FROM TEXTBOOK ARIES: NO UNDO LOG</div>
+    <p>ARIES defines both <b>redo</b> logging (reapply committed changes forward) and <b>undo</b> logging (roll back
+    an in-progress or crashed transaction's changes). PostgreSQL implements <b>redo-only</b> WAL. It can, because
+    MVCC (chapter 5) already gives every row version a creating and (if superseded) deleting transaction ID; an
+    aborted transaction's tuples simply become versions that no snapshot will ever consider visible, determined by
+    checking transaction status in <code>pg_xact</code> (the CLOG) — not by physically undoing anything. "Rolling
+    back" costs one CLOG bit flip, not a WAL-driven physical undo pass. The price of skipping undo is deferred, not
+    avoided: those dead-but-undeleted tuples are exactly what chapter 12's vacuum exists to reclaim.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The WAL subsystem, end to end</h2>
+  <p>A backend that commits touches a small constellation of shared structures and processes, all orbiting one
+  logical byte stream. Click any component to see its role, its source file, and how it fails.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">IN SHARED MEMORY</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="walbuf">WAL buffers</div>
+          <div class="acard" data-p="insertlocks">insert locks ×8</div>
+          <div class="acard" data-p="insertptr">shared insert pointer</div>
+        </div>
+        <div class="arch-row-label">ON DISK — pg_wal/</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="segfiles">WAL segment files</div>
+          <div class="acard" data-p="pgcontrol">pg_control</div>
+        </div>
+        <div class="arch-row-label">PROCESSES</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="walwriter">walwriter</div>
+          <div class="acard" data-p="checkpointer">checkpointer</div>
+          <div class="acard" data-p="walsender">walsender</div>
+          <div class="acard" data-p="walreceiver">walreceiver</div>
+        </div>
+        <div class="arch-row-label">DISPATCH</div>
+        <div class="arch-grid"><div class="acard" data-p="rmgr">RmgrTable[]</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE LOG HAS NO END — ONLY SEGMENTS</div>
+    <p>Conceptually WAL is one infinite append-only byte stream addressed by a 64-bit <code>XLogRecPtr</code>. It is
+    physically sliced into 16&nbsp;MB segment files under <code>pg_wal/</code> purely so the filesystem, the archiver,
+    and replication can work with ordinary, finite, nameable files. §8 shows exactly how a filename encodes a byte
+    offset into that stream — no lookup table required, the arithmetic is the index.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The bytes, the pointer, and the reservation protocol</h2>
+  <p>Five things to internalize at the level you'd need to patch them: the record's byte layout, how full-page
+  writes ride inside that layout, how an LSN becomes a filename, how a record is dispatched to the code that
+  understands it, and how concurrent backends reserve space in one shared stream without serializing on a single
+  lock.</p>
+
+  <h3>(a) <code>XLogRecord</code>: 24 bytes that precede every change</h3>
+  <p>Every WAL record — whether it describes one heap insert or a whole transaction's commit — begins with the
+  same fixed header, defined in <code>src/include/access/xlogrecord.h</code>:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>xlogrecord.h — XLogRecord</span></div>
+    <pre><span class="k">typedef struct</span> XLogRecord
+{
+    uint32          xl_tot_len;   <span class="c">/* total length of this record, header+data */</span>
+    TransactionId   xl_xid;       <span class="c">/* the inserting transaction's XID */</span>
+    XLogRecPtr      xl_prev;      <span class="c">/* ptr to the previous record in the log — a
+                                    * backward linked list threaded through the log */</span>
+    uint8           xl_info;      <span class="c">/* flag bits: is this a checkpoint? does the
+                                    * transaction have subtransactions? etc. */</span>
+    RmgrId          xl_rmid;      <span class="c">/* which resource manager understands this record */</span>
+    <span class="c">/* 2 bytes of required padding here */</span>
+    pg_crc32c       xl_crc;       <span class="c">/* CRC-32C over the whole record */</span>
+    <span class="c">/* XLogRecordBlockHeader(s), then XLogRecordDataHeader,
+     * then the block data / main data payload follow immediately */</span>
+} XLogRecord;</pre>
+  </div>
+  <p>Drag through the header below — widths are proportional to byte size, matching the real 24-byte layout
+  (<code>SizeOfXLogRecord</code>):</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">XLogRecord fixed header — byte by byte</span><span class="w-sub">HOVER A FIELD</span></div>
+    <div class="w-body">
+      <div class="bytebar" id="xlr-bar"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="xlr-note">Hover a segment above.</p>
+    </div>
+  </div>
+
+  <h3>(b) Block references and full-page writes: the torn-page insurance policy</h3>
+  <p>Immediately after the fixed header, one <code>XLogRecordBlockHeader</code> appears per page the record
+  touches, naming the relation fork and block number and — critically — an optional flag: <b>does this block
+  reference include a full copy of the page?</b> That full copy is the <b>full-page write (FPW)</b>, and it exists
+  to solve exactly the torn-page problem §4 raised: physiological log records only describe a delta ("insert this
+  tuple at this offset"), which is useless for repairing a page whose sectors are a mix of old and new bytes — you'd
+  be applying a delta to a base you can no longer trust.</p>
+  <p>PostgreSQL's rule (governed by <code>full_page_writes</code>, on by default): the <b>first</b> time any
+  backend modifies a page after a checkpoint completes, the WAL record for that change carries a full 8&nbsp;KB
+  (minus the unused "hole" between <code>pd_lower</code> and <code>pd_upper</code>, which needn't be logged) image
+  of the page <i>as it looked right before this change</i>. Every subsequent modification to that same page, before
+  the next checkpoint, only needs the small delta — because redo can now always fall back to "restore the full
+  image, then reapply small deltas from there," and the full image itself is written as one contiguous WAL append,
+  immune to being torn independently of the WAL record's own CRC-checked boundaries. The mechanism that decides
+  "first time since checkpoint" compares the page's <code>pd_lsn</code> against the checkpoint's redo pointer,
+  tracked per-relation-fork in shared memory.</p>
+  <div class="callout warn">
+    <div class="co-t">THE COST: WAL VOLUME SPIKES RIGHT AFTER EVERY CHECKPOINT</div>
+    <p>Full-page writes are why WAL volume is not proportional to logical write volume — it's proportional to
+    logical write volume <b>plus a burst of full-page images concentrated in the seconds after each checkpoint</b>,
+    decaying as the working set's hot pages each get their one mandatory full image and settle into cheap deltas.
+    On a busy server with a small, hot working set, this can mean 3–10× the steady-state WAL rate right after
+    <code>checkpoint_completion_target</code> finishes. <code>wal_compression</code> (compressing the full-page
+    image, not the delta) is the direct mitigation — it trades CPU for a smaller burst, and matters most exactly
+    when the burst is largest.</p>
+  </div>
+
+  <h3>(c) LSN arithmetic: a filename is just an encoded byte offset</h3>
+  <p>An <code>XLogRecPtr</code> is a 64-bit byte address into the logical WAL stream since time zero — nothing
+  more exotic than that. <code>psql</code> renders it as two hex halves, <code>HIGH32/LOW32</code>. The stream is
+  sliced into fixed-size segments (16&nbsp;MB by default, chosen at <code>initdb</code> time), and a segment's
+  filename is exactly three 8-hex-digit fields — <b>timeline, then the segment number split across a "logical log"
+  boundary of 4&nbsp;GB</b> — with no separate index anywhere; the filesystem path <i>is</i> the address. Drag the
+  slider to decode any LSN into its segment filename and byte offset:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">LSN → segment filename decoder</span><span class="w-sub">DRAG THE SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>timeline</label><input type="range" id="lsn-tli" min="1" max="3" value="1" step="1"><span class="val" id="lsn-tli-val">1</span></div>
+      <div class="slider-row"><label>LSN (high32/low32)</label><input type="range" id="lsn-val" min="0" max="4294967295" value="167772171" step="1"><span class="val" id="lsn-val-val">0/A00000B</span></div>
+      <div class="lsn-out" id="lsn-out"></div>
+    </div>
+  </div>
+  <p>Try the worked example from the chapter brief by hand: <code>pg_wal/00000001000000000000000A</code> decodes as
+  timeline <b>1</b>, high-32 group ("logid") <b>0</b>, segment <b>0x0A</b> = <b>10</b> within that group. Segment
+  size is 16&nbsp;MB = <code>0x1000000</code>, so this segment's first byte sits at <code>10 × 0x1000000 =
+  0xA000000</code> — which is under 4&nbsp;GB, so as a full LSN that's <code>0/A000000</code>. The slider above
+  reproduces exactly this arithmetic for any value you drag to.</p>
+
+  <h3>(d) Resource managers: the redo dispatch table</h3>
+  <p><code>xl_rmid</code> is a small integer — <code>RmgrId</code> — indexing into <code>RmgrTable[]</code>
+  (<code>src/backend/access/transam/rmgr.c</code>, built from <code>src/include/access/rmgrlist.h</code>): one
+  entry per subsystem that can produce WAL, each holding function pointers for redo, description/debug-printing,
+  and a few lifecycle hooks. <code>RM_XACT_ID</code> handles commit/abort records, <code>RM_HEAP_ID</code> and
+  <code>RM_HEAP2_ID</code> handle heap tuple operations, <code>RM_BTREE_ID</code> handles B-tree structure changes,
+  and similarly one ID each for hash, GiST, GIN, SP-GiST, BRIN, sequences, CLOG, multixact, and a generic ID for
+  extensions that need their own WAL. During replay, <code>xlogreader.c</code> parses the raw bytes back into a
+  record and hands it to <code>RmgrTable[record-&gt;xl_rmid].rm_redo(record)</code> — a single dispatch, no special
+  casing, which is what lets new access methods add WAL support without touching the replay loop at all.</p>
+
+  <h3>(e) <code>XLogInsert</code>: reserve first, copy in parallel, flush last</h3>
+  <p>Step through what a backend actually does to get a record into the log — the reservation is one atomic
+  compare-and-swap on a shared pointer; the (larger) memcpy is where parallelism comes from:</p>
+  <div class="widget deck" id="deckInsert">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">XLogInsertRecord — reserve → copy → flush</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <p>Watch what happens to insert throughput as concurrent backends compete for a small number of copy locks versus
+  a larger one — this is a pedagogical model of why <b><code>NUM_XLOGINSERT_LOCKS</code> = 8</b> exists at all
+  (it's a compile-time constant, not a GUC you can tune, but the shape of the tradeoff it encodes is real):</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Insert-lock contention, illustrated</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>concurrent backends inserting</label><input type="range" id="ilock-be" min="1" max="64" value="16" step="1"><span class="val" id="ilock-be-val">16</span></div>
+      <div class="slider-row"><label>copy locks available</label><input type="range" id="ilock-n" min="1" max="32" value="8" step="1"><span class="val" id="ilock-n-val">8</span></div>
+      <div class="memmap" id="ilock-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="ilock-note"></p>
+    </div>
+  </div>
+
+  <h3>(f) <code>wal_buffers</code>: how much headroom before a backend must wait</h3>
+  <p>WAL buffers are a small ring in shared memory that backends copy freshly reserved records into; the WAL writer
+  (and any backend calling <code>XLogFlush</code>) drains the ring by writing its contents to the segment file and
+  fsyncing. If reservation outruns draining — buffers full before the writer catches up — the reserving backend
+  must itself force a flush and wait, turning a background optimization into a foreground stall. Drag
+  <code>wal_buffers</code> and the commit rate to see the headroom:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">wal_buffers headroom</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>wal_buffers</label><input type="range" id="wb-size" min="1" max="256" value="16" step="1"><span class="val" id="wb-size-val">16 MB</span></div>
+      <div class="slider-row"><label>commit rate</label><input type="range" id="wb-rate" min="10" max="20000" value="2000" step="10"><span class="val" id="wb-rate-val">2000/s</span></div>
+      <div class="meter"><div class="m-l"><span>buffer fill before drain</span><span id="wb-fill-v">0%</span></div><div class="m-bar"><div class="m-fill" id="wb-fill"></div></div></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="wb-note"></p>
+    </div>
+  </div>
+
+  <h3>(g) <code>synchronous_commit</code>: choosing exactly what you're willing to lose</h3>
+  <p><code>XLogFlush()</code> at commit blocks until WAL is durable — but "durable" is a spectrum PostgreSQL exposes
+  directly as a GUC, because "wait for the fsync" and "wait for a replica to also have it" are different guarantees
+  at different costs:</p>
+  <table class="cmp">
+    <tr><th>synchronous_commit</th><th>ACK happens after…</th><th>WHAT A CRASH CAN LOSE</th></tr>
+    <tr><td>off</td><td>the record is copied into WAL buffers — no flush at all yet</td><td>up to <code>wal_writer_delay</code> (~200&nbsp;ms default) of the <i>most recently acknowledged</i> commits. The client was told "success" and it can still vanish.</td></tr>
+    <tr><td>local</td><td>local <code>fsync()</code> of WAL, ignoring any standby</td><td>nothing on this node — but a standby that hadn't received this WAL yet, promoted after failover, won't have it either.</td></tr>
+    <tr><td>remote_write</td><td>local fsync <b>and</b> the standby's <code>walreceiver</code> has written the bytes into its OS (not yet fsynced there)</td><td>the standby's own uncommitted-to-disk cache, if the standby itself crashes before its own fsync.</td></tr>
+    <tr><td>on (default)</td><td>local fsync <b>and</b> the configured synchronous standby confirms its own <code>fsync()</code></td><td>nothing durable on either node — but the standby may not have <i>replayed</i> it yet, so a query against the standby right after failover might not see it.</td></tr>
+    <tr><td>remote_apply</td><td>local fsync <b>and</b> the standby has replayed (applied) the record</td><td>essentially nothing — strongest guarantee, at the cost of waiting on the slowest link: the replica's own replay speed.</td></tr>
+  </table>
+  <p>Note what none of these levels touch: <b>whether the transaction is internally consistent.</b> That's governed
+  entirely by the WAL-before-data rule from §6 and holds regardless of <code>synchronous_commit</code> — this GUC
+  only trades <i>how much recently-acknowledged work</i> a crash can erase, never database integrity itself.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Every serious engine logs ahead — the differences are in the details</h2>
+  <p>Write-ahead logging is close to universal among engines that need crash durability; what varies is the
+  torn-page defense, the durability knob, and how group commit is implemented:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>LOG DESIGN</th><th>TORN-PAGE / PARTIAL-WRITE DEFENSE</th><th>DURABILITY KNOB</th></tr>
+    <tr><td>PostgreSQL</td><td>Physiological WAL, one continuous LSN-addressed stream, 16&nbsp;MB segments</td>
+      <td>Full-page writes: first touch per page per checkpoint carries a full image</td>
+      <td><code>synchronous_commit</code> (off/local/remote_write/on/remote_apply)</td></tr>
+    <tr><td>MySQL / InnoDB</td><td>Redo log, fixed-size circular <code>ib_logfiles</code></td>
+      <td>Doublewrite buffer — pages are written to a staging area first, then to their real location, so a torn
+        real-location write can be repaired from the doublewrite copy</td>
+      <td><code>innodb_flush_log_at_trx_commit</code> (0/1/2 — off/on/OS-cache-only, directly analogous to
+        <code>synchronous_commit</code>'s off/on split)</td></tr>
+    <tr><td>Oracle</td><td>Online redo log groups, written by the dedicated LGWR process</td>
+      <td>Block-level checksums plus multiplexed redo members for redundancy, not a full-page-image mechanism</td>
+      <td>Commit-time wait behavior tunable per-session (<code>COMMIT WRITE {WAIT\|NOWAIT}, {IMMEDIATE\|BATCH}</code>)</td></tr>
+    <tr><td>SQLite (WAL mode)</td><td>A single WAL <i>file</i> that readers can read directly; checkpointing folds it
+        back into the main database file</td>
+      <td>Relies on the WAL file's own frame checksums; single-writer model sidesteps most of PostgreSQL's
+        concurrent-insert problem entirely</td>
+      <td><code>PRAGMA synchronous</code> (OFF/NORMAL/FULL/EXTRA)</td></tr>
+    <tr><td>RocksDB</td><td>WAL is the LSM-tree's write-ahead log — every write optionally appended before touching
+        the memtable</td>
+      <td>Per-record CRC plus the fact that records are variable-length appends, not fixed-page overwrites — there
+        is no in-place page to tear</td>
+      <td><code>WriteOptions::sync</code>, plus <code>Options::manual_wal_flush</code></td></tr>
+    <tr><td>Cassandra</td><td>Per-node commit log, replayed on restart before memtable flush</td>
+      <td>Not applicable in the same sense — SSTables are immutable, written once, never overwritten in place</td>
+      <td><code>commitlog_sync</code> (periodic vs batch)</td></tr>
+  </table>
+  <p>Read the pattern: every column is answering the same question — <i>what exactly must reach stable storage
+  before I tell the caller "done," and how do I survive a write that only half-landed?</i> PostgreSQL's answer
+  (physiological logging + full-page writes + a five-level durability GUC) is more mechanically involved than
+  RocksDB's (append-only records, no in-place pages to tear) precisely because PostgreSQL commits to in-place,
+  fixed-size heap and index pages that <i>can</i> be torn — a structural choice made in chapters 3–4, paid for
+  here.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">The physics of fsync, and why it lies to you sometimes</h2>
+  <p><code>fsync()</code> is not one operation with one cost — its latency is set by the storage medium, and its
+  correctness depends on a chain of caches that must each actually mean it when they say "done":</p>
+  <ul class="plain">
+    <li><b>Spinning disk:</b> ~4.2&nbsp;ms average rotational latency (7200&nbsp;RPM) plus several ms of seek —
+      <b>~8–10&nbsp;ms per random durability round trip</b>, a mechanical constant.</li>
+    <li><b>SATA SSD:</b> no seek, but protocol and firmware overhead still land a synchronous flush around
+      <b>~100–300&nbsp;µs</b> typically — an order of magnitude better, still far from free.</li>
+    <li><b>NVMe SSD:</b> deeper queues and a leaner protocol bring well-tuned synchronous writes down to roughly
+      <b>~10–50&nbsp;µs</b>.</li>
+    <li><b>Battery-backed (or supercap/PLP) write cache:</b> the drive or RAID controller can honestly say "durable"
+      the instant bytes land in a cache it knows will survive a power loss — <b>~10&nbsp;µs</b>, because the physical
+      media write no longer gates the acknowledgment at all.</li>
+  </ul>
+  <p>That last point matters more than the number suggests: a <b>volatile</b> write cache can also say "done"
+  instantly — the difference is that it's lying about durability. Pull the power and its contents are gone,
+  <code>fsync()</code>'s promise notwithstanding. This is why enterprise storage advice treats BBU/PLP as a
+  correctness lever, not merely a performance one: it's the thing that makes the fast answer also the true one.</p>
+  <p>PostgreSQL lets you choose which kernel primitive protects WAL writes via <code>wal_sync_method</code>:
+  <code>fsync()</code> flushes data <b>and</b> file metadata (size, mtime); <code>fdatasync()</code> skips the
+  metadata sync when the file size hasn't changed, which is cheaper and is a common Linux default; <code>open_datasync</code>
+  folds durability into the write itself via <code>O_DSYNC</code>, avoiding a second syscall round trip entirely.
+  All three are answering the same question through different kernel doors — none of them can make a volatile disk
+  cache tell the truth.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">fsync latency vs. achievable commit rate</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="toggle-row" id="perf-storage-chips"></div>
+      <div class="slider-row"><label>group commit batch size</label><input type="range" id="perf-batch" min="1" max="64" value="1" step="1"><span class="val" id="perf-batch-val">1</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> max commits/sec</span>
+        <span><span style="color:var(--warn)">┆</span> your storage choice</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">GROUP COMMIT: AMORTIZING THE ONE COST THAT DOESN'T PARALLELIZE</div>
+    <p><code>XLogInsert</code>'s copy step scales across 8 insert locks (§8e), but the <i>flush</i> is fundamentally
+    one fsync of one shared log tail. If several backends' commit records are all waiting to be flushed at once,
+    one fsync durably covers all of them — this is <b>group commit</b>, and it is why PostgreSQL's commit throughput
+    under concurrent load is often far higher than <code>1 / fsync_latency</code> would suggest for a single
+    backend. <code>commit_delay</code> (microseconds) and <code>commit_siblings</code> let you trade a small,
+    deliberate added latency for larger batches — useful when fsync is expensive (spinning disk) and many backends
+    commit concurrently; nearly pointless on a device where fsync is already ~10&nbsp;µs.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents this chapter explains completely</h2>
+
+  <h3>Incident 1: the 2018 fsync() error-handling scare</h3>
+  <p>Craig Ringer's investigation, discussed at length on pgsql-hackers in 2018, surfaced an uncomfortable fact
+  about Linux: when a buffered write later fails to reach disk (an I/O error, a full device), some kernel/filesystem
+  combinations report the error to <i>only the first</i> <code>fsync()</code> call after the failure — and may
+  drop the affected dirty pages from the page cache regardless, rather than keeping them around to retry. A process
+  that calls <code>fsync()</code> again later can receive a clean return code even though the earlier data was
+  never durably written and is now unrecoverable from cache. PostgreSQL had been treating a failed <code>fsync()</code>
+  as something to log and retry — an assumption that the dirty page would still be sitting in cache to try again,
+  which does not hold universally. The fix, landed for PostgreSQL 12, is blunt on purpose: treat any WAL or data
+  <code>fsync()</code> failure as a <b>PANIC</b>, crash immediately, and force a full recovery cycle rather than
+  silently trusting a kernel that may have already lied once. This is the OS-level sibling of the disk-cache lie
+  discussed in §10 — the write cache isn't the only layer that can quietly drop your durability guarantee.</p>
+
+  <h3>Incident 2: full_page_writes=off on storage that didn't actually guarantee it</h3>
+  <p><code>full_page_writes=off</code> is a documented, legitimate optimization — <i>if and only if</i> the
+  underlying storage genuinely guarantees atomic writes at PostgreSQL's full page size (8&nbsp;KB, or your
+  configured <code>BLCKSZ</code>). Teams running on general-purpose cloud block storage have disabled it assuming
+  "it's redundant, our storage is durable" — conflating <i>durable</i> (survives power loss once acknowledged) with
+  <i>atomic at 8&nbsp;KB</i> (never partially written). Generic block storage historically guarantees atomicity only
+  at much smaller granularities (a sector, or the underlying device's native block size), not at a full Postgres
+  page. The result, discovered only much later during an unrelated crash: <code>invalid page in block N of relation</code>
+  errors and checksum failures on pages that recovery had no full image to repair, because there was none to fall
+  back to. The operational lesson generalizes: <code>full_page_writes=off</code> requires a written guarantee from
+  the storage vendor about atomic write size, not an assumption from "durable" marketing copy.</p>
+
+  <h3>Incident 3: asynchronous replication, a failover, and the transactions that were never there</h3>
+  <p>A common production shape: <code>synchronous_commit</code> left at a level that doesn't wait on any standby
+  (or no synchronous standby configured at all), streaming replication running normally with a small, healthy lag
+  of a few WAL records. An unplanned failover promotes the standby. The application had received "COMMIT
+  successful" for the last handful of transactions before the primary died — and those transactions are simply
+  absent on the newly promoted primary, because their WAL never made it across before the failure. From the
+  business's perspective: an order confirmed, a payment recorded, that no longer exists anywhere. This is not a bug;
+  it is precisely what asynchronous replication (and any <code>synchronous_commit</code> level short of one that
+  waits on the standby) advertises it will do under failover. The fix is a deliberate tradeoff, not a patch: adopt
+  <code>synchronous_commit=on</code> or <code>remote_apply</code> together with <code>synchronous_standby_names</code>
+  for the transactions that must survive a failover, accepting the added commit latency as the price of that
+  guarantee — the same tradeoff table from §8g, now with real money attached.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend synchronous_commit=off at 2am to the person who lost an order?</h2>
+  <p>Think before you reveal — each answer is the depth a Staff/Principal interview loop actually expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>xlog.c</code> and <code>xloginsert.c</code></h2>
+  <p>Where everything from this chapter lives. Files marked <span style="color:var(--warn)">●</span> are this
+  chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/access/transam/</span></div>
+<div>│   ├── <span class="fhl">● xlog.c</span> <span class="fnote">— XLogFlush(), XLogWrite(), checkpoint control, pg_control I/O (~9k lines)</span></div>
+<div>│   ├── <span class="fhl">● xloginsert.c</span> <span class="fnote">— XLogBeginInsert/XLogRegister*/XLogInsert: record assembly + reservation</span></div>
+<div>│   ├── xlogrecovery.c <span class="fnote">— the REDO replay loop (chapter 11 goes deep here)</span></div>
+<div>│   ├── xlogreader.c <span class="fnote">— XLogReadRecord(): parses raw bytes back into a record, validates the CRC</span></div>
+<div>│   ├── xlogutils.c</div>
+<div>│   ├── rmgr.c <span class="fnote">— RmgrTable[] — the redo dispatch table, built from rmgrlist.h</span></div>
+<div>│   └── clog.c · commit_ts.c · multixact.c <span class="fnote">— SLRUs themselves protected by WAL from RM_CLOG_ID etc.</span></div>
+<div><span class="dir">src/include/access/</span></div>
+<div>│   ├── <span class="fhl">● xlogrecord.h</span> <span class="fnote">— XLogRecord, XLogRecordBlockHeader, XLogRecordDataHeader</span></div>
+<div>│   ├── xlogdefs.h <span class="fnote">— XLogRecPtr, XLogSegNo, segment-size macros</span></div>
+<div>│   └── rmgr.h · rmgrlist.h <span class="fnote">— RM_*_ID enum via the PG_RMGR() X-macro table</span></div>
+<div><span class="dir">src/backend/access/heap/</span>heapam.c <span class="fnote">— heap_insert()/heap_redo(): a concrete RM_HEAP_ID producer + its redo function</span></div>
+<div><span class="dir">src/backend/access/nbtree/</span>nbtxlog.c <span class="fnote">— btree_redo(): RM_BTREE_ID's redo, including page-split replay</span></div>
+  </div></div>
+
+  <p>First, how a backend gets bytes into the log — reservation is a tight CAS loop; the copy happens outside any
+  single global lock:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>xloginsert.c — XLogInsertRecord(), simplified but faithful in structure</span></div>
+    <pre><span class="k">XLogRecPtr</span>
+<span class="f">XLogInsertRecord</span>(XLogRecData *rdata, XLogRecPtr fpw_lsn, uint8 flags, ...)
+{
+    <span class="k">uint32</span> tot_len = <span class="f">CalcSizeOfXLogRecord</span>(rdata);   <span class="c">/* header + block refs + data */</span>
+
+    <span class="c">/* 1. RESERVE: an atomic bump of the shared "current end of log"
+     *    pointer. This is the ONLY globally-serialized step — it's a
+     *    tiny compare-and-swap, not a memcpy.                        */</span>
+    XLogRecPtr StartPos, EndPos;
+    <span class="f">ReserveXLogInsertLocation</span>(tot_len, &amp;StartPos, &amp;EndPos, &amp;rechdr.xl_prev);
+
+    <span class="c">/* 2. COPY: take ONE of NUM_XLOGINSERT_LOCKS (8) locks — chosen so
+     *    up to 8 backends copy their already-reserved bytes into the
+     *    shared WAL buffer ring in parallel, none blocking the others. */</span>
+    <span class="k">int</span> slot = MyProc-&gt;pgprocno % NUM_XLOGINSERT_LOCKS;
+    <span class="f">WALInsertLockAcquire</span>(slot);
+    <span class="f">CopyXLogRecordToWAL</span>(tot_len, rdata, StartPos, EndPos);
+    <span class="f">WALInsertLockRelease</span>(slot);
+
+    <span class="c">/* Caller decides whether/when to force this durable — a commit
+     * record's caller will call XLogFlush(EndPos) right after.       */</span>
+    <span class="k">return</span> EndPos;
+}</pre>
+  </div>
+
+  <p>Then the flush — the one genuinely serial step, and the one every commit ultimately waits behind:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>xlog.c — XLogFlush(), simplified</span></div>
+    <pre><span class="k">void</span>
+<span class="f">XLogFlush</span>(XLogRecPtr record)
+{
+    <span class="k">if</span> (XLogCtl-&gt;LogwrtResult.Flush &gt;= record)
+        <span class="k">return</span>;      <span class="c">/* someone else's flush already covered us — group commit */</span>
+
+    <span class="f">WALWriteLock_Acquire</span>();
+    <span class="k">if</span> (XLogCtl-&gt;LogwrtResult.Flush &lt; record)
+    {
+        <span class="f">XLogWrite</span>(WriteRqst);          <span class="c">/* write() the buffered bytes to the segment file */</span>
+        <span class="k">if</span> (!<span class="f">issue_xlog_fsync</span>(openLogFile, ...))
+            <span class="f">ereport</span>(PANIC, (<span class="f">errmsg</span>(<span class="s">"could not fsync WAL segment"</span>)));
+        XLogCtl-&gt;LogwrtResult.Flush = EndPos;
+    }
+    <span class="f">WALWriteLock_Release</span>();
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Separate the serialized part from the parallel part.</b> Only the pointer bump is globally atomic;
+    everything expensive (the memcpy) happens under one of 8 locks chosen by backend, so most concurrent inserts
+    never contend at all. <b>2. Make the flush idempotent-checkable.</b> <code>XLogFlush</code>'s first line is
+    "did someone already flush past me?" — the mechanism that makes group commit free: a busy server's flushes
+    naturally cover many backends' commit records in one fsync. <b>3. Treat a failed fsync as unrecoverable, on
+    purpose.</b> The PANIC in <code>XLogFlush</code> (added for PG12 after the incident in §11) encodes "we cannot
+    prove what's actually on disk anymore, so stop and let full recovery re-establish ground truth" — the same
+    philosophy chapter 1's crash protocol uses for a dying backend, applied here to a lying kernel.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a synchronous commit, end to end</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur for a transaction committing with <code>synchronous_commit=on</code>, no synchronous standby configured. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The WAL pipeline, live — now pull the power cord</h2>
+  <p>Run transactions, pick a <code>synchronous_commit</code> level and a storage class, then hit the big red button
+  at an arbitrary moment. Watch exactly which transactions survive — their commit record reached the disk column —
+  and which vanish, including the ones the client was already told succeeded.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">WAL timeline simulator</span><span class="w-sub" id="sim-phase">RUNNING</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:8px">
+            insert: <span id="sim-lsn-insert" style="color:var(--pg)">0/0</span> ·
+            flushed: <span id="sim-lsn-flush" style="color:var(--ok)">0/0</span> ·
+            replica applied: <span id="sim-lsn-replica" style="color:var(--purple)">0/0</span>
+          </p>
+          <div class="wal-pipeline">
+            <div class="wal-col"><div class="wc-t">WAL BUFFERS — shared memory (volatile)</div><div class="wc-body" id="sim-col-buf"></div></div>
+            <div class="wal-col"><div class="wc-t">WAL SEGMENT — pg_wal/ (disk, durable)</div><div class="wc-body" id="sim-col-disk"></div></div>
+          </div>
+          <div class="sbe-label" style="margin-top:12px">TRANSACTIONS</div>
+          <div id="sim-txns"></div>
+          <button class="btn danger pcord" id="sc-pull">⚡ PULL THE POWER CORD</button>
+          <button class="btn good" id="sc-reboot" style="width:100%;margin-top:8px;display:none">↻ reboot &amp; replay WAL</button>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">WORKLOAD</div>
+            <div class="btns">
+              <button class="btn" id="sc-small">small txn</button>
+              <button class="btn" id="sc-medium">medium txn</button>
+              <button class="btn" id="sc-batch">big batch (5)</button>
+              <button class="btn warn" id="sc-ckpt">run checkpoint</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">DURABILITY — synchronous_commit</div>
+            <div class="toggle-row" id="sim-sync-chips"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">STORAGE — fsync latency</div>
+            <div class="toggle-row" id="sim-storage-chips"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">OPTIONS</div>
+            <div class="btns">
+              <button class="chip on" id="sc-fpw">full_page_writes: ON</button>
+              <button class="chip" id="sc-delay">commit_delay: OFF</button>
+              <button class="chip" id="sc-pause">⏸ pause</button>
+            </div>
+          </div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">INSPECTOR</div>
+            <div style="color:var(--dim)">click a WAL record…</div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-bytes">0</div><div class="cl">KB written</div></div>
+            <div class="scounter"><div class="cv" id="cnt-fsync">0</div><div class="cl">fsyncs</div></div>
+            <div class="scounter"><div class="cv" id="cnt-lost" style="color:var(--bad)">0</div><div class="cl">lost txns</div></div>
+          </div>
+          <div style="padding:11px 15px">
+            <div class="meter"><div class="m-l"><span>FPW amplification since ckpt</span><span id="m-amp-v">0%</span></div><div class="m-bar"><div class="m-fill" id="m-amp"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> <code>synchronous_commit=off</code>, run a few small txns, pull the cord fast — watch a transaction
+    the client was told "succeeded" get marked lost. <b>2.</b> Same workload with <code>on</code> — nothing
+    acknowledged is ever lost, only unacknowledged in-flight work. <b>3.</b> Switch storage to spinning disk, run a
+    batch, watch fsyncs group more txns per flush. <b>4.</b> Run a checkpoint, then a batch — watch the first touch
+    to each page balloon with a full-page image, then shrink back down. <b>5.</b> Toggle <code>full_page_writes</code>
+    off and re-run the same batch right after a checkpoint — compare total bytes written.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 11: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head, <i>then</i> reveal. If any reveal
+  surprises you, re-run the relevant simulator experiment.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 10 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now decode an LSN into a segment filename by hand,
+    explain exactly what each <code>synchronous_commit</code> level risks, and trace a commit from
+    <code>XLogInsertRecord</code>'s reservation through <code>XLogFlush</code>'s fsync. Chapter 11 asks the
+    question this chapter deliberately deferred: WAL grows forever unless something bounds how much of it a crash
+    must replay — that something is the <b>checkpoint</b>, and its pacing is one of the most consequential tuning
+    decisions in the whole system.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="pg-11.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-11: Checkpoints &amp; Crash Recovery →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* reveal cards */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1978", l:"System R", d:`<b>Jim Gray's team formalizes write-ahead logging</b> in IBM's System R recovery
+    manager: never let a change reach the database before its log record is safe. The principle predates the word
+    'WAL' by over a decade and predates PostgreSQL by eight years.` },
+  { yr:"1992", l:"ARIES", d:`<b>C. Mohan et al. publish ARIES</b> ('Algorithms for Recovery and Isolation Exploiting
+    Semantics'), the paper that turns the WAL principle into a complete, implementable algorithm: physiological
+    logging, LSNs stamped on pages, steal/no-force buffer management, and fuzzy checkpoints. PostgreSQL's WAL is not
+    a byte-for-byte ARIES implementation, but every one of those four ideas shows up directly in this chapter.` },
+  { yr:"1995", l:"pre-WAL Postgres95", d:`<b>The community-maintained codebase still has no WAL.</b> Crash
+    consistency depends on forcing data files directly; an unclean shutdown is a real risk to data integrity, not
+    just a slow recovery. This is the gap chapter 1's process model alone cannot close.` },
+  { yr:"2001", l:"PostgreSQL 7.1", d:`<b>Vadim Mikheev lands write-ahead logging.</b> This is the single biggest
+    durability-and-performance change in the project's history: commits stop forcing scattered data pages and start
+    appending to one sequential log. <code>full_page_writes</code> ships in the same release, because the moment
+    you stop forcing data pages at commit, you need a torn-page defense for whenever they do get written.` },
+  { yr:"2005", l:"PITR (8.0)", d:`<b>Continuous archiving and point-in-time recovery.</b> Once WAL is a durable,
+    ordered, replayable stream, archiving it and replaying it to an arbitrary past LSN is a natural next step, not a
+    new mechanism — PITR is "recovery, but you choose where to stop."` },
+  { yr:"2010", l:"streaming replication (9.0)", d:`<b>WAL becomes the replication transport.</b> Instead of shipping
+    whole log files after the fact, a <code>walsender</code> streams records as they're generated and a
+    <code>walreceiver</code> on the standby applies them continuously — chapters 18–19 build entirely on the byte
+    stream this chapter defines.` },
+  { yr:"2014→16", l:"logical decoding · wal_compression", d:`<b>9.4 adds logical decoding</b> — output plugins that
+    read this same WAL stream and translate physiological records back into logical row changes, the basis of
+    logical replication. <b>9.6 adds <code>wal_compression</code></b>, compressing full-page images specifically to
+    blunt the post-checkpoint volume spike §8 quantifies.` }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: fsync-per-commit under load (§3) — canvas sim
+   ============================================================ */
+(function(){
+  let cfg = { pagesPerTxn: 3, deviceMs: 9 };
+  const steps = [
+    { stage:`<canvas id="nv-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>Light load, small transactions.</b> Each commit dirties ~3 scattered pages (dots), and each page needs
+        its own ~9&nbsp;ms fsync round trip (bars draining) before the commit can return. At low arrival rates the
+        pending queue stays near zero — this architecture looks completely fine, the way every architecture looks
+        fine at low utilization.`,
+      onshow:()=>{ cfg.pagesPerTxn=3; cfg.deviceMs=9; } },
+    { stage:`<canvas id="nv-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>Ordinary OLTP concurrency.</b> Nothing about the workload changed in kind — just volume. With several
+        commits arriving per second, each needing 3 serialized 9&nbsp;ms device round trips, the queue of
+        pending fsyncs backs up because arrivals now exceed 1 / (3 × 9&nbsp;ms) ≈ 37/sec. No query got slower;
+        the ceiling is the device.`,
+      onshow:()=>{ cfg.pagesPerTxn=3; cfg.deviceMs=9; } },
+    { stage:`<canvas id="nv-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>A bulk-load transaction joins the stream.</b> One transaction touching 40 pages needs 40 serialized
+        fsyncs before it may commit — over a third of a second of pure device latency for one statement, and every
+        small OLTP commit queued behind it waits the whole time. Commit latency is now proportional to <i>how many
+        pages you touched</i>, exactly the coupling §1 said a real design must avoid.`,
+      onshow:()=>{ cfg.pagesPerTxn=18; cfg.deviceMs=9; } },
+    { stage:`<canvas id="nv-c" width="740" height="260" style="width:100%"></canvas>`,
+      cap:`<b>Verdict.</b> Correctness: fine — every acknowledged commit really is durable. Throughput: capped by
+        device random-write latency times pages touched, a number no query optimizer can improve. This is precisely
+        the failure §4 quantifies, and precisely the problem an append-only log with lazy page writeback (§5)
+        removes from the commit path entirely.`,
+      onshow:()=>{ cfg.pagesPerTxn=6; cfg.deviceMs=9; } }
+  ];
+  stepper("deckNaive", steps);
+
+  let queue = [], serving = null, servedCount = 0, qHist = [];
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min((now-last)/1000, .1); last = now;
+    const c = document.getElementById("nv-c");
+    if (c){
+      const arrival = 6; // txns/sec arriving
+      if (Math.random() < arrival*dt) queue.push({ pages: cfg.pagesPerTxn, remaining: cfg.pagesPerTxn });
+      if (queue.length > 40) queue.length = 40;
+      if (!serving && queue.length) { serving = queue.shift(); serving.t = cfg.deviceMs/1000; }
+      if (serving){
+        serving.t -= dt;
+        if (serving.t <= 0){
+          serving.remaining--;
+          if (serving.remaining <= 0){ servedCount++; serving = null; }
+          else serving.t = cfg.deviceMs/1000;
+        }
+      }
+      qHist.push(queue.length); if (qHist.length > 200) qHist.shift();
+
+      const ctx = c.getContext("2d");
+      const W = c.width, H = c.height;
+      ctx.clearRect(0,0,W,H);
+      ctx.strokeStyle = serving ? "#ff9f43" : "#2a3446"; ctx.lineWidth = 2;
+      ctx.strokeRect(W-170, 30, 140, 76);
+      ctx.fillStyle = "#8b94a7"; ctx.font = "11px monospace"; ctx.textAlign = "center";
+      ctx.fillText("device — one page at a time", W-100, 20);
+      if (serving){
+        ctx.fillStyle = "#ff9f43";
+        ctx.fillText(`fsyncing page ${serving.pages-serving.remaining+1}/${serving.pages}`, W-100, 60);
+        const frac = 1 - (serving.t/(cfg.deviceMs/1000));
+        ctx.fillRect(W-160, 74, 120*Math.max(0,Math.min(1,frac)), 10);
+      }
+      queue.forEach((q,i)=>{
+        const x = W-210 - i*14, y = 68;
+        if (x < 15) return;
+        ctx.fillStyle = q.pages > 10 ? "#f25c54" : "#60a5fa";
+        ctx.beginPath(); ctx.arc(x, y, q.pages>10?9:5, 0, 7); ctx.fill();
+      });
+      ctx.fillStyle = "#5b6475"; ctx.textAlign = "left";
+      ctx.fillText(`pending fsyncs: ${queue.length}   committed: ${servedCount}   device ceiling: ~${Math.round(1000/cfg.deviceMs)}/sec`, 15, 20);
+      ctx.strokeStyle = "#ff9f43"; ctx.lineWidth = 1.5; ctx.beginPath();
+      qHist.forEach((v,i)=>{ const x = 15 + (i/200)*(W-30), y = H-12 - Math.min(v,30)/30*70;
+        i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+      ctx.stroke();
+      ctx.fillStyle = "#5b6475"; ctx.fillText("pending-fsync queue depth over time", 15, H-2);
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+
+/* ============================================================
+   3. DECK: three candidates examined (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:180px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  stepper("deckCandidates", [
+    { stage: box("CANDIDATE A — SHADOW PAGING / COPY-ON-WRITE (LMDB, ZFS, Btrfs)",
+        cell("never overwrite a live page in place","#8b94a7")
+      + cell("write a new version elsewhere, then atomically swap a root pointer","#8b94a7")
+      + cell("REJECTED for the primary heap/index path: full CoW page trees add write amplification for many small updates, and Postgres already gets MVCC append semantics at the tuple level (chapter 5) without paying it at the page-tree level too","#f25c54","rgba(242,92,84,.08)")),
+      cap:`<b>Candidate A.</b> Real, used elsewhere (LMDB, ZFS, Btrfs) — and rejected here because it fights the
+        existing MVCC design instead of complementing it. Chapter 14 revisits this exact tradeoff for B-tree pages.` },
+    { stage: box("CANDIDATE B — fsync EVERY DIRTY PAGE AT COMMIT",
+        cell("the naive solution from §3","#f25c54","rgba(242,92,84,.08)")
+      + cell("correct, but commit latency ∝ pages touched","#f25c54","rgba(242,92,84,.08)")
+      + cell("REJECTED: random I/O ceiling, no torn-page defense","#f25c54","rgba(242,92,84,.08)")),
+      cap:`<b>Candidate B.</b> Already eliminated in §3–§4 — restated here only to show it sits alongside the other
+        rejected options, not as a special case.` },
+    { stage: box("CANDIDATE C — WRITE-AHEAD LOG ✓",
+        cell("log the intent (page + operation), append-only, sequential","#60a5fa","rgba(96,165,250,.06)")
+      + cell("fsync the tiny log tail, not the scattered data pages","#60a5fa","rgba(96,165,250,.06)")
+      + cell("data pages written back lazily, out of order, whenever convenient — steal + no-force","#4ade80","rgba(74,222,128,.06)")),
+      cap:`<b>Candidate C, accepted.</b> One sequential append replaces N random writes; the durability guarantee
+        (the log record is safe) is fully decoupled from the data page's on-disk state. This is what §7's
+        architecture and §8's byte-level mechanics implement.` },
+    { stage: box("THE ONE RULE THAT MAKES C SAFE", cell("a dirty page may reach disk before OR after commit (steal / no-force)","#4ade80") + cell("...but NEVER before its own WAL record is flushed","#ff9f43","rgba(255,159,67,.08)") + cell("this is the WAL-before-data invariant — §6 shows exactly how it's enforced","#a78bfa")),
+      cap:`<b>The catch, previewed.</b> Candidate C's freedom for the buffer manager is not unconditional — it's
+        bought by one invariant that must hold with zero exceptions, forever. §6 is that invariant's full cost.` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const WARCH = {
+  walbuf:{ n:"WAL buffers", f:"shared memory, sized by wal_buffers", r:"A small ring backends copy freshly reserved WAL records into. This is the only thing a commit's memcpy touches directly — the actual segment file write happens later, out of the backend's critical path when possible.", l:"Sized once at boot from wal_buffers (a memory-context-style fixed allocation, like shared_buffers — chapter 1). Drained by XLogWrite(), called from XLogFlush() or the WAL writer.", d:"If reservation outruns draining, a backend must itself force the write+fsync and stall — §8f quantifies this." },
+  insertlocks:{ n:"WAL insert locks (×8)", f:"src/backend/access/transam/xlog.c — WALInsertLock array", r:"NUM_XLOGINSERT_LOCKS (8) separate lightweight locks, one taken per backend (by a simple modulo of its proc slot) purely to protect the memcpy into WAL buffers — NOT the reservation, which is a separate atomic step.", l:"Compile-time constant, not a GUC. Exists so up to 8 backends copy in parallel instead of serializing behind one lock.", d:"Contention beyond ~8 concurrent inserters saturates the locks and copying serializes in practice — §8e's slider shows the shape." },
+  insertptr:{ n:"shared insert pointer", f:"XLogCtl->Insert.CurrBytePos, xlog.c", r:"The authoritative 'end of the WAL stream so far.' Every XLogInsertRecord call atomically bumps this by the new record's length via ReserveXLogInsertLocation() — a compare-and-swap loop, not a lock.", l:"Lives for the server's lifetime; monotonically increasing for as long as the cluster exists (it's a 64-bit LSN — practically unbounded).", d:"This is the one truly serialized step in the whole insert path; keeping it a CAS instead of a lock+critical-section is what lets §8e's parallelism work at all." },
+  segfiles:{ n:"WAL segment files", f:"pg_wal/, named by timeline+logid+segment — see §8c", r:"16 MB (default) slices of the one logical WAL stream, existing purely so the filesystem, the archiver, and replication have finite, nameable units to work with.", l:"Pre-allocated and recycled (renamed) rather than freshly created per segment, avoiding metadata-heavy file creation on the hot path.", d:"Deleted or recycled once no longer needed for crash recovery, archiving, or any replication slot's retained WAL — chapter 11 covers exactly when that is." },
+  pgcontrol:{ n:"pg_control", f:"global/pg_control, written by xlog.c", r:"The cluster's one piece of ground truth read before anything else at startup: the latest checkpoint's location, the current timeline, and the state the last shutdown left behind (clean vs. needs recovery).", l:"Rewritten at every checkpoint; a small, frequently-fsynced file by design — it must never itself be torn.", d:"Corruption here is catastrophic (no bootstrap point for recovery) — hence pg_control keeps redundant copies of its own checksum-verified content internally." },
+  walwriter:{ n:"walwriter", f:"src/backend/postmaster/walwriter.c", r:"Flushes WAL buffers to disk on a steady cadence (wal_writer_delay, default ~200 ms) so that asynchronous commits (synchronous_commit=off) and background flushing have a bounded worst case, independent of any single backend calling XLogFlush.", l:"Resident background process (chapter 1's process constellation).", d:"Not required for correctness — any backend can call XLogFlush itself — but without it, off-commits could accumulate unboundedly in memory between unrelated synchronous flushes." },
+  checkpointer:{ n:"checkpointer", f:"src/backend/postmaster/checkpointer.c", r:"Owns the WAL-before-data enforcement on the largest scale: at each checkpoint, it must ensure every page dirtied before the checkpoint's start is written with its WAL already flushed, then records the new redo pointer in pg_control.", l:"Paced by checkpoint_timeout / max_wal_size; chapter 11's entire subject.", d:"Also directly resets the 'has this page been full-page-written since the last checkpoint' bookkeeping §8b depends on." },
+  walsender:{ n:"walsender", f:"src/backend/replication/walsender.c", r:"Streams WAL records to a connected standby or logical-decoding client as they're generated — this chapter's byte stream is precisely what it ships.", l:"Lives while a replica or logical subscriber stays connected.", d:"Its disconnection is what makes a standby's replicaReceivedLSN stop advancing in the §15 simulator." },
+  walreceiver:{ n:"walreceiver", f:"src/backend/replication/walreceiver.c", r:"On a standby: receives the streamed bytes, writes them into its own pg_wal, and signals the startup process to replay them — the mechanism behind remote_write's guarantee in §8g.", l:"Lives while replication is streaming.", d:"A gap here is exactly the failover data-loss window incident 3 in §11 describes." },
+  rmgr:{ n:"RmgrTable[]", f:"src/backend/access/transam/rmgr.c + rmgrlist.h", r:"The redo dispatch table: one entry per RmgrId, each holding a redo function pointer and a few lifecycle hooks. xl_rmid in every record's header is the index into this table.", l:"Built once, at compile time, from an X-macro list — adding a new access method with WAL support means adding one row here.", d:"If a record's rmgr entry can't be resolved during replay, recovery cannot proceed — this table is as load-bearing as pg_control itself." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = WARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">MECHANICS</div>${a.l}<div class="ad-sec">FAILURE MODE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("walbuf");
+
+/* ============================================================
+   5. XLogRecord BYTE BAR (§8a)
+   ============================================================ */
+(function(){
+  const FIELDS = [
+    ["xl_tot_len", 4, "#60a5fa", "total length of this record (header + block refs + data)"],
+    ["xl_xid", 4, "#8ab8ff", "the inserting transaction's TransactionId"],
+    ["xl_prev", 8, "#a78bfa", "XLogRecPtr of the previous record — a backward linked list threaded through the log"],
+    ["xl_info", 1, "#4ade80", "flag bits: checkpoint marker, subtransaction presence, etc."],
+    ["xl_rmid", 1, "#ff9f43", "RmgrId — index into RmgrTable[], §8d"],
+    ["pad", 2, "#5b6475", "2 required padding bytes (alignment)"],
+    ["xl_crc", 4, "#f25c54", "CRC-32C over the entire record, checked by xlogreader.c before redo ever runs"]
+  ];
+  const total = FIELDS.reduce((s,f)=>s+f[1],0); // 24
+  const bar = el("xlr-bar"), note = el("xlr-note");
+  bar.innerHTML = FIELDS.map(([name,bytes,color,desc])=>
+    `<div class="bseg" data-d="${desc} — ${bytes} byte${bytes>1?"s":""}" style="background:${color};width:${bytes/total*100}%">${name}</div>`).join("");
+  bar.querySelectorAll(".bseg").forEach(seg=>{
+    seg.addEventListener("mouseenter", ()=>{ note.textContent = seg.dataset.d; });
+  });
+  note.textContent = `SizeOfXLogRecord = ${total} bytes, fixed for every record regardless of payload. Hover any field.`;
+})();
+
+/* ============================================================
+   6. LSN → SEGMENT DECODER (§8c)
+   ============================================================ */
+(function(){
+  const SEGSZ = 0x1000000;              // 16 MB
+  const SEGS_PER_LOGID = 0x100000000 / SEGSZ; // 256
+  function fmtLSN(v){
+    const hi = Math.floor(v / 0x100000000);
+    const lo = v % 0x100000000;
+    return hi.toString(16).toUpperCase() + "/" + lo.toString(16).toUpperCase();
+  }
+  function render(){
+    const tli = +el("lsn-tli").value;
+    const lsn = +el("lsn-val").value;
+    el("lsn-tli-val").textContent = tli;
+    el("lsn-val-val").textContent = fmtLSN(lsn);
+    const segno = Math.floor(lsn / SEGSZ);
+    const logid = Math.floor(segno / SEGS_PER_LOGID);
+    const seg = segno % SEGS_PER_LOGID;
+    const segStart = segno * SEGSZ;
+    const pad8 = n => n.toString(16).toUpperCase().padStart(8,"0");
+    const filename = pad8(tli) + pad8(logid) + pad8(seg);
+    el("lsn-out").innerHTML =
+      `LSN <b>${fmtLSN(lsn)}</b> falls in segment <b>${segno}</b> (16 MB each)<br>
+       filename → <span class="seg">pg_wal/${filename}</span><br>
+       decoded: timeline=<b>${tli}</b> · logid=<b>${logid}</b> · seg=<b>${seg}</b><br>
+       segment start byte offset in the logical stream = ${segno} × 0x1000000 = <b>0x${segStart.toString(16).toUpperCase()}</b> = ${fmtLSN(segStart)}`;
+  }
+  el("lsn-tli").oninput = render;
+  el("lsn-val").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. DECK: XLogInsertRecord pipeline (§8e)
+   ============================================================ */
+(function(){
+  const F = (fn, file, mode="") => ({fn, file, mode});
+  function stacks(frames, title){
+    let h = `<div class="stacks"><div class="stackcol"><div class="sc-t">${title}</div>`;
+    frames.forEach(f=> h += `<div class="frame ${f.mode}"><span class="ff">${f.fn}</span><span class="fl">${f.file}</span></div>`);
+    return h + `</div></div>`;
+  }
+  stepper("deckInsert", [
+    { stage: stacks([F("XLogBeginInsert()","xloginsert.c"), F("XLogRegisterBuffer() / XLogRegisterData()","xloginsert.c","hot")], "BACKEND ASSEMBLING A RECORD"),
+      cap:`<b>Assemble.</b> The caller (heap_insert(), a btree split, xact commit) registers which buffers it touched and what data to log. Nothing has been reserved in the log yet — this is all local, in the backend's own memory.` },
+    { stage: stacks([F("XLogInsert()","xloginsert.c"), F("CalcSizeOfXLogRecord()","xloginsert.c"), F("ReserveXLogInsertLocation()","xlog.c","hot")], "RESERVE — ATOMIC CAS"),
+      cap:`<b>Reserve.</b> One atomic compare-and-swap bumps the shared insert pointer forward by this record's total length, in one step. The backend now owns an exclusive, contiguous byte range in the log — before a single byte has been copied anywhere.` },
+    { stage: stacks([F("WALInsertLockAcquire(slot)","xlog.c","hot"), F("CopyXLogRecordToWAL()","xlog.c","hot"), F("WALInsertLockRelease(slot)","xlog.c")], "COPY — 1 OF 8 LOCKS"),
+      cap:`<b>Copy.</b> The backend takes one of NUM_XLOGINSERT_LOCKS (8), chosen by its own proc slot, and memcpy's its already-reserved bytes into the shared WAL buffer ring. Up to 8 backends do this simultaneously without contending — the CAS in step 2 already made the ordering safe.` },
+    { stage: stacks([F("XLogFlush(EndPos)","xlog.c","hot"), F("WALWriteLock_Acquire()","xlog.c"), F("XLogWrite() → write()","xlog.c"), F("issue_xlog_fsync()","xlog.c","hot")], "FLUSH — THE SERIAL STEP"),
+      cap:`<b>Flush (only if this record must be durable now).</b> A commit's caller calls XLogFlush with its own end LSN. If some other backend's flush already covered this LSN, this returns instantly — free group commit. Otherwise one backend takes WALWriteLock, writes the buffered bytes, and fsyncs.` },
+    { stage: stacks([F("ack_client()","postgres.c","hot")], "COMMIT ACKNOWLEDGED"),
+      cap:`<b>Acknowledge.</b> Only once XLogFlush returns (for synchronous_commit levels stronger than off) does the backend tell the client COMMIT succeeded. §8g and the §15 simulator show exactly what changes when that ordering is relaxed.` }
+  ]);
+})();
+
+/* ============================================================
+   8. INSERT-LOCK CONTENTION SLIDER (§8e)
+   ============================================================ */
+(function(){
+  function render(){
+    const be = +el("ilock-be").value, n = +el("ilock-n").value;
+    el("ilock-be-val").textContent = be;
+    el("ilock-n-val").textContent = n;
+    // simple queueing-style model: effective parallel copy throughput saturates at n
+    const par = Math.min(be, n);
+    const over = Math.max(0, be - n);
+    const contention = 1 + Math.pow(over/Math.max(n,1), 1.3);
+    const relTput = par / contention;
+    const maxPossible = be; // ideal: every backend copies in parallel
+    const pct = Math.max(4, relTput/maxPossible*100);
+    el("ilock-map").innerHTML =
+      `<div class="seg" style="background:#4ade80;width:${pct}%">busy copying</div>` +
+      `<div class="seg" style="background:#2a3446;width:${100-pct}%;color:#8b94a7">waiting for a free lock</div>`;
+    el("ilock-note").innerHTML = `With <b style="color:var(--pg)">${be}</b> backends inserting concurrently against
+      <b style="color:var(--pg)">${n}</b> copy lock${n>1?"s":""}: roughly <b>${Math.round(pct)}%</b> of insert
+      attempts find a free lock immediately. At n=8 (the real constant) this stays comfortable for the concurrency
+      levels most OLTP workloads actually sustain per core; pushing n to 1 collapses to full serialization, while
+      pushing it past ~16–32 buys little further — cache-line bouncing between locks starts to dominate, which is
+      exactly why 8 was chosen rather than "as many as possible."`;
+  }
+  el("ilock-be").oninput = render;
+  el("ilock-n").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   9. wal_buffers HEADROOM SLIDER (§8f)
+   ============================================================ */
+(function(){
+  function render(){
+    const wb = +el("wb-size").value;       // MB
+    const rate = +el("wb-rate").value;     // commits/sec
+    el("wb-size-val").textContent = wb + " MB";
+    el("wb-rate-val").textContent = rate + "/s";
+    const avgRecordBytes = 250;             // illustrative average record size
+    const bytesPerSec = rate * avgRecordBytes;
+    const bufBytes = wb * 1024 * 1024;
+    const drainHz = 5; // walwriter-ish drains ~5x/sec in this illustrative model
+    const bytesPerDrainWindow = bytesPerSec / drainHz;
+    const fillPct = Math.min(100, bytesPerDrainWindow / bufBytes * 100);
+    el("wb-fill-v").textContent = Math.round(fillPct) + "%";
+    const fillEl = el("wb-fill");
+    fillEl.style.width = fillPct + "%";
+    fillEl.className = "m-fill " + (fillPct>80?"hot":fillPct>50?"warm":"");
+    el("wb-note").innerHTML = fillPct > 80
+      ? `At ~${rate}/s with ${wb} MB of wal_buffers, the ring fills faster than the writer drains it between cycles
+         — backends start forcing their own flush instead of relying on the background writer, turning a background
+         cost into a foreground stall. Raise wal_buffers or accept more synchronous flushes.`
+      : `Comfortable headroom: the ring absorbs a full drain interval's worth of records at ~${Math.round(fillPct)}%
+         fill. PostgreSQL auto-sizes wal_buffers to roughly shared_buffers/32 (capped at 16 MB) by default —
+         usually enough headroom for this reason.`;
+  }
+  el("wb-size").oninput = render;
+  el("wb-rate").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   10. PERF CHART — fsync latency vs commit rate (§10)
+   ============================================================ */
+(function(){
+  const STORAGE = [
+    { id:"nvme", n:"NVMe SSD", us:30 },
+    { id:"satassd", n:"SATA SSD", us:200 },
+    { id:"hdd", n:"spinning disk", us:9000 },
+    { id:"bbu", n:"battery-backed cache", us:10 }
+  ];
+  let choice = "satassd";
+  const chipsEl = el("perf-storage-chips");
+  chipsEl.innerHTML = STORAGE.map(s=>`<button class="chip" data-id="${s.id}">${s.n} (~${s.us}µs)</button>`).join("");
+  chipsEl.querySelectorAll(".chip").forEach(c=> c.onclick = ()=>{ choice = c.dataset.id; render(); });
+
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function render(){
+    chipsEl.querySelectorAll(".chip").forEach(c=>c.classList.toggle("on", c.dataset.id===choice));
+    const batch = +el("perf-batch").value;
+    el("perf-batch-val").textContent = batch;
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const xs = STORAGE.map(s=>s.us);
+    const rates = STORAGE.map(s=> Math.min(2000000, (1e6/s.us) * batch)); // commits/sec with group-commit batching
+    const maxR = Math.max(...rates);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    STORAGE.forEach((s,i)=>{
+      const x = PAD + i*((W-PAD-20)/(STORAGE.length-1+0.4));
+      ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,H-26); ctx.stroke();
+      ctx.fillText(s.n, x-24, H-10);
+    });
+    STORAGE.forEach((s,i)=>{
+      const x = PAD + i*((W-PAD-20)/(STORAGE.length-1+0.4));
+      const barH = (rates[i]/maxR) * (H-60);
+      ctx.fillStyle = s.id===choice ? "#60a5fa" : "#2a3446";
+      ctx.fillRect(x-22, H-26-barH, 44, barH);
+      ctx.fillStyle = "#c6cddb"; ctx.font="10.5px monospace"; ctx.textAlign="center";
+      ctx.fillText(Math.round(rates[i]).toLocaleString(), x, H-30-barH);
+      ctx.textAlign="left";
+    });
+    const cur = STORAGE.find(s=>s.id===choice);
+    const curRate = Math.min(2000000, (1e6/cur.us)*batch);
+    el("perf-note").innerHTML = `<b style="color:var(--pg)">${cur.n}</b> at a ~${cur.us}µs fsync, batched
+      ${batch===1?"with no group commit (batch=1)":`into groups of ${batch} commits per fsync`}: a theoretical ceiling
+      near <b>${Math.round(curRate).toLocaleString()}</b> commits/sec from fsync latency alone (real throughput is
+      lower once CPU, locking, and network are added — this isolates just the durability round trip). Notice how
+      little the spinning-disk bar moves without batching, and how much batch size matters precisely where fsync is
+      most expensive — that asymmetry is the entire justification for commit_delay/commit_siblings.`;
+  }
+  el("perf-batch").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   11. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Why is it safe for the background writer to write a dirty page to disk before the transaction that dirtied it has even committed?", hint:"pd_lsn + XLogFlush, not transaction state",
+    a:"Safety here has nothing to do with commit status — it's governed purely by the WAL-before-data rule. Before FlushBuffer() writes any dirty page, it calls XLogFlush() covering that page's pd_lsn, guaranteeing the WAL describing every change on that page is already durable. If the transaction later aborts, the page's bytes on disk are still consistent with what WAL says happened; MVCC visibility rules (via CLOG) — not the physical page state — determine that the aborted transaction's tuples are invisible. This is exactly ARIES's 'steal' policy: dirty pages may reach disk anytime, because redo can always reconstruct correctness from WAL." },
+  { lvl:"SENIOR", q:"What specifically is a torn page, and why doesn't calling fsync() prevent it?", hint:"sector atomicity vs page size",
+    a:"Storage hardware guarantees atomic writes only at the sector granularity (512B classically, 4KB on modern drives) — not at PostgreSQL's 8KB page size. A crash mid-write to a page can leave some sectors holding new bytes and others holding old bytes: internally inconsistent, and no simple checksum tells you which bytes are which. fsync() only guarantees that whatever was written eventually reaches stable storage — it says nothing about whether the write itself completed atomically. The defense is full-page writes (§8b): the first WAL record touching a page after a checkpoint carries a complete image, so redo can always discard a torn page and restore from that image rather than trusting it." },
+  { lvl:"STAFF", q:"Derive why XLogInsertRecord splits into a CAS-based reservation step and a separately-locked copy step, instead of one lock guarding the whole insert.", hint:"what's expensive, and what must be strictly ordered?",
+    a:"Only the ordering of records in the log needs to be globally serialized — that's a single pointer bump, cheap enough to do as an atomic compare-and-swap with no critical section at all. The expensive part — memcpy'ing potentially kilobytes of record data into the WAL buffer ring — does NOT need to happen in that same serialized order, only within the byte range each backend already reserved. Splitting them lets up to NUM_XLOGINSERT_LOCKS (8) backends copy in parallel while the ordering-critical step stays a near-instant CAS. One lock for both steps would serialize the expensive part behind the cheap part for no correctness benefit." },
+  { lvl:"STAFF", q:"A teammate sets synchronous_commit=remote_write and calls it 'basically as safe as on.' Where exactly is the gap?", hint:"what has 'write' vs 'flush' actually touched?",
+    a:"remote_write waits for the standby's walreceiver to have written the bytes into its own OS buffers — not fsynced them to its own disk. If the primary crashes, the data is safe (it's on the standby). But if the STANDBY itself crashes or loses power before its own fsync completes, that WAL is gone from both places. 'on' additionally waits for the standby's own fsync, closing that gap at the cost of one more round trip. The failure mode remote_write doesn't cover is specifically 'the standby's OS cache lies the same way any node's OS cache can' — the same lesson as the fsync incident in §11, just relocated to the replica." },
+  { lvl:"STAFF", q:"WAL volume on a busy server triples for a few seconds right after every checkpoint, then drops back down. Diagnose, and name the GUC that mitigates it without changing checkpoint frequency.", hint:"first touch since the redo pointer moved",
+    a:"This is full-page writes doing exactly what they're designed to do: the first modification to any page after a checkpoint completes must carry a full image (because the page's prior on-disk state, written at some earlier point, can no longer be assumed un-torn relative to the new checkpoint's redo pointer). A hot working set means most of its pages get touched again quickly after each checkpoint, so the full-image cost concentrates right after checkpoint and decays as pages settle into cheap-delta mode until the next one. wal_compression compresses those full-page images specifically, cutting the burst's bytes without touching checkpoint_timeout/max_wal_size." },
+  { lvl:"PRINCIPAL", q:"A customer wants zero acknowledged-then-lost transactions AND sub-millisecond commit latency. Explain why this is a physical contradiction, and name the closest achievable compromise.", hint:"what does 'zero loss' actually require to be true, physically?",
+    a:"Zero acknowledged-then-lost transactions requires the acknowledgment to wait until the data is durable somewhere that survives the failure you're protecting against — at minimum a local fsync (synchronous_commit=on), and for node-loss protection, a synchronous standby's own fsync or replay (on/remote_apply). Durability round trips are bounded below by physical device or network latency — even the best case (battery-backed cache, ~10µs local) can't be sub-millisecond once a network hop to a synchronous standby is added, since that's dominated by round-trip network latency, typically hundreds of microseconds to low milliseconds even on a fast LAN. The closest compromise: synchronous_commit=on with fast local storage (BBU/PLP) for node-local durability at near-minimum latency, treating cross-node zero-loss as a separate, explicitly slower guarantee applied only to the subset of transactions that truly require it — not a global setting." }
+]);
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 11 will show that a checkpoint's job is to bound how much WAL a crash must replay. Predict: what would happen to recovery time if PostgreSQL never checkpointed at all, using only what this chapter taught about the WAL-before-data rule?",
+    a:"Without checkpoints, there is no advancing 'redo pointer' — recovery would have to replay every WAL record ever written since the cluster's creation, because nothing establishes a point after which the data files are known to already reflect all earlier changes. Recovery time would grow unboundedly with cluster age, and pg_wal would need to retain the entire history forever (disk space unbounded too). Checkpoints exist precisely to let old WAL be discarded and recovery start recently instead of from the beginning of time." },
+  { lvl:"THINK", q:"On a hot standby, only the startup process may write dirty pages into shared buffers (chapter 1's model, revisited). Using this chapter's WAL-before-data rule, predict what must be true about the LSNs a read-only query on that standby is allowed to see.",
+    a:"A standby query must never see a page state whose LSN is ahead of what's been safely replayed and is consistent with the redo pointer — otherwise a subsequent standby crash and re-replay could produce a different, contradictory result for the same query. This is exactly why hot standby queries can be canceled or delayed on replication conflicts (max_standby_streaming_delay) — the startup process's replay position IS the standby's notion of 'now,' and readers can't be allowed ahead of it." },
+  { lvl:"THINK", q:"Design exercise: sketch, from this chapter's mechanics alone, why a checkpoint cannot simply be 'stop the world, flush everything, resume' on a live multi-terabyte database.",
+    a:"Stopping the world to flush every dirty buffer would make checkpoint duration proportional to shared_buffers' total dirty size — on a multi-terabyte buffer pool, potentially minutes of total unavailability, unacceptable for any live system. You already know enough to guess the fix's shape: spread the writes out over an interval (checkpoint_completion_target) so I/O is paced rather than bursted, while still recording one consistent point (the redo pointer) that recovery can trust — chapter 11 names this a 'fuzzy checkpoint' and derives exactly how it stays correct despite pages being written at different times." }
+]);
+
+/* ============================================================
+   12. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A background writer process is about to write a dirty heap page to disk. What must be true before that write is allowed to proceed?",
+    opts:[ "The transaction that dirtied the page must have committed",
+           "The WAL record covering that page's pd_lsn must already be flushed to stable storage",
+           "The page must be the oldest dirty page in the buffer pool",
+           "Nothing — dirty pages can be written at any time with no precondition" ],
+    a:1,
+    why:"This is the WAL-before-data rule, enforced literally by FlushBuffer() calling XLogFlush(page->pd_lsn) before the page write. Commit status (option A) is irrelevant to the physical write — steal means dirty pages from uncommitted transactions can be written too, as long as their WAL is flushed first. Option C describes a buffer-replacement policy detail, not a correctness precondition. Option D ignores the entire chapter." },
+  { q:"pg_wal/00000002000000010000004B — decode the timeline and the segment number.",
+    opts:[ "timeline 2, segment 0x4B (75)", "timeline 1, segment 2", "timeline 0x4B, segment 2", "timeline 2, segment 1" ],
+    a:0,
+    why:"The filename splits into three 8-hex-digit fields: timeline (00000002 → 2), logid (00000001 → 1), segment (0000004B → 0x4B = 75 decimal). The segment number by itself, within its logid group, is 75 — the answer combines timeline correctly with the segment field, which is the last group, not the middle one." },
+  { q:"Why does WAL volume spike for several seconds right after every checkpoint completes, even with no change in application write rate?",
+    opts:[ "The checkpointer itself writes large WAL records describing every page it flushed",
+           "full_page_writes attaches a full page image to the first modification of each page since the checkpoint's redo pointer moved",
+           "wal_buffers is forcibly shrunk during checkpoints, forcing more frequent flushes",
+           "Autovacuum always runs immediately after a checkpoint completes" ],
+    a:1,
+    why:"Checkpoints don't log their own page-flush activity as bulky WAL — they mainly just guarantee flushes happened and record a new redo pointer. The volume spike is full-page writes: the FIRST touch to any page after that redo pointer moves must carry a full image (the torn-page insurance from §8b), and a hot working set gets most of its pages touched again quickly, concentrating that cost right after each checkpoint. wal_buffers and autovacuum timing are unrelated to this specific mechanism." },
+  { q:"With synchronous_commit=off, a client receives 'COMMIT' successfully. The server then loses power before the next WAL flush. What happened to that transaction?",
+    opts:[ "Impossible — off still flushes before acknowledging, just asynchronously",
+           "It is guaranteed to be recovered because it was already in WAL buffers",
+           "It can be permanently lost, even though the client was told it succeeded",
+           "It corrupts the database because WAL buffers were never drained" ],
+    a:2,
+    why:"synchronous_commit=off acknowledges as soon as the record is copied into WAL buffers — no flush required before ack. WAL buffers are shared memory, which does not survive a power loss. If the walwriter's next scheduled flush (bounded by wal_writer_delay) hadn't happened yet, that commit's bytes never reached disk and are gone — the database itself stays internally consistent (option D is wrong; no corruption occurs, WAL-before-data still held for whatever DID reach disk), but that specific transaction's existence is simply erased from history." },
+  { q:"Why does NUM_XLOGINSERT_LOCKS split the WAL-insert critical section into 8 separate locks instead of 1?",
+    opts:[ "So each lock can protect a different WAL segment file on a different disk",
+           "So the expensive memcpy into WAL buffers can proceed in parallel across backends, while only the cheap pointer-reservation CAS is fully serialized",
+           "Because PostgreSQL supports at most 8 concurrent backends performing writes",
+           "To let 8 different resource managers write simultaneously without conflicting" ],
+    a:1,
+    why:"The reservation (bumping the shared insert pointer) is the only step that must be strictly ordered, and it's done as an atomic CAS with no lock at all. The insert locks protect a different, more expensive step — copying already-reserved bytes into the WAL buffer ring — and having 8 of them lets that copying happen concurrently across backends instead of serializing behind one lock. It has nothing to do with segment files, a backend-count limit, or resource manager count." },
+  { q:"A drive's write cache is volatile (not battery-backed) but reports every write as complete the instant it's cached. What does this mean for PostgreSQL's fsync() calls?",
+    opts:[ "Nothing — fsync() itself guarantees the drive's cache is bypassed entirely",
+           "fsync() can return success while the data is only in a cache that a power loss will erase, silently breaking the durability guarantee",
+           "PostgreSQL detects volatile write caches automatically and disables WAL in that case",
+           "This only matters for data pages, never for WAL, because WAL is always written with O_DIRECT" ],
+    a:1,
+    why:"fsync() asks the OS to flush to the device and asks the device to make its write durable — but a volatile write cache can acknowledge the flush command instantly while quietly keeping the bytes only in a cache that a power loss erases. The OS and PostgreSQL have no way to distinguish an honest fast device (BBU/PLP) from a lying one purely from the syscall's return value. This is exactly why battery-backed or power-loss-protected caches matter: they make the fast answer also the true one. There's no automatic detection, and WAL isn't universally O_DIRECT — wal_sync_method is configurable." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could patch xlog.c today.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks and §15's simulator — pulling the cord yourself makes this click fast."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Caller registers touched buffers + data via XLogBeginInsert/XLogRegister*",
+    "XLogInsert(): CalcSizeOfXLogRecord() computes the total record length",
+    "ReserveXLogInsertLocation(): atomic CAS bumps the shared insert pointer",
+    "WALInsertLockAcquire(slot): one of 8 locks, chosen by proc slot",
+    "CopyXLogRecordToWAL(): record bytes memcpy'd into shared WAL buffers",
+    "WALInsertLockRelease(slot)",
+    "XLogFlush(commitLSN): if not already covered, acquire WALWriteLock",
+    "XLogWrite() writes buffered bytes, then issue_xlog_fsync() forces the disk",
+    "ack_client(): COMMIT is only now reported successful"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real insert-to-ack path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   13. SIMULATOR (§15) — the flagship WAL timeline simulator
+   ============================================================ */
+(function(){
+  const SYNC_LEVELS = ["off","local","remote_write","on","remote_apply"];
+  const STORAGE = { nvme:{n:"NVMe", ticks:1}, bbu:{n:"BBU cache", ticks:1}, satassd:{n:"SATA SSD", ticks:2}, hdd:{n:"spinning disk", ticks:6} };
+  const NET_LAG = 2, RFSYNC_LAG = 1, APPLY_LAG = 1;
+  const BASE_LSN = 0x5000000;
+
+  const S = {
+    running:true, paused:false, crashed:false,
+    syncLevel:"on", storage:"satassd", fpw:true, commitDelay:false,
+    insertLSN:BASE_LSN, flushedLSN:BASE_LSN,
+    histFlush:[], histRecv:[], histRFlush:[],
+    replicaReceivedLSN:BASE_LSN, replicaFlushedLSN:BASE_LSN, replicaAppliedLSN:BASE_LSN,
+    touchedPages:new Set(), pageCursor:0,
+    records:[], txns:[], nextRecId:1, nextTxnId:1, nextXid:900,
+    flushTimer:null, sel:null,
+    bytesKB:0, fsyncCount:0, lostCount:0,
+    sinceCkptTotal:0, sinceCkptFpw:0
+  };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 100) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function fmtLSN(v){
+    const hi = Math.floor(v/0x100000000), lo = v%0x100000000;
+    return hi.toString(16).toUpperCase()+"/"+lo.toString(16).toUpperCase();
+  }
+  function recEndLSN(r){ return r.lsn + r.size; }
+
+  function makeRecord(txn, type){
+    let size;
+    let fpw = false;
+    if (type === "commit") size = 60;
+    else {
+      const page = S.pageCursor = (S.pageCursor+1) % 6;
+      size = type==="btree" ? 130 : 190;
+      if (S.fpw && !S.touchedPages.has(page)){
+        size += 6100; fpw = true; S.touchedPages.add(page);
+      }
+      var pageId = page;
+    }
+    const r = { id:S.nextRecId++, xid:txn.xid, type, lsn:S.insertLSN, size, fpw, page: type==="commit"?null:pageId };
+    S.insertLSN += size;
+    S.records.push(r);
+    S.bytesKB += size/1024;
+    S.sinceCkptTotal += size;
+    if (fpw) S.sinceCkptFpw += size;
+    if (S.records.length > 60) S.records.shift();
+    return r;
+  }
+
+  function startFlush(targetLSN){
+    if (S.flushTimer){
+      if (targetLSN > S.flushTimer.targetLSN) S.flushTimer.targetLSN = targetLSN;
+      return;
+    }
+    const ticks = STORAGE[S.storage].ticks + (S.commitDelay ? 1 : 0);
+    S.flushTimer = { ticksLeft: ticks, targetLSN };
+    log("LOG", `XLogFlush: starting fsync toward ${fmtLSN(targetLSN)} on ${STORAGE[S.storage].n} (~${ticks} tick${ticks>1?"s":""})`);
+  }
+
+  function newTxn(label, types){
+    const txn = { id:S.nextTxnId++, xid:S.nextXid++, label, recIds:[], commitEnd:null, status:"pending", ackSent:false };
+    types.forEach(t=>{
+      const r = makeRecord(txn, t);
+      txn.recIds.push(r.id);
+      if (t === "commit") txn.commitEnd = recEndLSN(r);
+    });
+    if (S.syncLevel === "off"){
+      txn.status = "buffered"; txn.ackSent = true;
+      log("WARN", `xid ${txn.xid}: COMMIT reported SUCCESS to client (synchronous_commit=off — WAL only in buffers so far)`);
+    } else {
+      log("LOG", `xid ${txn.xid}: ${label} txn — commit record reserved at ${fmtLSN(txn.commitEnd)}, waiting on flush`);
+      startFlush(txn.commitEnd);
+    }
+    S.txns.push(txn);
+    if (S.txns.length > 14) S.txns.shift();
+    render();
+  }
+
+  function ackConditionMet(txn){
+    if (S.flushedLSN < txn.commitEnd) return false;
+    if (S.syncLevel === "off" || S.syncLevel === "local") return true;
+    if (S.syncLevel === "remote_write") return S.replicaReceivedLSN >= txn.commitEnd;
+    if (S.syncLevel === "on") return S.replicaFlushedLSN >= txn.commitEnd;
+    if (S.syncLevel === "remote_apply") return S.replicaAppliedLSN >= txn.commitEnd;
+    return true;
+  }
+
+  function tick(){
+    if (S.paused || !S.running) return;
+    if (S.flushTimer){
+      S.flushTimer.ticksLeft--;
+      if (S.flushTimer.ticksLeft <= 0){
+        const target = S.flushTimer.targetLSN;
+        S.flushedLSN = Math.max(S.flushedLSN, target);
+        S.flushTimer = null;
+        S.fsyncCount++;
+        const covered = S.txns.filter(t=>t.status==="pending" && t.commitEnd<=S.flushedLSN).length +
+                         S.txns.filter(t=>t.status==="buffered" && t.commitEnd<=S.flushedLSN && !t._flushNoted).length;
+        log("OK", `fsync #${S.fsyncCount} complete — flushed up to ${fmtLSN(S.flushedLSN)}${covered>1?` (group commit: ${covered} txns covered in one fsync)`:""}`);
+      }
+    }
+    // replica lag chain, sampled each tick
+    S.histFlush.push(S.flushedLSN); if (S.histFlush.length>40) S.histFlush.shift();
+    S.replicaReceivedLSN = S.histFlush[Math.max(0, S.histFlush.length-1-NET_LAG)] ?? S.replicaReceivedLSN;
+    S.histRecv.push(S.replicaReceivedLSN); if (S.histRecv.length>40) S.histRecv.shift();
+    S.replicaFlushedLSN = S.histRecv[Math.max(0, S.histRecv.length-1-RFSYNC_LAG)] ?? S.replicaFlushedLSN;
+    S.histRFlush.push(S.replicaFlushedLSN); if (S.histRFlush.length>40) S.histRFlush.shift();
+    S.replicaAppliedLSN = S.histRFlush[Math.max(0, S.histRFlush.length-1-APPLY_LAG)] ?? S.replicaAppliedLSN;
+
+    S.txns.forEach(txn=>{
+      if ((txn.status==="pending" || txn.status==="buffered") && ackConditionMet(txn)){
+        const wasAcked = txn.ackSent;
+        txn.status = "flushed";
+        if (!wasAcked){
+          txn.ackSent = true;
+          log("OK", `xid ${txn.xid}: COMMIT reported SUCCESS to client (durable per synchronous_commit=${S.syncLevel})`);
+        }
+      }
+    });
+    render();
+  }
+  setInterval(tick, 300);
+
+  function pullCord(){
+    if (!S.running) return;
+    S.running = false;
+    if (S.flushTimer) log("WARN", "power lost mid-fsync — that flush never completes");
+    let survived=0, ghosts=0, honestLost=0, safeViaReplica=0;
+    S.txns.forEach(txn=>{
+      const durable = txn.commitEnd <= S.flushedLSN;
+      const onReplica = txn.commitEnd <= S.replicaAppliedLSN;
+      if (onReplica && !durable) safeViaReplica++;
+      if (durable){ txn.status = "flushed"; survived++; }
+      else if (txn.ackSent){ txn.status = "ghost"; ghosts++; }
+      else { txn.status = "lost"; honestLost++; }
+    });
+    S.lostCount += ghosts + honestLost;
+    log("PANIC", "*** POWER LOST *** — WAL buffers (volatile) are gone; only what reached the disk column survives");
+    log("FATAL", `${survived} transaction(s) survived, ${ghosts} were ACKNOWLEDGED then LOST, ${honestLost} were never acknowledged and are simply gone` + (safeViaReplica? `, ${safeViaReplica} additionally safe via standby failover`:""));
+    if (ghosts>0) log("WARN", "the ghost transactions are the dangerous ones: clients were told COMMIT succeeded, and it did not survive");
+    el("sc-pull").style.display = "none";
+    el("sc-reboot").style.display = "block";
+    render();
+  }
+  function reboot(){
+    log("LOG", "pg_ctl start — reading pg_control, replaying WAL up to the last flushed LSN");
+    S.records = S.records.filter(r=>recEndLSN(r) <= S.flushedLSN);
+    S.txns = [];
+    S.flushTimer = null;
+    S.crashed = false; S.running = true;
+    el("sc-pull").style.display = "block";
+    el("sc-reboot").style.display = "none";
+    log("OK", "recovery complete — database system is ready to accept connections");
+    render();
+  }
+
+  function render(){
+    el("sim-phase").textContent = !S.running ? "CRASHED — POWER LOST" : S.paused ? "PAUSED" : "RUNNING";
+    el("sim-phase").style.color = !S.running ? "var(--bad)" : "var(--ok)";
+    el("sim-lsn-insert").textContent = fmtLSN(S.insertLSN);
+    el("sim-lsn-flush").textContent = fmtLSN(S.flushedLSN);
+    el("sim-lsn-replica").textContent = fmtLSN(S.replicaAppliedLSN);
+
+    const bufRecs = S.records.filter(r=>recEndLSN(r) > S.flushedLSN);
+    const diskRecs = S.records.filter(r=>recEndLSN(r) <= S.flushedLSN).slice(-18);
+    const recHTML = r => `<div class="walrec ${r.type} ${r.fpw?"fpw":""} ${S.sel===r.id?"sel":""}" data-id="${r.id}">
+        ${r.type==="commit"?"XLOG_XACT_COMMIT":r.type==="btree"?"XLOG_BTREE_INSERT_LEAF":"XLOG_HEAP_INSERT"}${r.fpw?" +FPW":""}
+        <span class="wr-lsn">${fmtLSN(r.lsn)} · xid ${r.xid} · ${r.size}B</span></div>`;
+    el("sim-col-buf").innerHTML = bufRecs.length ? bufRecs.map(recHTML).join("") : `<div style="color:var(--dim);font-family:var(--mono);font-size:11px;padding:8px">empty</div>`;
+    el("sim-col-disk").innerHTML = diskRecs.length ? diskRecs.map(recHTML).join("") : `<div style="color:var(--dim);font-family:var(--mono);font-size:11px;padding:8px">nothing flushed yet</div>`;
+    document.querySelectorAll("#sim-col-buf .walrec, #sim-col-disk .walrec").forEach(n=>{
+      n.onclick = ()=>{ S.sel = +n.dataset.id; render(); };
+    });
+
+    const statusCls = { pending:"pend", buffered:"buf", flushed:"flush", lost:"lost", ghost:"ghost" };
+    const statusTxt = { pending:"reserved", buffered:"ACKED, buffered only", flushed:"durable", lost:"lost (never acked)", ghost:"ACKED then LOST" };
+    el("sim-txns").innerHTML = S.txns.slice().reverse().map(t=>
+      `<div class="txn-row">xid ${t.xid} · ${t.label}<span class="tstatus ${statusCls[t.status]}">${statusTxt[t.status]}</span></div>`
+    ).join("") || `<div style="color:var(--dim);font-family:var(--mono);font-size:11px">no transactions yet — run one</div>`;
+
+    if (S.sel){
+      const r = S.records.find(x=>x.id===S.sel);
+      if (r){
+        el("sim-insp").innerHTML = `<div class="i-t">INSPECTOR</div>
+          <div>LSN <span class="i-pid">${fmtLSN(r.lsn)}</span> → ${fmtLSN(recEndLSN(r))}<br>
+          type: ${r.type} · xid: ${r.xid} · size: ${r.size} bytes${r.fpw?" (includes full-page image)":""}<br>
+          location: ${recEndLSN(r)<=S.flushedLSN?"on disk (durable)":"WAL buffers only (volatile)"}</div>`;
+      }
+    } else {
+      el("sim-insp").innerHTML = `<div class="i-t">INSPECTOR</div><div style="color:var(--dim)">click a WAL record…</div>`;
+    }
+
+    el("cnt-bytes").textContent = S.bytesKB.toFixed(1);
+    el("cnt-fsync").textContent = S.fsyncCount;
+    el("cnt-lost").textContent = S.lostCount;
+    const amp = S.sinceCkptTotal>0 ? Math.round(S.sinceCkptFpw/S.sinceCkptTotal*100) : 0;
+    el("m-amp-v").textContent = amp+"%";
+    const af = el("m-amp"); af.style.width = amp+"%"; af.className = "m-fill " + (amp>50?"hot":amp>20?"warm":"");
+  }
+
+  el("sc-small").onclick = ()=> S.running && newTxn("small", ["heap","commit"]);
+  el("sc-medium").onclick = ()=> S.running && newTxn("medium", ["heap","btree","commit"]);
+  el("sc-batch").onclick = ()=> S.running && newTxn("batch×5", ["heap","heap","heap","heap","heap","commit"]);
+  el("sc-ckpt").onclick = ()=>{
+    if (!S.running) return;
+    S.touchedPages.clear();
+    S.sinceCkptTotal = 0; S.sinceCkptFpw = 0;
+    log("LOG", `checkpoint complete — redo pointer advances to ${fmtLSN(S.flushedLSN)}; next page touch pays a full-page image again`);
+    render();
+  };
+  el("sc-pull").onclick = pullCord;
+  el("sc-reboot").onclick = reboot;
+  el("sc-fpw").onclick = ()=>{ S.fpw = !S.fpw; el("sc-fpw").textContent = "full_page_writes: " + (S.fpw?"ON":"OFF"); el("sc-fpw").classList.toggle("on", S.fpw); };
+  el("sc-delay").onclick = ()=>{ S.commitDelay = !S.commitDelay; el("sc-delay").textContent = "commit_delay: " + (S.commitDelay?"ON":"OFF"); el("sc-delay").classList.toggle("on", S.commitDelay); };
+  el("sc-pause").onclick = ()=>{ S.paused = !S.paused; el("sc-pause").textContent = S.paused ? "▶ resume" : "⏸ pause"; };
+
+  const syncEl = el("sim-sync-chips");
+  syncEl.innerHTML = SYNC_LEVELS.map(l=>`<button class="chip ${l==="on"?"on":""}" data-l="${l}">${l}</button>`).join("");
+  syncEl.querySelectorAll(".chip").forEach(c=> c.onclick = ()=>{
+    S.syncLevel = c.dataset.l;
+    syncEl.querySelectorAll(".chip").forEach(x=>x.classList.toggle("on", x===c));
+    log("LOG", `synchronous_commit = ${S.syncLevel}`);
+  });
+  const stoEl = el("sim-storage-chips");
+  stoEl.innerHTML = Object.keys(STORAGE).map(k=>`<button class="chip ${k==="satassd"?"on":""}" data-k="${k}">${STORAGE[k].n}</button>`).join("");
+  stoEl.querySelectorAll(".chip").forEach(c=> c.onclick = ()=>{
+    S.storage = c.dataset.k;
+    stoEl.querySelectorAll(".chip").forEach(x=>x.classList.toggle("on", x===c));
+    log("LOG", `storage class = ${STORAGE[S.storage].n}`);
+  });
+
+  log("OK", "WAL simulator ready — synchronous_commit=on, SATA SSD, full_page_writes=ON");
+  log("HINT", "Try: off + pull the cord fast → an acknowledged commit becomes a ghost. Then try on + pull the cord → nothing acked is ever lost.");
+  render();
+})();
+
+/* ============================================================
+   12. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-10"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-09.html"><span>←</span><span><span class="cn-lbl">PREV · CH 09</span><span class="cn-ttl">Buffer Manager & the Clock-Sweep Algorithm</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html" selected>CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">10 / 21</span></div><a class="cn-btn" href="pg-11.html"><span><span class="cn-lbl">NEXT · CH 11</span><span class="cn-ttl">Checkpoints & Crash Recovery</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

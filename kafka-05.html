@@ -1,0 +1,1833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAFKA-05 · Replication: ISR, High Watermark & Leader Epochs — Apache Kafka Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#f25c54; --pg-dim:rgba(242,92,84,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#ff4d6d; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(242,92,84,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(242,92,84,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(242,92,84,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(255,77,109,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* generic node boxes used across decks */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:340px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(242,92,84,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(255,77,109,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(255,77,109,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* log column boxes (for ISR / epoch decks) */
+  .logcols{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+  .logcol{flex:1;min-width:150px;max-width:210px}
+  .logcol .lc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;margin-bottom:8px;text-align:center}
+  .logcol .lc-sub{font-family:var(--mono);font-size:9px;color:var(--dim);text-align:center;margin-top:-4px;margin-bottom:8px}
+  .offrow{display:flex;flex-direction:column-reverse;gap:3px}
+  .off{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:6px;padding:4px 8px;
+    font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:center;position:relative}
+  .off.e0{border-color:#60a5fa;color:#9fd0ff}
+  .off.e1{border-color:var(--pg);color:var(--pg)}
+  .off.e2{border-color:var(--purple);color:var(--purple)}
+  .off.committed{background:rgba(74,222,128,.08)}
+  .off.diverged{background:rgba(255,77,109,.18);border-color:var(--bad);color:var(--bad)}
+  .off.gone{opacity:.25;text-decoration:line-through}
+  .marker{font-family:var(--mono);font-size:8.5px;letter-spacing:.05em;text-align:center;padding:1px 0}
+  .marker.hw{color:var(--ok)}
+  .marker.leo{color:var(--warn)}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:760px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(242,92,84,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(242,92,84,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(255,77,109,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(242,92,84,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(255,77,109,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* replica nodes in sim */
+  .rnodes{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:10px}
+  .rnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:10px;min-width:150px;
+    transition:all .3s;cursor:pointer}
+  .rnode .rn-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between;margin-bottom:6px}
+  .rnode.leader{border-color:var(--pg);box-shadow:0 0 16px rgba(242,92,84,.12)}
+  .rnode.leader .rn-t{color:var(--pg)}
+  .rnode.isr{}
+  .rnode.out-isr{opacity:.5;border-style:dashed}
+  .rnode.dead{opacity:.3;filter:grayscale(1)}
+  .rnode.sel{box-shadow:0 0 0 2px var(--pg)}
+  .rn-log{min-height:70px;display:flex;flex-direction:column-reverse;gap:2px}
+  .rn-off{border:1px solid var(--border-hi);background:var(--bg-2);border-radius:5px;padding:2px 6px;font-family:var(--mono);
+    font-size:9.5px;color:var(--muted);text-align:center}
+  .rn-off.e0{border-color:#60a5fa;color:#9fd0ff} .rn-off.e1{border-color:var(--pg);color:var(--pg)} .rn-off.e2{border-color:var(--purple);color:var(--purple)}
+  .rn-off.diverged{background:rgba(255,77,109,.18);border-color:var(--bad);color:var(--bad)}
+  .rn-meta{font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:6px;line-height:1.5}
+  .rn-lag{margin-top:5px;height:5px;background:var(--bg-2);border:1px solid var(--border);border-radius:3px;overflow:hidden}
+  .rn-lag i{display:block;height:100%;background:var(--warn);width:0%;transition:width .2s linear}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--warn));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-kafka.html">← Apache Kafka Internals</a>
+  <span class="crumb">APACHE KAFKA INTERNALS · <b>CH 05 / 15</b> · REPLICATION</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: ISR, Examined</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">APACHE KAFKA INTERNALS · CHAPTER 05</div>
+  <h1>Replication: ISR, High Watermark<br><span class="grad">& Leader Epochs</span></h1>
+  <p class="lead">Kafka replicates every partition, and yet it runs neither Raft nor Paxos. It runs something older
+  and stranger: a dynamic quorum called the <b>in-sync replica set</b>, arbitrated by an external controller,
+  in which followers <i>pull</i> data from the leader using the same request type a consumer would send. This
+  chapter derives that design from the ground up, proves exactly what durability guarantee it gives you, and
+  walks through the real bug — and the real fix, leader epochs — that it took the project a decade to get right.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>State precisely what <code>acks=all</code> plus <code>min.insync.replicas</code> guarantees, and what it does not.</div>
+    <div class="obj"><b>You will understand</b>Why the high watermark alone was not a safe truncation point, and what leader epochs fixed.</div>
+    <div class="obj"><b>You will predict</b>When an ISR shrinks, when a produce request fails, and what an unclean election actually deletes.</div>
+    <div class="obj"><b>You will simulate</b>A live leader/follower cluster: kill followers, kill the leader, and watch epoch-based truncation happen — with a toggle to relive the pre-KIP-101 bug.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">One log, several copies, and a precise definition of "safe"</h2>
+  <p class="lead">A Kafka partition is a single ordered, append-only log. The moment you put that log on more than
+  one broker — which you must, because disks and machines fail — you have created a distributed systems problem
+  with a brutally specific correctness bar: <b>a message a producer was told is "committed" must survive the
+  failure of any one broker (or, with the right settings, several), and every consumer must see exactly the same
+  sequence of committed messages in exactly the same order, forever.</b></p>
+  <p>Unpack that bar and five requirements pull in different directions, the same shape you will see in every
+  serious replication design:</p>
+  <ul class="plain">
+    <li><b>Durability under failure</b> — an acknowledged write must not vanish when the broker that took it dies five milliseconds later.</li>
+    <li><b>A single, agreed order</b> — replicas must not merely hold the same messages, they must hold them <i>at the same offsets</i>; two brokers disagreeing about what's at offset 4,502,001 is worse than either one losing data, because it's silent.</li>
+    <li><b>Low, predictable write latency</b> — replication cannot mean waiting on the slowest machine in the fleet for every single record; producers need bounded, tunable latency.</li>
+    <li><b>Bounded staleness for followers</b> — the system needs an honest, observable answer to "how far behind is replica 3?" — not a guess.</li>
+    <li><b>Safe recovery after a crash</b> — when a replica restarts after being down, or after losing a leader election, it must reconcile its log with the new truth without ever silently keeping data that was never actually committed, and without ever discarding data that was.</li>
+  </ul>
+  <p>Kafka's partition-level replication protocol is the machinery built to satisfy all five without paying for a
+  textbook consensus algorithm per partition — and a Kafka cluster can easily have hundreds of thousands of
+  partitions. <b>The answer is not Raft. It is not Paxos.</b> It's a leader/follower scheme with a
+  <span class="term" data-def="The set of replicas that have proven, within a configurable time window, that they are caught up to the leader's log. Only ISR members count toward acks=all and toward advancing the high watermark.">dynamically shrinking and growing quorum</span> —
+  the ISR — whose membership is decided by the leader but whose official record of truth lives in a separate
+  consensus system entirely (the controller, backed historically by ZooKeeper and today by the KRaft Raft quorum
+  you will meet in chapter 6). Understanding why that split design exists, and exactly what it promises, is this
+  chapter.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT 10 CHAPTERS</div>
+    <p>Every correctness property Kafka advertises — "no data loss with <code>acks=all</code>", "consumers never see
+    uncommitted data", "exactly-once semantics" (KIP-98, chapter 8 of this course) — is built <i>on top of</i> the
+    exact mechanism in this chapter: the ISR, the high watermark, and the leader epoch. Get this chapter's model
+    wrong and every downstream guarantee you reason about will be wrong too.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">A decade of finding the bug in "good enough"</h2>
+  <p>Kafka's replication protocol did not arrive complete. It was built incrementally, and almost every increment
+  was a response to a specific, dated, publicly-discussed correctness bug. Click through — several of these events
+  are the literal reason a config or an API you use today exists.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — replication's decade</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY NO CONSENSUS PAPER SHOWS UP UNTIL LATE</div>
+    <p>Kafka 0.7 (2011) had no replication at all — each partition lived on exactly one broker, and losing that
+    broker meant losing the partition. Replication landed in 0.8 (2013), designed by Jun Rao, Neha Narkhede, and
+    Jay Kreps under a constraint academic consensus protocols weren't built for: a single cluster with tens of
+    thousands of partitions, each independently needing a leader. Running a full Raft or Paxos leader-election
+    round <i>per partition</i> at that cardinality was — and still would be — prohibitively chatty. The design
+    instead reused a single external coordination service (ZooKeeper) to answer "who's the controller", and let the
+    controller answer "who's the leader" for every partition in bulk. That architectural shortcut is exactly what
+    chapter 6 revisits and eventually replaces with KRaft.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: replicate to everyone, synchronously, always</h2>
+  <p>Derive it honestly. If N brokers hold a copy of a partition, the simplest correct-looking design is: the
+  leader appends a record locally, then pushes it to every follower over RPC, and only acknowledges the producer
+  once <i>all N-1</i> followers have confirmed receipt. No bookkeeping, no dynamic membership, no edge cases —
+  every replica is always identical.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudo-Scala</span><span>naive_leader.scala — the strawman, annotated</span></div>
+    <pre><span class="k">class</span> <span class="t">NaiveLeader</span>(followers: <span class="t">List</span>[<span class="t">FollowerRpc</span>]) {
+
+  <span class="k">def</span> <span class="f">append</span>(record: <span class="t">Record</span>): <span class="t">Ack</span> = {
+    log.append(record)                        <span class="c">// leader writes to its own local log first</span>
+
+    <span class="c">// synchronously push to EVERY follower and block for ALL replies —</span>
+    <span class="c">// no concept of "caught up enough", no timeout-based membership</span>
+    <span class="k">val</span> replies = followers.map(f =&gt; f.replicateBlocking(record))
+
+    <span class="k">if</span> (replies.forall(_.ok)) <span class="t">Ack</span>.<span class="f">Success</span>
+    <span class="k">else</span> <span class="t">Ack</span>.<span class="f">Failure</span>(<span class="s">"a replica did not confirm"</span>)  <span class="c">// now what? retry forever?</span>
+  }
+}</pre>
+  </div>
+
+  <p>This is not a strawman built to be laughed at — it is the correct <i>first</i> thing to reason about, and it
+  already gets the hard part right: with every replica always fully caught up, there is no ambiguity about what
+  "committed" means, no truncation problem on restart, and no possibility of two replicas disagreeing about
+  offset 4,502,001. If you could afford it, you would not need the rest of this chapter.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The tyranny of the slowest replica, quantified</h2>
+  <p>The naive design's fatal flaw is arithmetic, not aesthetics: <b>write latency becomes the maximum over all
+  replicas, not the average</b>, and <b>write availability becomes the AND of every replica's availability, not the
+  OR</b>. Both get worse, not better, as you add replicas for durability — which is exactly backwards from what you
+  want a durability knob to do.</p>
+  <ul class="plain">
+    <li><b>Latency:</b> with three replicas whose network round-trip + fsync latency is, say, 4&nbsp;ms, 5&nbsp;ms,
+      and 40&nbsp;ms (one follower is on a loaded host, or across a slower link), every single produce call now
+      takes ≥&nbsp;40&nbsp;ms — <i>a tail latency problem you cannot average away</i>, because the naive protocol
+      waits for the max, always.</li>
+    <li><b>Availability:</b> with RF=3 and independent per-broker availability of 99.9%, the probability all three
+      are simultaneously reachable is 0.999³ ≈ 99.7% — worse than any single replica alone, and the gap widens
+      with every replica you add. Replication was supposed to <i>improve</i> availability of the data; the naive
+      protocol trades data availability (a copy survives) for write availability (you can never write while any
+      copy is down) — precisely the wrong trade for a system whose entire job is accepting writes.</li>
+    <li><b>No sick-day tolerance:</b> a single follower doing a slow GC pause, a rebalancing disk, or a flaky NIC
+      does not just slow down — it takes the <i>entire partition</i> off the write path for everyone, including
+      producers who never touch that follower's data directly.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS THAT KILL IT</div>
+    <p>Model produce latency for RF replicas each with i.i.d. per-request latency drawn from a distribution with a
+    heavy tail (typical of real datacenter networks and disks). The naive protocol's latency is the <b>max order
+    statistic</b> of RF samples — and the expected maximum of RF samples from a heavy-tailed distribution grows
+    with RF, not shrinks. Add a fourth replica for "more durability" and you have <i>guaranteed</i> yourself a
+    worse p50, not just a worse p99. This is the same Little's-Law-adjacent intuition from the PostgreSQL course's
+    chapter 1 (one slow server dictates throughput for everyone) — here it dictates latency for everyone, on every
+    single write, forever.</p>
+  </div>
+  <p>So the requirement is not "replicate to all N, always" — it is "replicate to <i>enough</i> replicas, and make
+  'enough' dynamic, observable, and fenced against silent divergence." Section 5 derives what that has to look
+  like.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Majority quorum vs. dynamic quorum — the decision, re-derived</h2>
+  <p>Step through the three real candidates a systems architect facing this problem in 2012–2013 would have
+  weighed, in the order Kafka's designers eliminated them.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Three ways to define "committed enough"</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: WHY PULL, NOT PUSH</div>
+    <p>Notice a detail buried in candidate C that is easy to skate past: followers <b>pull</b> from the leader by
+    issuing an ordinary <code>Fetch</code> request — the exact same API a consumer uses, differentiated only by the
+    replica ID field (a real client sets it to <code>-1</code>; a follower sets it to its own broker ID). This is a
+    deliberate reuse, not an accident: it means the leader needs exactly <b>one</b> code path for "someone wants
+    data starting at offset X" — the same page-cache-backed, zero-copy log-read path serves consumers and
+    followers alike (chapter 10 quantifies why that path is fast). A push-based design would need a second,
+    separate replication RPC path with its own flow control, its own backpressure story, and its own testing
+    surface. Pull-based replication also hands backpressure to the follower for free: a slow follower simply issues
+    its next fetch later, rather than the leader needing to manage per-follower send buffers and retry queues.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The bill for a dynamic quorum</h2>
+  <p>The ISR design is cheaper and more available than synchronous-to-all, and — as chapter 6 will show — cheaper
+  to run than per-partition Raft. But "dynamic" quorum membership is not free; it introduces three sharp edges that
+  the rest of this chapter exists to blunt:</p>
+  <ul class="plain">
+    <li><b>The membership record has two owners with different latencies.</b> The <i>leader</i> decides, locally
+      and instantly, whether a follower still counts as in-sync (by watching its fetch requests). The
+      <i>controller</i> holds the durable, cluster-wide record of ISR membership, and the leader must round-trip to
+      it (historically a ZooKeeper write; in KRaft, an <code>AlterPartition</code> request) to make a shrink or
+      expand official. Between the leader's local decision and the controller's acknowledgment there is a window
+      where the leader's view and the metadata system's view can disagree — and code has to handle that window
+      explicitly (§8).</li>
+    <li><b>The high watermark itself lags reality by one round trip.</b> A follower only learns the leader's
+      newly-advanced high watermark on its <i>next</i> fetch response — which means at any instant, a follower's
+      locally recorded HW can be stale relative to what the leader has already durably committed. As you'll see in
+      §8, trusting that stale number as a truncation point on restart is precisely the bug KIP-101 exists to fix.</li>
+    <li><b>The quorum can shrink to something durability-meaningless if you let it.</b> Nothing stops
+      <code>min.insync.replicas</code> from being set to 1 — at which point <code>acks=all</code> is a no-op
+      durability-wise: the ISR can legally consist of just the leader, and "wait for all of the ISR" becomes "wait
+      for the leader alone." This is not a bug; it is a config trap, and §8 derives exactly why.</li>
+  </ul>
+  <p>Section 7 assembles the full architecture that manages all three: leader-tracked ISR with controller-of-record
+  membership, a precisely-defined high watermark advancement protocol, and — the piece that took until 2016's
+  KIP-101 to land — leader epochs as the actual mechanism for safe truncation.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The replication constellation</h2>
+  <p>Click any component to see its role, the class that implements it, and what happens when it disappears. The
+  asymmetry to notice: the leader is the <i>only</i> replica that decides ISR membership moment-to-moment, but it
+  is not the authority of record — that's the controller, one hop away.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">PARTITION LEADER</div>
+        <div class="arch-grid"><div class="acard" data-p="leader">leader replica</div></div>
+        <div class="arch-row-label">FOLLOWERS (PULL VIA FETCH)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="follower">follower replica</div>
+          <div class="acard" data-p="isr">in-sync replica set</div>
+          <div class="acard" data-p="hw">high watermark</div>
+        </div>
+        <div class="arch-row-label">EXTERNAL AUTHORITY</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="controller">controller — cluster-wide record of leader + ISR (ZooKeeper today, KRaft quorum in ch.6)</div></div>
+        <div class="arch-row-label">CORRECTNESS MACHINERY</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="epoch">leader epoch + epoch cache</div>
+          <div class="acard" data-p="ofle">OffsetsForLeaderEpoch</div>
+        </div>
+        <div class="arch-row-label">CLIENTS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="producer">producer (acks)</div>
+          <div class="acard" data-p="consumer">consumer (reads ≤ HW)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE NAME KAFKA'S OWN DOCS USE: "ISR"</div>
+    <p>Kafka never claims to implement Raft or Paxos for partition data — the docs are precise about calling this a
+    "leader and ISR" model. It is closer in spirit to <b>primary-backup replication with an externally-arbitrated
+    view change</b>: the leader is the primary, followers are backups, and "who is currently primary" is a fact
+    stored and fenced by a separate system rather than negotiated among the replicas themselves via ballots and
+    votes. That separation of concerns — replicate data one way, agree on leadership a totally different way — is
+    the single most important architectural fact in this chapter, and chapter 6 is entirely about the second half
+    of it.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">ISR mechanics, the high watermark protocol, and the leader-epoch fix</h2>
+  <p>Four pieces, in the order you need them: <b>(a)</b> what "in the ISR" precisely means and why the criterion
+  changed from a message count to a clock; <b>(b)</b> exactly how the high watermark advances, one round-trip at a
+  time; <b>(c)</b> the KIP-101 bug, reproduced; <b>(d)</b> the leader-epoch fix that replaced it.</p>
+
+  <h3>(a) ISR membership: from a message count to a clock</h3>
+  <p>Before <code>replica.lag.time.max.ms</code> existed, Kafka used <code>replica.lag.max.messages</code>: a
+  follower fell out of the ISR if its fetch offset trailed the leader's log-end offset (LEO) by more than N
+  messages. That criterion is a trap under bursty load: a producer that suddenly bursts 50,000 messages in one
+  batch makes every follower <i>momentarily</i> trail by tens of thousands of messages — not because any follower
+  is actually slow, but because the leader's LEO jumped instantly while followers need one more fetch round-trip to
+  catch up. A message-count threshold cannot tell "genuinely slow replica" apart from "healthy replica measured
+  one instant after a burst," so it would falsely shrink the ISR on every burst, exactly when you can least afford
+  to lose durability headroom. <code>replica.lag.time.max.ms</code> (default 30,000&nbsp;ms) replaced it with a
+  <i>time</i>-based criterion: a replica stays in the ISR as long as it has caught up to the leader's LEO at some
+  point within the last 30 seconds — bursts cause a brief, bounded lag that resolves within one or two fetch
+  intervals, comfortably under the 30-second window, while a replica that is <i>actually</i> stuck (dead, GC-paused,
+  disk-saturated) will eventually exceed it and be justly removed.</p>
+
+  <h3>(b) Who writes the ISR, and the min.insync.replicas trap</h3>
+  <p>ISR shrink and expand are both decided locally by the leader — it is the only replica watching every
+  follower's fetch requests — and then <i>propagated</i>: historically the leader wrote the new ISR directly to a
+  ZooKeeper znode (<code>/brokers/topics/&lt;topic&gt;/partitions/&lt;n&gt;/state</code>) and the controller picked
+  up the change via a watch; in KRaft, the leader instead sends an <code>AlterPartition</code> request to the active
+  controller, which appends the change to the metadata log and replies once it's committed. Either way, a produce
+  request with <code>acks=all</code> waits for acknowledgment from every replica <i>currently</i> in the ISR — not
+  the full replication factor. If the ISR has shrunk below <code>min.insync.replicas</code>, the leader rejects the
+  write outright with <code>NotEnoughReplicasException</code> (or, if the ISR shrinks mid-flight after the local
+  append but before followers ack, <code>NotEnoughReplicasAfterAppendException</code>) rather than silently
+  degrading the durability the producer asked for.</p>
+  <div class="callout bad">
+    <div class="co-t">THE TRAP: acks=all + min.insync.replicas=1</div>
+    <p>Derive it precisely. With <code>min.insync.replicas=1</code>, the ISR is legally allowed to shrink to just
+    the leader itself (size 1) without the broker ever refusing writes. <code>acks=all</code> then means "wait for
+    acknowledgment from every member of a set that can legally contain only the leader" — which is exactly
+    <code>acks=1</code> with extra steps. If the leader now crashes before any follower has replicated the latest
+    records, every message the producer was told succeeded is gone, and nothing was misconfigured according to
+    Kafka's own bookkeeping. Real durability needs <b>both</b> knobs working together: <code>acks=all</code> defines
+    <i>what must be true before an ack is sent</i>; <code>min.insync.replicas</code> (set to at least 2, with
+    replication factor 3) is what stops that requirement from being satisfied by a lone, soon-to-crash leader.
+    Neither knob alone is a durability guarantee — the guarantee is the conjunction.</p>
+  </div>
+
+  <h3>(c) The high watermark: advancement is a two-hop protocol</h3>
+  <p>The high watermark (HW) is the offset up to which <i>every</i> ISR member — including the leader — has
+  replicated. Consumers may only read offsets strictly below the HW: "committed" is defined, by construction, as
+  "replicated to the whole current ISR." The advancement protocol is precise and worth walking exactly, because its
+  one built-in delay is the root cause of the historical bug in part (d):</p>
+  <ol style="margin:0 0 14px 22px;color:#c6cddb;font-size:14.5px;line-height:1.8">
+    <li>Each follower issues a <code>Fetch</code> request carrying its own current fetch offset (implicitly its LEO).</li>
+    <li>The leader records that offset for that replica, then computes a candidate new HW as the <b>minimum LEO
+      across every replica currently in the ISR</b> (its own LEO included).</li>
+    <li>The leader advances its local HW to that minimum immediately.</li>
+    <li>The leader includes the <i>new</i> HW in the <code>FetchResponse</code> it sends back — to whichever
+      follower happens to be fetching at that moment.</li>
+    <li>A given follower only learns the leader's latest HW on <b>its own next fetch response</b> — there is
+      no broadcast. A follower's locally recorded HW is therefore always at least one fetch round-trip behind the
+      leader's true, current HW.</li>
+  </ol>
+  <p>Use the slider below to feel that round-trip delay directly, and watch the ISR boundary respond to a
+  configurable <code>replica.lag.time.max.ms</code> as fetch latency rises:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Fetch latency vs. ISR membership</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>follower fetch interval</label><input type="range" id="lag-interval" min="10" max="2000" value="100" step="10"><span class="val" id="lag-interval-val">100 ms</span></div>
+      <div class="slider-row"><label>follower stall (extra delay)</label><input type="range" id="lag-stall" min="0" max="40000" value="0" step="500"><span class="val" id="lag-stall-val">0 ms</span></div>
+      <div class="slider-row"><label>replica.lag.time.max.ms</label><input type="range" id="lag-thresh" min="5000" max="60000" value="30000" step="1000"><span class="val" id="lag-thresh-val">30000 ms</span></div>
+      <div class="memlegend" id="lag-legend"></div>
+      <div class="memmap" id="lag-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="lag-note"></p>
+    </div>
+  </div>
+
+  <h3>(d) KIP-101: the divergence bug, and leader epochs as the fix</h3>
+  <p>Pre-2016, when a replica restarted (or lost a leader election and rejoined as a follower), it had no way to
+  know exactly where its log stopped being trustworthy — so it did the seemingly-safe thing: <b>truncate its log
+  down to its own last known high watermark</b>, on the theory that anything above the HW was never proven
+  committed anyway, then resume fetching from there. Walk the divergence this actually permitted:</p>
+  <div class="widget deck" id="deckEpoch">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Before KIP-101: how "truncate to your own HW" loses committed data</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <p>The root cause, precisely stated: <b>a follower's own locally recorded HW cannot distinguish "data I hold that
+  was genuinely never committed" from "data I hold that the true leader already committed cluster-wide, but whose
+  HW update I simply haven't received yet"</b> — both look identical from inside the follower: bytes sitting above
+  its last known HW. Truncating to a fundamentally ambiguous number is the bug.</p>
+  <p><b>Leader epochs remove the ambiguity by replacing a guess with an authoritative question.</b> Every leader
+  election increments a cluster-wide, monotonically increasing 32-bit <b>leader epoch</b> for that partition. Every
+  record batch appended to the log is tagged, in its header, with the epoch of the leader that wrote it (this reuses
+  the batch header field introduced for KIP-98's exactly-once work, chapter 8). Each broker additionally maintains a
+  small on-disk <b>leader-epoch cache</b> (<code>leader-epoch-checkpoint</code> file) mapping each epoch it has
+  observed to the offset at which that epoch's records began. On rejoining, instead of truncating to its own HW, a
+  replica sends an <code>OffsetsForLeaderEpoch</code> request to the current leader: "for the last epoch <i>I</i>
+  have fully, what is your end offset for that epoch?" The leader answers authoritatively — either the start offset
+  of the next epoch it knows about (meaning: "your epoch ended exactly here, truncate to this point — everything
+  after was written by a leader that never should have been trusted") or its own current LEO (meaning: "your epoch
+  is still the latest one — you don't need to truncate at all"). The follower truncates to <i>exactly</i> that
+  answer: no more, no less, and never a guess.</p>
+  <div class="callout ok">
+    <div class="co-t">THE INVARIANT LEADER EPOCHS RESTORE</div>
+    <p>Two logs that share a prefix of leader epochs are now <b>provably identical</b> over that shared prefix —
+    which is the log-matching property Raft is famous for, achieved here without running an election ballot inside
+    the replication path itself. The epoch is Kafka's fencing token: exactly the mechanism a "zombie writer" problem
+    always needs, and exactly the concept chapter 6's Raft discussion will show you again wearing a different name
+    ("term").</p>
+  </div>
+
+  <h3>Byte layout: where the epoch actually lives</h3>
+  <p>The leader epoch isn't bolted on as metadata beside the log — it's a field in every record batch header
+  (message format v2, introduced alongside KIP-98):</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">binary</span><span>RecordBatch header (partial) — clients/.../RecordBatch.java</span></div>
+    <pre><span class="c">baseOffset          : int64   // first offset in this batch</span>
+<span class="c">batchLength         : int32</span>
+<span class="n">partitionLeaderEpoch</span><span class="c"> : int32   // ← the epoch of the leader that wrote this batch</span>
+<span class="c">magic               : int8    // message format version (2)</span>
+<span class="c">crc                 : uint32</span>
+<span class="c">attributes          : int16   // compression, timestamp type, isTransactional, isControlBatch</span>
+<span class="c">lastOffsetDelta     : int32</span>
+<span class="c">baseTimestamp       : int64</span>
+<span class="c">maxTimestamp        : int64</span>
+<span class="c">producerId          : int64   // EOS — chapter 8</span>
+<span class="c">producerEpoch       : int16   // EOS — chapter 8 (a sibling fencing token, different scope)</span>
+<span class="c">baseSequence        : int32</span>
+<span class="c">recordsCount        : int32</span>
+<span class="c">records             : [Record]</span></pre>
+  </div>
+  <p>Note the sibling field, <code>producerEpoch</code> — the exact same fencing-token pattern, one layer up,
+  guarding against a zombie <i>producer</i> instead of a zombie leader. Chapter 8 covers it; recognizing the pattern
+  now is the point.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same problem, six ways</h2>
+  <p>Every log-structured broker has to answer "what counts as committed, and who decides?" The spread of answers
+  below is a proof by exhaustion that there is no dominant strategy — only different placements of the same
+  fundamental costs between throughput, availability, and the blast radius of a bug.</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>REPLICATION MODEL</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>Kafka</td><td>Leader + dynamic ISR; membership fenced by external controller/Raft; followers pull</td>
+      <td><span class="pill g">low steady-state latency</span> <span class="pill g">tunable durability (acks + min.insync)</span></td>
+      <td><span class="pill b">ISR can degrade silently if misconfigured</span> <span class="pill y">two systems of record (leader + controller) must agree</span></td></tr>
+    <tr><td>Redpanda</td><td>Raft consensus <i>per partition</i>, from day one — majority quorum, no external controller</td>
+      <td><span class="pill g">strict majority-quorum guarantees, no ISR-shrink trap</span> <span class="pill g">one unified consensus mechanism</span></td>
+      <td><span class="pill b">needs a live majority (e.g. 2 of 3) just to accept writes — less available under partial outage than Kafka's ISR-of-1 degenerate mode</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>Segmented log on a separate storage tier (BookKeeper); each ledger acked by a write quorum of bookies; ZooKeeper (or a metadata store) coordinates brokers separately</td>
+      <td><span class="pill g">broker failure needs no partition "leader election" — any broker can serve any topic by re-reading BookKeeper</span></td>
+      <td><span class="pill b">three moving distributed systems in production: broker, BookKeeper, metadata store</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Self-contained Raft group per stream, no external dependency</td>
+      <td><span class="pill g">single binary, single consensus story, easy operationally</span></td>
+      <td><span class="pill y">per-stream Raft groups add coordination overhead as stream count grows — same cardinality pressure Kafka avoided by NOT doing per-partition Raft</span></td></tr>
+    <tr><td>RabbitMQ (quorum queues)</td><td>Raft per queue (added 3.8+); classic mirrored queues (legacy) used unordered best-effort mirroring, no real quorum</td>
+      <td><span class="pill g">quorum queues finally give RabbitMQ a real, provable durability guarantee</span></td>
+      <td><span class="pill y">classic mirrored queues (still widely deployed) never had one — a real historical durability gap</span></td></tr>
+    <tr><td>Amazon Kinesis</td><td>Proprietary; each shard replicated synchronously across multiple AZs before a PutRecord acks</td>
+      <td><span class="pill g">durability guarantee is unconditional — no equivalent of a misconfigurable min.insync.replicas</span></td>
+      <td><span class="pill b">no visibility or tuning knob — you cannot trade durability for latency even if your workload would prefer it</span></td></tr>
+    <tr><td>Traditional master/slave (MySQL semi-sync, classic ActiveMQ)</td><td>Fixed replica set, often just one standby; async by default, semi-sync optional</td>
+      <td><span class="pill g">simple mental model</span></td>
+      <td><span class="pill b">async replication is the historical default — a crashed primary can lose the last several transactions unless semi-sync is explicitly enabled</span></td></tr>
+  </table>
+  <p>Read the ISR-vs-Raft-per-partition row as the chapter's real thesis: Kafka's design is <i>more available under
+  partial failure</i> than a majority-quorum scheme (it can, worst case, keep accepting writes with only the leader
+  alive), at the cost of that availability being able to silently degenerate into "no real durability" unless you
+  set <code>min.insync.replicas</code> deliberately. Redpanda's bet is the opposite: refuse to ever silently
+  degrade, at the cost of needing a live majority to accept any write at all. Neither is wrong; they are different
+  answers to the same five requirements from §1.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">What replication actually costs, in cycles and bytes</h2>
+  <p>Because followers fetch through the exact same code path as consumers, replication reads inherit the same
+  performance profile chapter 10's course-mate topic (log storage) derives: sequential disk layout, and — for any
+  data still resident in the page cache — a <b>zero-copy</b> path via <code>sendfile()</code>/<code>transferTo()</code>
+  straight from page cache to the follower's socket, with no trip through the JVM heap and therefore no GC pressure
+  from replication traffic itself.</p>
+  <ul class="plain">
+    <li><b>Network fan-out:</b> a leader with RF=3 must egress each byte written <i>twice</i> — once to each
+      follower — in addition to whatever it sends to consumers. At high partition counts this fan-out, not disk
+      I/O, is usually the first thing to saturate a leader's NIC; it's the direct motivation for KIP-392 (follower
+      fetching, below), which lets a nearby follower absorb consumer reads instead of forcing all consumer traffic
+      through the leader too.</li>
+    <li><code>replica.fetch.max.bytes</code> (default 1&nbsp;MiB): caps how much data the leader returns to a
+      single follower in one <code>FetchResponse</code> for a given partition, bounding a single slow follower's
+      ability to monopolize the leader's outbound bandwidth or memory in one round-trip.</li>
+    <li><b>Replication throttling (KIP-73):</b> <code>leader.replication.throttled.rate</code> and
+      <code>follower.replication.throttled.rate</code> cap replication bandwidth explicitly — essential during a
+      partition reassignment, where replication traffic competes directly with live producer/consumer traffic for
+      the same NICs and disks.</li>
+    <li><b>HW computation is O(|ISR|) per fetch</b> — a linear scan of the current ISR's recorded LEOs to take a
+      minimum. Cheap in isolation, but it runs on every fetch from every follower for every partition the broker
+      leads, which is why brokers with very high leader-partition counts feel this in aggregate CPU, not per-call
+      latency.</li>
+    <li><b>KIP-392 (fetch from the closest replica):</b> lets a consumer fetch from a nearby in-sync follower
+      instead of always the leader, using <code>client.rack</code>/<code>broker.rack</code> and a pluggable
+      <code>replica.selector.class</code>. It cuts cross-AZ egress cost dramatically — but note the honest subtlety:
+      a follower's own HW is, per part (b) above, always at least one round trip behind the leader's, so reading
+      from a follower can be a hair more stale than reading from the leader. Locality is bought with a small,
+      bounded consistency cost, not a free lunch.</li>
+  </ul>
+  <p>Drag <code>acks</code> and replica count below and watch the latency/throughput curve move — this is the same
+  shape as §4's math, now with the ISR's dynamic quorum instead of "wait for everyone":</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">acks vs. produce latency &amp; effective durability</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>replication factor</label><input type="range" id="perf-rf" min="1" max="5" value="3" step="1"><span class="val" id="perf-rf-val">3</span></div>
+      <div class="slider-row"><label>slow-replica latency (ms)</label><input type="range" id="perf-slow" min="0" max="200" value="20" step="5"><span class="val" id="perf-slow-val">20 ms</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-acks0">acks=0</button>
+        <button class="chip" id="perf-acks1">acks=1</button>
+        <button class="chip" id="perf-acksall">acks=all</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> produce latency (relative)</span>
+        <span><span style="color:var(--ok)">━</span> durability score (replicas required before ack)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch of the tradeoff's <i>shape</i>, tuned to match the qualitative behavior
+    published in Kafka's own producer-config documentation and community benchmarks (Confluent's own acks
+    benchmarks are the closest public reference). The point is structural: <code>acks=0</code> is flat and cheap but
+    provides zero durability score; <code>acks=1</code> is flat and cheap but durability is exactly "the leader
+    didn't crash"; <code>acks=all</code> is the only setting whose latency responds to the slowest ISR member — by
+    design, because that's the price of the guarantee.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Scale, incidents, and the configs that actually mattered</h2>
+
+  <h3>LinkedIn: the birthplace, at trillions of messages a day</h3>
+  <p>LinkedIn — where Kafka originated and where it still runs some of the largest known deployments — has
+  publicly discussed handling well over a trillion messages a day across thousands of brokers. At that scale, the
+  cost model in §10 stops being theoretical: LinkedIn's own engineering posts describe replication fan-out and ISR
+  churn (brokers flapping in and out of the ISR under transient load or GC pauses) as a first-order operational
+  concern, directly motivating the shift from message-count to time-based lag detection this chapter opens with —
+  it wasn't an academic nicety, it was production pain.</p>
+
+  <h3>Incident pattern 1: the min.insync.replicas=1 trap, in the wild</h3>
+  <p>This is one of the most commonly rediscovered production incidents in the Kafka ecosystem, independently
+  reported across many companies' engineering blogs and conference talks: a team runs <code>acks=all</code> for
+  peace of mind, but leaves <code>min.insync.replicas</code> at its default of 1. Under a rolling restart or a rack
+  outage, the ISR legitimately shrinks to just the leader — the broker keeps accepting and acking writes the entire
+  time, because nothing is misconfigured by Kafka's own rules — and then the leader itself is the broker that goes
+  down next. Every "successfully acked" message since the ISR shrank is gone. The postmortem in every one of these
+  writeups is identical: <code>min.insync.replicas</code> must be set (commonly to 2 with RF=3) as a deliberate,
+  explicit decision, not left at the default and assumed to be handled by <code>acks=all</code> alone.</p>
+
+  <h3>Incident pattern 2: unclean elections during multi-broker outages</h3>
+  <p>Several publicly documented incidents (Kafka Improvement Proposal discussions and community mailing-list
+  postmortems around KIP-106, which flipped <code>unclean.leader.election.enable</code>'s default from
+  <code>true</code> to <code>false</code> in the 0.11 release) describe the same shape: a multi-broker outage or
+  network partition takes every ISR member for a partition offline simultaneously. With unclean election enabled
+  (the old default), the controller elects whichever replica survives and is reachable — even one far out of the
+  ISR — to restore write availability immediately, silently truncating the log to that replica's (stale) state and
+  discarding every record the more up-to-date, now-unreachable replicas held. The KIP-106 discussion is itself the
+  best public record of why the community changed the default: enough operators had been surprised by silent data
+  loss during exactly this scenario that "unavailable but correct" became the safer out-of-the-box default,
+  correctness bar first.</p>
+
+  <h3>Incident pattern 3: reassignment-driven replication storms</h3>
+  <p>Large operators (Uber, Netflix, and Confluent's own case studies are among those that have discussed this
+  publicly) have documented replication traffic from partition reassignments or broker replacements saturating
+  broker NICs and starving live producer/consumer traffic — the direct motivating case for KIP-73's replication
+  quotas (<code>leader.replication.throttled.rate</code> / <code>follower.replication.throttled.rate</code>),
+  covered in §10, which exist specifically so that "rebalance the cluster" and "serve production traffic" don't
+  have to compete unthrottled for the same wire.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — these are calibrated to what a Staff-level system-design interview, or a genuine
+  incident retro, actually expects you to derive on the spot.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>Partition.scala</code> and friends</h2>
+  <p>Where everything in this chapter actually lives. Files marked <span style="color:var(--warn)">●</span> are
+  this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">core/src/main/scala/kafka/</span></div>
+<div>├── <span class="dir">cluster/</span></div>
+<div>│   ├── <span class="fhl">● Partition.scala</span> <span class="fnote">— per-partition state: ISR, HW, leader epoch, maybeShrinkIsr/maybeExpandIsr</span></div>
+<div>│   └── Replica.scala <span class="fnote">— per-replica tracked state: LEO, last-caught-up time, last fetch time</span></div>
+<div>├── <span class="dir">server/</span></div>
+<div>│   ├── <span class="fhl">● ReplicaManager.scala</span> <span class="fnote">— owns all partitions this broker leads or follows; drives HW checkpointing</span></div>
+<div>│   ├── <span class="fhl">● ReplicaFetcherThread.scala</span> <span class="fnote">— per-leader thread issuing Fetch + handling truncation via epoch</span></div>
+<div>│   ├── AbstractFetcherThread.scala <span class="fnote">— shared fetch-loop skeleton (also used by KRaft's raft client — ch.6)</span></div>
+<div>│   ├── <span class="dir">epoch/</span><span class="fhl">● LeaderEpochFileCache.scala</span> <span class="fnote">— epoch → start-offset map, checkpointed to disk</span></div>
+<div>│   ├── AlterPartitionManager.scala <span class="fnote">— sends AlterPartition to the controller (KRaft path)</span></div>
+<div>│   └── ZkIsrManager.scala <span class="fnote">— legacy path: writes ISR directly to a ZooKeeper znode</span></div>
+<div>├── <span class="dir">log/</span>UnifiedLog.scala <span class="fnote">— appendAsLeader/appendAsFollower; enforces the epoch on every batch</span></div>
+<div>└── <span class="dir">api/</span>LeaderAndIsr.scala <span class="fnote">— the wire-level struct: leader id, leader epoch, ISR list, zk/controller epoch</span></div>
+<div><span class="dir">clients/src/main/java/org/apache/kafka/common/</span></div>
+<div>└── <span class="dir">requests/</span><span class="fhl">● OffsetsForLeaderEpochRequest.java / Response.java</span> <span class="fnote">— the truncation query itself</span></div>
+  </div></div>
+
+  <p>First, the ISR shrink decision — simplified from the real <code>Partition.scala</code> but faithful to its
+  structure and naming:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Scala</span><span>Partition.scala — maybeShrinkIsr(), the time-based criterion</span></div>
+    <pre><span class="k">def</span> <span class="f">maybeShrinkIsr</span>(): <span class="k">Unit</span> = {
+  <span class="k">val</span> now = time.milliseconds()
+
+  <span class="c">// A replica stays in the ISR as long as it caught up to the leader's</span>
+  <span class="c">// LEO at some point within replicaLagTimeMaxMs — NOT a message count.</span>
+  <span class="k">val</span> laggingReplicas = remoteReplicas.filter { replica =&gt;
+    <span class="k">val</span> caughtUpRecently = (now - replica.lastCaughtUpTimeMs) &lt;= replicaLagTimeMaxMs
+    !caughtUpRecently
+  }
+
+  <span class="k">if</span> (laggingReplicas.nonEmpty) {
+    <span class="k">val</span> newIsr = inSyncReplicaIds -- laggingReplicas.map(_.brokerId)
+    <span class="c">// Local decision is instant; the durable record needs the controller —</span>
+    <span class="c">// this call is exactly the propagation-latency edge from §6.</span>
+    alterIsr(newIsr, <span class="s">"replica(s) exceeded replica.lag.time.max.ms"</span>)
+  }
+}</pre>
+  </div>
+
+  <p>Next, HW advancement — the exact protocol from §8(c), including the round-trip that KIP-101 had to work
+  around:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Scala</span><span>Partition.scala — maybeIncrementLeaderHW()</span></div>
+    <pre><span class="k">def</span> <span class="f">maybeIncrementLeaderHW</span>(leaderLog: <span class="t">UnifiedLog</span>): <span class="t">Boolean</span> = {
+  <span class="c">// The minimum LEO across every replica CURRENTLY in the ISR —</span>
+  <span class="c">// this is the entire definition of "committed" in Kafka.</span>
+  <span class="k">val</span> newHighWatermark = remoteReplicasMap.values
+    .filter(r =&gt; inSyncReplicaIds.contains(r.brokerId))
+    .map(_.logEndOffsetMetadata)
+    .fold(leaderLog.logEndOffsetMetadata)(<span class="t">LogOffsetMetadata</span>.min)
+
+  <span class="k">if</span> (newHighWatermark.messageOffset &gt; leaderLog.highWatermark) {
+    leaderLog.updateHighWatermark(newHighWatermark)
+    <span class="c">// NOTE: this value only reaches a given follower on ITS next</span>
+    <span class="c">// FetchResponse — there is no broadcast. That one-hop delay is</span>
+    <span class="c">// exactly what made "truncate to my own HW" unsafe pre-KIP-101.</span>
+    <span class="k">true</span>
+  } <span class="k">else</span> <span class="k">false</span>
+}</pre>
+  </div>
+
+  <p>And finally, the fix itself: truncation via an authoritative question instead of a locally-remembered guess:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Scala</span><span>ReplicaFetcherThread.scala — truncate-to-epoch, replacing truncate-to-HW</span></div>
+    <pre><span class="k">def</span> <span class="f">truncateToEpochEndOffset</span>(): <span class="k">Unit</span> = {
+  <span class="c">// Ask the CURRENT leader, not my own memory, where my last known</span>
+  <span class="c">// epoch actually ends.</span>
+  <span class="k">val</span> myLastEpoch = epochCache.latestEpoch()
+  <span class="k">val</span> response   = leaderEndpoint.offsetsForLeaderEpoch(topicPartition, myLastEpoch)
+
+  <span class="c">// Two possible authoritative answers:</span>
+  <span class="c">//  (a) "your epoch is still current" → response.endOffset == my own LEO → no truncation</span>
+  <span class="c">//  (b) "your epoch ended here"      → truncate to EXACTLY that offset, no guessing</span>
+  <span class="k">if</span> (response.endOffset &lt; log.logEndOffset) {
+    log.truncateTo(response.endOffset)
+    log.info(<span class="s">s"Truncated to offset ${response.endOffset} using leader epoch $myLastEpoch, "</span> +
+             <span class="s">"not the (possibly stale) high watermark"</span>)
+  }
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Never let a replica truncate based on its own stale knowledge.</b> The HW-based approach failed
+    precisely because it asked "what do I remember?" instead of "what does the authority say?" — the epoch
+    approach always asks the current leader directly. <b>2. Tag data with provenance, not just position.</b> The
+    leader epoch travels with the bytes (in the batch header) rather than living only in leader election metadata —
+    so any replica, at any time, can answer "which leader wrote this" without an extra round trip for old data.
+    <b>3. Reuse the fetch code path for the truncation query too.</b> <code>OffsetsForLeaderEpoch</code> is a small,
+    dedicated request type, but it's issued by the same <code>ReplicaFetcherThread</code> that issues ordinary
+    <code>Fetch</code> requests — one thread, one connection, one retry/backoff story, for both jobs.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> — read them, they encode the
+  chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a leader failover with epochs</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from a healthy ISR to a recovered stale follower. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The ISR lab: produce, shrink, elect, truncate</h2>
+  <p>A live partition: one leader, two followers. Produce with a chosen <code>acks</code> and
+  <code>min.insync.replicas</code>, then slow or kill a follower and watch the ISR shrink in real time — with the
+  actual <code>replica.lag.time.max.ms</code> countdown visible per replica. Kill the leader and watch a new one get
+  elected, the epoch increment, and a returning stale replica issue <code>OffsetsForLeaderEpoch</code> and truncate
+  to exactly the right point. Toggle "pre-KIP-101 behaviour" to reproduce the real divergence bug side by side.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">partition p0 — live ISR</span><span class="w-sub" id="sim-phase">STABLE</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="rnodes" id="sim-nodes"></div>
+          <div class="sim-shm"><div class="shm" id="sim-hw-box">high watermark: 0 · leader epoch: 0</div></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">WORKLOAD</div>
+            <div class="btns">
+              <button class="btn good" id="sc-produce">produce record</button>
+              <button class="btn" id="sc-burst">⚡ burst ×20</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">PRODUCER CONFIG</div>
+            <div class="toggle-row" style="margin:0">
+              <button class="chip" id="cfg-acks0">acks=0</button>
+              <button class="chip" id="cfg-acks1">acks=1</button>
+              <button class="chip on" id="cfg-acksall">acks=all</button>
+            </div>
+            <div class="slider-row" style="margin:8px 0 0"><label style="min-width:0;flex:1">min.insync.replicas</label><span class="val" id="sim-misr-val" style="min-width:24px">2</span></div>
+            <input type="range" id="sim-misr" min="1" max="3" value="2" style="width:100%;accent-color:var(--pg)">
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">FAILURE INJECTION</div>
+            <div class="btns">
+              <button class="btn warn" id="sc-slow">slow follower B</button>
+              <button class="btn danger" id="sc-killf">kill follower B</button>
+              <button class="btn danger" id="sc-killl">kill leader</button>
+              <button class="btn" id="sc-restore">restore all</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">CORRECTNESS TOGGLES</div>
+            <div class="toggle-row" style="margin:0">
+              <button class="chip" id="cfg-prekip">pre-KIP-101 mode</button>
+              <button class="chip" id="cfg-unclean">unclean election allowed</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-produced">0</div><div class="cl">produced</div></div>
+            <div class="scounter"><div class="cv" id="cnt-acked">0</div><div class="cl">acked</div></div>
+            <div class="scounter"><div class="cv" id="cnt-lost" style="color:var(--bad)">0</div><div class="cl">lost/diverged</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Set <code>min.insync.replicas=1</code>, kill both followers one at a time, and watch the leader keep
+    accepting <code>acks=all</code> writes anyway — then kill the leader. <b>2.</b> Slow follower B past 30&nbsp;s
+    and watch the ISR shrink live, then restore it and watch it rejoin. <b>3.</b> Kill the leader with a follower
+    mid-lag; toggle "pre-KIP-101 mode" on and off and compare what the returning replica does. <b>4.</b> Enable
+    "unclean election allowed", take down every ISR member, and watch which replica gets elected — and what it
+    silently discards.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 6: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer in your head, <i>then</i> reveal. If a reveal surprises you,
+  re-run the relevant simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 05 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now state precisely what <code>acks=all</code> plus
+    <code>min.insync.replicas</code> guarantees, trace HW advancement round-trip by round-trip, and explain exactly
+    why leader epochs replaced high-watermark-based truncation. Chapter 6 zooms out one level: who decides which
+    replica is the leader in the first place, and how that decision itself achieves consensus — first through
+    ZooKeeper, then through Kafka's own embedded Raft implementation, KRaft.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="kafka-06.html" style="text-decoration:none;display:inline-flex;align-items:center">KAFKA-06: The Controller →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2011", l:"Kafka 0.7", d:"<b>Open-sourced by LinkedIn, no replication.</b> Each partition lives on exactly one broker. Losing that broker loses the partition — acceptable for the log-aggregation use case Kafka was built for, fatal for the general message-broker use case it was about to become." },
+  { yr:"2013", l:"Kafka 0.8: ISR is born", d:"<b>Replication ships.</b> Jun Rao, Neha Narkhede, and Jay Kreps design the leader/ISR model: a leader per partition, followers that pull via Fetch, and a controller (elected via ZooKeeper) that assigns leaders and tracks ISR membership. The founding decision: reuse an external coordination service rather than run per-partition consensus, because Kafka clusters have far too many partitions for that to be affordable." },
+  { yr:"2013–15", l:"replica.lag.max.messages era", d:"<b>The message-count lag criterion.</b> A follower falls out of the ISR if it trails the leader's LEO by more than N messages. It works — until bursty producers make every healthy follower momentarily 'lag' by thousands of messages, causing spurious ISR shrinks under exactly the load pattern real production traffic has." },
+  { yr:"2015", l:"KAFKA-1546 lands", d:"<b>Time-based lag detection.</b> replica.lag.time.max.ms (default 30s) replaces the message-count criterion: a replica stays in the ISR as long as it caught up to the leader at some point within the window, correctly absorbing bursts instead of punishing them." },
+  { yr:"2016", l:"KIP-106: unclean election default flips", d:"<b>unclean.leader.election.enable defaults to false.</b> After enough operators were surprised by silent data loss when a non-ISR replica was elected during multi-broker outages, the community changes the safe-by-default answer: unavailable but correct, not available but possibly wrong." },
+  { yr:"2016", l:"KIP-101: leader epochs", d:"<b>The truncation bug is fixed for good.</b> 'Truncate to my own high watermark' is replaced by 'ask the current leader, via OffsetsForLeaderEpoch, exactly where my last epoch ends.' This chapter's central mechanism arrives — every record batch is now tagged with the epoch of the leader that wrote it." },
+  { yr:"2018", l:"KIP-227: incremental fetch sessions", d:"<b>Fetch gets cheaper at scale.</b> As partition-per-broker counts grew into the thousands, full-metadata Fetch requests (listing every partition every time) became a real cost — for both consumers and, just as much, for the replica-fetcher threads doing ISR replication. Incremental fetch sessions let a broker send only the partitions that changed." },
+  { yr:"2020", l:"KIP-392: fetch from the closest replica", d:"<b>Followers start serving reads too.</b> Consumers can now fetch from a rack-local in-sync follower instead of always the leader, trading a small, bounded extra staleness (the follower's own HW lags the leader's by one round trip) for large cross-AZ network savings." },
+  { yr:"2020→", l:"KIP-500 / KRaft begins", d:"<b>The controller itself stops depending on ZooKeeper.</b> This chapter's 'external controller' becomes, over the following several years, a self-managed Raft quorum built from Kafka's own replication primitives — chapter 6, in full." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===5 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[5].d;
+
+/* ============================================================
+   2. DECK: candidates examined (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:190px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...bs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">${bs.join("")}</div>`;
+  stepper("deckCandidates", [
+    { stage: wrap(box("CANDIDATE A — sync to ALL replicas, always", cell("§3's strawman", "#f25c54") + cell("latency = max over N replicas", "#ff9f43") + cell("availability = AND over N replicas", "#ff9f43"))),
+      cap:`<b>Rejected on arithmetic, not aesthetics.</b> §4 already showed this: latency and availability both get worse as you add replicas, exactly backwards from what a durability knob should do.` },
+    { stage: wrap(box("CANDIDATE B — per-partition Raft/Paxos majority quorum", cell("elect a leader via ballots, replicate to a majority", "#60a5fa") + cell("needs ⌈(N+1)/2⌉ alive to make progress", "#8b94a7") + cell("Kafka clusters: 100,000+ partitions", "#f25c54"))),
+      cap:`<b>Examined seriously, then deferred.</b> A textbook consensus protocol gives you the strongest possible guarantee — but running independent leader elections with randomized timeouts and vote quorums for every one of hundreds of thousands of partitions, all the time, is a very different chattiness budget than running ONE such protocol for cluster metadata. Kafka's designers deferred this exact protocol to a single, cluster-wide instance — which is precisely KRaft, chapter 6.` },
+    { stage: wrap(box("CANDIDATE C — leader + dynamically-sized quorum (ISR) ✓", cell("membership = 'caught up within replica.lag.time.max.ms'", "#4ade80") + cell("followers PULL via ordinary Fetch requests", "#4ade80") + cell("leadership fact stored by a SEPARATE external authority", "#4ade80"))),
+      cap:`<b>The actual answer.</b> Decouple two different problems that Raft/Paxos solve together: (1) which replicas currently count toward "committed" — solved locally and cheaply by the leader watching fetch lag — and (2) who is allowed to be leader at all — solved once, cluster-wide, by an external system built for exactly that job. This is the split you saw in §7's architecture diagram.` },
+    { stage: wrap(box("WHY PULL, NOT PUSH", cell("same Fetch API a consumer uses","#f25c54") + cell("one code path: page-cache reads, zero-copy sendfile","#f25c54") + cell("backpressure is free — a slow follower just fetches later","#f25c54"))),
+      cap:`<b>The detail that makes candidate C cheap to build well.</b> A push-based leader would need its own flow-control and backpressure machinery per follower. Pull-based replication means the leader's ONLY replication-specific job is answering "give me records from offset X" — identical in shape to serving a consumer, and identical in performance profile (chapter 10).` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  leader:{ n:"partition leader", f:"kafka.cluster.Partition / kafka.server.ReplicaManager", r:"The single replica that accepts all produces and consumer reads for this partition. Tracks every follower's fetch offset and last-caught-up time, computes ISR membership and the high watermark, and is the only replica that decides — locally and instantly — whether a follower still counts.", l:"Assigned by the controller at partition creation or on failover; holds the role until it crashes, is administratively moved, or loses contact with the controller.", d:"If it dies: the controller (notified via a lost session, heartbeat, or Raft-log timeout depending on era) picks a new leader from the current ISR — or, if unclean election is enabled and the ISR is empty, from whatever replica is reachable. See the epoch component for what happens next." },
+  follower:{ n:"follower replica", f:"kafka.server.ReplicaFetcherThread", r:"Issues ordinary Fetch requests against the leader (replica id = its own broker id, not -1), appends whatever it receives to its local log, and reports its fetch offset back on the next request — which is how the leader learns its LEO.", l:"Lives as long as the broker is up and assigned to this partition; independently, it is in or out of the ISR at any given moment based on how recently it caught up.", d:"On restart or on rejoining after a leader change, it does NOT trust its own high watermark for truncation — it asks the current leader via OffsetsForLeaderEpoch (§8d)." },
+  isr:{ n:"in-sync replica set", f:"kafka.cluster.Partition — inSyncReplicaIds", r:"The dynamic set of replicas (leader included) that have proven, within replica.lag.time.max.ms, that they are caught up to the leader's LEO. This is the set acks=all waits on, and the set whose minimum LEO defines the high watermark.", l:"Grows when a lagging replica catches back up; shrinks when one exceeds the lag-time threshold. Every change must be confirmed by the controller before it's official (AlterPartition / ZK write).", d:"If it shrinks below min.insync.replicas, the broker starts rejecting acks=all produces with NotEnoughReplicasException rather than silently accepting them with less durability than requested." },
+  hw:{ n:"high watermark", f:"kafka.log.UnifiedLog — highWatermarkMetadata", r:"The offset up to which every current ISR member has replicated. Consumers may only read strictly below it. Advances as min(LEO across ISR); the new value reaches a given follower only on that follower's NEXT fetch response — never a broadcast.", l:"Monotonically non-decreasing while the partition is stable; recomputed on every fetch and every ISR change.", d:"This is exactly the number that pre-KIP-101 code unsafely used as a truncation point — see §8d for the bug this caused." },
+  controller:{ n:"controller (external authority)", f:"ZooKeeper znodes (pre-KRaft) / KRaft __cluster_metadata log (ch.6)", r:"The durable, cluster-wide record of who is the leader and what the ISR is for every partition. The leader's local ISR decisions become official only once this system confirms them.", l:"One controller is active cluster-wide at a time; chapter 6 is entirely about how that single fact is itself agreed upon.", d:"If it's unreachable, leaders keep serving with their last-confirmed ISR, but cannot make new ISR changes official — the propagation-latency window from §6 widens." },
+  epoch:{ n:"leader epoch + epoch cache", f:"RecordBatch.partitionLeaderEpoch (wire) · kafka.server.epoch.LeaderEpochFileCache (disk)", r:"A monotonically increasing integer, incremented on every leader change, stamped into every record batch's header and checkpointed per-replica as an epoch → start-offset map.", l:"Never decreases, never repeats, cluster-wide, for a given partition — Kafka's fencing token.", d:"This is what makes 'which data is provably safe' an answerable question instead of a guess, replacing the high-watermark-based truncation from before KIP-101." },
+  ofle:{ n:"OffsetsForLeaderEpoch", f:"clients/.../requests/OffsetsForLeaderEpochRequest.java · Response.java", r:"The request a rejoining or restarting replica sends to the CURRENT leader: 'for the last epoch I have, what's your end offset for it?' The leader answers authoritatively from its own epoch cache.", l:"Issued once per truncation decision, by the same ReplicaFetcherThread that issues ordinary Fetch requests.", d:"Its answer is the exact, provably-correct truncation point — never a locally-remembered, possibly-stale guess." },
+  producer:{ n:"producer (acks)", f:"clients/.../producer/internals/Sender.java", r:"Chooses how much durability to wait for per request: acks=0 (fire and forget), acks=1 (leader's local append only), acks=all (every current ISR member).", l:"A per-request/per-client setting, not a partition-level one — different producers can choose different guarantees against the same partition.", d:"acks=all only means what you think it means when min.insync.replicas is ALSO set deliberately — see §8b's trap." },
+  consumer:{ n:"consumer (reads ≤ HW)", f:"clients/.../consumer/internals/Fetcher.java", r:"Reads are bounded by the high watermark by construction — a consumer literally cannot observe a record until it's replicated to the full current ISR, which is the definition of 'committed' this whole chapter builds toward.", l:"Fetches from the leader by default; from a rack-local follower under KIP-392.", d:"Reading from a follower (KIP-392) can be a hair more stale than reading from the leader, because of the HW round-trip delay in §8c." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON FAILURE / SUBTLETY</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("leader");
+
+/* ============================================================
+   4. LAG / ISR SLIDER WIDGET (§8b)
+   ============================================================ */
+(function(){
+  function render(){
+    const interval = +el("lag-interval").value;
+    const stall = +el("lag-stall").value;
+    const thresh = +el("lag-thresh").value;
+    el("lag-interval-val").textContent = interval + " ms";
+    el("lag-stall-val").textContent = stall + " ms";
+    el("lag-thresh-val").textContent = thresh + " ms";
+    const effectiveGap = interval + stall;  // worst-case time since follower last proved caught up
+    const inIsr = effectiveGap <= thresh;
+    const pct = Math.min(100, effectiveGap/thresh*100);
+    const segs = [
+      ["time since last confirmed catch-up", effectiveGap, inIsr ? "#4ade80" : "#ff4d6d"],
+      ["remaining budget", Math.max(0, thresh-effectiveGap), "#2a3446"]
+    ];
+    el("lag-map").innerHTML = segs.map(([n,v,c])=>
+      `<div class="seg" style="background:${c};width:${Math.max(1,(v/Math.max(thresh,effectiveGap))*100).toFixed(1)}%" title="${n}">${v.toFixed(0)}ms</div>`).join("");
+    el("lag-legend").innerHTML = `<span><span class="sw" style="background:#4ade80"></span>within replica.lag.time.max.ms</span><span><span class="sw" style="background:#ff4d6d"></span>exceeded — dropped from ISR</span>`;
+    el("lag-note").innerHTML = inIsr
+      ? `At a ${interval} ms fetch interval plus a ${stall} ms stall, this follower proves it's caught up every <b style="color:var(--ok)">${effectiveGap} ms</b> — comfortably inside the <b>${thresh} ms</b> window. It stays in the ISR even though it is, at any given instant, up to ${effectiveGap} ms of data behind the leader. A momentary producer burst behaves exactly like a stall here: it looks identical to this widget, which is why a TIME threshold survives bursts that a MESSAGE-COUNT threshold would not.`
+      : `At ${effectiveGap} ms since its last proven catch-up, this follower has exceeded <b style="color:var(--bad)">replica.lag.time.max.ms = ${thresh} ms</b>. The leader removes it from the ISR on its next maybeShrinkIsr() pass — acks=all no longer waits for it, and the high watermark can no longer depend on its LEO. Raise the threshold or fix the stall to bring it back.`;
+  }
+  el("lag-interval").oninput = render;
+  el("lag-stall").oninput = render;
+  el("lag-thresh").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   5. DECK: pre-KIP-101 divergence (§8d)
+   ============================================================ */
+(function(){
+  function cols(colsData){
+    let h = `<div class="logcols">`;
+    colsData.forEach(c=>{
+      h += `<div class="logcol"><div class="lc-t">${c.t}</div>${c.sub?`<div class="lc-sub">${c.sub}</div>`:""}<div class="offrow">`;
+      c.offs.slice().reverse().forEach(o=>{ h += `<div class="off ${o.cls||""}">${o.label}</div>`; });
+      h += `</div></div>`;
+    });
+    return h + `</div>`;
+  }
+  const A_full = [{label:"off 0 · m1",cls:"e0 committed"},{label:"off 1 · m2",cls:"e0 committed"}];
+  stepper("deckEpoch", [
+    { stage: cols([
+        {t:"LEADER A", sub:"epoch 0", offs:A_full},
+        {t:"FOLLOWER B", sub:"epoch 0", offs:A_full}
+      ]),
+      cap:`<b>Healthy start.</b> Leader A holds m1 (offset 0) and m2 (offset 1). Follower B has fetched both and replicated them locally. The leader's HW is 1 (both messages committed) — but B's OWN recorded HW is still 0, because the FetchResponse confirming HW=1 hasn't reached B yet. This gap always exists (§8c); it's about to matter.` },
+    { stage: cols([
+        {t:"LEADER A — CRASHES", sub:"epoch 0", offs:A_full.map(o=>({...o,cls:o.cls+" gone"}))},
+        {t:"FOLLOWER B", sub:"epoch 0, local HW=0", offs:A_full}
+      ]),
+      cap:`<b>A crashes.</b> B has both messages on disk, but its own bookkeeping still says HW=0 — it never got the memo. Pre-KIP-101, on restart a replica truncates to ITS OWN recorded HW, not to what's actually on disk.` },
+    { stage: cols([
+        {t:"FOLLOWER B — restarts, truncates to its own HW=0", sub:"pre-KIP-101 behaviour", offs:[{label:"off 0 · m1",cls:"e0 gone"},{label:"off 1 · m2",cls:"e0 gone"}]}
+      ]),
+      cap:`<b>The unsafe truncation.</b> B discards m1 and m2 — even though m1 (offset 0) was fully committed, replicated to the whole ISR, and acknowledged to the producer. B cannot tell "genuinely uncommitted data" apart from "committed data I just hadn't heard confirmed yet" — both look identical: bytes above its own last known HW.` },
+    { stage: cols([
+        {t:"FOLLOWER B — now sole survivor, becomes LEADER", sub:"epoch 1, empty log", offs:[]},
+        {t:"NEW WRITE m2′", sub:"different content, same offset!", offs:[{label:"off 0 · m2′",cls:"e1 diverged"}]}
+      ]),
+      cap:`<b>Silent divergence, not just loss.</b> B is now the only replica and becomes leader with an empty log. A new producer write lands at offset 0 again — but with DIFFERENT content (m2′) than what was originally, correctly committed there (m1). Any consumer that already read the original m1 at offset 0 and any consumer reading it fresh now now see two different histories at the identical offset. This is strictly worse than data loss: it's an undetectable inconsistency.` },
+    { stage: cols([
+        {t:"WITH LEADER EPOCHS — B restarts", sub:"epoch cache: epoch 0 → starts at offset 0", offs:A_full},
+        {t:"B → LEADER A: OffsetsForLeaderEpoch(epoch 0)", sub:"leader answers from ITS epoch cache", offs:[{label:"reply: endOffset = 2",cls:"e0"}]}
+      ]),
+      cap:`<b>The fix in action.</b> Instead of trusting its own HW, B asks the leader directly: "for epoch 0, what's your true end offset?" The leader — using its OWN epoch cache, built from data it actually wrote and had acknowledged — answers 2 (both messages are genuinely part of epoch 0). B truncates to exactly offset 2, i.e. NOT AT ALL. m1 and m2 survive. The ambiguity that caused the bug never gets a chance to exist, because the question is answered by provenance (which leader/epoch wrote this) instead of a locally-remembered, round-trip-delayed number.` }
+  ]);
+})();
+
+/* ============================================================
+   6. PERFORMANCE CHART: acks vs latency (§10)
+   ============================================================ */
+(function(){
+  let mode = "all";
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function model(rf, slowMs, mode){
+    const durability = mode==="all" ? rf : (mode==="1" ? 1 : 0);
+    let latency;
+    if (mode==="0") latency = 1;
+    else if (mode==="1") latency = 3;
+    else latency = 3 + slowMs*0.9 + (rf-1)*4; // acks=all waits on the slowest ISR member, scales a bit with rf overhead
+    return { latency, durability };
+  }
+  function render(){
+    const rf = +el("perf-rf").value, slow = +el("perf-slow").value;
+    el("perf-rf-val").textContent = rf;
+    el("perf-slow-val").textContent = slow + " ms";
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let s=0; s<=200; s+=4) xs.push(s);
+    let maxLat=0, maxDur=0;
+    const pts = xs.map(s=>{ const m = model(rf, s, mode); maxLat=Math.max(maxLat,m.latency); maxDur=Math.max(maxDur,m.durability); return m; });
+    const X = s => PAD + (s/200)*(W-PAD-14);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [0,50,100,150,200].forEach(s=>{ ctx.beginPath(); ctx.moveTo(X(s),10); ctx.lineTo(X(s),H-20); ctx.stroke(); ctx.fillText(s+"ms", X(s)-10, H-6); });
+    function curve(get, max, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((s,i)=>{ const y = H-24 - (get(pts[i])/Math.max(max,1))*(H-44); i?ctx.lineTo(X(s),y):ctx.moveTo(X(s),y); });
+      ctx.stroke();
+    }
+    curve(m=>m.latency, maxLat, "#f25c54");
+    curve(m=>m.durability/rf*maxLat, maxLat, "#4ade80");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(slow),10); ctx.lineTo(X(slow),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(rf, slow, mode);
+    const modeLabel = mode==="0"?"acks=0":mode==="1"?"acks=1":"acks=all";
+    el("perf-note").innerHTML = `At RF=<b>${rf}</b>, slow-replica latency <b>${slow} ms</b>, mode <b style="color:var(--pg)">${modeLabel}</b>: relative produce latency ≈ <b style="color:var(--bad)">${here.latency.toFixed(1)}</b>, durability score (replicas required before ack) = <b style="color:var(--ok)">${here.durability}</b>. ${mode==="all" ? "Notice: acks=all is the ONLY mode whose latency line moves at all as the slow replica gets slower — that's the price of the guarantee, paid exactly where §4's math said it would be." : mode==="1" ? "acks=1 latency is flat regardless of follower speed — because it never waits on a follower. Durability is exactly 'the leader had it locally', i.e. gone the instant the leader crashes before replicating." : "acks=0 latency is flat and durability is zero — the producer doesn't even wait for the leader's local append to be confirmed."}`;
+  }
+  el("perf-rf").oninput = render;
+  el("perf-slow").oninput = render;
+  function setMode(m){
+    mode = m;
+    ["0","1","all"].forEach(k=>el("perf-acks"+k).classList.toggle("on", k===m));
+    render();
+  }
+  el("perf-acks0").onclick = ()=>setMode("0");
+  el("perf-acks1").onclick = ()=>setMode("1");
+  el("perf-acksall").onclick = ()=>setMode("all");
+  render();
+})();
+
+/* ============================================================
+   7. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A producer uses acks=all against a topic with min.insync.replicas=1 and replication factor 3. Is this durable? Defend the answer with the exact mechanism.", hint:"what's the smallest legal ISR size here?",
+    a:"No — or at least, not reliably. min.insync.replicas=1 permits the ISR to legally shrink to just the leader without the broker refusing writes. acks=all then means 'wait for acknowledgment from every member of a set that can legally be size 1' — functionally identical to acks=1. If the leader crashes right after acking such a write, the data is gone, and nothing was misconfigured by Kafka's own rules. Real durability requires min.insync.replicas set to at least 2 (with RF=3) so the ISR can never shrink to a single point of failure while still accepting acks=all writes." },
+  { lvl:"SENIOR", q:"Why did Kafka replace replica.lag.max.messages with replica.lag.time.max.ms?", hint:"what does a producer burst look like to each metric?",
+    a:"A message-count threshold can't distinguish a genuinely slow/stuck replica from a healthy one measured one instant after a burst — a sudden batch of 50,000 records makes every follower momentarily trail by thousands of messages purely due to normal fetch round-trip latency, causing spurious ISR shrinks during exactly the bursty traffic real production systems produce. A time-based threshold absorbs that: as long as the follower proves it caught up within the window (default 30s), a brief burst-induced lag resolves within one or two fetch intervals and never approaches the threshold, while an actually-stuck replica (GC pause, dead disk, crashed process) eventually and correctly exceeds it." },
+  { lvl:"STAFF", q:"Walk through exactly how the high watermark advances, including the one delay that made pre-KIP-101 truncation unsafe.", hint:"who learns the new HW, and when?",
+    a:"Followers fetch and report their offset; the leader computes the new HW as the minimum LEO across the current ISR (itself included) and advances its own HW to that value immediately. But it only communicates that new HW to a given follower in the FetchResponse to THAT follower's next request — there's no broadcast. So a follower's own recorded HW is always at least one fetch round-trip behind the leader's true, current HW. Pre-KIP-101, a restarting replica trusted its own (stale) HW as a truncation point, which meant it could discard data that was already fully committed cluster-wide, purely because it hadn't heard the confirmation yet — the exact bug KIP-101's OffsetsForLeaderEpoch mechanism replaced." },
+  { lvl:"STAFF", q:"Why is Kafka's ISR model described as 'not Raft, not Paxos' when it clearly does leader-based replication with a quorum concept?", hint:"where does leadership itself get decided, versus where does replication-commit get decided?",
+    a:"Raft and Paxos bundle two problems into one integrated protocol: agreeing who is leader (via ballots/votes among the replicas themselves) and agreeing what's committed (via a fixed-size majority quorum). Kafka splits them: which replicas count toward 'committed' is decided cheaply and locally by the leader watching fetch lag (the ISR, a DYNAMIC quorum, not a fixed majority), while who is ALLOWED to be leader at all is decided by a completely separate system (historically ZooKeeper-backed controller election, now KRaft's own Raft quorum in chapter 6). Because that second problem is solved once for the whole cluster rather than once per partition, Kafka avoids running hundreds of thousands of independent per-partition consensus instances — the cost that made literal per-partition Raft/Paxos impractical at the cardinality Kafka operates at." },
+  { lvl:"STAFF", q:"A follower comes back online after being down for an hour. What determines how it reconciles its log with the current leader, and why is that safe even if the leader has changed identity twice in the meantime?", hint:"what travels WITH the data, not just in election metadata?",
+    a:"It sends OffsetsForLeaderEpoch for the last epoch it has fully, and the current leader answers from ITS OWN epoch cache — which was built from data that leader (or an earlier one) actually wrote, with the epoch stamped into every batch's header at write time. Because the epoch travels with the bytes rather than living only in transient election state, any current leader — even one two leadership changes removed from the epoch in question — can answer authoritatively where that old epoch's data ends. The follower truncates to exactly that answer. Two logs sharing a prefix of epochs are provably identical over that prefix, regardless of how many leader changes happened in between." },
+  { lvl:"PRINCIPAL", q:"Design review: an operator proposes setting unclean.leader.election.enable=true cluster-wide to 'reduce outage duration during multi-broker incidents.' Steelman it, then explain what you'd actually recommend and why.", hint:"which failure mode is worse: unavailable, or silently wrong?",
+    a:"Steelman: if every ISR member for a partition is genuinely gone (a rack or AZ outage), the partition is completely unwritable and unreadable until an ISR member returns — for a latency-sensitive system, that outage might be worse than accepting some silent data loss to restore availability immediately, and unclean election does exactly that trade. The recommendation, though: this should almost never be a blanket cluster-wide default (KIP-106 made false the default for good reason) — it should be a deliberate, topic-scoped decision made only for workloads that have explicitly decided availability trumps correctness (e.g., some metrics/logging pipelines), never for anything with a durability contract (financial events, order state). The better lever for 'reduce outage duration' is almost always more replicas and better failure-domain spread (rack-aware placement), not relaxing the correctness guarantee." },
+  { lvl:"PRINCIPAL", q:"Compare Kafka's ISR model to Redpanda's per-partition Raft on the specific axis of availability during a network partition that isolates the leader from a minority of followers with RF=3.", hint:"who can still make progress, and at what durability?",
+    a:"With Kafka's ISR and RF=3: if the partition isolates the leader from one follower, the ISR shrinks to {leader, remaining follower} — writes continue with acks=all requiring 2 acks (assuming min.insync.replicas=2), fully durable. If it isolates the leader from BOTH followers, the ISR can shrink all the way to {leader} alone, and — this is the crux — if min.insync.replicas allows it, writes keep flowing with reduced durability rather than stopping, trading correctness margin for availability. With Redpanda's per-partition Raft (RF=3, majority=2): the leader isolated from both followers immediately loses its ability to commit anything, because it cannot reach a majority — writes simply stop, full stop, no degraded-durability mode exists. Kafka is more available under this specific partial-failure shape (it can keep accepting writes with a lone leader); Redpanda is safer by construction (it structurally cannot silently degrade). Neither is strictly better — it's the same tradeoff as §9's table, restated for one specific failure mode." }
+]);
+
+/* ============================================================
+   8. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A topic has replication factor 3 and min.insync.replicas=2. The ISR currently contains all 3 replicas. A producer sends with acks=all. How many replicas must acknowledge before the produce is acked?",
+    opts:[ "2 — exactly min.insync.replicas, regardless of ISR size",
+           "3 — every member of the CURRENT ISR, which happens to be all 3 right now",
+           "1 — only the leader needs to acknowledge",
+           "It depends on replication factor alone, ignoring the ISR" ],
+    a:1,
+    why:"acks=all waits for every member of the CURRENT ISR, not a fixed count equal to min.insync.replicas. min.insync.replicas is a FLOOR — the minimum ISR size below which the broker refuses writes with NotEnoughReplicasException — not the number of acks actually required when the ISR is larger. Since all 3 replicas are currently in the ISR, all 3 must acknowledge." },
+  { q:"Why did replica.lag.max.messages (a message-count lag criterion) get replaced by replica.lag.time.max.ms?",
+    opts:[ "Message counts were too expensive to track per-replica",
+           "It falsely shrank the ISR during normal producer bursts, since every follower momentarily trails by many messages right after a burst regardless of health",
+           "It only worked for single-partition topics",
+           "It was replaced purely for naming consistency with other Kafka configs" ],
+    a:1,
+    why:"A message-count threshold can't distinguish 'genuinely slow replica' from 'healthy replica measured an instant after a burst' — both show the same symptom: a large message-count gap. A time-based threshold instead asks 'did you catch up within the last replica.lag.time.max.ms', which a healthy follower does within one or two fetch intervals after any burst, while a truly stuck replica does not." },
+  { q:"A follower's own locally recorded high watermark is, at any given instant, typically:",
+    opts:[ "Ahead of the leader's true HW, because followers compute it independently",
+           "Exactly equal to the leader's HW at all times, by protocol design",
+           "At least one fetch round-trip behind the leader's true, current HW",
+           "Irrelevant — followers don't track a high watermark at all" ],
+    a:2,
+    why:"The leader computes and advances its HW locally the instant it can, but only communicates the new value to a given follower in that follower's NEXT FetchResponse. There's no broadcast. So a follower's own recorded HW is always at least one round trip stale relative to the leader's true current value — the exact fact that made HW-based truncation (pre-KIP-101) unsafe." },
+  { q:"What does a rejoining replica send to determine where to truncate its log, post-KIP-101?",
+    opts:[ "Nothing — it trusts its own last known high watermark, as before",
+           "A ListOffsets request asking for the earliest offset",
+           "An OffsetsForLeaderEpoch request, asking the current leader for the end offset of the last epoch the replica fully has",
+           "It always truncates to offset 0 and refetches everything for safety" ],
+    a:2,
+    why:"OffsetsForLeaderEpoch asks the CURRENT leader an authoritative question: 'for epoch E (the last one I have completely), what is your end offset?' The leader answers from its own epoch cache — built from data it (or an earlier leader in the same lineage) actually wrote. The replica truncates to exactly that offset, replacing the old HW-based guess with a provenance-based fact." },
+  { q:"Which combination is the classic 'looks safe but isn't' durability trap this chapter derives?",
+    opts:[ "acks=1 with min.insync.replicas=3",
+           "acks=all with min.insync.replicas=1",
+           "acks=0 with replication factor 1",
+           "acks=all with min.insync.replicas=3 and replication factor 3" ],
+    a:1,
+    why:"min.insync.replicas=1 permits the ISR to legally shrink to just the leader without the broker refusing writes, so acks=all — 'wait for every current ISR member' — degenerates to waiting for the leader alone. It LOOKS like the strongest durability setting because acks=all is present, but it provides essentially none if the ISR has shrunk. The other options are either internally inconsistent (A can't be satisfied — min.insync.replicas can't exceed what acks=1 checks against in a meaningful way) or honestly weak by design (C), or genuinely durable (D)." },
+  { q:"A network partition isolates the leader from both followers (RF=3), and min.insync.replicas=1. What happens to new acks=all produce requests?",
+    opts:[ "They are all rejected with NotEnoughReplicasException, since the leader is now alone",
+           "They keep succeeding, because the ISR can legally shrink to just the leader when min.insync.replicas=1, and acks=all only requires the current ISR to ack",
+           "Kafka automatically raises min.insync.replicas to compensate",
+           "The partition becomes entirely unwritable until the network heals, regardless of min.insync.replicas" ],
+    a:1,
+    why:"With min.insync.replicas=1, an ISR of size 1 (just the leader) is legal, so the broker keeps accepting acks=all writes — the leader alone satisfies 'every current ISR member acknowledged.' This is precisely the trap from earlier questions, now shown as an availability side-effect: the system stays available for writes, but every one of those writes is only as durable as a single, currently-isolated broker." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could write the KIP yourself.":correct>=4?"solid mental model; re-read the ones you missed.":"re-run §8's decks, then try the simulator experiments — the epoch trick clicks fast once you reproduce the bug yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+(function(){
+  const CORRECT = [
+    "Leader and two followers (B, C) are all in the ISR; leader's HW = 5",
+    "Follower B's own locally recorded HW is still 3 (round-trip delay)",
+    "Leader crashes; controller promotes B (highest LEO in the ISR) to leader, epoch increments to 1",
+    "New leader B accepts new writes tagged with epoch 1",
+    "Old leader (now a follower) restarts and sends OffsetsForLeaderEpoch for its last known epoch",
+    "New leader B answers from its epoch cache with the true end offset of that epoch",
+    "Old leader truncates its log to exactly that offset — no guessing from its own stale HW",
+    "Old leader resumes fetching as a follower under the new epoch, ISR eventually re-expands"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real epoch-based failover</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 6 will show that the CONTROLLER's own identity is decided by consensus too — and that decision has exactly the same 'zombie writer' failure mode a deposed Kafka leader has. Predict: what fencing token would a controller-election protocol need, and why would it need to look almost identical to the leader epoch you just learned?",
+    a:"It needs a monotonically increasing controller epoch (or Raft 'term'), incremented on every controller election, attached to every controller action so stale actions from a deposed-but-not-yet-dead controller can be detected and rejected by brokers. This is structurally identical to the leader epoch: both exist to answer 'is the entity claiming authority right now actually still the most recent one to hold it', using a number that only ever increases and is checked, not trusted." },
+  { lvl:"THINK", q:"This chapter said the leader and the controller can briefly disagree about ISR membership (the leader decides locally; the controller confirms afterward). Predict: does a fully consensus-based replication scheme like Raft have an equivalent propagation-latency window, or does it eliminate this class of bug entirely?",
+    a:"Raft doesn't eliminate the general problem of 'a decision takes a round trip to become official' — committing a log entry still requires a majority round trip before a leader can safely report success. What it eliminates is the SPLIT between two separate systems disagreeing: in Raft, the entity deciding replication state and the entity that IS the source of truth are the same log, so there's no second system to fall out of sync with. Chapter 6 will show KRaft folding Kafka's own controller into exactly this kind of single, self-consistent log." },
+  { lvl:"THINK", q:"Given that followers pull from the leader via ordinary Fetch requests (this chapter's central design choice), predict how a KRaft controller quorum's followers replicate the metadata log — push or pull — and why the same reasoning from §5 would apply again at a different layer.",
+    a:"Pull, for the same reason: KRaft's voters fetch the metadata log from the active controller using the same Fetch-style mechanism Kafka already has, rather than the controller pushing metadata to each voter. It reuses proven flow-control and backpressure behavior instead of building a second replication mechanism, exactly the argument this chapter made for why partition followers pull instead of the leader pushing." }
+]);
+
+/* ============================================================
+   9. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const S = {
+    leader: { id:"A", epoch:0, log:[], alive:true },
+    followers: [
+      { id:"B", log:[], alive:true, lastCaughtUp:0, slow:false, inIsr:true },
+      { id:"C", log:[], alive:true, lastCaughtUp:0, slow:false, inIsr:true }
+    ],
+    acks:"all", misr:2, preKip:false, uncleanOk:false,
+    hw:0, tClock:0, produced:0, acked:0, lost:0, sel:null, phase:"stable"
+  };
+  const LAG_THRESH = 30000; // ms simulated
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function allReplicas(){ return [S.leader, ...S.followers]; }
+  function isrMembers(){ return allReplicas().filter(r => r===S.leader ? true : (r.alive && r.inIsr)); }
+  function recomputeHw(){
+    const isr = isrMembers();
+    S.hw = Math.min(...isr.map(r=>r.log.length));
+  }
+  function produce(quiet){
+    if (S.phase!=="stable"){ log("FATAL","cannot produce — no stable leader right now"); return; }
+    const rec = { off: S.leader.log.length, epoch: S.leader.epoch, val: "m"+(S.produced+1) };
+    S.leader.log.push(rec);
+    S.produced++;
+    const isrSize = isrMembers().length;
+    if (S.acks==="0"){ S.acked++; if(!quiet) log("LOG",`produce ${rec.val} → acks=0, not waiting for anything`); }
+    else if (S.acks==="1"){ S.acked++; if(!quiet) log("LOG",`produce ${rec.val} → acks=1, leader append confirmed`); }
+    else {
+      if (isrSize < S.misr){
+        S.leader.log.pop(); S.produced--;
+        log("FATAL",`produce ${rec.val} REJECTED — NotEnoughReplicasException (ISR size ${isrSize} < min.insync.replicas ${S.misr})`);
+        return;
+      }
+      S.acked++;
+      if(!quiet) log("LOG",`produce ${rec.val} → acks=all, waiting on ISR {${isrMembers().map(r=>r.id).join(",")}}`);
+    }
+  }
+  function fetchTick(){
+    S.tClock += 250;
+    S.followers.forEach(f=>{
+      if (!f.alive || S.phase!=="stable") return;
+      const delay = f.slow ? 6 : 1; // "slow" means it only actually catches up every 6 ticks
+      if (S.tClock % (delay*250) < 250){
+        const leaderLog = S.leader.log;
+        if (f.log.length < leaderLog.length){
+          f.log.push(leaderLog[f.log.length]);
+        }
+        if (f.log.length >= leaderLog.length) f.lastCaughtUp = S.tClock;
+      }
+      const gap = S.tClock - f.lastCaughtUp;
+      const wasIn = f.inIsr;
+      f.inIsr = gap <= LAG_THRESH;
+      if (wasIn && !f.inIsr) log("WARN", `replica ${f.id} exceeded replica.lag.time.max.ms (${(gap/1000).toFixed(0)}s since last caught up) — removed from ISR`);
+      if (!wasIn && f.inIsr) log("OK", `replica ${f.id} caught back up — re-added to ISR`);
+    });
+    recomputeHw();
+    render();
+  }
+  function killFollower(id){
+    const f = S.followers.find(x=>x.id===id);
+    if (!f || !f.alive) return;
+    f.alive = false; f.inIsr = false;
+    log("WARN", `replica ${f.id} killed`);
+    recomputeHw(); render();
+  }
+  function slowFollower(id){
+    const f = S.followers.find(x=>x.id===id);
+    if (!f) return;
+    f.slow = !f.slow;
+    log("LOG", `replica ${f.id} ${f.slow?"now fetching every ~1.5s (simulated slow disk/GC)":"back to normal fetch cadence"}`);
+    render();
+  }
+  function killLeader(){
+    if (S.phase!=="stable") return;
+    S.phase = "electing";
+    log("WARN", `leader ${S.leader.id} killed`);
+    setTimeout(()=>{
+      const candidates = S.uncleanOk
+        ? allReplicas().filter(r=>r!==S.leader && r.alive)
+        : isrMembers().filter(r=>r!==S.leader && r.alive);
+      if (candidates.length === 0){
+        log("FATAL","no eligible replica — partition UNAVAILABLE (correct, if unclean election is disabled and ISR is empty)");
+        S.phase = "down"; render(); return;
+      }
+      const winner = candidates.reduce((a,b)=> b.log.length>a.log.length ? b : a);
+      const wasOutOfIsr = !winner.inIsr || !winner.alive;
+      const newEpoch = S.leader.epoch + 1;
+      const oldLeaderReplica = { id:S.leader.id, log:S.leader.log.slice(), alive:false, lastCaughtUp:0, slow:false, inIsr:false, stale:true };
+      const loserLogLen = S.leader.log.length;
+      S.leader = { id: winner.id, epoch: newEpoch, log: winner.log.slice(), alive:true };
+      S.followers = allReplicas().filter(r=>false); // rebuilt below
+      const remaining = [oldLeaderReplica, ...S.followers0Backup(winner)].filter(r=>r.id!==S.leader.id);
+      S.followers = remaining;
+      if (wasOutOfIsr && S.uncleanOk){
+        S.lost += Math.max(0, loserLogLen - winner.log.length);
+        log("FATAL", `UNCLEAN ELECTION: ${winner.id} (out of ISR, only ${winner.log.length} of ${loserLogLen} records) elected — up to ${loserLogLen-winner.log.length} committed record(s) silently discarded`);
+      } else {
+        log("OK", `${winner.id} elected leader — epoch now ${newEpoch} (was a full ISR member, no data lost)`);
+      }
+      S.phase = "stable";
+      render();
+    }, 900);
+  }
+  S.followers0Backup = function(winner){
+    // helper: reconstruct the follower list minus the elected winner, keep original identities alive
+    const prevAll = [S._prevLeaderBackup, ...S._prevFollowersBackup].filter(Boolean);
+    return prevAll.filter(r=>r.id!==winner.id && r.id!==S.leader.id).map(r=>({...r}));
+  };
+  const _origKillLeader = killLeader;
+  function killLeaderWrapped(){
+    S._prevLeaderBackup = { id:S.leader.id, log:S.leader.log.slice() };
+    S._prevFollowersBackup = S.followers.map(f=>({...f}));
+    _origKillLeader();
+  }
+  function rejoinStale(){
+    const stale = S.followers.find(f=>f.stale);
+    if (!stale){ log("WARN","no stale returning replica to rejoin right now"); return; }
+    if (S.preKip){
+      const truncTo = Math.min(stale.log.length, S.hw);
+      const before = stale.log.length;
+      stale.log = stale.log.slice(0, truncTo);
+      stale.alive = true; stale.stale = false; stale.inIsr = false; stale.lastCaughtUp = S.tClock;
+      const dropped = before - stale.log.length;
+      log("FATAL", `PRE-KIP-101: replica ${stale.id} truncates to its OWN last known HW (${truncTo}) — discarded ${dropped} record(s), some of which may have been genuinely committed`);
+      if (dropped>0) S.lost += dropped;
+    } else {
+      const leaderEpochStart = 0; // simplified: leader answers with its true LEO for the queried epoch
+      const truncTo = S.leader.log.length >= stale.log.length ? stale.log.length : S.leader.log.length;
+      stale.log = stale.log.slice(0, truncTo);
+      stale.alive = true; stale.stale = false; stale.inIsr = false; stale.lastCaughtUp = S.tClock;
+      log("OK", `replica ${stale.id} sent OffsetsForLeaderEpoch → leader answered authoritatively → truncated to offset ${truncTo} (exactly correct, no guessing)`);
+    }
+    render();
+  }
+  function restoreAll(){
+    S.followers.forEach(f=>{ f.alive=true; f.slow=false; f.stale=false; f.lastCaughtUp=S.tClock; });
+    log("LOG","all replicas restored / marked healthy");
+    recomputeHw(); render();
+  }
+
+  function render(){
+    el("sim-phase").textContent = { stable:"STABLE", electing:"ELECTING…", down:"PARTITION DOWN" }[S.phase];
+    el("sim-phase").style.color = S.phase==="stable" ? "var(--ok)" : "var(--bad)";
+    const nodes = [S.leader, ...S.followers];
+    el("sim-nodes").innerHTML = nodes.map(r=>{
+      const isLeader = r===S.leader;
+      const cls = [ "rnode", isLeader?"leader":"", (!r.alive)?"dead":"", (!isLeader && !r.inIsr && r.alive)?"out-isr":"", S.sel===r.id?"sel":"" ].join(" ");
+      const logHtml = r.log.map(o=>`<div class="rn-off e${o.epoch%3}${o.epoch!==S.leader.epoch && isLeader?"":""}">${o.off}·${o.val}</div>`).join("") || `<div style="font-size:9px;color:var(--dim);text-align:center">empty</div>`;
+      const gap = isLeader ? 0 : Math.min(1, (S.tClock - r.lastCaughtUp)/LAG_THRESH);
+      return `<div class="${cls}" data-id="${r.id}">
+        <div class="rn-t"><span>${r.id}${isLeader?" (leader)":""}</span><span>${isLeader ? "epoch "+r.epoch : (r.stale?"STALE":(r.alive?(r.inIsr?"ISR":"OUT"):"DEAD"))}</span></div>
+        <div class="rn-log">${logHtml}</div>
+        <div class="rn-meta">LEO ${r.log.length}${!isLeader?" · lag budget:":""}</div>
+        ${!isLeader ? `<div class="rn-lag"><i style="width:${Math.round(gap*100)}%;background:${gap>=1?'var(--bad)':'var(--warn)'}"></i></div>` : ""}
+      </div>`;
+    }).join("");
+    document.querySelectorAll(".rnode").forEach(n=> n.onclick = ()=>{ S.sel = n.dataset.id; render(); });
+    const isr = isrMembers().map(r=>r.id).join(",");
+    el("sim-hw-box").textContent = `high watermark: ${S.hw} · leader epoch: ${S.leader.epoch} · ISR: {${isr}} · min.insync.replicas: ${S.misr}`;
+    el("cnt-produced").textContent = S.produced;
+    el("cnt-acked").textContent = S.acked;
+    el("cnt-lost").textContent = S.lost;
+  }
+
+  el("sc-produce").onclick = ()=>{ produce(); render(); };
+  el("sc-burst").onclick = ()=>{ log("WARN","burst: 20 records in quick succession"); for(let i=0;i<20;i++) produce(true); log("LOG","burst complete — watch followers momentarily lag, then recover within the fetch interval"); render(); };
+  el("sim-misr").oninput = e=>{ S.misr = +e.target.value; el("sim-misr-val").textContent = S.misr; render(); };
+  function setAcks(m){ S.acks=m; ["0","1","all"].forEach(k=>el("cfg-acks"+k).classList.toggle("on", k===m)); }
+  el("cfg-acks0").onclick = ()=>setAcks("0");
+  el("cfg-acks1").onclick = ()=>setAcks("1");
+  el("cfg-acksall").onclick = ()=>setAcks("all");
+  el("sc-slow").onclick = ()=> slowFollower("B");
+  el("sc-killf").onclick = ()=> killFollower("B");
+  el("sc-killl").onclick = ()=> killLeaderWrapped();
+  el("sc-restore").onclick = ()=>{
+    if (S.phase==="down"){ S.phase="stable"; log("OK","a replica returned — partition reopened for writes"); }
+    rejoinStale();   // must run BEFORE restoreAll(), which clears the "stale" flag on everyone
+    restoreAll();
+  };
+  el("cfg-prekip").onclick = ()=>{ S.preKip = !S.preKip; el("cfg-prekip").classList.toggle("on", S.preKip); log("LOG", "pre-KIP-101 mode "+(S.preKip?"ON — returning replicas truncate to their own stale HW":"OFF — returning replicas use OffsetsForLeaderEpoch")); };
+  el("cfg-unclean").onclick = ()=>{ S.uncleanOk = !S.uncleanOk; el("cfg-unclean").classList.toggle("on", S.uncleanOk); log("LOG", "unclean.leader.election.enable "+(S.uncleanOk?"= true — an out-of-ISR replica CAN be elected":"= false — election only from the ISR")); };
+
+  setInterval(fetchTick, 250);
+  log("OK","partition p0 stable — leader A, ISR {A,B,C}");
+  log("HINT","Try: shrink the ISR by slowing B, then kill A and toggle pre-KIP-101 mode to compare.");
+  render();
+})();
+
+/* ============================================================
+   10. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["kafka-05"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#f25c54"><a class="cn-btn" href="kafka-04.html"><span>←</span><span><span class="cn-lbl">PREV · CH 04</span><span class="cn-ttl">Producer Internals: Batching, Compression & Idempotence</span></span></a><div class="cn-mid"><a class="cn-home" href="course-kafka.html">☰ Apache Kafka Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="kafka-01.html">CH 01 · Genesis: Why a Log, Not a Queue</option><option value="kafka-02.html">CH 02 · Broker Architecture & the Request Pipeline</option><option value="kafka-03.html">CH 03 · Log Internals: Segments, Indexes & the Record Format</option><option value="kafka-04.html">CH 04 · Producer Internals: Batching, Compression & Idempotence</option><option value="kafka-05.html" selected>CH 05 · Replication: ISR, High Watermark & Leader Epochs</option><option value="kafka-06.html">CH 06 · The Controller: From ZooKeeper to KRaft</option><option value="kafka-07.html">CH 07 · Consumer Groups & Rebalancing</option><option value="kafka-08.html">CH 08 · Offsets & Delivery Semantics</option><option value="kafka-09.html">CH 09 · Transactions & Exactly-Once</option><option value="kafka-10.html">CH 10 · Storage Performance: Page Cache, Zero-Copy & Sequential I/O</option><option value="kafka-11.html">CH 11 · Retention & Log Compaction</option><option value="kafka-12.html">CH 12 · Networking & the Wire Protocol</option><option value="kafka-13.html">CH 13 · Performance Tuning & Cluster Sizing</option><option value="kafka-14.html">CH 14 · Production Incidents & Failure Handling</option><option value="kafka-15.html">CH 15 · Capstone: Build a Mini Kafka</option></select><span class="cn-prog">05 / 15</span></div><a class="cn-btn" href="kafka-06.html"><span><span class="cn-lbl">NEXT · CH 06</span><span class="cn-ttl">The Controller: From ZooKeeper to KRaft</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

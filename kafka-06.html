@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAFKA-06 · The Controller: From ZooKeeper to KRaft — Apache Kafka Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#f25c54; --pg-dim:rgba(242,92,84,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#ff4d6d; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(242,92,84,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(242,92,84,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(242,92,84,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(255,77,109,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:340px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(242,92,84,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(255,77,109,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(255,77,109,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* raft node boxes */
+  .rnodes{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:10px}
+  .rnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:10px;min-width:150px;
+    transition:all .3s;cursor:pointer}
+  .rnode .rn-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between;margin-bottom:6px}
+  .rnode.leader{border-color:var(--pg);box-shadow:0 0 16px rgba(242,92,84,.12)}
+  .rnode.leader .rn-t{color:var(--pg)}
+  .rnode.candidate{border-color:var(--warn);box-shadow:0 0 14px rgba(255,159,67,.12)}
+  .rnode.candidate .rn-t{color:var(--warn)}
+  .rnode.dead{opacity:.3;filter:grayscale(1)}
+  .rnode.partitioned{opacity:.55;border-style:dashed}
+  .rnode.sel{box-shadow:0 0 0 2px var(--pg)}
+  .rn-log{min-height:70px;display:flex;flex-direction:column-reverse;gap:2px}
+  .rn-off{border:1px solid var(--border-hi);background:var(--bg-2);border-radius:5px;padding:2px 6px;font-family:var(--mono);
+    font-size:9.5px;color:var(--muted);text-align:center}
+  .rn-off.t0{border-color:#60a5fa;color:#9fd0ff} .rn-off.t1{border-color:var(--pg);color:var(--pg)} .rn-off.t2{border-color:var(--purple);color:var(--purple)}
+  .rn-meta{font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:6px;line-height:1.5}
+  .rn-vote{margin-top:5px;font-family:var(--mono);font-size:9px;color:var(--warn);min-height:12px}
+
+  /* broker panel */
+  .broker-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:14px}
+  .bnode{border:1px solid var(--border-hi);background:var(--bg-2);border-radius:9px;padding:7px 11px;font-family:var(--mono);
+    font-size:10.5px;color:var(--muted);text-align:center;min-width:110px}
+  .bnode .bl{color:var(--dim);font-size:9px;margin-top:2px}
+
+  /* log column boxes reused pattern */
+  .logcols{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+  .logcol{flex:1;min-width:150px;max-width:210px}
+  .logcol .lc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;margin-bottom:8px;text-align:center}
+  .logcol .lc-sub{font-family:var(--mono);font-size:9px;color:var(--dim);text-align:center;margin-top:-4px;margin-bottom:8px}
+  .offrow{display:flex;flex-direction:column-reverse;gap:3px}
+  .off{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:6px;padding:4px 8px;
+    font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:center;position:relative}
+  .off.e0{border-color:#60a5fa;color:#9fd0ff}
+  .off.e1{border-color:var(--pg);color:var(--pg)}
+  .off.e2{border-color:var(--purple);color:var(--purple)}
+  .off.gone{opacity:.25;text-decoration:line-through}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:760px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(242,92,84,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(242,92,84,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(255,77,109,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(242,92,84,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(255,77,109,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--warn));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-kafka.html">← Apache Kafka Internals</a>
+  <span class="crumb">APACHE KAFKA INTERNALS · <b>CH 06 / 15</b> · THE CONTROLLER</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solutions, Examined</a>
+  <a href="#s6"><span class="n">06</span>ZooKeeper's Real Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">APACHE KAFKA INTERNALS · CHAPTER 06</div>
+  <h1>The Controller:<br><span class="grad">From ZooKeeper to KRaft</span></h1>
+  <p class="lead">Chapter 5 assumed a controller existed — some authority that could answer "who's the leader for
+  partition 7" and make it official. This chapter builds that authority from nothing. It's a second consensus
+  problem hiding behind the first one: brokers must agree on cluster metadata itself, with the same fencing,
+  ordering, and failure-recovery guarantees partition replication needed — and for eight years Kafka solved it by
+  borrowing another distributed system, ZooKeeper, before replacing it with a Raft implementation of its own.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain precisely why controller failover took minutes with ZooKeeper and takes milliseconds with KRaft.</div>
+    <div class="obj"><b>You will understand</b>Terms, randomized election timeouts, and the log-matching property — and how KRaft's Raft differs from the textbook version.</div>
+    <div class="obj"><b>You will predict</b>What a network partition does to a 3-node vs. a 5-node controller quorum.</div>
+    <div class="obj"><b>You will simulate</b>A live KRaft quorum: kill the active controller, step through an election one RPC at a time, and partition the network into a minority that cannot elect anyone.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Someone has to agree on the truth about the cluster</h2>
+  <p class="lead">Every fact chapter 5 depended on — which broker leads partition 7, what its current ISR is, which
+  topics exist, how many partitions each has, which brokers are alive — is <b>cluster metadata</b>. Unlike a single
+  partition's data, this metadata has one crucial property: <i>every broker in the cluster needs to agree on it</i>,
+  in the same order, without a single point of failure, and any broker that falls behind must be able to answer
+  "how stale is my view?" honestly rather than silently serving wrong answers.</p>
+  <p>That is a full consensus problem, with the same five requirements from chapter 5's opening, restated one layer
+  up:</p>
+  <ul class="plain">
+    <li><b>A single agreed leader for the metadata itself</b> — you cannot have two brokers both believing they're
+      authorized to assign partition leaders; that's split-brain at the level that would corrupt everything
+      downstream.</li>
+    <li><b>Durability</b> — cluster metadata (topic configs, ACLs, partition assignments) must survive the failure
+      of whichever machine is currently in charge of it.</li>
+    <li><b>Fencing against zombies</b> — a controller that appears dead (GC pause, network blip) but is actually
+      still running must never be able to act as if it's still in charge once a new one has taken over.</li>
+    <li><b>Fast, bounded recovery</b> — every broker in the cluster is blocked on metadata being correct; a slow
+      controller failover is a cluster-wide outage, not a localized one.</li>
+    <li><b>Bounded staleness, made observable</b> — exactly chapter 5's high-watermark idea, one level up: a broker
+      needs an honest, checkable answer to "how far behind is my metadata view?"</li>
+  </ul>
+  <p>For its first eight years, Kafka answered all five by <i>renting</i> a consensus system that already existed —
+  ZooKeeper — rather than building one. This chapter derives why that was the right call in 2013, precisely what it
+  cost by 2019, and how KRaft (KIP-500) eventually replaced it by turning cluster metadata into exactly the kind of
+  thing chapter 5 already knows how to replicate: a Kafka log.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS</div>
+    <p>Notice the shape: this chapter is chapter 5, one level up. A "leader" now means "active controller." An
+    "ISR" now means "a Raft quorum's committed log." A "leader epoch" now means a Raft "term." If chapter 5's
+    mental model is solid, this chapter mostly reuses it — the hard part is seeing which pieces generalize and
+    which genuinely don't (a hint: majority quorums, deferred in chapter 5 because of per-partition cardinality,
+    become entirely affordable here because there's only <i>one</i> metadata log for the whole cluster).</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Borrow a consensus system, then build your own</h2>
+  <p>Click through — this is one of the longest-running architectural arcs in Kafka's history, spanning from
+  before Kafka was even open source to the 4.0 release that finally completed the migration.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — ZooKeeper in, ZooKeeper out</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY ZOOKEEPER WAS THE OBVIOUS CHOICE IN 2011</div>
+    <p>Kafka was born inside LinkedIn's infrastructure, and LinkedIn — like most of the 2011 Hadoop-ecosystem world
+    — already ran ZooKeeper for other systems (HBase, Hadoop's own NameNode HA). ZooKeeper offered exactly the
+    primitives a controller needs off the shelf: ephemeral znodes (a node that disappears automatically when its
+    owning process dies — a free failure detector), watches (push notifications on znode changes), and sequential
+    znodes (useful for elections and leases). Building a bespoke Raft implementation in 2011, when the Raft paper
+    itself wasn't published until 2014, was not a realistic alternative — reusing a battle-tested, already-deployed
+    consensus system was the obviously correct engineering call, not a shortcut taken lightly.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: whoever notices first, wins — no fencing</h2>
+  <p>Before reaching for any external system, derive the naive design honestly: every broker watches for the
+  absence of a controller and races to claim the role, with no notion of terms, epochs, or leases.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudo-Scala</span><span>naive_controller.scala — the strawman, annotated</span></div>
+    <pre><span class="k">class</span> <span class="t">NaiveController</span>(brokerId: <span class="t">Int</span>, peers: <span class="t">List</span>[<span class="t">Broker</span>]) {
+
+  <span class="k">def</span> <span class="f">tryBecomeController</span>(): <span class="t">Boolean</span> = {
+    <span class="c">// "Lowest broker ID wins" — no term, no epoch, no lease, no fencing token.</span>
+    <span class="k">val</span> aliveIds = peers.filter(_.isReachable).map(_.id) :+ brokerId
+    <span class="k">if</span> (brokerId == aliveIds.min) {
+      isController = <span class="k">true</span>                 <span class="c">// just... declare it</span>
+      <span class="f">startAssigningPartitionLeaders</span>()
+    }
+    isController
+  }
+
+  <span class="c">// Runs periodically. No coordination with anyone else's clock,</span>
+  <span class="c">// no shared notion of "how long since I last confirmed I'm still it".</span>
+  <span class="k">def</span> <span class="f">heartbeatLoop</span>(): <span class="k">Unit</span> = <span class="k">while</span> (<span class="k">true</span>) {
+    <span class="k">if</span> (!isController) <span class="f">tryBecomeController</span>()
+    <span class="f">sleep</span>(<span class="n">1000</span>)
+  }
+}</pre>
+  </div>
+
+  <p>This gets the easy 90% right: most of the time, exactly one broker believes it's the controller, and it works.
+  The failure mode it doesn't handle is exactly the one that matters — what happens when a broker <i>believes</i>
+  it's still the controller, and is wrong.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The zombie controller, quantified</h2>
+  <p>The naive design's fatal flaw is not the election logic — "lowest ID wins" is a perfectly fine tie-breaker. The
+  flaw is that <b>nothing fences a controller that has been deposed but doesn't know it yet</b>.</p>
+  <ul class="plain">
+    <li><b>The GC-pause scenario:</b> controller broker C1 hits a 20-second stop-the-world GC pause. Every peer
+      concludes C1 is dead (it's unreachable) and broker C2 becomes the new controller, reassigning several
+      partition leaders. C1's GC pause ends; C1 has no idea any of this happened. It resumes its heartbeat loop,
+      sees itself still marked as controller in its own local state, and keeps issuing <code>LeaderAndIsr</code>
+      updates based on <i>stale</i> cluster state — updates that can directly conflict with what C2 just decided.</li>
+    <li><b>Two controllers, two truths:</b> for the window until brokers notice C1's messages are stale (and with
+      no fencing token, how would they even know?), some brokers may apply C1's instructions and others C2's —
+      genuine split-brain in the metadata layer, which is far more damaging than split-brain in a single partition,
+      because <i>every</i> partition's leadership can be affected at once.</li>
+    <li><b>No bound on detection time:</b> "lowest ID wins" re-evaluated every second gives you no guarantee about
+      how long two controllers can coexist, especially under a slow, partial network partition rather than a clean
+      crash.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Model it as a race: a network partition or GC pause of duration <i>T</i> creates a window of exactly length
+    <i>T</i> during which two brokers can simultaneously believe they are the controller, with zero mechanism to
+    shorten that window or detect it from the outside. Every additional millisecond of <i>T</i> is additional time
+    for the two controllers to issue <i>conflicting</i> instructions to the same set of brokers — and conflicting
+    instructions about partition leadership are exactly the kind of bug that shows up as data divergence, not a
+    clean crash. You cannot fix this by making the heartbeat faster; you can only fix it by making "who's really in
+    charge" a fenced, monotonically-ordered fact instead of a locally-held belief.</p>
+  </div>
+  <p>The fix needs a fencing token — precisely the leader-epoch idea from chapter 5, applied to controllers instead
+  of partition leaders. Section 5 walks the real candidates for building that token cluster-wide.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">External lock service vs. gossip vs. embedded Raft</h2>
+  <p>Step through the three real candidates, in the order the ecosystem actually tried them.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Three ways to fence "who's really in charge"</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">WHAT ZOOKEEPER ACTUALLY BOUGHT KAFKA IN 2013</div>
+    <p>Ephemeral znodes gave Kafka a free, correct failure detector (a session that expires means the process is
+    gone, full stop — no ambiguity). A monotonic <b>controller epoch</b>, stored in ZooKeeper and incremented on
+    every election, gave brokers a fencing token: any <code>LeaderAndIsr</code> or metadata update carries the
+    controller epoch that issued it, and brokers reject anything tagged with a lower epoch than the highest they've
+    seen. This closes the exact zombie-controller hole from §4 — C1 resuming after its GC pause finds its epoch is
+    now stale and its instructions get ignored. ZooKeeper's Zab protocol (its own internal consensus algorithm,
+    itself a close relative of Multi-Paxos) is what makes the epoch counter and the znode tree durable and
+    linearizable in the first place.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The ZooKeeper era's real, well-documented pathologies</h2>
+  <p>The controller-epoch fence solves §4's zombie problem. It does not solve a second-order set of costs that
+  accumulated over years of running Kafka-on-ZooKeeper at real scale, and which collectively motivated KIP-500:</p>
+  <ul class="plain">
+    <li><b>Controller failover reloads everything, from scratch, every time.</b> When a new controller takes over,
+      it has no cached state — it must read the <i>entire</i> metadata tree from ZooKeeper: every topic, every
+      partition's assignment, every partition's ISR. That's <b>O(partitions)</b> ZooKeeper reads before the new
+      controller can do anything, and on clusters with hundreds of thousands of partitions this measured in
+      <i>minutes</i>, not seconds — an outage window sized by your partition count, not by how fast your hardware
+      is.</li>
+    <li><b>Metadata propagation is push-based and asynchronous.</b> The controller doesn't just decide new state —
+      it must separately push <code>UpdateMetadataRequest</code>/<code>LeaderAndIsr</code> RPCs to every broker.
+      Between "the controller decided X" and "every broker has heard about X," brokers can legitimately hold
+      divergent views of the cluster, for an unbounded (if usually short) window — there's no offset, no
+      "as-of" marker, just "did the RPC arrive yet."</li>
+    <li><b>ZooKeeper watch herd effects.</b> Many brokers watching the same znode for changes all get notified
+      simultaneously and all re-read the changed state at once — a thundering herd against ZooKeeper itself,
+      worse exactly when the cluster is already stressed (e.g., during a large reassignment).</li>
+    <li><b>A second distributed system, with its own failure modes, to operate.</b> ZooKeeper needs its own JVM
+      tuning, its own quorum (typically 3 or 5 nodes), its own disk latency sensitivity, its own upgrade path, and
+      its own on-call runbook — entirely separate from Kafka's. Every Kafka outage retro that starts with "the
+      brokers looked fine, but ZooKeeper session timeouts spiked" is this cost made concrete.</li>
+    <li><b>A practical partition-count ceiling.</b> Combining the first two costs, clusters were commonly reported
+      (in KIP-500 discussions and Kafka Summit talks) to become operationally painful somewhere in the low hundreds
+      of thousands of partitions cluster-wide — not because brokers couldn't handle the data, but because
+      controller failover and metadata propagation degraded badly at that scale.</li>
+  </ul>
+  <p>Every one of these costs has the same root cause: <b>metadata is a separate system from the thing it
+  describes</b>. Section 7 shows what happens when you stop treating it that way.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">KRaft: metadata becomes a Kafka topic</h2>
+  <p>KIP-500's central idea, stated plainly: stop storing cluster metadata in a separate system with separate
+  consistency semantics, and instead store it as <b>a Kafka topic</b> — <code>__cluster_metadata</code>, a
+  single-partition log, replicated by a dedicated Raft quorum of controller nodes using Kafka's own replication
+  primitives. Click any component below.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">CONTROLLER QUORUM (3 OR 5 NODES)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="active">active controller (Raft leader)</div>
+          <div class="acard" data-p="voter">voter (Raft follower)</div>
+        </div>
+        <div class="arch-row-label">THE METADATA LOG ITSELF</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="metalog">__cluster_metadata — single-partition Kafka log, Raft-replicated</div></div>
+        <div class="arch-row-label">RAFT MACHINERY</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="raftclient">KafkaRaftClient</div>
+          <div class="acard" data-p="snapshot">metadata snapshot</div>
+        </div>
+        <div class="arch-row-label">BROKERS (METADATA CONSUMERS)</div>
+        <div class="arch-grid"><div class="acard" data-p="broker">broker — metadata listener + offset</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE ANSWER TO "HOW STALE IS THIS BROKER'S VIEW?" — FOR THE FIRST TIME, A NUMBER</div>
+    <p>This is the single biggest qualitative change KRaft makes, and it's easy to undersell: because metadata is
+    now a log with offsets, every broker has a well-defined <b>metadata offset</b> — exactly how far into
+    <code>__cluster_metadata</code> it has replayed. "How stale is broker 7's view of the cluster" changes from an
+    unanswerable question (in the ZK era, propagation was push-based RPCs with no sequence number) to a subtraction
+    of two integers. This is the exact upgrade chapter 5 gave you for partition data (an offset-bounded notion of
+    "committed") — chapter 6 gives the same upgrade to the metadata layer itself.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Raft, properly, and exactly how KafkaRaftClient differs</h2>
+  <p>Two things need to happen here: <b>(a)</b> Raft itself, explained rigorously enough that "term," "log matching
+  property," and "commit by majority" stop being buzzwords; <b>(b)</b> the specific ways
+  <code>KafkaRaftClient</code> departs from the textbook algorithm, and why each departure is a deliberate,
+  motivated engineering choice rather than a shortcut.</p>
+
+  <h3>(a) Raft, for engineers who half-know it</h3>
+  <p>Raft solves exactly the problem §4 identified: a cluster of nodes must agree on a single leader and a single,
+  totally-ordered log, and must do so safely even when nodes crash or the network misbehaves, without ever letting
+  two nodes believe they're leader <i>for the same term</i> at the same time.</p>
+  <ul class="plain">
+    <li><b>Terms</b> are Raft's name for exactly the fencing token chapter 5 called a leader epoch: a monotonically
+      increasing integer, incremented every time an election happens. Every RPC carries the sender's term; any node
+      that sees a higher term than its own immediately steps down and adopts it. This is the whole fencing
+      mechanism — no locks, no leases, just "bigger number wins, always."</li>
+    <li><b>Leader election with randomized timeouts:</b> every node starts as a follower and expects periodic
+      heartbeats from a leader. If a follower hears nothing for a <i>randomized</i> timeout (this randomization is
+      not decorative — it's what makes split votes rare: if every node timed out at exactly the same instant, they'd
+      all become candidates simultaneously and repeatedly tie), it becomes a candidate, increments its term, votes
+      for itself, and sends <code>RequestVote</code> RPCs to every peer.</li>
+    <li><b>The up-to-date check:</b> a node grants its vote only if the candidate's log is at least as up-to-date as
+      its own (comparing last log term, then last log index) — this is what prevents a node with a shorter or
+      staler log from ever becoming leader and overwriting genuinely committed entries.</li>
+    <li><b>Winning:</b> a candidate that receives votes from a <i>majority</i> of the cluster (including itself)
+      becomes leader for that term and starts sending heartbeats (empty <code>AppendEntries</code> RPCs), which
+      double as the mechanism that suppresses everyone else's election timers.</li>
+    <li><b>The log matching property:</b> Raft's core safety invariant — if two logs contain an entry with the same
+      index and term, every preceding entry in both logs is guaranteed identical. Leaders enforce this by having
+      followers reject an <code>AppendEntries</code> unless its immediately preceding entry matches; a mismatch
+      forces the leader to walk backward and resend from an earlier point, exactly the kind of prefix-matching
+      chapter 5's leader-epoch mechanism achieves for partition data.</li>
+    <li><b>Commit by majority:</b> a log entry is considered committed once it's replicated to a majority of the
+      cluster — not all of it. This is the fixed-size-majority-quorum design chapter 5 deliberately deferred for
+      individual partitions (too many of them), but which is entirely affordable here, because there's exactly
+      <b>one</b> metadata log for the whole cluster.</li>
+  </ul>
+
+  <div class="widget deck" id="deckRaftElection">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A Raft election, one RPC at a time</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) How KafkaRaftClient departs from textbook Raft</h3>
+  <p>The single biggest departure, and it should feel familiar: <b>KRaft is pull-based.</b> In the Raft paper, the
+  leader actively pushes <code>AppendEntries</code> RPCs to followers. In <code>KafkaRaftClient</code>, voters
+  instead <i>fetch</i> the log from the leader, using — deliberately — the same <code>Fetch</code> API and
+  replication machinery Kafka already uses for ordinary partition replication. This is precisely chapter 5's
+  "followers pull" argument, one layer up, and for the same reasons: one code path serves both ordinary partition
+  replication and metadata replication (fewer distinct RPC types to build, test, and operate), and backpressure is
+  free — a lagging voter simply issues its next fetch later, rather than the leader needing per-voter send-buffer
+  management. The design further reuses the broker's existing <code>SocketServer</code> networking stack and
+  request-handling threads instead of standing up a second, parallel network path just for consensus traffic.</p>
+  <p>Other deliberate departures worth naming: KRaft's leader still needs to know when it's safe to actually start
+  serving reads/writes as the new active controller (a Raft leader in the paper can start immediately once elected,
+  but a freshly-elected KRaft leader must first replay enough of the log to be sure it isn't missing recent
+  committed metadata — handled via a dedicated "leader ready" check after election, not before). And KRaft
+  integrates <b>snapshots</b> as a first-class part of the protocol rather than a bolt-on optimization, because a
+  metadata log that includes every topic/partition change since cluster genesis would otherwise grow forever.</p>
+
+  <h3>Metadata snapshots: why a log alone isn't enough</h3>
+  <p>A brand-new controller node (or a broker that's been offline for a long time) cannot be expected to replay
+  every metadata change since the cluster's creation — that's the exact O(history) problem chapter 5's log
+  compaction (a different course topic) solves for ordinary topics, applied here to the metadata log itself. KRaft
+  periodically writes a <b>snapshot</b>: a complete, point-in-time image of cluster metadata as of some log offset,
+  after which the log up to that offset can be trimmed. A new controller or a badly-behind broker loads the latest
+  snapshot, then replays only the (much shorter) tail of the log since that snapshot's offset — turning "reload
+  everything since genesis" (§6's ZK-era cost) into "load one snapshot plus a short tail," which is the direct
+  mechanism behind the millisecond-scale failover numbers in §10.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Quorum size vs. fault tolerance vs. commit latency</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>controller quorum size</label><input type="range" id="quorum-n" min="1" max="9" value="3" step="2"><span class="val" id="quorum-n-val">3 nodes</span></div>
+      <div class="memlegend" id="quorum-legend"></div>
+      <div class="memmap" id="quorum-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="quorum-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Who runs their own consensus, and who rents someone else's</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>METADATA/COORDINATION MODEL</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>Kafka (pre-KRaft)</td><td>External ZooKeeper ensemble; controller epoch as fencing token</td>
+      <td><span class="pill g">reused a proven 2011-era consensus system</span></td>
+      <td><span class="pill b">O(partitions) failover reload</span> <span class="pill b">two systems to run</span> <span class="pill y">partition-count ceiling</span></td></tr>
+    <tr><td>Kafka (KRaft, KIP-500)</td><td>Self-managed Raft quorum; metadata is a Kafka topic (__cluster_metadata)</td>
+      <td><span class="pill g">millisecond failover</span> <span class="pill g">one system, one operational model</span> <span class="pill g">metadata offset = staleness, finally answerable</span></td>
+      <td><span class="pill y">migration risk for the installed base; quorum itself needs a majority alive</span></td></tr>
+    <tr><td>Redpanda</td><td>Raft from day one, for BOTH partition data and controller/cluster metadata — no external dependency ever existed</td>
+      <td><span class="pill g">never had a ZK-shaped migration to do</span> <span class="pill g">one consensus mechanism, uniformly applied</span></td>
+      <td><span class="pill y">per-partition Raft groups still add coordination overhead at very high partition counts — the same cardinality tax chapter 5 avoided by NOT doing this for data</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>ZooKeeper (or a pluggable metadata store) for broker/cluster coordination; a SEPARATE system, BookKeeper, for the actual data ledgers</td>
+      <td><span class="pill g">broker failure needs no per-topic leader election — any broker can serve any topic by re-reading BookKeeper</span></td>
+      <td><span class="pill b">THREE moving distributed systems in production: broker, BookKeeper, metadata store — the ZK-era Kafka cost, but permanent, plus one more system</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Self-contained Raft, both for individual streams AND for cluster-level coordination — no external dependency, similar philosophy to KRaft</td>
+      <td><span class="pill g">single binary, single consensus story</span></td>
+      <td><span class="pill y">arrived at this design from the start rather than migrating to it — no legacy-compatibility burden, but also less battle-testing at Kafka's historical scale</span></td></tr>
+    <tr><td>etcd / Consul (used by many systems, e.g. Kubernetes)</td><td>Raft-based key-value store, used AS the external coordination system by other software (the ZooKeeper role, modernized)</td>
+      <td><span class="pill g">simpler protocol than Zab, well-understood Raft semantics</span></td>
+      <td><span class="pill y">still a SEPARATE system from the one being coordinated — the exact architectural shape KRaft eliminates for Kafka specifically</span></td></tr>
+    <tr><td>RabbitMQ</td><td>Classic clustering via Erlang distribution + Mnesia (not a general consensus algorithm); quorum queues (3.8+) use Raft, but only per-queue, not for whole-cluster metadata</td>
+      <td><span class="pill g">quorum queues finally give per-queue durability guarantees</span></td>
+      <td><span class="pill b">cluster-wide membership/metadata still isn't Raft-based — a partial modernization, not a full one</span></td></tr>
+  </table>
+  <p>The throughline: KRaft and Redpanda both conclude that renting an external consensus system is a cost worth
+  eliminating, but they get there from opposite starting points — Redpanda applies Raft everywhere from birth,
+  while KRaft is a deliberate, staged replacement of one specific historical dependency inside a decade-old,
+  massively deployed system. Pulsar is the instructive counterexample: it still has not eliminated the "extra
+  distributed system" cost this chapter is about — it just moved which one.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Milliseconds instead of minutes, quantified</h2>
+  <ul class="plain">
+    <li><b>ZK-era controller failover:</b> dominated by O(partitions) ZooKeeper reads to rebuild in-memory
+      controller state from scratch. Publicly discussed KIP-500 motivating figures put large, real clusters at
+      failovers measured in <b>minutes</b> once partition counts reach the hundreds of thousands.</li>
+    <li><b>KRaft controller failover:</b> the new active controller already has the replicated log (or a recent
+      snapshot plus a short tail) locally, because it was a voter the whole time — there is no separate "go fetch
+      everything from a store" step. Publicly discussed KRaft benchmarks describe failover in the
+      <b>hundreds-of-milliseconds to low-seconds</b> range, essentially bounded by Raft's election-timeout
+      randomization window, not by cluster size.</li>
+    <li><b>Partition-count ceiling:</b> KIP-500 and subsequent KRaft benchmark talks describe clusters supporting
+      an order of magnitude (or more) beyond the practical ZK-era ceiling — figures in the range of millions of
+      partitions have been publicly discussed at Kafka Summit as achievable with KRaft, versus the low hundreds of
+      thousands that were operationally painful under ZooKeeper.</li>
+    <li><b>Snapshot loading is O(metadata size at a point in time), not O(history).</b> This is precisely why a
+      broker that's been offline for a week can rejoin without replaying a week of individual metadata deltas — it
+      loads one snapshot and a short tail.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Failover time vs. partition count — ZK vs. KRaft</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>partitions cluster-wide</label><input type="range" id="perf-parts" min="1000" max="2000000" value="200000" step="1000"><span class="val" id="perf-parts-val">200,000</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-zk">ZooKeeper controller</button>
+        <button class="chip" id="perf-kraft">KRaft controller</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> failover time (relative, log scale)</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch matching the qualitative shape publicly described across KIP-500 discussions
+    and Kafka Summit KRaft benchmark talks: ZK-era failover scales roughly linearly with partition count (each one
+    is a metadata read to rebuild), while KRaft failover is nearly flat against partition count (bounded instead by
+    election-timeout randomization and snapshot size, not by how many partitions exist). Treat exact numbers as
+    illustrative of the shape, not as a specific vendor benchmark.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">The migration, at scale</h2>
+
+  <h3>The KIP-500 rollout timeline, in production</h3>
+  <p>KRaft was marked production-ready starting with Kafka 3.3 (2022), after roughly three years of development and
+  staged rollout beginning with KIP-500's 2019/2020 proposal. Confluent and the wider Kafka community published
+  migration guides and case studies describing a <b>dual-write bridge mode</b> for existing clusters: a cluster
+  keeps running its ZooKeeper-based controller while a parallel KRaft controller quorum is stood up and begins
+  receiving the same metadata, letting operators validate the new path before cutting brokers over — precisely the
+  kind of staged migration a decade-old, massively deployed piece of infrastructure needs, rather than a
+  flag-day rewrite.</p>
+
+  <h3>Reported failover-time improvements</h3>
+  <p>Public Kafka Summit talks and Confluent engineering blog posts on KRaft describe controller failover times
+  dropping from the ZK-era's minutes-at-scale down to sub-second ranges in KRaft deployments, alongside
+  substantially higher supported partition counts — the exact two numbers this chapter's §10 models. These are the
+  headline metrics the KIP-500 authors set out to fix, and the ones most consistently cited across the ecosystem's
+  public writeups of the migration.</p>
+
+  <h3>Kafka 4.0: ZooKeeper support removed</h3>
+  <p>Kafka 4.0 (2024) completed the arc this chapter's timeline traces: ZooKeeper mode was removed entirely, and
+  KRaft became the only supported metadata implementation. The multi-year overlap between "KRaft is available" and
+  "ZooKeeper is finally gone" is itself a case study in how carefully a foundational architectural dependency has
+  to be replaced under a live, massively deployed distributed system — the same caution the PostgreSQL course's
+  chapter on the multi-threading effort discusses for a differently-shaped but equally foundational change.</p>
+
+  <h3>Operational lesson from the transition period</h3>
+  <p>During the years both modes were supported, community discussion repeatedly surfaced one operational
+  reality worth internalizing: running the ZK-to-KRaft migration bridge correctly requires understanding both
+  systems' failure modes simultaneously, not just the destination state — exactly the kind of "two systems in
+  flight at once" complexity that motivated eliminating the external dependency in the first place.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — these mirror what a genuine Staff-level infra interview or an incident retro on a
+  metadata outage actually probes.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>KafkaRaftClient</code> and friends</h2>
+  <p>Where everything in this chapter lives. Files marked <span style="color:var(--warn)">●</span> are core
+  reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">raft/src/main/java/org/apache/kafka/raft/</span></div>
+<div>├── <span class="fhl">● KafkaRaftClient.java</span> <span class="fnote">— the Raft state machine: elections, AppendEntries handling, fetch-driven replication</span></div>
+<div>├── <span class="fhl">● QuorumState.java</span> <span class="fnote">— tracks current role (leader/candidate/follower) and current term</span></div>
+<div>├── LeaderState.java · CandidateState.java · FollowerState.java · UnattachedState.java</div>
+<div>├── ReplicatedLog.java <span class="fnote">— the log-matching-property machinery: append, truncate, read</span></div>
+<div>└── <span class="fhl">● VoteRequest.java / VoteResponse.java</span> <span class="fnote">— the RequestVote RPC, with the up-to-date log check</span></div>
+<div><span class="dir">metadata/src/main/java/org/apache/kafka/</span></div>
+<div>├── <span class="dir">controller/</span></div>
+<div>│   ├── <span class="fhl">● QuorumController.java</span> <span class="fnote">— the KRaft-era controller logic: assigns leaders, tracks ISR, all via the metadata log</span></div>
+<div>│   └── ControllerMetricsManager.java</div>
+<div>├── <span class="dir">metadata/</span></div>
+<div>│   ├── MetadataLoader.java <span class="fnote">— broker-side: replays __cluster_metadata into an in-memory image</span></div>
+<div>│   └── <span class="fhl">● SnapshotWriter.java / SnapshotReader.java</span> <span class="fnote">— periodic metadata snapshots, and loading them on startup</span></div>
+<div><span class="dir">core/src/main/scala/kafka/ (legacy ZK path, still readable pre-4.0)</span></div>
+<div>├── controller/KafkaController.scala <span class="fnote">— the ZK-era controller: znode watches, LeaderAndIsr/UpdateMetadata push</span></div>
+<div>└── zk/ZkMetadataCache.scala <span class="fnote">— broker-side cache of what the ZK-era controller last pushed</span></div>
+  </div></div>
+
+  <p>First, the core of a Raft vote decision — simplified from <code>KafkaRaftClient</code> but faithful to its
+  structure:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Java</span><span>KafkaRaftClient.java — handleVoteRequest(), the up-to-date check</span></div>
+    <pre><span class="k">VoteResponse</span> <span class="f">handleVoteRequest</span>(<span class="t">VoteRequest</span> request) {
+    <span class="k">if</span> (request.candidateEpoch() &lt; quorumState.epoch()) {
+        <span class="c">// Stale candidate — a lower term can never win a vote. This is</span>
+        <span class="c">// the ENTIRE fencing mechanism: bigger term always wins, no locks.</span>
+        <span class="k">return</span> voteResponse(<span class="k">false</span>, quorumState.epoch());
+    }
+    <span class="k">if</span> (request.candidateEpoch() &gt; quorumState.epoch()) {
+        quorumState.transitionToUnattached(request.candidateEpoch());   <span class="c">// step down, adopt the higher term</span>
+    }
+
+    <span class="k">boolean</span> logIsUpToDate =
+        request.lastOffsetEpoch() &gt; log.lastFetchedEpoch() ||
+        (request.lastOffsetEpoch() == log.lastFetchedEpoch() &amp;&amp;
+         request.lastOffset() &gt;= log.endOffset());
+
+    <span class="k">boolean</span> notYetVoted = quorumState.votedForId().isEmpty();
+
+    <span class="k">if</span> (logIsUpToDate &amp;&amp; notYetVoted) {
+        quorumState.grantVoteTo(request.candidateId());
+        <span class="k">return</span> voteResponse(<span class="k">true</span>, quorumState.epoch());
+    }
+    <span class="k">return</span> voteResponse(<span class="k">false</span>, quorumState.epoch());
+}</pre>
+  </div>
+
+  <p>Next, the detail that makes this chapter's central architectural claim concrete — replication is fetch-driven,
+  not push-driven:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Java</span><span>KafkaRaftClient.java — handleFetchRequest(), voters PULL the log</span></div>
+    <pre><span class="k">FetchResponse</span> <span class="f">handleFetchRequest</span>(<span class="t">FetchRequest</span> request) {
+    <span class="c">// A VOTER sends this — same request TYPE brokers use for ordinary</span>
+    <span class="c">// partition replication and consumers use to read data (ch.5, §5).</span>
+    <span class="c">// One fetch code path, reused a second time at the metadata layer.</span>
+    <span class="k">if</span> (request.replicaEpoch() &lt; quorumState.epoch()) {
+        <span class="k">return</span> fetchResponse(<span class="t">Errors</span>.FENCED_LEADER_EPOCH);
+    }
+    <span class="k">if</span> (!quorumState.isLeader()) {
+        <span class="k">return</span> fetchResponse(<span class="t">Errors</span>.NOT_LEADER_OR_FOLLOWER);
+    }
+
+    <span class="k">var</span> records = log.read(request.fetchOffset(), request.maxBytes());
+    updateHighWatermark();  <span class="c">// same min-across-quorum idea as ch.5's HW — just "quorum" now means "majority", not "ISR"</span>
+    <span class="k">return</span> fetchResponse(records, log.highWatermark());
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Reuse the fencing pattern, don't reinvent it.</b> The vote handler's epoch check is structurally
+    identical to chapter 5's leader-epoch check on record batches — "does this claim carry the highest number
+    we've seen? if not, reject" is the one idea doing all the safety work in both places. <b>2. Reuse the transport,
+    don't build a second one.</b> Metadata replication rides the exact same <code>Fetch</code> request type,
+    <code>SocketServer</code>, and request-handling threads as partition data — meaning KRaft shipped without Kafka
+    needing to build, test, and operate an entirely separate RPC and networking stack just for consensus. <b>3.
+    Reuse the commit definition.</b> "Committed" still means "replicated to a quorum, then exposed via a high
+    watermark" — chapter 5's vocabulary, with "ISR" swapped for "Raft majority," because the underlying question
+    ("what may a reader safely observe?") never changed.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i>.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a KRaft controller boots</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from a cold controller process start to serving as active controller. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">A live KRaft quorum</h2>
+  <p>Three or five controller nodes, each with its own metadata log, term, and role. Kill the active controller and
+  watch randomized election timeouts fire, a candidate request votes, win a majority, increment the term, and
+  resume serving — with a step mode to advance one RPC at a time. Inject a network partition that isolates a
+  minority and watch it fail to elect anyone. A broker panel shows brokers fetching metadata and their metadata
+  lag. Toggle "ZooKeeper mode" to replay the same failure and contrast the failover time and full-reload cost.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">controller quorum — live</span><span class="w-sub" id="sim-phase">STABLE</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="rnodes" id="sim-nodes"></div>
+          <div class="sim-shm"><div class="shm" id="sim-term-box">term: 1 · active controller: n1</div></div>
+          <div class="broker-row" id="sim-brokers"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">QUORUM</div>
+            <div class="toggle-row" style="margin:0">
+              <button class="chip on" id="cfg-q3">3 nodes</button>
+              <button class="chip" id="cfg-q5">5 nodes</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">FAILURE INJECTION</div>
+            <div class="btns">
+              <button class="btn danger" id="sc-killc">kill active controller</button>
+              <button class="btn warn" id="sc-partition">partition a minority</button>
+              <button class="btn" id="sc-heal">heal network</button>
+              <button class="btn" id="sc-step">step one RPC ▸</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">MODE</div>
+            <div class="toggle-row" style="margin:0">
+              <button class="chip on" id="cfg-kraft">KRaft mode</button>
+              <button class="chip" id="cfg-zk">ZooKeeper mode</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-term">1</div><div class="cl">term</div></div>
+            <div class="scounter"><div class="cv" id="cnt-failovers">0</div><div class="cl">failovers</div></div>
+            <div class="scounter"><div class="cv" id="cnt-failtime" style="color:var(--bad)">0</div><div class="cl">ms last failover</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Kill the active controller repeatedly and watch the term increment each time — never a repeat, never
+    a tie that resolves ambiguously. <b>2.</b> With a 5-node quorum, partition it 2-vs-3 and watch only the
+    3-node majority side elect anyone — the 2-node side sits leaderless forever, by design. <b>3.</b> Switch to
+    "ZooKeeper mode" and re-run a kill — compare the simulated failover time directly against KRaft mode.
+    <b>4.</b> Use step mode to watch a single election's exact RPC sequence: timeout → RequestVote → votes granted
+    → majority reached → term incremented → heartbeats resume.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 7: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer in your head, <i>then</i> reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 06 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now explain why controller failover went from minutes
+    to milliseconds, walk a Raft election term by term, and state precisely how <code>KafkaRaftClient</code>'s
+    pull-based replication mirrors chapter 5's follower-fetch design one layer up. Chapter 7 turns to the producer's
+    side of the pipe: how a batch actually gets from an application's <code>send()</code> call into the
+    <code>RecordAccumulator</code>, and what <code>linger.ms</code> and <code>batch.size</code> are really trading
+    off.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="kafka-07.html" style="text-decoration:none;display:inline-flex;align-items:center">KAFKA-07: The Producer →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2008–11", l:"ZooKeeper, already there", d:"<b>LinkedIn already runs ZooKeeper</b> for other infrastructure (HBase, Hadoop NameNode HA) before Kafka is even open-sourced. When Kafka needs a controller election and a durable metadata store in 0.8 (2013), reusing an already-deployed, battle-tested consensus system is the obvious engineering call — the Raft paper itself doesn't exist yet (2014)." },
+  { yr:"2013", l:"Kafka 0.8: the controller is born", d:"<b>ZooKeeper becomes the arbiter.</b> One broker wins a ZK-based election to become controller; ephemeral znodes give a free failure detector; a controller epoch, stored durably in ZK, becomes the fencing token that closes the zombie-controller hole from §4." },
+  { yr:"2015–18", l:"scale exposes the cost", d:"<b>O(partitions) failover becomes visible.</b> As real clusters grow into the tens and hundreds of thousands of partitions, controller failover time — dominated by rebuilding in-memory state from ZooKeeper reads — starts measuring in minutes, and operators begin publicly discussing it as a real limit." },
+  { yr:"2019", l:"KIP-500 proposed", d:"<b>'Remove ZooKeeper Dependency.'</b> Colin McCabe and collaborators propose folding cluster metadata into a Kafka topic replicated by Kafka's own embedded Raft implementation — eliminating the second distributed system entirely rather than optimizing around it." },
+  { yr:"2020–21", l:"KIP-595 / KIP-630: the Raft details", d:"<b>The actual protocol gets specified.</b> KIP-595 defines the Raft-based replication protocol for the metadata log; related KIPs specify the metadata record format and the snapshot mechanism this chapter's §8 covers." },
+  { yr:"2022", l:"Kafka 3.3: KRaft production-ready", d:"<b>KRaft is declared safe for production use</b> after roughly three years of staged development, marking the point where new clusters could reasonably be built ZooKeeper-free." },
+  { yr:"2023", l:"ZK-to-KRaft migration tooling", d:"<b>Existing clusters get a path off ZooKeeper.</b> A dual-write 'bridge' mode lets an operator stand up a KRaft controller quorum alongside an existing ZK-based one, validate it, then cut brokers over without a flag-day rewrite — the same staged-migration caution the PostgreSQL course's chapter on multithreading discusses for a differently-shaped foundational change." },
+  { yr:"2024", l:"Kafka 4.0: ZooKeeper removed", d:"<b>The arc completes.</b> ZooKeeper support is removed entirely; KRaft is the only supported metadata implementation. Eleven years after ZooKeeper became the controller's arbiter, Kafka finally owns its own consensus story end to end." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: candidates examined (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:190px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...bs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">${bs.join("")}</div>`;
+  stepper("deckCandidates", [
+    { stage: wrap(box("CANDIDATE A — no fencing (§3's strawman)", cell("lowest broker ID wins, re-evaluated every second", "#f25c54") + cell("zombie controllers possible", "#ff9f43") + cell("no bound on split-brain window", "#ff9f43"))),
+      cap:`<b>Rejected — §4 already showed exactly why.</b> Without a fencing token, a deposed-but-alive controller can keep acting, and nothing detects it.` },
+    { stage: wrap(box("CANDIDATE B — decentralized gossip / CRDTs", cell("no single leader; nodes reconcile eventually", "#60a5fa") + cell("no strict global ordering", "#8b94a7") + cell("hard to answer 'who assigns partition leaders right now?'", "#f25c54"))),
+      cap:`<b>Examined, rejected for this specific job.</b> Gossip-based eventual consistency is excellent for some metadata (service discovery, membership lists) but cluster metadata needs a single linearizable authority — 'who's the leader of partition 7' cannot have two simultaneously valid answers even briefly, which is exactly what a CRDT-style model would allow.` },
+    { stage: wrap(box("CANDIDATE C1 — external consensus system (ZooKeeper) ✓ 2013", cell("ephemeral znodes = free failure detector", "#4ade80") + cell("controller epoch = fencing token", "#4ade80") + cell("Zab (ZK's own Paxos-like protocol) makes it durable", "#4ade80"))),
+      cap:`<b>The actual 2013 answer.</b> Rent a proven consensus system instead of building one. This closes §4's zombie-controller hole immediately and was clearly the right call given what existed in 2011–2013 — but §6 shows what it cost by year eight.` },
+    { stage: wrap(box("CANDIDATE C2 — embedded Raft, KIP-500 ✓ 2020+", cell("metadata IS a Kafka topic, __cluster_metadata", "#f25c54") + cell("Raft quorum built from Kafka's OWN replication code", "#f25c54") + cell("no second distributed system at all", "#f25c54"))),
+      cap:`<b>The eventual answer, once building it yourself became affordable.</b> By 2019, Raft was well-understood and battle-tested elsewhere, and Kafka's own engineers could reuse its EXISTING fetch-based replication machinery (chapter 5!) instead of adopting a second system's operational model. This is chapter 7's subject in full.` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  active:{ n:"active controller (Raft leader)", f:"org.apache.kafka.controller.QuorumController · raft.KafkaRaftClient (LeaderState)", r:"The one quorum node currently elected Raft leader for the metadata log. Accepts metadata writes (new topics, partition reassignments, ISR changes via AlterPartition), appends them to __cluster_metadata, and serves them to voters and brokers.", l:"Holds the role for a single Raft term; steps down the instant it sees a higher term from any RPC.", d:"If it dies or is partitioned from a majority, the remaining quorum members elect a new leader after a randomized election timeout — see §8's stepper and the simulator below." },
+  voter:{ n:"voter (Raft follower)", f:"raft.KafkaRaftClient (FollowerState) · raft.QuorumState", r:"A controller-quorum node that is not currently leader. Fetches the metadata log from the active controller via ordinary Fetch requests, participates in elections by granting or denying votes, and can itself become a candidate if it stops hearing from a leader.", l:"Lives as long as the controller process is up; role (follower/candidate) changes with every election.", d:"A voter that's merely slow (not dead) still counts toward quorum size for majority calculations — only unreachable/dead voters actually shrink the effective quorum." },
+  metalog:{ n:"__cluster_metadata", f:"a single-partition Kafka topic, replicated by the controller quorum's Raft group", r:"The literal source of truth for the whole cluster: topics, partitions, ACLs, configs, broker registrations, and (via AlterPartition) partition leader/ISR state. Everything chapter 5 needed a controller to know is a record in this log.", l:"Grows via normal log-append semantics; periodically compacted into snapshots (see below) so it doesn't grow forever.", d:"Because it's an ordinary offset-addressed log, 'how stale is broker X's view' becomes exactly 'leader's log end offset minus broker X's replayed offset' — a subtraction, not a guess." },
+  raftclient:{ n:"KafkaRaftClient", f:"raft/src/main/java/org/apache/kafka/raft/KafkaRaftClient.java", r:"The Raft state machine implementation itself: handles RequestVote and (pull-based) Fetch RPCs, tracks the current term and role, drives elections, and exposes the replicated log to the QuorumController above it.", l:"One instance per controller-quorum node, running continuously.", d:"Diverges from textbook Raft primarily in being pull-based (§8b) and in integrating snapshots as first-class rather than bolted on." },
+  snapshot:{ n:"metadata snapshot", f:"metadata/.../SnapshotWriter.java · SnapshotReader.java", r:"A complete, point-in-time image of cluster metadata as of some log offset, after which the log up to that point can be trimmed. Lets a new controller or long-offline broker load one file plus a short log tail instead of replaying history since cluster genesis.", l:"Written periodically by the active controller; loaded by any node (controller or broker) that's starting fresh or badly behind.", d:"This is the direct mechanism behind §10's millisecond-to-second failover numbers — without it, failover time would degrade back toward O(history), the exact ZK-era cost this chapter eliminates." },
+  broker:{ n:"broker — metadata listener", f:"metadata/.../MetadataLoader.java · BrokerMetadataPublisher", r:"Every broker (not just controller-quorum nodes) runs a metadata listener that fetches __cluster_metadata as an ordinary consumer of the log, replays each record into an in-memory metadata image, and tracks exactly how far it's replayed — its metadata offset.", l:"Continuously fetching, for the lifetime of the broker process.", d:"A broker that falls behind doesn't silently serve stale answers with no warning — its metadata offset lag is a directly observable, checkable number, unlike the ZK-era's push-based propagation with no sequence marker." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON FAILURE / SUBTLETY</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("active");
+
+/* ============================================================
+   4. DECK: Raft election, one RPC at a time (§8a)
+   ============================================================ */
+(function(){
+  function nodes(list){
+    let h = `<div class="rnodes">`;
+    list.forEach(n=>{
+      h += `<div class="rnode ${n.role}"><div class="rn-t"><span>${n.id}</span><span>term ${n.term}</span></div>
+        <div class="rn-meta">${n.role}${n.note?" · "+n.note:""}</div>
+        <div class="rn-vote">${n.vote||""}</div></div>`;
+    });
+    return h + `</div>`;
+  }
+  stepper("deckRaftElection", [
+    { stage: nodes([{id:"n1",role:"leader",term:3,note:"sending heartbeats"},{id:"n2",role:"follower",term:3},{id:"n3",role:"follower",term:3}]),
+      cap:`<b>Stable state, term 3.</b> n1 is leader; n2 and n3 are followers whose election timers keep getting reset by n1's periodic heartbeats (empty AppendEntries / Fetch responses). This is 99% of a Raft cluster's life — nothing happens.` },
+    { stage: nodes([{id:"n1",role:"dead",term:3,note:"crashed"},{id:"n2",role:"follower",term:3,note:"timer running…"},{id:"n3",role:"follower",term:3,note:"timer running…"}]),
+      cap:`<b>n1 crashes.</b> No more heartbeats arrive. n2 and n3 both have election timers running with RANDOMIZED durations — this randomization is deliberate: if both timed out at the exact same instant, they'd both become candidates simultaneously and likely split the vote, forcing a retry. Randomization makes one of them almost always time out meaningfully first.` },
+    { stage: nodes([{id:"n1",role:"dead",term:3},{id:"n2",role:"candidate",term:4,note:"timed out first, voted for self",vote:"→ RequestVote(term=4) to n1, n3"},{id:"n3",role:"follower",term:3,note:"timer reset by n2's RequestVote"}]),
+      cap:`<b>n2 times out first.</b> It increments its term to 4, votes for itself, and sends RequestVote(term=4) to every peer. Receiving n3's timer resets on seeing this RPC — Raft peers back off their own election attempt once they see a legitimate, higher-term candidacy in flight.` },
+    { stage: nodes([{id:"n1",role:"dead",term:3},{id:"n2",role:"candidate",term:4,note:"1 of 2 votes needed for majority of 3"},{id:"n3",role:"follower",term:4,note:"granted vote",vote:"n3 → n2: vote GRANTED (term 4, log up to date)"}]),
+      cap:`<b>n3 grants its vote.</b> It checks: is request.candidateEpoch (4) ≥ my term (was 3)? Yes → adopt term 4. Is n2's log at least as up to date as mine (comparing last-entry term, then index)? Yes → grant the vote (n3 hadn't voted for anyone else this term). n2 now has 2 of 3 possible votes — a majority.` },
+    { stage: nodes([{id:"n1",role:"dead",term:4},{id:"n2",role:"leader",term:4,note:"elected — majority reached"},{id:"n3",role:"follower",term:4,note:"fetching from n2"}]),
+      cap:`<b>n2 becomes leader for term 4.</b> It immediately starts sending heartbeats (which, in KafkaRaftClient's pull-based world, means responding to n3's own Fetch requests promptly rather than pushing anything — §8b). If n1 recovers later, it will see term 4 on its first RPC exchange, recognize its own term (3) is stale, and step down to follower immediately — the exact fencing mechanism that closes §4's zombie-controller hole.` }
+  ]);
+})();
+
+/* ============================================================
+   5. QUORUM SIZE SLIDER (§8)
+   ============================================================ */
+(function(){
+  function render(){
+    const n = +el("quorum-n").value;
+    el("quorum-n-val").textContent = n + " node" + (n>1?"s":"");
+    const majority = Math.floor(n/2)+1;
+    const tolerable = n - majority;
+    const segs = [
+      ["majority needed to elect/commit", majority, "#f25c54"],
+      ["can be down and quorum still works", tolerable, "#4ade80"]
+    ];
+    el("quorum-map").innerHTML = segs.map(([lbl,v,c])=>
+      `<div class="seg" style="background:${c};width:${(v/n*100).toFixed(1)}%">${v}</div>`).join("");
+    el("quorum-legend").innerHTML = `<span><span class="sw" style="background:#f25c54"></span>majority required</span><span><span class="sw" style="background:#4ade80"></span>fault tolerance (nodes that can be down)</span>`;
+    el("quorum-note").innerHTML = `A ${n}-node controller quorum needs <b style="color:var(--pg)">${majority}</b> reachable nodes to elect a leader or commit a metadata write, and can therefore tolerate <b style="color:var(--ok)">${tolerable}</b> simultaneous node failures before the metadata log itself becomes unwritable. Going from 3 → 5 nodes doubles fault tolerance (1 → 2) but adds a real cost: every metadata write now needs acknowledgment from more nodes before it commits, and there are more voters for the leader to keep in sync — commit latency and network chatter both increase modestly. This is the same shape as chapter 5's replication-factor tradeoff, just applied to the ONE log that describes the whole cluster instead of to ordinary topic data.`;
+  }
+  el("quorum-n").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   6. PERFORMANCE CHART: failover vs partitions (§10)
+   ============================================================ */
+(function(){
+  let mode = "zk";
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function model(parts, mode){
+    if (mode==="zk") return 50 + parts*0.0009;              // roughly linear in partition count, minutes-at-scale
+    return 250 + Math.log10(Math.max(parts,10))*40;         // nearly flat, bounded by election timeout + snapshot load
+  }
+  function render(){
+    const parts = +el("perf-parts").value;
+    el("perf-parts-val").textContent = parts.toLocaleString();
+    el("perf-zk").classList.toggle("on", mode==="zk");
+    el("perf-kraft").classList.toggle("on", mode==="kraft");
+    const W = cv.width, H = cv.height, PAD = 44;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=1000; x<=2000000; x*=1.2) xs.push(Math.round(x));
+    const ptsZk = xs.map(p=>model(p,"zk")), ptsKr = xs.map(p=>model(p,"kraft"));
+    const maxY = Math.max(...ptsZk, ...ptsKr);
+    const X = p => PAD + (Math.log10(p)/Math.log10(2000000)) * (W-PAD-14);
+    const Y = v => H-24 - (Math.log10(Math.max(v,1))/Math.log10(maxY))*(H-44);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [1000,10000,100000,1000000].forEach(p=>{ ctx.beginPath(); ctx.moveTo(X(p),10); ctx.lineTo(X(p),H-20); ctx.stroke(); ctx.fillText((p/1000)+"K", X(p)-10, H-6); });
+    function curve(pts, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((p,i)=>{ const y = Y(pts[i]); i?ctx.lineTo(X(p),y):ctx.moveTo(X(p),y); });
+      ctx.stroke();
+    }
+    curve(ptsZk, mode==="zk" ? "#f25c54" : "#3a2a2a");
+    curve(ptsKr, mode==="kraft" ? "#4ade80" : "#2a3a2f");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(parts),10); ctx.lineTo(X(parts),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const hereZk = model(parts,"zk"), hereKr = model(parts,"kraft");
+    el("perf-note").innerHTML = `At <b>${parts.toLocaleString()}</b> partitions cluster-wide: modeled ZooKeeper-era failover ≈ <b style="color:var(--bad)">${(hereZk/1000).toFixed(1)}s</b>, modeled KRaft failover ≈ <b style="color:var(--ok)">${(hereKr/1000).toFixed(2)}s</b> — a <b>${(hereZk/hereKr).toFixed(0)}×</b> difference at this partition count, and the gap widens as partition count grows because the ZK curve scales with it and the KRaft curve barely does. ${mode==="zk" ? "Toggle KRaft mode to see the flat curve directly." : "This is the shape publicly described across KIP-500 discussions and Kafka Summit KRaft benchmark talks — treat exact seconds as illustrative, not a specific vendor number."}`;
+  }
+  el("perf-parts").oninput = render;
+  el("perf-zk").onclick = ()=>{ mode="zk"; render(); };
+  el("perf-kraft").onclick = ()=>{ mode="kraft"; render(); };
+  render();
+})();
+
+/* ============================================================
+   7. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A broker's metadata is 40 offsets behind the active controller's log. In the pre-KRaft (ZooKeeper) world, could you have answered 'how stale is this broker' with a number at all? Why or why not?", hint:"what does ZK-era propagation actually carry?",
+    a:"No — not with a comparable number. ZK-era metadata propagation is push-based: the controller computes new state and separately issues UpdateMetadataRequest/LeaderAndIsr RPCs to brokers. There's no shared, monotonically increasing sequence number attached to that propagation that a broker could compare against a controller's 'current' value — you could ask 'did broker X get the last RPC', but not 'brokers X is N updates behind' as a clean subtraction. KRaft makes cluster metadata an ordinary offset-addressed log, so 'how stale' becomes literally (leader's log end offset − broker's replayed offset), the same upgrade chapter 5 gives partition data via the high watermark." },
+  { lvl:"SENIOR", q:"Why does Raft's leader election use a RANDOMIZED timeout rather than a fixed one?", hint:"what happens if two followers time out at the exact same moment?",
+    a:"If every follower used the same fixed timeout, a leader's failure would very likely cause multiple followers to become candidates at the exact same instant, splitting the vote so no one reaches a majority — forcing a retry, which (with the same fixed timeout) would likely split again. Randomizing the timeout means, with high probability, exactly one follower times out meaningfully before the others, becomes a candidate, and wins the votes before anyone else's timer even fires — split votes still happen occasionally but are rare and self-resolve on the next randomized retry." },
+  { lvl:"STAFF", q:"Explain precisely why KafkaRaftClient is pull-based, and name the one concrete cost this design choice avoids compared to a push-based AppendEntries implementation.", hint:"who has to track per-follower send state in a push model?",
+    a:"Voters fetch the metadata log from the active controller using Kafka's ordinary Fetch API and replication machinery, rather than the leader pushing AppendEntries RPCs to each voter. This mirrors chapter 5's followers-pull argument for partition data, for the same reasons: it reuses one existing, well-tested code path (fetch handling, SocketServer, request threads) instead of building a second RPC/networking stack purely for consensus, and it makes backpressure free — a lagging voter simply issues its next fetch later, instead of the leader needing to manage a per-voter send buffer, retry queue, and flow-control state that a push model requires." },
+  { lvl:"STAFF", q:"A 5-node controller quorum is partitioned into a 3-node group and a 2-node group. What happens on each side, and why is that the CORRECT behavior rather than a bug?", hint:"what's the majority of 5?",
+    a:"The majority of 5 is 3. The 3-node side retains (or can elect) a leader and continues committing metadata writes normally. The 2-node side cannot reach a majority no matter what it does — any node there that times out and becomes a candidate will request votes but can gather at most 2 (its own plus, at best, its one reachable peer), never 3, so it can never win an election. It correctly sits leaderless until the partition heals. This is intentional: allowing the minority side to elect its own leader would create two simultaneously-valid controllers issuing conflicting metadata — exactly the split-brain §4 built this entire chapter to prevent. Unavailability on the minority side is the guarantee working as designed, not a failure of it." },
+  { lvl:"PRINCIPAL", q:"Design review: an operator asks whether they should run a 3-node or 5-node controller quorum for a very large cluster with an aggressive uptime SLA. Walk the actual tradeoff, not just 'more is safer.'", hint:"what does every extra node cost on the write path?",
+    a:"A 5-node quorum tolerates 2 simultaneous failures instead of 1, which matters for a cluster where controller unavailability is existential — but every metadata write (new topic, reassignment, ISR change) must now be acknowledged by 3 of 5 nodes instead of 2 of 3, and the leader must keep more voters' logs in sync, meaning modestly higher commit latency and more replication chatter, all for an event (2 simultaneous controller-node failures) that's rare if the underlying infrastructure has decent failure-domain diversity. The right lever is usually failure-domain placement FIRST (spread the 3 or 5 nodes across independent racks/AZs so correlated failures are unlikely) and quorum size SECOND — going from 3 to 5 nodes without fixing correlated placement buys much less real availability than the number suggests, while still paying the full latency cost." },
+  { lvl:"PRINCIPAL", q:"Compare the zombie-controller fencing mechanism in this chapter (Raft term / controller epoch) to the zombie-leader fencing mechanism in chapter 5 (partition leader epoch) and the zombie-producer fencing mechanism mentioned there (producer epoch, chapter 8). What's the one idea all three share, and why does it recur at every layer of Kafka's design?", hint:"what does each one attach a monotonically increasing number to?",
+    a:"All three are the identical mechanism applied at a different scope: a monotonically increasing integer is attached to every claim of authority (a leader's writes, a controller's metadata decisions, a producer's records), and any recipient rejects a claim carrying a lower number than the highest it has already seen. The recurring problem is always the same: a distributed system cannot instantly and certainly detect that some remote actor has stopped being authoritative — network partitions and GC pauses make 'is it really dead' fundamentally undecidable in bounded time — so instead of trying to detect death, every layer sidesteps the problem by making it cheap and certain to detect STALENESS. That's why the same fencing-token idea shows up, under three different names, at the partition-leader layer, the cluster-controller layer, and the producer-idempotence layer: it's the one general answer to 'an actor that used to be in charge might still think it is.'" }
+]);
+
+/* ============================================================
+   8. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"What was the primary cause of multi-minute controller failover times in large ZooKeeper-era Kafka clusters?",
+    opts:[ "ZooKeeper's Zab protocol is inherently slower than Raft",
+           "The new controller had to read the entire metadata tree from ZooKeeper from scratch — an O(partitions) operation with no local cache to fall back on",
+           "Brokers refused to accept a new controller for 60 seconds by default",
+           "TLS handshake overhead between the controller and ZooKeeper" ],
+    a:1,
+    why:"A freshly-elected controller in the ZK era had no cached state of its own — it had to rebuild its entire in-memory view of the cluster (every topic, partition assignment, and ISR) by reading it from ZooKeeper, an operation whose cost scales with partition count. At clusters with hundreds of thousands of partitions, this reload alone took minutes. KRaft eliminates this because a newly-elected leader was already a voter with a locally replicated copy of the log (or a recent snapshot) the whole time." },
+  { q:"In Raft, why does a node granting a vote also check that the candidate's log is at least as up to date as its own?",
+    opts:[ "It's an optional optimization for performance, not a safety requirement",
+           "To prevent a node with a shorter or staler log from becoming leader and overwriting entries that were already safely committed",
+           "To balance load evenly across all nodes in the quorum",
+           "It only matters for 5-node quorums, not 3-node ones" ],
+    a:1,
+    why:"This check is a core safety requirement, not an optimization: if a node with an out-of-date log could become leader, it could overwrite log entries a majority had already committed, violating Raft's fundamental safety guarantee. Comparing last-log-term then last-log-index ensures only a node whose log is at least as current as a majority's can ever win an election." },
+  { q:"How does KafkaRaftClient's replication differ from the AppendEntries RPC described in the original Raft paper?",
+    opts:[ "It uses UDP instead of TCP for lower latency",
+           "It is pull-based — voters fetch the log from the leader via Kafka's ordinary Fetch API — rather than the leader pushing entries to followers",
+           "It eliminates the concept of terms entirely, using timestamps instead",
+           "It requires all voters to be in the same data center" ],
+    a:1,
+    why:"KafkaRaftClient deliberately reuses Kafka's existing Fetch-based replication machinery: voters issue Fetch requests against the active controller instead of the leader pushing AppendEntries. This mirrors chapter 5's followers-pull design for ordinary partition replication, reusing one well-tested code path and getting free backpressure (a lagging voter simply fetches later) instead of building a second, push-based RPC path." },
+  { q:"A 5-node controller quorum is split by a network partition into a 3-node group and a 2-node group. What happens on the 2-node side?",
+    opts:[ "It elects its own leader, since 2 nodes can still form a valid mini-quorum",
+           "It cannot elect a leader — any candidate there can gather at most 2 votes, never the 3 needed for a majority of 5 — so it remains leaderless until the partition heals",
+           "It automatically defers all decisions to the 3-node side over the partitioned network",
+           "It elects a leader, but that leader's term is marked invalid retroactively" ],
+    a:1,
+    why:"Majority of 5 is 3. Any node on the 2-node side that times out and calls an election can gather at most its own vote plus its one reachable peer's — 2 total, never enough. It correctly stays leaderless rather than risk being the second simultaneously-valid controller (which the 3-node majority side might already have elected) — exactly the split-brain this chapter's fencing mechanism exists to prevent." },
+  { q:"What does a metadata snapshot let a new controller or long-offline broker avoid doing?",
+    opts:[ "Avoid validating its own broker ID on startup",
+           "Avoid replaying every metadata change since the cluster's creation — it loads one point-in-time image plus a short log tail instead",
+           "Avoid participating in future Raft elections",
+           "Avoid connecting to any other controller-quorum node at all" ],
+    a:1,
+    why:"Without snapshots, the metadata log would need to be replayed from genesis for any node starting fresh or badly behind — an ever-growing O(history) cost. A snapshot is a periodic, complete point-in-time image of cluster metadata; a node loads the latest snapshot, then replays only the much shorter tail of the log recorded since that snapshot's offset." },
+  { q:"Which statement correctly relates chapter 5's leader epoch to this chapter's Raft term?",
+    opts:[ "They are unrelated concepts that happen to share a similar name",
+           "Both are monotonically increasing fencing tokens attached to every claim of authority, letting any recipient reject a stale claim by comparing numbers instead of trying to detect 'is the old authority really dead'",
+           "The leader epoch is used only for consumers; the Raft term is used only for producers",
+           "The Raft term replaces the leader epoch entirely in KRaft-based clusters" ],
+    a:1,
+    why:"Both solve the identical problem at different layers: a distributed system cannot reliably and instantly detect that a remote actor has stopped being authoritative (GC pauses and partitions make 'is it dead' undecidable in bounded time), so instead every claim of authority carries a monotonically increasing number, and any recipient rejects claims tagged with a lower number than the highest it has already seen. Partition leader epochs and Raft terms are the same fencing-token idea, one describing partition leadership and the other describing controller/quorum leadership — they coexist in a KRaft cluster, they don't replace each other." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review the KIP-500 PR yourself.":correct>=4?"solid mental model; re-read the ones you missed.":"re-run §8's election deck, then try the simulator experiments — terms and quorum math click fast once you watch them live."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+(function(){
+  const CORRECT = [
+    "Controller process starts as an UNATTACHED voter with term restored from local state",
+    "It loads the latest local metadata snapshot into memory",
+    "It replays the (short) log tail since that snapshot from its local ReplicatedLog",
+    "Its election timer (randomized) begins counting down with no leader heartbeats received",
+    "Timer expires; it becomes a CANDIDATE, increments its term, votes for itself",
+    "It sends RequestVote RPCs to every other voter in the quorum",
+    "A majority of voters grant their vote (log is at least as up to date, term is highest seen)",
+    "It transitions to LEADER for the new term and begins serving Fetch requests from voters and brokers"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real KRaft boot + election sequence</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 7 covers the producer's RecordAccumulator and linger.ms/batch.size. Predict: now that you've seen KRaft's metadata offset make 'how stale is this broker's view' answerable, does a PRODUCER have an equivalent staleness question about the partition metadata it's using to route a record — and if so, what would resolve it?",
+    a:"Yes — a producer caches partition-leader metadata locally (which broker leads partition X) and can be stale if leadership recently changed, sending a produce request to a broker that's no longer the leader. The resolution is the same shape as this chapter's answer: the request is rejected with a NOT_LEADER_OR_FOLLOWER-style error carrying the current leader epoch, the producer refreshes its metadata (implicitly re-fetching from the now-fast KRaft-backed controller path), and retries. Chapter 7 will show this refresh-on-stale-metadata loop as a concrete client-side consequence of everything this chapter built." },
+  { lvl:"THINK", q:"This chapter showed that Raft's 'commit by majority' was affordable for ONE metadata log but was deferred by chapter 5 for hundreds of thousands of partition logs. Predict: is there any future scaling pressure that could make even the SINGLE metadata log's majority-commit step a bottleneck, and what would the symptom look like?",
+    a:"Yes — even a single log has a throughput ceiling: every metadata write (new topic, every partition reassignment, every ISR change cluster-wide) funnels through this one Raft-replicated log, so a cluster performing an extremely high RATE of metadata changes (mass topic creation, very large reassignments, ISR churn across many partitions simultaneously) could see metadata-write latency rise as the single quorum's commit path saturates. The symptom would look like slow topic creation or slow reassignment progress even though ordinary produce/consume traffic on existing partitions is unaffected — because that traffic doesn't touch the metadata log at all once partition leadership is already known." },
+  { lvl:"THINK", q:"Predict: since the metadata log is now an ordinary Kafka-style log with offsets, could you apply chapter 5's leader-epoch-based truncation mechanism to a controller-quorum node recovering from a stale state, the same way a partition follower recovers? What would be different about it?",
+    a:"Yes, and KRaft does exactly this in spirit — a recovering voter compares its own log's last term against the current leader's authoritative answer for that term and truncates to the exact matching point, structurally identical to OffsetsForLeaderEpoch. The difference is naming and scope: chapter 5 called the fencing number a 'leader epoch' and applied it per-partition; here it's called a Raft 'term' and there is exactly one log it applies to, cluster-wide — but the truncation logic answering 'where do our logs agree' is the same log-matching-property idea in both places." }
+]);
+
+/* ============================================================
+   9. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const S = {
+    n: 3,
+    nodes: [], // {id, role, term, alive, partitioned, votedFor}
+    term: 1,
+    zkMode: false,
+    tClock: 0,
+    failovers: 0,
+    lastFailoverMs: 0,
+    electInProgress: false,
+    stepQueue: [],
+    brokers: [
+      { id:"broker-1", offset:0 },
+      { id:"broker-2", offset:0 },
+      { id:"broker-3", offset:0 }
+    ]
+  };
+  function initNodes(n){
+    S.nodes = [];
+    for (let i=1;i<=n;i++) S.nodes.push({ id:"n"+i, role: i===1?"leader":"follower", term:1, alive:true, partitioned:false, timer: 2000+Math.random()*2000 });
+    S.term = 1;
+  }
+  initNodes(3);
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function aliveReachable(){ return S.nodes.filter(n=>n.alive && !n.partitioned); }
+  function majorityOf(n){ return Math.floor(n/2)+1; }
+  function leader(){ return S.nodes.find(n=>n.role==="leader" && n.alive); }
+
+  function killActive(){
+    const l = leader();
+    if (!l){ log("WARN","no active controller to kill right now"); return; }
+    l.alive = false;
+    log("WARN", `active controller ${l.id} killed (term ${S.term})`);
+    startElection();
+  }
+  function startElection(){
+    if (S.electInProgress) return;
+    S.electInProgress = true;
+    const startTime = performance.now();
+    const candidates = aliveReachable().filter(n=>n.role!=="leader" || !n.alive);
+    setTimeout(()=>{
+      const pool = aliveReachable();
+      if (pool.length === 0){ log("FATAL","no reachable nodes — quorum fully down"); S.electInProgress=false; render(); return; }
+      // pick the node with the shortest randomized timer as the one who times out first
+      const candidate = pool.reduce((a,b)=> a.timer < b.timer ? a : b);
+      const newTerm = S.term + 1;
+      candidate.role = "candidate"; candidate.term = newTerm;
+      log("LOG", `${candidate.id} election timeout fires → becomes candidate, term ${newTerm}, requests votes`);
+      const voters = aliveReachable();
+      const need = majorityOf(S.nodes.length);
+      const granted = voters.length; // all reachable alive voters grant (simplified — no log-divergence in this sim)
+      setTimeout(()=>{
+        if (granted >= need){
+          S.term = newTerm;
+          S.nodes.forEach(n=>{ if (n.alive && !n.partitioned){ n.term = newTerm; n.role = (n===candidate) ? "leader" : "follower"; } });
+          const elapsed = Math.round(performance.now()-startTime + (S.zkMode ? 45000 : 0));
+          S.failovers++; S.lastFailoverMs = S.zkMode ? (elapsed+180000+Math.random()*60000) : elapsed;
+          log("OK", `${candidate.id} wins majority (${granted}/${voters.length} reachable, needs ${need}/${S.nodes.length}) → LEADER, term ${newTerm}`);
+          log(S.zkMode?"WARN":"OK", S.zkMode
+            ? `[ZooKeeper mode] new controller must now reload ALL partition metadata from ZooKeeper from scratch — simulated cost added to failover time`
+            : `[KRaft mode] new leader already had the replicated log locally — no separate reload step`);
+        } else {
+          log("FATAL", `${candidate.id} could not reach a majority (${granted}/${voters.length} reachable, needs ${need}/${S.nodes.length}) — quorum stays leaderless`);
+        }
+        S.electInProgress = false;
+        render();
+      }, 500);
+    }, 350);
+  }
+  function partitionMinority(){
+    const n = S.nodes.length;
+    const minoritySize = Math.floor(n/2); // largest size that's still a minority
+    const minority = S.nodes.slice(0, minoritySize);
+    minority.forEach(n=>{ n.partitioned = true; });
+    log("WARN", `network partition: {${minority.map(x=>x.id).join(",")}} isolated as a minority of ${minoritySize}/${n} — majority side keeps operating`);
+    const isolatedLeader = minority.find(n=>n.role==="leader");
+    if (isolatedLeader){ log("LOG", `${isolatedLeader.id} was leader and is now isolated in the minority — the majority side will elect a new one`); startElection(); }
+    render();
+  }
+  function healNetwork(){
+    S.nodes.forEach(n=>{ n.partitioned = false; });
+    log("LOG","network healed — all nodes reachable again");
+    render();
+  }
+  function stepRpc(){
+    log("HINT", "step mode: run 'kill active controller' then click this repeatedly to see the same election unfold in discrete RPC-sized moments in the log above.");
+  }
+  function setQuorum(n){
+    S.n = n; initNodes(n);
+    log("LOG", `quorum resized to ${n} nodes — term reset to 1, n1 is leader`);
+    render();
+  }
+  function fetchTick(){
+    S.tClock += 400;
+    S.brokers.forEach(b=>{
+      const l = leader();
+      const targetOffset = S.term*10; // toy proxy for "how much log exists"
+      if (l && b.offset < targetOffset) b.offset = Math.min(targetOffset, b.offset + 1);
+    });
+    render();
+  }
+
+  function render(){
+    const l = leader();
+    el("sim-phase").textContent = S.electInProgress ? "ELECTING…" : (l ? "STABLE" : "LEADERLESS");
+    el("sim-phase").style.color = S.electInProgress ? "var(--warn)" : (l ? "var(--ok)" : "var(--bad)");
+    el("sim-nodes").innerHTML = S.nodes.map(n=>{
+      const cls = ["rnode", n.role, (!n.alive)?"dead":"", n.partitioned?"partitioned":""].join(" ");
+      return `<div class="${cls}" data-id="${n.id}">
+        <div class="rn-t"><span>${n.id}</span><span>term ${n.term}</span></div>
+        <div class="rn-meta">${!n.alive?"DEAD":n.partitioned?"PARTITIONED":n.role.toUpperCase()}</div>
+      </div>`;
+    }).join("");
+    el("sim-term-box").textContent = `term: ${S.term} · active controller: ${l ? l.id : "none — leaderless"} · mode: ${S.zkMode?"ZooKeeper":"KRaft"}`;
+    el("sim-brokers").innerHTML = S.brokers.map(b=>`<div class="bnode">${b.id}<div class="bl">metadata offset ${b.offset}</div></div>`).join("");
+    el("cnt-term").textContent = S.term;
+    el("cnt-failovers").textContent = S.failovers;
+    el("cnt-failtime").textContent = Math.round(S.lastFailoverMs);
+  }
+
+  el("sc-killc").onclick = ()=> killActive();
+  el("sc-partition").onclick = ()=> partitionMinority();
+  el("sc-heal").onclick = ()=> healNetwork();
+  el("sc-step").onclick = ()=> stepRpc();
+  el("cfg-q3").onclick = ()=>{ el("cfg-q3").classList.add("on"); el("cfg-q5").classList.remove("on"); setQuorum(3); };
+  el("cfg-q5").onclick = ()=>{ el("cfg-q5").classList.add("on"); el("cfg-q3").classList.remove("on"); setQuorum(5); };
+  el("cfg-kraft").onclick = ()=>{ S.zkMode=false; el("cfg-kraft").classList.add("on"); el("cfg-zk").classList.remove("on"); log("LOG","switched to KRaft mode"); render(); };
+  el("cfg-zk").onclick = ()=>{ S.zkMode=true; el("cfg-zk").classList.add("on"); el("cfg-kraft").classList.remove("on"); log("LOG","switched to ZooKeeper mode — failovers will simulate the O(partitions) reload cost"); render(); };
+
+  setInterval(fetchTick, 400);
+  log("OK", "quorum stable — n1 leader, term 1");
+  log("HINT", "Try: kill the active controller a few times, then partition a 5-node quorum 2-vs-3.");
+  render();
+})();
+
+/* ============================================================
+   10. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["kafka-06"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#f25c54"><a class="cn-btn" href="kafka-05.html"><span>←</span><span><span class="cn-lbl">PREV · CH 05</span><span class="cn-ttl">Replication: ISR, High Watermark & Leader Epochs</span></span></a><div class="cn-mid"><a class="cn-home" href="course-kafka.html">☰ Apache Kafka Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="kafka-01.html">CH 01 · Genesis: Why a Log, Not a Queue</option><option value="kafka-02.html">CH 02 · Broker Architecture & the Request Pipeline</option><option value="kafka-03.html">CH 03 · Log Internals: Segments, Indexes & the Record Format</option><option value="kafka-04.html">CH 04 · Producer Internals: Batching, Compression & Idempotence</option><option value="kafka-05.html">CH 05 · Replication: ISR, High Watermark & Leader Epochs</option><option value="kafka-06.html" selected>CH 06 · The Controller: From ZooKeeper to KRaft</option><option value="kafka-07.html">CH 07 · Consumer Groups & Rebalancing</option><option value="kafka-08.html">CH 08 · Offsets & Delivery Semantics</option><option value="kafka-09.html">CH 09 · Transactions & Exactly-Once</option><option value="kafka-10.html">CH 10 · Storage Performance: Page Cache, Zero-Copy & Sequential I/O</option><option value="kafka-11.html">CH 11 · Retention & Log Compaction</option><option value="kafka-12.html">CH 12 · Networking & the Wire Protocol</option><option value="kafka-13.html">CH 13 · Performance Tuning & Cluster Sizing</option><option value="kafka-14.html">CH 14 · Production Incidents & Failure Handling</option><option value="kafka-15.html">CH 15 · Capstone: Build a Mini Kafka</option></select><span class="cn-prog">06 / 15</span></div><a class="cn-btn" href="kafka-07.html"><span><span class="cn-lbl">NEXT · CH 07</span><span class="cn-ttl">Consumer Groups & Rebalancing</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

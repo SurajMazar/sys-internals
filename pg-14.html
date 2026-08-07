@@ -1,0 +1,2090 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames / generic boxes reused across decks */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars (reused for GIN memory illustration) */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR shell ---------- */
+  #sim .w-body{padding:14px 18px 18px}
+  .sim-ctl{padding:10px 0}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- CH14-SPECIFIC: index-chooser simulator ---------- */
+  .idxsim{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:14px}
+  @media(max-width:980px){.idxsim{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:560px){.idxsim{grid-template-columns:1fr}}
+  .ip{border:1px solid var(--border-hi);background:var(--bg-2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transition:box-shadow .2s}
+  .ip.animating{box-shadow:0 0 0 1.5px var(--pg)}
+  .ip-head{padding:8px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10.5px;color:var(--pg);font-weight:700}
+  .ip-head .ip-sub{display:block;color:var(--dim);font-size:9px;font-weight:400;margin-top:2px}
+  .ip-viz{flex:1;min-height:168px;padding:8px;position:relative;overflow:hidden}
+  .ip-viz canvas{width:100%;display:block;border-radius:8px;background:var(--panel-2)}
+  .ip-stats{border-top:1px solid var(--border);padding:8px 10px;font-family:var(--mono);font-size:10px;color:var(--muted)}
+  .ip-stats .r{display:flex;justify-content:space-between;margin-bottom:3px}
+  .ip-stats .r b{color:var(--text)}
+  .ip-stats .rk-y{color:var(--warn);font-weight:700}
+  .ip-stats .rk-n{color:var(--ok);font-weight:700}
+  .postrow{display:flex;align-items:center;gap:6px;margin-bottom:3px;font-family:var(--mono);font-size:9.5px;color:var(--muted)}
+  .postrow .pk{flex:0 0 46px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .postbar{flex:1;height:8px;border-radius:4px;background:var(--panel-2);border:1px solid var(--border);position:relative;overflow:hidden}
+  .postbar i{position:absolute;left:0;top:0;bottom:0;background:var(--pg);border-radius:4px;display:block}
+  .postbar.hit i{background:var(--ok)}
+  .brinrow{display:flex;align-items:center;gap:5px;margin-bottom:3px;flex-wrap:wrap}
+  .brinbar{width:100%;height:13px;border-radius:4px;border:1px solid var(--border-hi);position:relative;background:var(--panel-2);overflow:hidden}
+  .brinbar b{position:absolute;top:0;bottom:0;display:block}
+  .brinbar.touch{box-shadow:0 0 0 1.5px var(--ok)}
+  .brinbar.skip{opacity:.35}
+  .tnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:6px;padding:3px 6px;font-family:var(--mono);font-size:9px;color:var(--muted);display:inline-block;margin:2px}
+  .tnode.hit{border-color:var(--ok);color:var(--ok)}
+  .btleaf{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:5px;padding:3px 6px;margin:2px 0;font-family:var(--mono);font-size:9.5px;color:var(--muted)}
+  .btleaf.hit{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.08)}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 14 / 21</b> · BEYOND B-TREE</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 14</div>
+  <h1>Beyond B-Tree:<br><span class="grad">GIN, GiST, SP-GiST, BRIN & Hash</span></h1>
+  <p class="lead">A B-tree gives you exactly one thing: a total order over keys, and the ability to prune search
+  space for any predicate expressible as a contiguous range on that order. Containment, spatial overlap,
+  nearest-neighbor, and "megabyte index over a terabyte table" are not that shape. This chapter derives the
+  <code>IndexAmRoutine</code> abstraction that lets PostgreSQL host five structurally different index types behind
+  one executor interface, then goes inside each one: GIN's inverted posting lists, GiST's lossy bounding predicates,
+  SP-GiST's unbalanced space partitions, BRIN's tiny block summaries, and hash's cautionary history.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Read <code>pg_am</code>/<code>pg_opclass</code>/<code>pg_amproc</code> and explain what plugs into what.</div>
+    <div class="obj"><b>You will understand</b>Why GIN inserts are slow, why GiST needs "Recheck Cond", why BRIN can silently stop working.</div>
+    <div class="obj"><b>You will predict</b>Index size and query cost from data shape alone, before creating anything.</div>
+    <div class="obj"><b>You will simulate</b>The same dataset built into five index structures side by side, live.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A total order can only answer total-order questions</h2>
+  <p class="lead">Every B-tree access method PostgreSQL ships — the default <code>btree</code> — is built on one
+  guarantee: its opclass exposes a <span class="term" data-def="A linear order where for any two keys a, b exactly one of a<b, a=b, a>b holds.">total order</span>
+  over the indexed type, via exactly five strategies (<code>&lt;</code>, <code>&lt;=</code>, <code>=</code>,
+  <code>&gt;=</code>, <code>&gt;</code>) registered in <code>pg_amop</code> against a <code>btree</code>
+  <span class="term" data-def="A named bundle of operators + support functions for one or more data types, registered against one access method.">opfamily</span>.
+  That single guarantee is what makes a B-tree's search correct and fast: at every internal page the tree can ask
+  "is my target less than, equal to, or greater than this separator key?" and throw away half the remaining space.
+  It is a beautiful, general algorithm for exactly one predicate shape: <i>is this key inside a contiguous interval
+  of the ordering?</i></p>
+  <p>Now try to make that algorithm answer questions that are not interval questions. <code>tags @> ARRAY['urgent']</code>
+  asks "does this row's multi-valued column contain a specific element" — there is no single scalar ordering of
+  arrays for which "contains element X" collapses to a contiguous range. <code>box1 && box2</code> asks "do these
+  two 2-D regions overlap" — impose any single total order on 2-D space (row-major, Z-order, whatever) and points
+  that are physically adjacent get scattered arbitrarily far apart in that order, so a range scan of the ordering
+  does not correspond to a spatial neighborhood. <code>tsvector @@ tsquery</code> asks "does this document contain
+  these lexemes" — same shape as array containment, at a much larger fan-out (hundreds of keys per row instead of a
+  handful). And a query like <code>WHERE created_at BETWEEN a AND b</code> against a 4 TB append-only table is a
+  perfectly good interval question that a B-tree answers correctly — but at a size cost (an entry for every one of
+  billions of rows) that is wasteful when the answer "which physical blocks could possibly contain this range" is
+  knowable from a structure a thousand times smaller.</p>
+  <p>Two different failures are bundled together here, and the chapter is organized around teasing them apart:
+  <b>wrong algorithm</b> (B-tree literally cannot represent containment or spatial adjacency, no matter how it's
+  tuned) and <b>wrong cost model</b> (B-tree can represent range-over-huge-correlated-data, but pays per-row when
+  per-block would do). PostgreSQL's answer to both is the same abstraction: an
+  <span class="term" data-def="A struct of C function pointers — build, insert, scan, cost-estimate, etc — that an access method fills in and hands to the executor. Defined in src/include/access/amapi.h.">IndexAmRoutine</span>
+  dispatch table, instantiated five different ways.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT SIX CHAPTERS</div>
+    <p>Every index type this chapter covers is <i>not</i> hardcoded into the query executor. The executor calls
+    <code>amgettuple()</code> or <code>amgetbitmap()</code> through a function pointer and does not know or care
+    whether the code behind that pointer is walking a B-tree, decoding a posting list, or testing a bounding box.
+    That indirection is what let GIN, GiST, SP-GiST, and BRIN ship as ordinary PostgreSQL releases — and let
+    PostGIS ship an entire spatial database as an out-of-core extension, registering nothing but SQL-level
+    catalog rows against machinery that already existed.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From one bolted-on R-tree to a pluggable framework</h2>
+  <p>PostgreSQL did not start with a clean abstraction. It started, like most 1980s systems, with special-purpose
+  code for one extra index type, and only generalized once the pattern repeated enough times to hurt. Click through
+  the timeline — each event is a step from "special case" toward "framework."</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — five access methods in 37 years</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · THE THESIS BEHIND THE FRAMEWORK</div>
+    <p>Hellerstein, Naughton, and Pfeffer's 1995 VLDB paper "Generalized Search Trees for Database Systems" made an
+    argument that is easy to underrate in hindsight: instead of writing a new balanced-tree implementation for every
+    new predicate shape (R-trees for boxes, tries for text, signature trees for documents), factor out the one thing
+    every balanced tree implementation was re-deriving — page splits, concurrency, recovery — and let the
+    <i>data-type author</i> supply only the handful of functions that encode what makes their predicate special.
+    That's <code>consistent</code>, <code>union</code>, <code>penalty</code>, and <code>picksplit</code>. Everything
+    generic (locking, WAL, page layout) lives once, in <code>src/backend/access/gist/gist.c</code>, forever.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: no index, or a fake one</h2>
+  <p>Derive it honestly, the way the naive attempt actually happens in production. A team stores each document's
+  words as a <code>text[]</code> and needs "find documents containing word X." The first thing anyone tries is the
+  index they already understand:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">SQL</span><span>naive_1.sql — no supporting index at all</span></div>
+    <pre><span class="k">CREATE</span> <span class="k">TABLE</span> docs (id <span class="k">bigint</span> <span class="k">primary</span> <span class="k">key</span>, tags <span class="k">text</span>[]);
+<span class="c">-- 10 million rows loaded, ~8 tags each, no index on tags</span>
+
+<span class="k">SELECT</span> id <span class="k">FROM</span> docs <span class="k">WHERE</span> tags <span class="n">@&gt;</span> ARRAY[<span class="s">'urgent'</span>];
+<span class="c">-- EXPLAIN: Seq Scan on docs  (cost=0.00..312000.00 rows=1 width=8)</span>
+<span class="c">--            Filter: (tags @&gt; '{urgent}'::text[])</span>
+<span class="c">-- every one of 10,000,000 rows is fetched from the heap and tested</span></pre>
+  </div>
+
+  <p>The second naive attempt tries to reuse the one index shape that exists — B-tree — by faking an inverted
+  structure at the SQL level: explode every row into one row per element, then B-tree <i>that</i>:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">SQL</span><span>naive_2.sql — hand-rolled inverted index over a B-tree</span></div>
+    <pre><span class="k">CREATE</span> <span class="k">TABLE</span> doc_tags <span class="k">AS</span>
+  <span class="k">SELECT</span> id <span class="k">AS</span> doc_id, <span class="f">unnest</span>(tags) <span class="k">AS</span> tag <span class="k">FROM</span> docs;
+
+<span class="k">CREATE</span> <span class="k">INDEX</span> <span class="k">ON</span> doc_tags (tag, doc_id);   <span class="c">-- a plain B-tree, "faking" GIN</span>
+
+<span class="k">SELECT</span> doc_id <span class="k">FROM</span> doc_tags <span class="k">WHERE</span> tag = <span class="s">'urgent'</span>;
+<span class="c">-- fast! B-tree equality on `tag` prunes to the matching leaf run.</span>
+<span class="c">-- but: this is a SECOND TABLE, kept in sync by hand, and every</span>
+<span class="c">-- multi-tag query becomes an application-level or SQL-level</span>
+<span class="c">-- intersection across doc_id sets, not a single index operation.</span></pre>
+  </div>
+
+  <p>This is not a foolish first move — it already reveals the right intuition (invert the relationship between
+  document and element), it is exactly how you'd hand-build an inverted index in any general-purpose language, and
+  it is genuinely fast for a single-tag equality lookup. Its failure mode only shows up at the two axes that matter
+  in production: <b>write amplification</b> and <b>multi-key query cost</b>. Section 4 quantifies both.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The arithmetic of exploding a multi-valued column</h2>
+  <p>Take the numbers from naive_2.sql and make them concrete. 10 million documents, ~8 tags each: <code>doc_tags</code>
+  has <b>80 million rows</b> — an 8× explosion over the base table before the B-tree even starts, and the B-tree
+  itself needs an entry per row, so the index is roughly <b>8× the size</b> of a hypothetical single-column index on
+  <code>docs</code>. For a <code>tsvector</code>-shaped workload the multiplier is far worse: a few hundred distinct
+  lexemes per document is normal, so "one B-tree entry per (doc, lexeme) pair" is a <b>100–300×</b> explosion, not 8×.
+  At 10M documents × 150 lexemes that is <b>1.5 billion</b> index entries for data that started as 10M rows.</p>
+  <p>Write cost compounds the size cost. Updating one document's tag set under the naive scheme means deleting its
+  old rows from <code>doc_tags</code> and inserting its new ones — N physical B-tree operations (delete + insert,
+  each an index-page descent) where GIN, as section 8 will show, does <b>one</b> logical insert that appends to a
+  pending list in amortized O(1). And multi-key queries (<code>tags @> ARRAY['urgent','billing']</code>) need an
+  explicit intersection of two B-tree scans' doc_id sets — either as a SQL-level join the planner has to construct
+  and execute, or, with no supporting index at all, a full <code>Seq Scan</code> costing <b>O(N)</b> heap-page
+  fetches regardless of how selective the predicate actually is; a query matching 1 row in 10 million still touches
+  every one of the table's heap pages, because nothing about a sequential scan's access pattern depends on the
+  predicate's selectivity.</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Seq Scan cost is <b>O(N)</b> pages, full stop — a query that will match one row in ten million still reads
+    every page. The hand-rolled inverted B-tree turns <b>O(1)</b> logical writes into <b>O(D)</b> physical ones,
+    where D is lexemes-per-document (100–300 for prose), and turns a single index into an entire second table with
+    its own bloat, its own vacuum, and its own consistency-with-the-source-of-truth problem. Neither of these is a
+    tuning oversight — they are what you get from forcing a data structure whose only trick is "prune a contiguous
+    range" to represent a fundamentally different question, "does this bag contain this element."</p>
+  </div>
+  <p>So the industry needed either a purpose-built inverted-index access method, or — since spatial, full-text, and
+  block-summary problems all share the same "wrong shape for B-tree" root cause — a way to add <i>several</i> new
+  index shapes without rewriting the executor once per shape. Section 5 walks the elimination.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three candidates, and why only the third one survives contact with reality</h2>
+  <p>Given the failure modes in §4, there are three plausible next moves. Step through them in order — each is a
+  reasonable engineering instinct, and each gets eliminated for a specific, quantifiable reason rather than vague
+  dissatisfaction.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Candidate elimination: from a fake inverted index to a framework</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE ACTUAL DECISION POSTGRESQL MADE</div>
+    <p>Not "add an inverted-index access method." Add an <b>abstraction</b> that any number of access methods can
+    implement: a struct of function pointers (<code>IndexAmRoutine</code>), resolved once per access method via a
+    handler function registered in <code>pg_am</code>, and a catalog layer (<code>pg_opclass</code>/<code>pg_opfamily</code>/
+    <code>pg_amop</code>/<code>pg_amproc</code>) that binds a data type's operators to whichever access method can
+    serve them. GIN, GiST, SP-GiST, and BRIN are four <i>instances</i> of that one decision, not four separate
+    special cases bolted onto the executor. §7 explores the dispatch table directly.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Pluggability doesn't repeal the cost — it relocates it</h2>
+  <p>A generalized framework is not a free lunch; it moves cost from "core has to write a new index type" to two
+  other places, and both show up later in this chapter as concrete, nameable failure modes rather than abstractions:</p>
+  <ul class="plain">
+    <li><b>Correctness risk moves to the opclass author.</b> GiST's <code>penalty</code> and <code>picksplit</code>
+      are ordinary C functions supplied per data type — core cannot verify that a third-party <code>picksplit</code>
+      produces well-separated, non-overlapping children. A bad <code>picksplit</code> compiles, runs, and returns
+      correct query results; it just returns them slowly, because every sibling ends up needing to be visited (§8b,
+      §11 incident 3). The framework guarantees a balanced <i>tree</i>, never a balanced <i>partition of the key
+      space</i> — those are different properties, and only the second one determines query speed.</li>
+    <li><b>Write cost moves to key extraction.</b> GIN must decompose every inserted row into potentially hundreds
+      of keys (lexemes, array elements, jsonb path/value pairs), sort them, and maintain a compressed posting
+      structure per key — work a B-tree insert never does, because a B-tree's "key" is the row's value as-is, not a
+      derived multiset. §8a quantifies this as the reason GIN builds and inserts are measurably slower than B-tree's,
+      in exchange for reads that are correspondingly faster.</li>
+    <li><b>BRIN's entire value proposition is an assumption the index cannot enforce.</b> A block-range summary is
+      only useful if physical row order correlates with the summarized value — and nothing about the BRIN access
+      method can make that true. An UPDATE-heavy workload, or a table that was never loaded in sorted order, silently
+      converts a BRIN index from "prunes 99% of ranges" to "prunes nothing," with no error, no warning, and no
+      change to query correctness — only to query cost. §11 incident 2 is exactly this failure in production.</li>
+    <li><b>Hash paid for its narrowness with two decades of not being trustworthy.</b> Restricting yourself to
+      equality-only, single-column, unordered buckets should in principle be a smaller, faster structure than a
+      B-tree — and it is smaller, per entry. But PostgreSQL's hash access method went un-WAL-logged for over 20
+      years (§2), meaning the "faster, narrower" index also happened to be the one you could lose to a crash. That
+      specific cost had nothing to do with hashing as an algorithm and everything to do with which subsystem got
+      engineering investment first — a reminder that a framework's five instances are not required to mature at the
+      same rate.</li>
+  </ul>
+  <p>None of this is an argument against the framework — GIN, GiST, SP-GiST, and BRIN each solve real problems
+  B-tree structurally cannot. It is the honest accounting the rest of the chapter is built on: pick the right AM for
+  your data's shape, and then respect the specific cost each one relocated onto you.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The IndexAmRoutine dispatch table and its five tenants</h2>
+  <p><code>src/include/access/amapi.h</code> defines <code>IndexAmRoutine</code>: a plain C struct of booleans
+  (capability flags like <code>amcanorder</code>, <code>amcanmulticol</code>, <code>amsearcharray</code>) and
+  function pointers. <code>pg_am.amhandler</code> names a C function — <code>bthandler()</code>, <code>ginhandler()</code>,
+  <code>gisthandler()</code>, <code>spghandler()</code>, <code>brinhandler()</code>, <code>hashhandler()</code> — that
+  <code>GetIndexAmRoutine()</code> calls once per planning/execution need; that function allocates and fills in the
+  struct and returns it. Everything downstream — the planner's cost comparisons, the executor's scans, <code>VACUUM</code>'s
+  bulk-delete pass — talks only to this struct, never to GIN- or GiST-specific code directly. Click a function
+  pointer or an access method below to see what it does and who supplies it.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer — dispatch table & access methods</span><span class="w-sub">CLICK ANYTHING</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">CORE DISPATCH TABLE (IndexAmRoutine, amapi.h)</div>
+        <div class="arch-grid">
+          <div class="acard" data-k="fn" data-p="ambuild">ambuild</div>
+          <div class="acard" data-k="fn" data-p="aminsert">aminsert</div>
+          <div class="acard" data-k="fn" data-p="ambulkdelete">ambulkdelete</div>
+          <div class="acard" data-k="fn" data-p="amvacuumcleanup">amvacuumcleanup</div>
+          <div class="acard" data-k="fn" data-p="amcanreturn">amcanreturn</div>
+          <div class="acard" data-k="fn" data-p="amcostestimate">amcostestimate</div>
+          <div class="acard" data-k="fn" data-p="amoptions">amoptions</div>
+          <div class="acard" data-k="fn" data-p="amvalidate">amvalidate</div>
+          <div class="acard" data-k="fn" data-p="amscanfamily">ambeginscan / amgettuple / amgetbitmap / amrescan / amendscan</div>
+        </div>
+        <div class="arch-row-label">CATALOG BINDING (how an opclass plugs in)</div>
+        <div class="arch-grid"><div class="acard shmcard" data-k="fn" data-p="catalogs">pg_am · pg_opclass · pg_opfamily · pg_amop · pg_amproc</div></div>
+        <div class="arch-row-label">ACCESS METHODS (five tenants of the same dispatch table)</div>
+        <div class="arch-grid">
+          <div class="acard" data-k="am" data-p="btree">btree (reference)</div>
+          <div class="acard" data-k="am" data-p="gin">gin</div>
+          <div class="acard" data-k="am" data-p="gist">gist</div>
+          <div class="acard" data-k="am" data-p="spgist">spgist</div>
+          <div class="acard" data-k="am" data-p="brin">brin</div>
+          <div class="acard" data-k="am" data-p="hash">hash</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail2"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE INTEGRATION SURFACE IS ONE SQL STATEMENT</div>
+    <p><code>CREATE OPERATOR CLASS gist_geometry_ops_2d FOR TYPE geometry USING gist AS ...</code> is, literally,
+    the entire mechanism PostGIS uses to give <code>geometry</code> a working spatial index. It inserts rows into
+    <code>pg_opclass</code>, <code>pg_amop</code> (which operators — <code>&amp;&amp;</code>, <code>~</code>,
+    <code>@</code> — this opclass answers, and with which GiST strategy number), and <code>pg_amproc</code> (which C
+    functions implement <code>consistent</code>/<code>union</code>/<code>penalty</code>/<code>picksplit</code> for
+    this type). No executor code, no planner code, no GiST core code changes. This is why the pluggability thesis
+    from §2 is not academic: it is the actual mechanism by which PostgreSQL's most consequential extension exists.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Five structures, at the level you'd need to patch them</h2>
+
+  <h3>(a) GIN: entry tree, posting lists, and the pending-list tradeoff</h3>
+  <p>A GIN index is two structures glued together. The <b>entry tree</b> is an ordinary B-tree (built with GIN's own
+  page format, but conceptually a B-tree) keyed on extracted keys — lexemes, array elements, jsonb path/value
+  pairs — produced by the opclass's <code>extractValue</code> support function. Each entry-tree leaf either stores a
+  small compressed <b>posting list</b> inline (the matching row TIDs, if there are few) or a pointer to a
+  <b>posting tree</b> — itself a small B-tree of TID ranges — once the list would be too large to keep inline.
+  Traversal state through the entry tree during insert/vacuum is kept in a <code>GinBtreeStack</code>, a linked list
+  of page/offset pairs mirroring the descent, defined in <code>src/include/access/gin_private.h</code> and pushed/popped
+  in <code>ginbtree.c</code> exactly the way any B-tree descent needs a stack to know how to propagate a split upward.</p>
+  <p>Posting lists are not arrays of raw 6-byte <code>ItemPointerData</code> values. <code>ginpostinglist.c</code>'s
+  <code>ginCompressPostingList()</code> stores them <b>delta-encoded and varbyte-compressed</b>: TIDs within one
+  key's posting list are already sorted, so each entry is stored as the difference from the previous TID rather than
+  an absolute block/offset pair, and that difference is encoded in as few bytes as fit (a varint scheme — 1 byte for
+  small deltas, more only when needed). Consecutive matches in a dense table compress to roughly a byte or two each
+  instead of 6 fixed bytes — a compression ratio that is exactly why GIN's <i>read</i> path stays cheap even though
+  its <i>key space</i> is large: decoding is a tight sequential loop, not pointer chasing.</p>
+  <p>The expensive part is staying up to date. <code>fastupdate</code> (default on) exists because inserting
+  directly into the entry tree per row means: extract keys, then for <i>each</i> key, descend the entry tree,
+  possibly split pages, possibly grow a posting tree — expensive, and worse under concurrent writers who all want
+  the same hot keys. Instead, a new tuple's extracted keys are appended to an unsorted <b>pending list</b> — cheap,
+  append-only pages, no entry-tree descent at all. The cost is deferred, not eliminated: every scan must now also
+  linearly scan the entire pending list (it isn't sorted, so it can't be searched, only scanned) in addition to
+  using the real entry tree. <code>gin_pending_list_limit</code> (default 4&nbsp;MB) is the cliff: once the pending
+  list would exceed it, an insert triggers a synchronous merge (<code>ginInsertCleanup()</code> in
+  <code>ginfast.c</code>) that sorts the pending list and folds it into the main structure — which is why some
+  inserts, seemingly at random, take far longer than their neighbors: whichever one crosses the size threshold pays
+  for everyone's deferred work.</p>
+
+  <div class="widget deck" id="deckGinPending">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">GIN insert lifecycle: pending list → forced merge</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">gin_pending_list_limit — insert cost vs. read cost</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>gin_pending_list_limit</label><input type="range" id="gpl-slider" min="256" max="65536" value="4096" step="256"><span class="val" id="gpl-val">4096 KB</span></div>
+      <div class="memmap" id="gpl-map"></div>
+      <div class="memlegend" id="gpl-legend"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="gpl-note"></p>
+    </div>
+  </div>
+
+  <p>Support functions round out the entry-tree side: <code>consistent()</code> takes the query's extracted keys and
+  a bitmap of which ones matched this candidate row, and returns whether the row satisfies the original predicate —
+  necessary because <code>a @> ARRAY['x','y']</code> needs AND-logic across two keys' posting lists, not just "some
+  key matched." <code>triConsistent()</code> (added in 9.4) extends this to a genuine three-valued logic — <i>true</i>,
+  <i>false</i>, or <i>maybe (needs recheck)</i> — letting GIN answer AND/OR/NOT combinations without first
+  decompressing every candidate key's full posting list, and <code>comparePartial()</code> supports partial-match
+  operators like <code>tsquery</code>'s prefix search (<code>foo:*</code>) directly against the entry tree's sorted
+  keys.</p>
+
+  <h3>(b) GiST: bounding predicates, penalty-driven insert, and the recheck contract</h3>
+  <p>A GiST index is a balanced tree where every internal entry is a <b>bounding predicate</b> — a summary,
+  produced by the opclass's <code>union</code> function, of everything beneath it. For PostGIS geometry that's a
+  bounding box; for <code>btree_gist</code> over a range or scalar type it's an interval; for the built-in
+  <code>tsvector_ops</code> GiST opclass it's a fixed-length superimposed-code <b>signature</b> (a Bloom-filter-like
+  bitstring per document). <code>GISTSTATE</code> (built once per scan/insert in <code>gist.c</code> from the
+  opclass's <code>pg_amproc</code> rows) holds the resolved function pointers for <code>consistent</code>,
+  <code>union</code>, <code>compress</code>, <code>decompress</code>, <code>penalty</code>, <code>picksplit</code>,
+  <code>equal</code>, and optionally <code>distance</code> (KNN — <code>ORDER BY geom &lt;-&gt; point</code>) and
+  <code>fetch</code> (reconstructing an original value for an index-only scan, when possible).</p>
+  <p>Insert descends the tree by repeatedly calling <code>penalty()</code> on each child and choosing the one that
+  would need to grow its bounding predicate least to accommodate the new entry — a greedy heuristic, not an optimal
+  one. When a leaf page overflows, <code>picksplit()</code> divides its entries into two new pages, and the parent's
+  bounding predicates are recomputed via <code>union()</code>; if the parent itself overflows, the split propagates
+  upward exactly like a B-tree split, just with predicates being unioned instead of separator keys being copied.
+  <b>Whether the resulting tree stays fast is entirely a function of picksplit's quality</b>: a good picksplit
+  produces children whose bounding boxes barely overlap, so a search predicate usually rules out one side entirely;
+  a bad picksplit — or data whose natural shape defeats any splitting heuristic (long overlapping skinny polygons,
+  for instance) — produces siblings whose boxes both contain the query, forcing the search to descend into every
+  subtree, degrading toward a full index scan over years of inserts with no error or warning (§11 incident 3).</p>
+
+  <div class="widget deck" id="deckGistSplit">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">GiST insert & split, and where "Recheck" comes from</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">LOSSY BY DESIGN, NOT BY BUG</div>
+    <p>A bounding box is a lossy summary of the geometry inside it — many shapes share the same box. When
+    <code>compress()</code> throws away information to make the stored predicate small and fast to test (the
+    signature-based <code>tsvector_ops</code> GiST opclass is the extreme case: a fixed-length bitstring can never
+    perfectly represent an unbounded document), <code>amgettuple</code>/<code>amgetbitmap</code> can return false
+    positives — TIDs whose bounding predicate matched but whose actual value does not. The executor must
+    <b>recheck</b> each one against the real heap tuple, which is exactly what <code>Recheck Cond</code> in
+    <code>EXPLAIN ANALYZE</code> output — and its sibling line <code>Rows Removed by Index Recheck</code> — is
+    reporting. This is not a defect to fix; it's the documented, load-bearing contract every lossy GiST opclass
+    makes with the executor.</p>
+  </div>
+
+  <h3>(c) SP-GiST: exact partitions instead of tolerated overlap</h3>
+  <p><code>SpGistState</code> (<code>spgist_private.h</code>, built in <code>spgutils.c</code>) resolves a different,
+  smaller function set: <code>config</code> (declares the opclass's node-label and leaf-value types),
+  <code>choose</code> (given a value and an existing inner tuple's partition scheme, decide which child it belongs
+  in, or whether the node needs to be split first), <code>picksplit</code> (create a new partitioning scheme for a
+  page whose values no longer fit one scheme — e.g., pick a new quadrant center), and <code>inner_consistent</code>/
+  <code>leaf_consistent</code> (the scan-side tests, split into an inner-page version that can prune whole subtrees
+  and a leaf-page version that tests actual values). The structural difference from GiST is architectural, not
+  cosmetic: an SP-GiST inner page can hold <b>many</b> partition labels (quadrants, radix-trie branches) whose
+  children may live on entirely different pages, and — critically — <b>a value belongs to exactly one partition</b>,
+  never two. There is no overlap to tolerate, so there is nothing for a bad <code>picksplit</code> to degrade into
+  overlapping siblings; the tree also does not need to stay balanced in the B-tree/GiST sense, because depth follows
+  wherever the data's own structure requires more discrimination (a quadtree over clustered points goes deep only in
+  the dense clusters), not a global balance target.</p>
+
+  <h3>(d) BRIN: revmap, summary tuples, and the bloom-filter opclass</h3>
+  <p>A <code>BrinTuple</code> (<code>brin_tuple.h</code>) is not one per row — it is one per <b>page range</b>
+  (<code>pages_per_range</code>, default 128 heap pages), holding one summary value per indexed column: for
+  <code>minmax</code>, a (min, max) pair; for <code>minmax_multi</code>, up to several disjoint (min, max) intervals
+  so a handful of outliers don't blow the whole range's summary out to "spans everything"; for <code>bloom</code>, a
+  fixed-size Bloom filter bitmap. A separate structure, the <b>revmap</b> (reverse range map — a small, densely
+  packed array of pointers, one per range, to that range's current summary tuple), lets a scan or an insert find "the
+  summary for the range containing heap page P" in O(1) without touching the summary tuples themselves; a
+  <code>BrinMemTuple</code> is just the in-memory, de-TOASTed, per-column-array working form of a <code>BrinTuple</code>
+  that <code>brin_minmax.c</code>/<code>brin_bloom.c</code>'s support functions actually read and update.</p>
+  <p>Building or updating a summary never touches memory outside the pages already being scanned — <code>brin.c</code>'s
+  summarization loop reads each page range once, sequentially, and folds each column's value into the range's
+  running summary via the opclass's <code>add_value</code> function (widen the min/max; or-in the new value's hash
+  bits into the Bloom filter). No random heap access, no extra I/O beyond what a sequential scan already does — this
+  is the entire reason BRIN indexes are affordable to build and maintain even on tables too large to keep any other
+  index type resident in cache.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">pages_per_range — index size vs. pruning power</span><span class="w-sub">DRAG SLIDER (assumes correlation ≈ 0.95)</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>pages_per_range</label><input type="range" id="ppr-slider" min="1" max="9" value="4" step="1"><span class="val" id="ppr-val">128</span></div>
+      <div class="memmap" id="ppr-map"></div>
+      <div class="memlegend" id="ppr-legend"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="ppr-note"></p>
+    </div>
+  </div>
+
+  <p>The <code>bloom</code> opclass exists because <code>minmax</code> has one hard failure mode: <b>equality</b>
+  lookups on a column with no ordering correlation at all (a UUID, a hashed customer ID) make every range's min/max
+  span almost the entire domain — a min/max summary is only informative when nearby physical rows have nearby
+  values, and equality on an uncorrelated column never gives you that. A per-range Bloom filter instead asks
+  "could this range possibly contain this exact value?", and answers correctly regardless of ordering, at a
+  quantifiable false-positive cost:</p>
+
+  <div class="callout deep">
+    <div class="co-t">THE BLOOM FALSE-POSITIVE MATH</div>
+    <p>For a Bloom filter of <b>m</b> bits using <b>k</b> hash functions, after <b>n</b> distinct items have been
+    inserted, the probability that a value <i>not actually present</i> tests as "maybe present" is approximately:</p>
+    <p style="font-family:var(--mono);font-size:15px;color:var(--pg);text-align:center;margin:14px 0">
+      p&nbsp;≈&nbsp;(1&nbsp;−&nbsp;e<sup>−kn/m</sup>)<sup>k</sup></p>
+    <p>Every false positive costs one extra heap-page-range fetch that gets filtered out after the fact (never a
+    wrong answer — Bloom filters never produce false <i>negatives</i>, only false positives) — so <b>p</b> is a pure
+    performance dial, tunable via how many distinct values land in one range (smaller <code>pages_per_range</code> →
+    smaller n per filter → lower p, at the cost of more summary tuples total) and via the per-range filter's bit
+    width, which the opclass sizes from the range's expected cardinality at build time.</p>
+  </div>
+
+  <h3>(e) Hash: buckets, overflow chains, and the WAL-logging wart</h3>
+  <p>A hash index buckets rows by <code>hash_uint32()</code>-style hashing of the key, growing via incremental,
+  linear-hashing-style bucket splits as <code>HashMetaPageData</code>'s (<code>hash.h</code>) tracked tuple count
+  crosses thresholds — <code>hashm_maxbucket</code>, <code>hashm_lowmask</code>/<code>hashm_highmask</code> record
+  exactly which buckets have split so far, and <code>hashm_ovflpoint</code> tracks where new overflow pages get
+  allocated when a bucket fills before its turn to split. <code>hashinsert.c</code> and <code>hashsearch.c</code>
+  implement, respectively, "hash the key, find the bucket, chain into overflow pages if full" and "hash the key,
+  find the bucket, scan its primary page and overflow chain for exact matches" — no ordering is maintained or even
+  possible, since bucket assignment is a hash, not a comparison.</p>
+  <p>The honest historical wart: until PostgreSQL 10 (2017), hash index changes were <b>not written to the WAL at
+  all</b>. That meant a hash index was not crash-safe — a crash between a hash-index page modification and the next
+  checkpoint could leave it corrupted with no record to replay it from — and it could not be used on a streaming
+  replica, since there was no WAL to stream. For over two decades, the documented, honest advice in the manual was
+  effectively "don't rely on this in production; rebuild it after any crash." Amit Kapila's PG10 work made hash
+  indexes fully WAL-logged, closing both gaps. What it didn't change: hash still can't do range scans, can't do
+  <code>ORDER BY</code>, can't be multicolumn, and B-tree's superior cache locality (dense, ordered pages instead of
+  scattered buckets) and support for covering/multicolumn indexes usually make B-tree at least as fast even for
+  pure equality — which is why hash indexes remain, honestly, a mostly historical and niche-large-single-column
+  choice rather than a routine one (§9, §10).</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same five problems, five other engines' answers</h2>
+  <p>Every mature relational engine eventually meets containment, spatial, and huge-correlated-table problems. Few
+  of them answer with a unified pluggable framework — most bolt on one or two purpose-built structures instead:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>NON-B-TREE INDEX SUPPORT</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID / GAVE UP</th></tr>
+    <tr><td>PostgreSQL</td><td>Pluggable AM framework: GIN, GiST, SP-GiST, BRIN, hash — all via one <code>IndexAmRoutine</code> contract and <code>CREATE OPERATOR CLASS</code></td>
+      <td><span class="pill g">extensions add real index types</span> <span class="pill g">right structure per data shape</span> <span class="pill g">tiny BRIN summaries</span></td>
+      <td><span class="pill b">correctness of picksplit/penalty is the extension author's problem</span> <span class="pill y">GIN write amplification</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td>A single built-in inverted index for <code>FULLTEXT</code>; R-tree for <code>SPATIAL</code> columns — both hardcoded AMs, not a general framework</td>
+      <td><span class="pill g">works out of the box for those two cases</span></td>
+      <td><span class="pill b">no way to add a third predicate shape without a server patch</span> <span class="pill y">no BRIN-equivalent tiny summary index</span></td></tr>
+    <tr><td>Oracle</td><td>Oracle Text (inverted-index-based, GIN-analog), native spatial indexes (R-tree/quadtree, GiST-analog), plus <b>bitmap indexes</b> for low-cardinality columns</td>
+      <td><span class="pill g">bitmap indexes are a strong BRIN-adjacent answer for low-cardinality equality</span></td>
+      <td><span class="pill y">each is its own separately-licensed, separately-tuned subsystem, not one contract</span></td></tr>
+    <tr><td>SQL Server</td><td>Full-text indexes (inverted, GIN-analog) and spatial indexes built on a tessellated grid scheme (not GiST-style bounding boxes)</td>
+      <td><span class="pill g">grid tessellation avoids GiST's overlap-quality dependency entirely</span></td>
+      <td><span class="pill b">grid cell size/level tuning replaces picksplit tuning — a different, not absent, tuning burden</span></td></tr>
+    <tr><td>SQLite</td><td><code>rtree</code> virtual-table module (opt-in R-tree, spatial only), FTS5 (inverted index, GIN-analog, also opt-in)</td>
+      <td><span class="pill g">tiny footprint; genuinely optional — pay for it only if you load the module</span></td>
+      <td><span class="pill b">no BRIN-equivalent; no generalized framework, so each is a distinct bolted-on virtual table, not one AM contract</span></td></tr>
+    <tr><td>RocksDB / Cassandra</td><td>No secondary-index access-method framework at all in the storage engine; secondary indexes are either denormalized column families/tables you maintain yourself, or a bolted-on, separately-consistent index subsystem (e.g. Cassandra's SASI/materialized views)</td>
+      <td><span class="pill g">the core LSM structure stays simple and fast for its one job (ordered key-value)</span></td>
+      <td><span class="pill b">containment/spatial/summary indexing is entirely an application-level or bolted-on problem, often with its own consistency gaps</span></td></tr>
+  </table>
+  <p>Read this table the way §9 always wants to be read: nobody gets containment, spatial search, and huge-table
+  block summaries "for free." PostgreSQL's specific bet was a small, well-factored contract (<code>IndexAmRoutine</code>
+  plus the opclass catalogs) that lets a third party add a whole new index type — the payoff being GIN, GiST,
+  SP-GiST, and BRIN all exist as ordinary features rather than forks, and PostGIS exists as an extension rather than
+  a separate spatial database product.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Big-O per access method, and the size story you can predict before benchmarking</h2>
+  <table class="cmp">
+    <tr><th>AM</th><th>BUILD</th><th>INSERT</th><th>EQUALITY LOOKUP</th><th>RANGE / ORDER BY</th><th>CACHE BEHAVIOR</th></tr>
+    <tr><td>btree</td><td>O(N log N)</td><td>O(log N)</td><td>O(log N)</td><td>O(log N + k)</td><td>dense, ordered pages — excellent locality, small working set for hot ranges</td></tr>
+    <tr><td>gin</td><td>O(K log K), K = total extracted keys (≫N)</td><td>O(1) amortized (pending list) or O(log U) per key (U = unique keys) without fastupdate</td><td>O(log U + posting-list length, compressed)</td><td>weak — entry tree orders by key, not by row order; not the intended use</td><td>entry tree usually small &amp; hot; posting lists sequential-decode friendly</td></tr>
+    <tr><td>gist</td><td>O(N log N), penalty-bound</td><td>O(log N) traversal + possible cascading split</td><td>O(log N) if picksplit kept boxes tight; degrades toward O(N) if overlap is high</td><td>supports KNN via <code>distance</code>; range/containment via bounding predicate</td><td>page visits scale with bounding-box overlap, not just tree depth — the one AM whose cache behavior is data-quality-dependent</td></tr>
+    <tr><td>spgist</td><td>O(N log N) typical, partition-dependent</td><td>O(depth), depth follows data structure</td><td>O(depth), no overlap to force extra descents</td><td>good for prefix/range-like partitionable predicates</td><td>disjoint children → visited pages don't overlap in content; generally fewer wasted page reads than GiST on skewed data</td></tr>
+    <tr><td>brin</td><td>O(N) single sequential pass, no per-row structure</td><td>O(1) — widen or bloom-insert into current range's summary</td><td>O(ranges) worst case; O(ranges·(1−correlation)) practically — degenerates to full scan as correlation→0</td><td>excellent when the range predicate aligns with physical order</td><td>index itself is nearly always fully cached (it's tiny); the cost that matters is heap pages fetched per surviving range</td></tr>
+    <tr><td>hash</td><td>O(N)</td><td>O(1) amortized, occasional bucket-split cost</td><td>O(1) amortized</td><td>none — no ordering exists to scan</td><td>scattered bucket/overflow pages — worse locality than B-tree's dense sorted leaves for the same equality workload</td></tr>
+  </table>
+  <p>The size story is where GIN's "big index" reputation and "far smaller than the alternative" reality both live
+  at once. Drag the table-size slider and watch four curves separate: a native B-tree over a single scalar column,
+  a GIN index over a <code>tsvector</code> column (paying entry-tree + compressed-posting-list overhead per lexeme
+  occurrence, but sharing one entry-tree node per distinct lexeme), a BRIN index over the same table (roughly flat —
+  it barely grows with row count once <code>pages_per_range</code> is fixed), and the naive "one B-tree row per
+  (document, lexeme) pair" scheme from §3/§4 that GIN exists to make unnecessary:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Index size vs. table size</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>table rows (log scale)</label><input type="range" id="sz-n" min="3" max="9" value="6" step="0.05"><span class="val" id="sz-n-val">1,000,000</span></div>
+      <div class="slider-row"><label>pages_per_range</label><input type="range" id="sz-ppr" min="1" max="512" value="128" step="1"><span class="val" id="sz-ppr-val">128</span></div>
+      <div class="chartbox"><canvas id="sz-chart" width="740" height="290"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> B-tree (single scalar column)</span>
+        <span><span style="color:#a78bfa">━</span> GIN (tsvector, ~12 lexemes/doc)</span>
+        <span><span style="color:var(--bad)">━</span> naive one-row-per-(doc,lexeme) B-tree</span>
+        <span><span style="color:var(--ok)">━</span> BRIN (minmax)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="sz-note"></p>
+    </div>
+  </div>
+
+  <p>Cache and TLB effects layer on top of raw size. A B-tree's dense, ordered leaf pages mean a hot range of keys
+  usually fits in a handful of buffer-pool pages that stay resident; GIN's entry tree is small enough to stay hot
+  even when its posting lists are large, because posting-list <i>decoding</i> is a sequential varbyte scan — cache-
+  and prefetcher-friendly — rather than pointer-chasing. GiST is the outlier: its cache behavior is not purely a
+  function of tree depth but of <b>bounding-box overlap</b>, so two GiST indexes over the same row count can have
+  wildly different page-visit counts depending purely on picksplit quality and data skew — a property none of the
+  other four AMs share. Hash's scattered bucket/overflow chain is the one structurally worse-than-B-tree cache
+  pattern in this table for the one workload (pure equality) hash is supposedly optimized for, which is the concrete
+  mechanism behind §9's "B-tree is usually just as fast or faster" claim.</p>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents you will eventually meet</h2>
+
+  <h3>Incident 1: the bulk-load hangover</h3>
+  <p>A nightly batch job bulk-inserts 20 million rows into a table with a GIN index on a <code>jsonb</code> column,
+  <code>fastupdate</code> left at its default (on). The load itself is fast — every insert is a cheap pending-list
+  append. An hour later, morning-dashboard <code>SELECT</code>s against that table are randomly 5–10× slower than
+  their historical baseline, then quietly return to normal over the next hour. Nothing in the logs mentions an
+  error, a lock wait, or a plan change. The mechanism, once you know §8a: the pending list grew far past
+  <code>gin_pending_list_limit</code> during the bulk load's overnight window before autovacuum got to it, so every
+  morning query paid a linear scan of a multi-hundred-megabyte unsorted pending list on top of its normal entry-tree
+  lookup — and the "returns to normal" part is autovacuum's <code>amvacuumcleanup</code> eventually folding the
+  pending list into the main structure. <b>Fix:</b> run <code>VACUUM</code> (or explicitly <code>SELECT gin_clean_pending_list('idx')</code>)
+  immediately after a known bulk load, before the query traffic resumes, rather than waiting for autovacuum's normal
+  schedule to notice.</p>
+
+  <h3>Incident 2: the BRIN index that stopped helping and nobody noticed</h3>
+  <p>A 6 TB events table has a BRIN index on <code>created_at</code>, loaded originally in insertion (hence
+  timestamp) order — correlation near 1.0, BRIN pruning nearly every range for typical "last 24 hours" queries. A
+  data-retention job runs a bulk <code>UPDATE</code> to redact a column across most of the table's rows. Postgres's
+  MVCC means that UPDATE doesn't modify rows in place — it writes new row versions whose physical location is
+  wherever free space (or a fresh page) puts them, entirely decoupled from the table's original insertion order.
+  <code>pg_stats.correlation</code> for <code>created_at</code> quietly drops from 0.98 to 0.1 the next time
+  <code>ANALYZE</code> runs. Every range's (min, max) now spans nearly the full timestamp domain, because rows from
+  every era got rewritten into whatever pages happened to be free at redaction time. Query plans don't change
+  (BRIN is still "used"), and query correctness never wavered — but BRIN now excludes almost nothing, and the same
+  "last 24 hours" query silently starts reading nearly the whole table through the bitmap heap scan.
+  <b>Fix:</b> monitor <code>pg_stats.correlation</code> for BRIN-indexed columns as a first-class signal (not just
+  after complaints); after any bulk rewrite, consider <code>CLUSTER</code> or a rebuild-via-reload to restore
+  physical/value correlation, or switch to a <code>minmax_multi</code>/<code>bloom</code> opclass if the workload
+  can tolerate the different tradeoff those make.</p>
+
+  <h3>Incident 3: GiST bloat on skewed polygon data</h3>
+  <p>A logistics company indexes delivery-zone polygons with PostGIS's GiST-based spatial opclass. Most zones are
+  small, well-separated city neighborhoods — the index performs exactly as expected for years. Then a handful of
+  enormous, overlapping "regional" zones get added (each one a bounding box the size of a state, deliberately
+  overlapping dozens of city zones underneath it). <code>picksplit</code>, doing its best with a page that suddenly
+  contains both tiny tight polygons and enormous sprawling ones, cannot separate them without one child's bounding
+  box growing to cover most of the other — exactly the §8b failure mode. Point-in-polygon queries that used to touch
+  a handful of pages start touching a large fraction of the index, with <code>EXPLAIN ANALYZE</code> showing a
+  ballooning "Rows Removed by Index Recheck" as bounding-box false positives pile up. <b>Fix:</b> in the specific
+  case of a few enormous outlier geometries alongside many small ones, split them into a separate table/index (or
+  pre-clip/tile them) rather than let one GiST tree's <code>picksplit</code> try to reconcile wildly different
+  size scales — a real, documented PostGIS operational pattern, not a workaround anyone should need to invent from
+  scratch.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend an index choice at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is the depth a Staff-level interview, or a pgsql-hackers thread, expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: five access methods, one contract</h2>
+  <p>Where everything from this chapter lives. Files marked <span style="color:var(--warn)">●</span> are this
+  chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/include/access/</span></div>
+<div>├── <span class="fhl">● amapi.h</span> <span class="fnote">— IndexAmRoutine: the dispatch struct every AM fills in and returns from its handler</span></div>
+<div>├── gin_private.h <span class="fnote">— GinBtreeStack, GIN's internal entry-tree traversal state</span></div>
+<div>├── gist_private.h <span class="fnote">— GISTSTATE, resolved support-function pointers per scan</span></div>
+<div>├── spgist_private.h <span class="fnote">— SpGistState, config/choose/picksplit/consistent pointers</span></div>
+<div>├── brin_tuple.h <span class="fnote">— BrinTuple / BrinMemTuple on-disk and in-memory layouts</span></div>
+<div>└── hash.h <span class="fnote">— HashMetaPageData: bucket counts, split state, overflow tracking</span></div>
+<div><span class="dir">src/backend/access/</span></div>
+<div>├── <span class="dir">gin/</span> <span class="fnote">— README (read this first — it's excellent)</span></div>
+<div>│   ├── <span class="fhl">● gininsert.c</span> <span class="fnote">— aminsert: extract keys, append to pending list or insert directly</span></div>
+<div>│   ├── <span class="fhl">● ginfast.c</span> <span class="fnote">— the pending list: append, and ginInsertCleanup()'s forced merge</span></div>
+<div>│   ├── <span class="fhl">● ginget.c</span> <span class="fnote">— amgetbitmap/amgettuple: entry-tree lookup + posting list/tree scan + consistent()</span></div>
+<div>│   ├── ginbtree.c <span class="fnote">— generic entry-tree descent shared by insert & scan (GinBtreeStack lives here)</span></div>
+<div>│   └── <span class="fhl">● ginpostinglist.c</span> <span class="fnote">— varbyte/delta compression and decompression of TID posting lists</span></div>
+<div>├── <span class="dir">gist/</span> <span class="fnote">— README</span></div>
+<div>│   ├── <span class="fhl">● gist.c</span> <span class="fnote">— gistdoinsert(): choose subtree via penalty(), split via picksplit()</span></div>
+<div>│   ├── gistget.c <span class="fnote">— scan side: consistent(), Recheck flagging</span></div>
+<div>│   ├── <span class="fhl">● gistsplit.c</span> <span class="fnote">— the generic split-propagation machinery around a per-opclass picksplit()</span></div>
+<div>│   └── gistproc.c <span class="fnote">— built-in opclass support functions (e.g. for box, point)</span></div>
+<div>├── <span class="dir">spgist/</span> <span class="fnote">— README</span></div>
+<div>│   ├── spgutils.c <span class="fnote">— SpGistState setup, page/tuple helpers</span></div>
+<div>│   ├── spginsert.c <span class="fnote">— per-tuple insert via choose()/picksplit()</span></div>
+<div>│   └── spgscan.c <span class="fnote">— inner_consistent()/leaf_consistent() traversal</span></div>
+<div>├── <span class="dir">brin/</span> <span class="fnote">— README</span></div>
+<div>│   ├── <span class="fhl">● brin.c</span> <span class="fnote">— build/insert/scan driver; sequential per-range summarization loop</span></div>
+<div>│   ├── brin_minmax.c <span class="fnote">— the default opclass: (min,max) per range</span></div>
+<div>│   ├── <span class="fhl">● brin_bloom.c</span> <span class="fnote">— PG14 bloom opclass: per-range Bloom filter, add_value/consistent</span></div>
+<div>│   └── brin_minmax_multi.c <span class="fnote">— PG14 multi-minmax: several disjoint intervals per range</span></div>
+<div>└── <span class="dir">hash/</span> <span class="fnote">— README</span></div>
+<div>    ├── hash.c <span class="fnote">— amhandler + top-level build/insert/scan dispatch</span></div>
+<div>    ├── hashinsert.c <span class="fnote">— bucket assignment, overflow-page chaining</span></div>
+<div>    └── hashsearch.c <span class="fnote">— bucket + overflow-chain lookup, no ordering possible</span></div>
+  </div></div>
+
+  <p>First, the dispatch contract every access method implements — simplified from PostgreSQL 16/17's
+  <code>amapi.h</code> but faithful to the real field names and their purpose:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>amapi.h — IndexAmRoutine, simplified</span></div>
+    <pre><span class="k">typedef</span> <span class="k">struct</span> IndexAmRoutine
+{
+    NodeTag     type;
+
+    <span class="c">/* capability flags the planner reads without calling anything */</span>
+    <span class="k">bool</span>        amcanorder;       <span class="c">/* can return tuples in index order? (btree: yes) */</span>
+    <span class="k">bool</span>        amcanmulticol;    <span class="c">/* supports multi-column indexes? */</span>
+    <span class="k">bool</span>        amsearcharray;    <span class="c">/* supports "= ANY(array)" scan keys? */</span>
+    <span class="k">uint16</span>      amstrategies;     <span class="c">/* # of strategy numbers this AM defines (btree: 5) */</span>
+    <span class="k">uint16</span>      amsupport;        <span class="c">/* # of support-function slots per opclass    */</span>
+
+    <span class="c">/* the actual dispatch table — resolved ONCE per amhandler() call */</span>
+    ambuild_function            ambuild;         <span class="c">/* full index build from a heap scan            */</span>
+    aminsert_function           aminsert;        <span class="c">/* index one new/updated row                    */</span>
+    ambulkdelete_function        ambulkdelete;    <span class="c">/* VACUUM pass 1: remove dead TIDs               */</span>
+    amvacuumcleanup_function     amvacuumcleanup; <span class="c">/* VACUUM pass 2: structural cleanup             */</span>
+    amcostestimate_function      amcostestimate;  <span class="c">/* tell the planner what a scan would cost       */</span>
+    amoptions_function           amoptions;       <span class="c">/* parse WITH (fastupdate=..., pages_per_range=...) */</span>
+    amvalidate_function          amvalidate;      <span class="c">/* sanity-check a new opclass/opfamily            */</span>
+    ambeginscan_function          ambeginscan;
+    amgettuple_function           amgettuple;      <span class="c">/* NULL if this AM can't stream ordered tuples   */</span>
+    amgetbitmap_function          amgetbitmap;     <span class="c">/* NULL if this AM can't produce a TID bitmap    */</span>
+    amrescan_function              amrescan;
+    amendscan_function             amendscan;
+} IndexAmRoutine;
+
+<span class="c">/* pg_am.amhandler points at a function with this shape — called once,
+ * the returned struct is then used for every operation on this AM.   */</span>
+Datum
+<span class="f">ginhandler</span>(PG_FUNCTION_ARGS)
+{
+    IndexAmRoutine *amroutine = <span class="f">makeNode</span>(IndexAmRoutine);
+    amroutine-&gt;amcanorder    = <span class="k">false</span>;   <span class="c">/* posting lists aren't row-ordered */</span>
+    amroutine-&gt;amcanmulticol = <span class="k">true</span>;
+    amroutine-&gt;ambuild       = <span class="f">ginbuild</span>;
+    amroutine-&gt;aminsert      = <span class="f">gininsert</span>;
+    amroutine-&gt;amgetbitmap   = <span class="f">gingetbitmap</span>;
+    amroutine-&gt;amgettuple    = <span class="k">NULL</span>;      <span class="c">/* GIN only supports bitmap scans */</span>
+    <span class="c">/* ... rest of the struct filled in identically for every GIN index ... */</span>
+    PG_RETURN_POINTER(amroutine);
+}</pre>
+  </div>
+
+  <p>The posting-list decode loop — the reason GIN scans stay fast despite large key spaces — simplified from
+  <code>ginpostinglist.c</code>:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>ginpostinglist.c — decoding a delta-encoded, varbyte-compressed posting list</span></div>
+    <pre><span class="c">/* On disk: NOT an array of 6-byte ItemPointerData.
+ * Instead: the first TID stored whole, every subsequent TID stored
+ * as (this_tid - previous_tid), varbyte-encoded — small deltas cost
+ * ONE byte, only large gaps cost more.                              */</span>
+ItemPointer
+<span class="f">ginPostingListDecode</span>(GinPostingList *plist, <span class="k">int</span> *ndecoded)
+{
+    ItemPointer result = <span class="f">palloc</span>(plist-&gt;nbytes * <span class="k">sizeof</span>(ItemPointerData));
+    <span class="k">unsigned char</span> *ptr = plist-&gt;bytes;
+    ItemPointerData current = plist-&gt;first;    <span class="c">/* stored whole, uncompressed */</span>
+    result[<span class="n">0</span>] = current;
+    <span class="k">int</span> i = <span class="n">1</span>;
+
+    <span class="k">while</span> (ptr &lt; plist-&gt;bytes + plist-&gt;nbytes)
+    {
+        <span class="k">uint64</span> delta = <span class="n">0</span>;
+        <span class="k">int</span> shift = <span class="n">0</span>;
+        <span class="k">unsigned char</span> b;
+        <span class="k">do</span> {                                <span class="c">/* varbyte: 7 payload bits + 1 continuation bit */</span>
+            b = *ptr++;
+            delta |= (<span class="k">uint64</span>)(b &amp; <span class="n">0x7F</span>) &lt;&lt; shift;
+            shift += <span class="n">7</span>;
+        } <span class="k">while</span> (b &amp; <span class="n">0x80</span>);
+        current = <span class="f">ItemPointerAddOffset</span>(current, delta);   <span class="c">/* reconstruct absolute TID */</span>
+        result[i++] = current;
+    }
+    *ndecoded = i;
+    <span class="k">return</span> result;                        <span class="c">/* sorted ascending, ready to intersect with other keys' lists */</span>
+}</pre>
+  </div>
+
+  <p>BRIN's range-summarization loop — the reason a BRIN index is affordable to build even on a table too large to
+  keep resident in cache, simplified from <code>brin.c</code>/<code>brin_minmax.c</code>, plus the bloom opclass's
+  probe that the false-positive formula in §8d describes:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>brin.c / brin_minmax.c — sequential range summarization</span></div>
+    <pre><span class="k">void</span>
+<span class="f">brinbuild</span>(Relation heap, Relation index, IndexInfo *indexInfo)
+{
+    BrinMemTuple *summary = <span class="k">NULL</span>;
+    BlockNumber   rangeStart = <span class="n">0</span>;
+
+    <span class="c">/* ONE pass over the heap, in physical page order — no random access */</span>
+    <span class="f">table_index_build_scan</span>(heap, index, indexInfo, <span class="k">true</span>, <span class="k">false</span>,
+                            brinBuildCallback, (<span class="k">void</span> *) &amp;summary, <span class="k">NULL</span>);
+}
+
+<span class="k">static</span> <span class="k">void</span>
+<span class="f">brinBuildCallback</span>(Relation index, ItemPointer tid, Datum *values, <span class="k">bool</span> *isnull, ...)
+{
+    BlockNumber page = <span class="f">ItemPointerGetBlockNumber</span>(tid);
+    <span class="k">if</span> (page / pagesPerRange != currentRange)
+        <span class="f">brinSummarizeRange</span>(index, currentRange);   <span class="c">/* flush the finished range's tuple */</span>
+
+    <span class="c">/* minmax opclass's add_value(): widen, never narrow */</span>
+    <span class="k">if</span> (values[<span class="n">0</span>] &lt; summary-&gt;min) summary-&gt;min = values[<span class="n">0</span>];
+    <span class="k">if</span> (values[<span class="n">0</span>] &gt; summary-&gt;max) summary-&gt;max = values[<span class="n">0</span>];
+}
+
+<span class="c">/* bloom opclass's consistent(): can this range possibly contain `key`? */</span>
+<span class="k">bool</span>
+<span class="f">brinBloomConsistent</span>(BloomFilter *filter, Datum key)
+{
+    <span class="k">for</span> (<span class="k">int</span> i = <span class="n">0</span>; i &lt; filter-&gt;k; i++)          <span class="c">/* k hash functions */</span>
+        <span class="k">if</span> (!<span class="f">bloom_bit_test</span>(filter, <span class="f">bloom_hash</span>(key, i) % filter-&gt;m))
+            <span class="k">return</span> <span class="k">false</span>;               <span class="c">/* definitely NOT present — safe to skip range */</span>
+    <span class="k">return</span> <span class="k">true</span>;                        <span class="c">/* MAYBE present — false-positive rate ≈ (1-e^(-kn/m))^k */</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Function pointers, not virtual classes.</b> C has no vtables, so an <code>IndexAmRoutine</code> is a
+    literal struct of function pointers, filled in once by a handler function named in <code>pg_am</code> and cached
+    for the lifetime of the plan/execution — dispatch cost is one indirect call per operation, not a lookup. <b>2.
+    Delta+varbyte posting lists, not raw TID arrays.</b> TIDs inside one key's posting list are already sorted by
+    construction (they're appended/merged in TID order), so encoding them as small deltas turns what would be a
+    fixed 6-bytes-per-TID array into a compressible stream — and decoding is a tight sequential loop, exactly the
+    access pattern a modern CPU prefetches well, which is why GIN reads stay fast even though GIN writes are
+    expensive. <b>3. BRIN summarization never leaves the pages it's already reading.</b> No opclass's
+    <code>add_value</code> is allowed to go fetch other pages — it only ever sees the values already streaming past
+    during a normal sequential scan, which is exactly why building or maintaining a BRIN index costs almost nothing
+    extra beyond a scan you were likely doing anyway (VACUUM, or the initial load).</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — read them, they encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a GIN pending-list merge</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from a normal INSERT to a pending list fully folded back into the main structure. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The index chooser: one dataset, five structures, live</h2>
+  <p>Pick a dataset shape, then watch the same rows get built into all five access methods side by side, each
+  panel rendering something close to its actual internal structure. Drag the correlation slider (timestamps
+  dataset) and watch BRIN's ranges visibly lose pruning power as physical/value correlation degrades. Then run the
+  canonical query for that dataset shape and compare pages touched, approximate index size, and whether a heap
+  recheck was required — the concrete, numeric version of everything §1–§10 argued in prose.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Index chooser — GIN · GiST · SP-GiST · BRIN · B-tree</span><span class="w-sub" id="sim-sub">IDLE</span></div>
+    <div class="w-body">
+      <div class="sim-ctl">
+        <div class="ctl-t">DATASET SHAPE</div>
+        <div class="toggle-row" id="shape-chips">
+          <button class="chip on" data-shape="text">text documents (tsvector-ish)</button>
+          <button class="chip" data-shape="geo">geometric points</button>
+          <button class="chip" data-shape="time">timestamps</button>
+          <button class="chip" data-shape="tags">low-cardinality tags</button>
+        </div>
+      </div>
+      <div class="sim-ctl" id="corr-row">
+        <div class="ctl-t">PHYSICAL / VALUE CORRELATION (pg_stats.correlation) — timestamps only</div>
+        <div class="slider-row" style="margin:0"><input type="range" id="sim-corr" min="0" max="100" value="92" style="flex:1"><span class="val" id="sim-corr-val">0.92</span></div>
+      </div>
+      <div class="sim-ctl">
+        <div class="ctl-t">QUERY</div>
+        <div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn primary" id="sim-run">▶ run query</button>
+          <span id="sim-query-desc" style="font-family:var(--mono);font-size:11.5px;color:var(--muted)"></span>
+        </div>
+      </div>
+      <div class="idxsim" id="idxsim"></div>
+      <div class="slog" id="sim2-log" style="height:130px;border-radius:0 0 12px 12px"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Text documents: run the query, then compare GIN's tiny posting-list hop against B-tree's forced
+    full scan (there's no scalar to seek on). <b>2.</b> Geometric points: watch GiST's bounding boxes and SP-GiST's
+    quadtree partition the SAME point cloud differently, then compare pages touched and recheck. <b>3.</b>
+    Timestamps: drag correlation from ~0.95 down toward 0 and watch BRIN's bars visibly stop discriminating —
+    exactly §11 incident 2, live. <b>4.</b> Low-cardinality tags: see GIN and SP-GiST both do well, while GiST's
+    bounding intervals collapse into unselective overlap.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 15: three questions, no options</h2>
+  <p>Chapter 15 covers the parser, the rewriter, and the front half of the planner. These three questions have no
+  multiple choice — formulate a full answer, then reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 14 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now explain why a B-tree can't answer containment or
+    spatial predicates, read <code>IndexAmRoutine</code> and the opclass catalogs, and predict from data shape alone
+    whether GIN, GiST, SP-GiST, BRIN, or plain B-tree is the right index — including the specific ways each one can
+    quietly stop earning its keep in production. Chapter 15 goes to the front of the query pipeline: the parser and
+    rewriter that decide what a statement even means before the planner gets to choose among these five structures.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="pg-15.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-15: Parser, Rewriter & the Planner →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1984", l:"R-trees", d:"<b>Antonin Guttman publishes R-trees</b> (SIGMOD '84): a balanced tree that indexes rectangles by nesting bounding boxes, trading exact partitioning for allowed overlap between siblings. Every idea GiST later generalizes — bounding-predicate summaries, a penalty-driven insertion choice, a split that tries to minimize resulting overlap — starts here, applied to exactly one data type: spatial rectangles." },
+  { yr:"1995", l:"GiST paper", d:"<b>Hellerstein, Naughton & Pfeffer, VLDB '95: \"Generalized Search Trees for Database Systems.\"</b> The thesis: factor R-trees, B-trees, and signature-file text indexes into one balanced-tree skeleton (page management, concurrency, recovery) plus a small set of type-supplied functions — consistent, union, penalty, picksplit. Get the framework right once and every future predicate shape is a new opclass, not a new access method." },
+  { yr:"1997", l:"GiST in PostgreSQL 6.2", d:"<b>GiST lands in the PostgreSQL tree.</b> It is the first genuinely pluggable index access method the project ships — predating the modern <code>IndexAmRoutine</code> handler-function convention, but already exposing the same idea: register support functions per opclass, get a working balanced tree for free. Postgres's earlier special-purpose R-tree access method becomes redundant almost immediately, since a GiST opclass can express the identical bounding-box algorithm." },
+  { yr:"2001", l:"PostGIS founded", d:"<b>Refractions Research starts PostGIS</b> as an out-of-core extension. It adds full spatial data types and operators <i>and</i> a working spatial index (R-tree-equivalent bounding-box search over geometry) without touching the PostgreSQL executor, planner, or storage code at all — the entire integration surface is <code>CREATE OPERATOR CLASS</code> against GiST. This is the framework's founding thesis, proven in production: PostGIS became one of the most important reasons enterprises adopted PostgreSQL, and it shipped as a plugin." },
+  { yr:"2006", l:"GIN — PostgreSQL 8.2", d:"<b>Oleg Bartunov and Teodor Sigaev's GIN (Generalized Inverted Index)</b> ships. GiST's bounding-predicate model is a poor fit for \"this row contains any of N discrete keys\" — you'd need overlapping boxes around sets, which degrades badly. GIN is a purpose-built second framework: an entry B-tree over extracted keys, each pointing to a compressed posting list or posting tree of matching row TIDs. It becomes the basis for full-text search indexing and, later, jsonb containment." },
+  { yr:"2012", l:"SP-GiST — PostgreSQL 9.2", d:"<b>Space-Partitioned GiST</b> (Sigaev, Bartunov, Korotkov) adds a third framework: unbalanced, non-overlapping partition trees — quadtrees, k-d trees, radix tries — for data whose natural index is a partition of the domain, not an overlap-tolerant bounding hierarchy. Where GiST siblings can overlap (a point can conceptually belong under multiple boxes before a split resolves it), SP-GiST children are disjoint by construction — the data's own structure picks the split, not a balance heuristic." },
+  { yr:"2015", l:"BRIN — PostgreSQL 9.5", d:"<b>Álvaro Herrera's Block Range Index</b> takes a completely different axis: instead of asking \"can we build a smaller structure over a hard predicate,\" it asks \"can we build almost no structure at all, if we're willing to summarize physical locality instead of indexing every value.\" One summary tuple per range of table pages (default 128) makes BRIN indexes that are megabytes over terabyte tables — contingent entirely on physical/value correlation, a tradeoff explicit in the name and revisited all through §8 and §11." },
+  { yr:"2017", l:"Hash indexes become WAL-logged — PostgreSQL 10", d:"<b>The historical wart, named honestly.</b> Hash indexes existed since early Postgres but were not write-ahead logged until PG10: a crash could silently corrupt one, and they were never replicated to standbys, so for two decades the documented advice was \"don't use hash indexes in production.\" Amit Kapila's PG10 work made them fully crash-safe and replicable — removing the historical reason to avoid them, even though B-tree usually still wins on raw performance today." },
+  { yr:"2021", l:"BRIN bloom & multi-minmax — PostgreSQL 14", d:"<b>Tomas Vondra and collaborators ship two new BRIN opclasses.</b> Plain minmax BRIN is useless for equality lookups on uncorrelated data (every range's min/max spans the whole domain). <code>bloom</code> BRIN stores a per-range Bloom filter instead of a min/max pair, giving probabilistic equality pruning that doesn't depend on correlation at all. <code>minmax_multi</code> stores several disjoint min/max intervals per range instead of one, tolerating a moderate number of outliers without the whole range's summary collapsing to \"spans everything.\"" }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[1].d;
+
+/* ============================================================
+   2. DECK: candidate elimination (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, bad) => `<div style="border:1px solid ${bad?"var(--bad)":"var(--border-hi)"};border-radius:11px;padding:12px 14px;background:${bad?"rgba(242,92,84,.06)":"var(--panel-2)"}">
+    <div style="font-family:var(--mono);font-size:10px;color:${bad?"var(--bad)":"var(--pg)"};letter-spacing:.06em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  stepper("deckCandidates", [
+    { stage: box("CANDIDATE A — one B-tree entry per element (naive_2.sql)",
+        `<p style="font-size:13px;color:#c6cddb;margin:0">Explode every multi-valued row into one row per element, B-tree the (element, row) pairs. This is what §3/§4 already measured: correct, fast for single-key equality, and an 8–300× storage/write explosion for anything with real fan-out. It also only ever answers <i>equality</i> on the element — it has no way to represent "these two 2-D boxes overlap," because there's no element to explode a box into.</p>`, true),
+      cap:`<b>Rejected for scope, not just cost.</b> This candidate can't be generalized to spatial or nearest-neighbor predicates at all — there's no notion of "the elements of" a bounding box. Whatever we build next has to handle containment <i>and</i> overlap <i>and</i> ranges, not just multi-valued equality.` },
+    { stage: box("CANDIDATE B — a hardcoded R-tree bolted into the executor",
+        `<p style="font-size:13px;color:#c6cddb;margin:0">Give the executor and planner first-class knowledge of one new index shape: bounding-box R-trees for spatial types, wired in like B-tree and hash already are. This directly solves the spatial case — but full-text containment needs a completely different structure (inverted posting lists), and "tiny summary over huge correlated tables" needs yet another (block ranges). Each new predicate shape would mean another hardcoded AM, another set of executor special cases, another cost model wired into the planner by hand.</p>`, true),
+      cap:`<b>Rejected for not generalizing.</b> Solves today's problem (spatial) by creating tomorrow's problem (a new hardcoded AM for every future predicate shape) — including ones nobody has invented yet. The R-tree paper itself is 11 years old at this point (1984→1995); the pattern of "special tree per predicate" was already visibly repeating.` },
+    { stage: box("CANDIDATE C — a generalized, pluggable tree framework ✓",
+        `<p style="font-size:13px;color:#c6cddb;margin:0">Factor out everything generic about a balanced or partitioned tree — page splits, locking, WAL, the scan/rescan protocol — into core, once. Let a data-type author supply only the handful of functions that encode what makes their predicate special: how to test containment (<code>consistent</code>), how to summarize a subtree (<code>union</code>), how to decide where a new entry goes (<code>penalty</code>), how to divide an overflowing page (<code>picksplit</code>). Ship that framework (GiST), then a structurally different second framework for inverted-list problems (GIN), a third for exact space-partitioning (SP-GiST), and a fourth for pure physical-locality summaries (BRIN) — four frameworks, one dispatch contract (<code>IndexAmRoutine</code>) the executor already knows how to call.</p>`, false),
+      cap:`<b>The winning move.</b> The cost of a new predicate shape drops from "implement and validate a new balanced tree, wire it into the executor and planner" to "write five to nine C functions and one <code>CREATE OPERATOR CLASS</code> statement." §6 is honest about what this move still costs — it does not eliminate cost, it relocates it to the opclass author and to data-shape assumptions.` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const AMFN2 = {
+  ambuild:{ n:"ambuild", f:"amapi.h field · e.g. ginbuild() / gistbuild() / brinbuild() / hashbuild()", r:"Builds a brand-new index from a full table scan (table_index_build_scan() calls back into the AM once per heap tuple). Each AM's bulk-load strategy differs enormously: GIN sorts and merges millions of extracted keys before ever touching the entry tree; GiST/SP-GiST insert-and-split per tuple (or bulk-pack a sorted build in newer versions); BRIN just walks pages in order, computing one summary per range with no per-row indexing at all.", l:"Called once per CREATE INDEX / REINDEX / CREATE INDEX CONCURRENTLY.", d:"This is exactly why GIN and GiST builds are the slow ones in this chapter's story — build cost is where key-extraction and picksplit-quality costs are paid up front, bounded by maintenance_work_mem." },
+  aminsert:{ n:"aminsert", f:"amapi.h field · e.g. gininsert() / gistdoinsert() / brininsert()", r:"Indexes one newly inserted (or updated) heap tuple. For GIN this means: extract every key from the value, and either append them to the pending list (fastupdate) or descend the real entry tree immediately. For GiST: choose a subtree by minimum penalty, insert, split on overflow, propagate a new union predicate upward. For BRIN: check whether the tuple's page range's summary needs widening; if so, update it in place — no new index entries are created per row at all.", l:"Called once per row per index, inside the same transaction as the write.", d:"The single biggest per-AM performance divergence in this chapter lives here — compare GIN's O(keys-per-row) extraction against BRIN's near-O(1) summary touch." },
+  ambulkdelete:{ n:"ambulkdelete", f:"amapi.h field · e.g. ginbulkdelete() / gistbulkdelete()", r:"VACUUM's first pass: given a callback that reports whether a TID is now dead, remove the corresponding index entries. GIN must walk and rewrite posting lists; GiST/SP-GiST remove leaf tuples and may trigger page consolidation; BRIN does nothing here at all — dead TIDs inside a summarized range don't invalidate the range's min/max/bloom summary.", l:"Called by VACUUM, once per index, per vacuum cycle.", d:"BRIN's ambulkdelete being nearly a no-op is part of why BRIN vacuum is cheap — but it also means a BRIN summary is never tightened by vacuum, only by amvacuumcleanup's optional re-summarization or explicit brin_summarize_range()." },
+  amvacuumcleanup:{ n:"amvacuumcleanup", f:"amapi.h field · e.g. ginvacuumcleanup() / brinvacuumcleanup()", r:"VACUUM's second pass, after all tables/indexes have had dead tuples removed: opportunistic structural cleanup. GIN uses this moment to merge the pending list if fastupdate left one outstanding. BRIN can use it (with autosummarize) to summarize any page ranges that were extended since the last summary.", l:"Called once per VACUUM cycle, after ambulkdelete.", d:"This is the other place — besides gin_pending_list_limit being hit mid-insert — where a GIN pending list gets folded into the main structure, which is why 'run VACUUM' is real, practical advice after a bulk load with fastupdate on." },
+  amcanreturn:{ n:"amcanreturn", f:"amapi.h field", r:"Answers a narrow but important planner question: can this index return the indexed column's actual value without visiting the heap at all (index-only scan)? True for B-tree always; false for GIN and (usually) GiST/SP-GiST, because their stored representation is a derived key or a lossy compressed predicate, not the original value — you cannot reconstruct 'the tsvector' from a GIN posting list.", l:"Consulted once per planning, per index, per column.", d:"This is a quiet reason GIN/GiST-heavy schemas see fewer Index Only Scans than B-tree-heavy ones — the visibility-map optimization from chapter 9 only pays off when amcanreturn is true." },
+  amcostestimate:{ n:"amcostestimate", f:"amapi.h field · e.g. gincostestimate() / gistcostestimate() / brincostestimate()", r:"Given a restriction clause and the index's current statistics (including, for BRIN, pg_stats.correlation), estimates startup cost, total cost, and selectivity, in the same cost units the planner uses to compare every other Path. This is the ONLY place cost differences between eligible indexes get resolved — if two opfamilies both expose an operator, whichever amcostestimate returns the lower number wins the plan.", l:"Called during planning for every index that survived the opfamily-eligibility filter (chapter 15's territory).", d:"brincostestimate() is the one that reads pg_stats.correlation directly — this is the literal code path §8/§11's correlation discussion is about." },
+  amoptions:{ n:"amoptions", f:"amapi.h field · e.g. ginoptions() / brinoptions()", r:"Parses an index's reloptions — fastupdate and gin_pending_list_limit for GIN; pages_per_range and autosummarize for BRIN; fillfactor for most AMs — from the raw text array stored in pg_class.reloptions into a typed C struct the rest of the AM's code reads.", l:"Called at index-open time.", d:"Every storage-parameter GUC-like knob this chapter discusses (fastupdate, pages_per_range, gin_pending_list_limit) is per-index, set via WITH (...) at CREATE INDEX time, resolved through exactly this function." },
+  amvalidate:{ n:"amvalidate", f:"amapi.h field · e.g. ginvalidate() / gistvalidate()", r:"Sanity-checks a newly created opclass/opfamily against the AM's structural requirements — e.g. GiST requires consistent+union+picksplit at minimum; an opfamily claiming to support an operator without a matching strategy number is rejected. This is the closest core comes to policing a third-party opclass, and it only checks catalog shape, never runtime behavior like picksplit quality.", l:"Called by CREATE OPERATOR CLASS / CREATE OPERATOR FAMILY and by amcheck-style validation.", d:"amvalidate is exactly the boundary named in §6: core can verify your opclass is catalog-complete, never that your picksplit is any good — that's discovered in production, not at DDL time." },
+  amscanfamily:{ n:"ambeginscan / amgettuple / amgetbitmap / amrescan / amendscan", f:"amapi.h fields · e.g. ginbeginscan()/gingettuple()/gingetbitmap()", r:"The actual scan protocol the executor drives: open a scan, optionally pull one TID at a time in order (amgettuple — only if amcanorder-ish), or hand back a whole TID bitmap in one call (amgetbitmap, used for Bitmap Index Scan, which is how GIN/GiST/BRIN are usually consumed since none of them promise an ordering amgettuple could stream). amrescan resets the same scan for a new set of scan keys (used inside nested loops); amendscan releases scan-local resources.", l:"Called once per query execution, per index used in the plan.", d:"Whether an AM implements amgettuple at all (ordered streaming) versus only amgetbitmap (unordered set) is a real capability difference this chapter's simulator surfaces: GIN/BRIN are bitmap-only in practice; GiST/SP-GiST can support ordered KNN scans via the distance support function." },
+  catalogs:{ n:"pg_am · pg_opclass · pg_opfamily · pg_amop · pg_amproc", f:"src/include/catalog/pg_am.h, pg_opclass.h, pg_opfamily.h, pg_amop.h, pg_amproc.h", r:"The catalog layer that turns a C struct of function pointers into something CREATE INDEX can find by name. pg_am has one row per access method (name → amhandler). pg_opclass binds a data type to an access method (\"these are the default operators for jsonb under gin\"). pg_opfamily groups related opclasses that can cross-type-compare. pg_amop lists, per (opfamily, strategy number), which operator implements that strategy — this is what lets the planner ask 'does any index on this column support @&gt;'. pg_amproc lists the support functions (consistent, union, penalty, picksplit, ...) by number.", l:"Populated by CREATE ACCESS METHOD (rare, core-only in practice) and CREATE OPERATOR CLASS / CREATE OPERATOR FAMILY (routine, extension-authored).", d:"This is the whole answer to 'how did PostGIS add a new index type without patching core': it added rows to these five catalogs and shipped C functions for pg_amproc to point at — nothing else." }
+};
+const AMS2 = {
+  btree:{ n:"btree (reference point)", f:"src/backend/access/nbtree/", r:"Balanced, ordered tree over a total-order opclass. amcanorder=true, so it's the one AM that can back an Index Scan streaming rows in order (no bitmap needed) and the only one that can serve ORDER BY directly off the index. Every other AM in this chapter is defined by what it gives up relative to this baseline.", l:"Default AM; CREATE INDEX with no USING clause.", d:"Reach for it whenever the predicate is equality or a range on a single scalar ordering — which, per §1, is most predicates. Everything else in this chapter exists for the predicates that aren't." },
+  gin:{ n:"gin — Generalized Inverted Index", f:"src/backend/access/gin/ (README, gininsert.c, ginget.c, ginfast.c, ginbtree.c, ginpostinglist.c)", r:"Entry B-tree over extracted keys (lexemes, array elements, jsonb path/value pairs), each key pointing to a compressed posting list (small) or posting tree (large, itself a small B-tree of TID ranges). Support functions: extractValue, extractQuery, consistent, comparePartial, triConsistent.", l:"Built via a full-table extraction+sort pass; grows via a pending list unless fastupdate=off.", d:"Reach for it for @>, @@, jsonb containment, array containment — anything where one row maps to many keys and equality/containment on those keys is the query." },
+  gist:{ n:"gist — Generalized Search Tree", f:"src/backend/access/gist/ (README, gist.c, gistget.c, gistsplit.c, gistproc.c)", r:"Balanced tree of possibly-overlapping bounding predicates. Support functions: consistent, union, compress, decompress, penalty, picksplit, equal, and optionally distance (KNN / ORDER BY <->) and fetch. Because the bounding predicate is often a lossy summary (a box is not the geometry), scans may need Recheck against the real heap tuple.", l:"Built by per-tuple insert-and-split (choose subtree by minimum penalty; split on overflow via picksplit).", d:"Reach for it for spatial containment/overlap/KNN (PostGIS), range-type containment (btree_gist), and any predicate whose natural summary is 'a bounding region,' lossy or not." },
+  spgist:{ n:"spgist — Space-Partitioned GiST", f:"src/backend/access/spgist/ (README, spgutils.c, spginsert.c, spgscan.c, spgproc.c)", r:"Unbalanced tree of exact, non-overlapping partitions — quadtree, k-d tree, or radix trie depending on the opclass. Support functions: config, choose, picksplit, inner_consistent, leaf_consistent. Inner pages can hold many partition labels with children on other pages; the tree's shape follows the data's own structure rather than a balance target.", l:"Built by per-tuple insert; the partitioning scheme (not a balance heuristic) decides depth.", d:"Reach for it when the data has a natural non-overlapping partition — point clustering (quadtree), IP ranges, or text prefixes (radix trie) — and you'd rather not pay for GiST's overlap tolerance." },
+  brin:{ n:"brin — Block Range Index", f:"src/backend/access/brin/ (README, brin.c, brin_minmax.c, brin_bloom.c, brin_minmax_multi.c)", r:"One tiny summary tuple per pages_per_range consecutive heap pages (min/max, a Bloom filter, or several min/max intervals, depending on opclass). No per-row entries at all. Support functions: opcinfo, add_value, consistent, union.", l:"Built by one sequential pass over the table computing running summaries; grown incrementally per insert or lazily via autosummarize/VACUUM.", d:"Reach for it on huge, append-mostly tables where the indexed column correlates with physical insertion order — timestamps, monotonic IDs. Its entire value proposition lives or dies on pg_stats.correlation (§8d, §11)." },
+  hash:{ n:"hash", f:"src/backend/access/hash/ (README, hash.c, hashinsert.c, hashsearch.c, hashpage.c)", r:"Buckets keyed by a hash of the value; O(1) equality lookup, no ordering, no multicolumn support, no range scans. WAL-logged and crash-safe only since PostgreSQL 10 — before that a crash could silently corrupt one (§2).", l:"Bucket count grows via linear-hashing-style incremental splits as the index grows; overflow pages chain off a bucket when it's full.", d:"Mostly a historical/niche choice today — B-tree's better cache behavior and covering/multicolumn support usually make it at least as fast for equality, so hash survives mainly for very large single-column equality-only workloads and backward compatibility (§9, §10)." }
+};
+const archDetail2 = el("arch-detail2");
+function showArch2(key){
+  const a = AMFN2[key] || AMS2[key];
+  archDetail2.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">WHY IT MATTERS HERE</div>${a.d}`;
+  document.querySelectorAll("#s7 .acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll("#s7 .acard").forEach(c=> c.onclick = ()=>showArch2(c.dataset.p));
+showArch2("gin");
+
+/* ============================================================
+   4. DECK: GIN pending list lifecycle (§8a)
+   ============================================================ */
+(function(){
+  const bar = (label, filled, cls, note) => `<div style="margin-bottom:14px">
+    <div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:4px">${label}</div>
+    <div style="height:16px;border-radius:6px;background:var(--panel-2);border:1px solid var(--border-hi);overflow:hidden">
+      <div style="height:100%;width:${filled}%;background:${cls};transition:width .3s"></div></div>
+    ${note?`<div style="font-size:11px;color:var(--dim);margin-top:3px">${note}</div>`:""}</div>`;
+  const frame = (inner) => `<div style="max-width:520px;margin:0 auto">${inner}</div>`;
+  stepper("deckGinPending", [
+    { stage: frame(bar("entry tree (sorted, real structure)", 38, "var(--pg)") + bar("pending list (unsorted append pages)", 4, "var(--muted)", "empty — no writes yet")),
+      cap:`<b>Steady state.</b> The entry tree holds everything indexed so far, fully sorted and searchable. The pending list is empty. A bulk load is about to begin.` },
+    { stage: frame(bar("entry tree (unchanged this insert)", 38, "var(--pg)") + bar("pending list — growing", 22, "var(--warn)", "INSERT: extract keys, append to pending list. No entry-tree descent at all.")),
+      cap:`<b>Fast path.</b> Each new row's extracted keys are appended to the pending list's pages — cheap, sequential, no B-tree descent, no lock contention on hot keys. This is what "fastupdate" buys: insert cost stays flat regardless of how skewed the key distribution is.` },
+    { stage: frame(bar("entry tree (unchanged)", 38, "var(--pg)") + bar("pending list — still growing", 55, "var(--warn)", "Every SELECT must now linearly scan this ENTIRE unsorted list, in addition to the entry tree.")),
+      cap:`<b>The tax accrues on reads, not writes.</b> The pending list can't be searched — it isn't sorted — so every scan pays an O(pending-list-size) linear pass on top of its normal entry-tree cost. This is invisible in monitoring that only tracks write latency.` },
+    { stage: frame(bar("entry tree (unchanged)", 38, "var(--pg)") + bar("pending list — hits gin_pending_list_limit", 100, "var(--bad)", "THIS insert now pays for everyone's deferred work.")),
+      cap:`<b>The cliff.</b> The pending list's size crosses <code>gin_pending_list_limit</code> (default 4 MB). The current INSERT synchronously triggers <code>ginInsertCleanup()</code> — sort the entire pending list, then merge it into the real entry tree/posting trees. One unlucky row's insert now takes as long as flushing everyone else's — this is the "randomly slow insert" production symptom named in §11.` },
+    { stage: frame(bar("entry tree — freshly merged", 61, "var(--pg)") + bar("pending list — drained", 2, "var(--ok)", "Reads are fast again; the tax has been paid.")),
+      cap:`<b>After the merge.</b> The entry tree now reflects everything; the pending list is nearly empty again. Scans go back to touching only the real structure. VACUUM's <code>amvacuumcleanup</code> can also trigger this merge proactively — which is why "just run VACUUM after a bulk load with fastupdate on" is genuinely good, specific advice, not folklore.` }
+  ]);
+})();
+
+/* ============================================================
+   5. DECK: GiST insert & split (§8b)
+   ============================================================ */
+(function(){
+  const box2d = (boxes, hi) => {
+    let s = `<svg viewBox="0 0 300 160" style="width:100%;max-width:420px;display:block;margin:0 auto;background:var(--panel-2);border-radius:10px;border:1px solid var(--border)">`;
+    boxes.forEach(b=>{ s += `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="${b.hit?'rgba(74,222,128,.14)':'none'}" stroke="${b.hit?'#4ade80':'#2a3446'}" stroke-width="${b.hit?2:1.4}" rx="4"/>`; });
+    if (hi) s += `<circle cx="${hi.x}" cy="${hi.y}" r="5" fill="#f78c6c"/>`;
+    s += `</svg>`;
+    return s;
+  };
+  stepper("deckGistSplit", [
+    { stage: box2d([{x:20,y:20,w:120,h:70},{x:160,y:70,w:110,h:70}]),
+      cap:`<b>Two leaf pages, two bounding boxes.</b> Each box is the <code>union()</code> of everything stored beneath it. A new entry (orange dot) needs a home.` },
+    { stage: box2d([{x:20,y:20,w:120,h:70,hit:true},{x:160,y:70,w:110,h:70}], {x:70,y:50}),
+      cap:`<b>penalty() picks a side.</b> The new entry falls inside — or would require the smallest bounding-box growth to fit inside — the left page's box, so insert descends there. This is a greedy, per-step decision; GiST never looks ahead to a globally optimal placement.` },
+    { stage: box2d([{x:20,y:20,w:170,h:120,hit:true},{x:160,y:70,w:110,h:70}]),
+      cap:`<b>Overflow.</b> The left leaf page is full. It cannot simply grow its box and add one more entry — it has to split. <code>picksplit()</code> is called to divide its entries into two new pages.` },
+    { stage: box2d([{x:20,y:20,w:90,h:60,hit:true},{x:70,y:80,w:130,h:60,hit:true},{x:160,y:70,w:110,h:70}]),
+      cap:`<b>A split happened — and the boxes now overlap.</b> This is the crux of §8b/§11: a good <code>picksplit</code> would have separated these two groups with little or no overlap. Here (deliberately, to illustrate the failure mode) the split leaves both children's boxes covering the same middle region.` },
+    { stage: `${box2d([{x:20,y:20,w:90,h:60,hit:true},{x:70,y:80,w:130,h:60,hit:true},{x:160,y:70,w:110,h:70}])}<div style="text-align:center;font-family:var(--mono);font-size:11px;color:var(--warn);margin-top:8px">query box overlaps BOTH children → must descend into both</div>`,
+      cap:`<b>The cost of overlap.</b> A query whose search box touches the shared region can no longer rule out either child by looking at the bounding box alone — it must descend into both, then both again at the next level if their children also overlap. Repeated over years of inserts with a mediocre <code>picksplit</code>, this is exactly how a GiST index degrades toward "every query visits every page" with zero errors and zero warnings along the way.` },
+    { stage: `<div style="max-width:460px;margin:0 auto;font-family:var(--mono);font-size:12px;color:#c6cddb;line-height:1.8">
+        <div style="color:var(--pg);margin-bottom:6px">amgettuple() / amgetbitmap() return a candidate TID</div>
+        <div>↓</div><div style="color:var(--muted)">is the bounding predicate lossy for this opclass? (compress() discarded information)</div>
+        <div>↓ yes</div><div style="color:var(--warn)">executor fetches the heap tuple and re-evaluates the ORIGINAL predicate</div>
+        <div>↓</div><div style="color:var(--ok)">EXPLAIN ANALYZE: "Recheck Cond" + "Rows Removed by Index Recheck: N"</div></div>`,
+      cap:`<b>Where "Recheck" comes from.</b> Independent of overlap quality, ANY lossy GiST opclass (bounding boxes for geometry, signatures for tsvector) can return false positives by design — the bounding predicate is a summary, not the value. The executor's recheck step is the correctness backstop that makes lossy compression safe to use at all.` }
+  ]);
+})();
+
+/* ============================================================
+   6. SLIDER: gin_pending_list_limit tradeoff (§8a)
+   ============================================================ */
+(function(){
+  function render(){
+    const limitKB = +el("gpl-slider").value;
+    el("gpl-val").textContent = limitKB.toLocaleString() + " KB";
+    // model: bigger limit -> fewer, bigger merges (cheaper amortized insert cost) but bigger worst-case pending scan per read
+    const mergeFreqPerMillion = Math.max(1, Math.round(200000 / limitKB));      // merges per 1M rows, illustrative
+    const avgPendingAtReadKB = limitKB / 2;                                     // average state a scan must linear-scan
+    const worstInsertMs = (limitKB / 4096) * 180;                               // merge cost scales with what's being sorted+merged
+    const avgReadTaxMs = (avgPendingAtReadKB / 4096) * 9;                       // linear scan tax on an average read
+    const segs = [
+      ["steady insert cost", 30, "#4ade80"],
+      ["occasional merge cost", Math.min(70, worstInsertMs/4), "#f25c54"],
+    ];
+    const wsum = segs.reduce((s,x)=>s+x[1],0);
+    el("gpl-map").innerHTML = segs.map(([n,v,c])=>`<div class="seg" style="background:${c};width:${(v/wsum*100).toFixed(1)}%">${n}</div>`).join("");
+    el("gpl-legend").innerHTML = `<span><span class="sw" style="background:#4ade80"></span>cheap appends</span><span><span class="sw" style="background:#f25c54"></span>synchronous merge when the limit is hit</span>`;
+    el("gpl-note").innerHTML = `At <b style="color:var(--pg)">${limitKB.toLocaleString()} KB</b>: roughly <b>${mergeFreqPerMillion}</b> forced merge(s) per million inserted rows (illustrative model — actual frequency depends on row size and key count); a merge triggered mid-insert costs on the order of <b style="color:var(--bad)">${worstInsertMs.toFixed(0)} ms</b> (sorting and folding the whole pending list into the entry tree); meanwhile an average SELECT pays roughly <b style="color:var(--warn)">${avgReadTaxMs.toFixed(1)} ms</b> extra just linearly scanning whatever's currently pending. Raise the limit → rarer, bigger insert spikes, worse average read tax. Lower it (or set <code>fastupdate=off</code>, limit→0) → every insert pays entry-tree cost directly, evenly, with no pending-list read tax at all. There is no setting that avoids paying the cost somewhere — only where.`;
+  }
+  el("gpl-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. SLIDER: BRIN pages_per_range tradeoff (§8d)
+   ============================================================ */
+(function(){
+  const PPR = [1,2,4,8,16,32,64,128,256];
+  function render(){
+    const idx = +el("ppr-slider").value;
+    const ppr = PPR[idx];
+    el("ppr-val").textContent = ppr;
+    const tableRows = 200_000_000;         // fixed illustrative table: 200M rows
+    const rowsPerPage = 90;                 // illustrative heap density
+    const heapPages = tableRows/rowsPerPage;
+    const ranges = heapPages/ppr;
+    const summaryBytesMinmax = 40;
+    const sizeKB = ranges*summaryBytesMinmax/1024;
+    const correlation = 0.95;
+    // pruning effectiveness: with high correlation, avg fraction of domain a range's min/max spans shrinks with smaller ppr
+    const domainFracPerRange = Math.min(1, (ppr/ (heapPages)) * (1-correlation)*40 + ppr/heapPages*2);
+    const prunedPct = Math.max(0, 100*(1-domainFracPerRange));
+    const segs = [["summary tuples (tiny)", Math.max(2,Math.pow(sizeKB,0.3)), "#60a5fa"], ["ranges NOT pruned by a typical range query", Math.max(2,100-prunedPct), "#ff9f43"], ["ranges pruned (skipped entirely)", Math.max(2,prunedPct), "#4ade80"]];
+    const wsum = segs.reduce((s,x)=>s+x[1],0);
+    el("ppr-map").innerHTML = segs.map(([n,v,c])=>`<div class="seg" style="background:${c};width:${(v/wsum*100).toFixed(1)}%" title="${n}">${n}</div>`).join("");
+    el("ppr-legend").innerHTML = segs.map(([n,,c])=>`<span><span class="sw" style="background:${c}"></span>${n}</span>`).join("");
+    el("ppr-note").innerHTML = `200M-row table, <code>pages_per_range=${ppr}</code>: <b>${Math.round(ranges).toLocaleString()}</b> summary tuples ≈ <b style="color:var(--pg)">${sizeKB<1024?sizeKB.toFixed(0)+" KB":(sizeKB/1024).toFixed(1)+" MB"}</b> total — vs. a B-tree over the same column that would run tens to hundreds of MB. Smaller <code>pages_per_range</code> means each summary covers less physical space, so its min/max is tighter and prunes more aggressively (≈<b style="color:var(--ok)">${prunedPct.toFixed(0)}%</b> of ranges skipped at this setting, assuming correlation≈0.95) — at the direct cost of more summary tuples to store and scan. This is a real tradeoff, not a free win: halving <code>pages_per_range</code> roughly doubles index size for a usually-smaller gain in pruning, which is why 128 is the shipped default rather than 1.`;
+  }
+  el("ppr-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. CHART: index size vs table size (§10)
+   ============================================================ */
+(function(){
+  const cv = el("sz-chart"), ctx = cv.getContext("2d");
+  const AVG_LEXEMES = 12;
+  function sizesKB(N, ppr){
+    const btreeKB = N*24/1024;
+    const uniqueKeys = Math.min(N*AVG_LEXEMES, 40000 + Math.sqrt(N)*80); // vocabulary saturates
+    const ginKB = uniqueKeys*40/1024 + N*AVG_LEXEMES*2.3/1024;
+    const naiveKB = N*AVG_LEXEMES*24/1024;
+    const rowsPerPage = 90;
+    const brinKB = (N/rowsPerPage/ppr)*40/1024;
+    return { btreeKB, ginKB, naiveKB, brinKB };
+  }
+  function render(){
+    const N = Math.round(Math.pow(10, +el("sz-n").value));
+    const ppr = +el("sz-ppr").value;
+    el("sz-n-val").textContent = N.toLocaleString();
+    el("sz-ppr-val").textContent = ppr;
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let e=3; e<=9; e+=0.15) xs.push(Math.pow(10,e));
+    const X = n => PAD + (Math.log10(n)-3)/6 * (W-PAD-14);
+    let maxKB = 1;
+    const series = xs.map(n=>sizesKB(n, ppr));
+    series.forEach(s=>{ maxKB = Math.max(maxKB, s.btreeKB, s.ginKB, s.naiveKB, s.brinKB); });
+    const Y = kb => H-26 - (Math.log10(Math.max(kb,0.01))/Math.log10(maxKB*1.2)) * (H-46);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [3,4,5,6,7,8,9].forEach(e=>{ const n=Math.pow(10,e); ctx.beginPath(); ctx.moveTo(X(n),8); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText("10^"+e, X(n)-14, H-6); });
+    function curve(get, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.beginPath();
+      xs.forEach((n,i)=>{ const y = Y(get(series[i])); i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y); });
+      ctx.stroke();
+    }
+    curve(s=>s.btreeKB, "#60a5fa");
+    curve(s=>s.ginKB, "#a78bfa");
+    curve(s=>s.naiveKB, "#f25c54");
+    curve(s=>s.brinKB, "#4ade80");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(N),8); ctx.lineTo(X(N),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = sizesKB(N, ppr);
+    const fmt = kb => kb<1024 ? kb.toFixed(0)+" KB" : kb<1048576 ? (kb/1024).toFixed(1)+" MB" : (kb/1048576).toFixed(2)+" GB";
+    el("sz-note").innerHTML = `At <b style="color:var(--pg)">${N.toLocaleString()}</b> rows (pages_per_range=${ppr}): B-tree ≈ <b style="color:var(--pg)">${fmt(here.btreeKB)}</b>, GIN(tsvector) ≈ <b style="color:#a78bfa">${fmt(here.ginKB)}</b> — bigger than the plain B-tree because it pays for one entry per distinct lexeme plus a compressed posting-list entry per occurrence — but the naive one-row-per-(doc,lexeme) B-tree from §3/§4 would be <b style="color:var(--bad)">${fmt(here.naiveKB)}</b>, ${(here.naiveKB/Math.max(here.ginKB,1)).toFixed(0)}× larger than GIN for the identical containment query, and still can't answer <code>@@</code> without an application-level intersection. BRIN stays at <b style="color:var(--ok)">${fmt(here.brinKB)}</b> throughout — it isn't answering the same @@ predicate, but it shows what "proportional to table size, not row count" actually looks like on this chart.`;
+  }
+  el("sz-n").oninput = render;
+  el("sz-ppr").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   9. INTERVIEW QA (§12)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"WHERE tags @> ARRAY['x'] and WHERE created_at BETWEEN a AND b are both 'find matching rows' queries. Why can one column family use a B-tree and the other structurally cannot?", hint:"what does a B-tree's opclass actually guarantee?",
+    a:"A B-tree opclass guarantees a total order and five strategies (<, <=, =, >=, >) over that order — every predicate it can prune on has to collapse to 'is this key inside a contiguous interval of that order.' created_at BETWEEN a AND b is exactly that shape. tags @> ARRAY['x'] is not a question about ONE array's position in some ordering of all possible arrays — it's a per-element membership question, and there is no total order over arrays for which 'contains element x' becomes a contiguous range. That's not a missing feature, it's a category mismatch — which is precisely why GIN, an entirely different structure (an entry tree over extracted elements, not over whole array values), exists." },
+  { lvl:"SENIOR", q:"EXPLAIN ANALYZE on a spatial GiST query shows 'Recheck Cond' and a nonzero 'Rows Removed by Index Recheck.' Is this a sign something is wrong?", hint:"what does compress() throw away?",
+    a:"No — for a lossy GiST opclass (bounding boxes for geometry, superimposed-code signatures for tsvector_ops) this is the expected, documented contract, not a symptom. compress() intentionally discards information to make the stored predicate small and fast to test; amgetbitmap/amgettuple can therefore return TIDs whose bounding predicate matched but whose actual value doesn't, and the executor's recheck against the real heap tuple is what makes that lossy compression safe to use at all. It's only worth investigating if the recheck-removed fraction is unexpectedly high relative to history — that specifically points at picksplit-driven bounding-box bloat (§11 incident 3), not at recheck existing in the first place." },
+  { lvl:"STAFF", q:"A GIN index has fastupdate on. A bulk load finishes fast, but SELECTs are randomly slow for the next hour, then recover. Diagnose the mechanism end to end.", hint:"what does a scan have to do that an insert doesn't?",
+    a:"fastupdate makes inserts append extracted keys to an unsorted pending list instead of descending the entry tree — cheap, which is why the bulk load itself was fast. But the pending list can't be searched, only linearly scanned, so every SELECT during that window pays entry-tree cost PLUS an O(pending-list-size) scan. Once the pending list crosses gin_pending_list_limit (default 4MB) or autovacuum's amvacuumcleanup runs, ginInsertCleanup() sorts and merges it into the real structure — that's the 'recovers on its own' part. Fix: proactively VACUUM (or SELECT gin_clean_pending_list()) right after a known bulk load instead of waiting for the automatic trigger." },
+  { lvl:"STAFF", q:"A BRIN index on created_at stopped excluding any ranges after a bulk UPDATE, with no error and no plan change. What single statistic explains this, and why does an UPDATE — which doesn't move rows in a B-tree — break it?", hint:"MVCC row versions don't land back where they started",
+    a:"pg_stats.correlation for the indexed column. BRIN's entire value proposition — a tiny min/max per page range — only works if physical row order correlates with value order. An UPDATE under MVCC never modifies a row in place; it writes a new row version wherever free space (or a new page) happens to be, completely decoupled from the table's original insertion order. After a bulk UPDATE touches most rows, the next ANALYZE recomputes correlation near zero, and every range's min/max now spans nearly the whole domain — the index still returns correct results (it's a bitmap heap scan producing candidates, not a source of truth), it just no longer excludes almost anything, silently converting a fast range query into something close to a full table scan." },
+  { lvl:"STAFF", q:"Given GIN is generally the faster READ path for tsvector @@ tsquery, why would anyone still choose the GiST tsvector_ops opclass?", hint:"what's fixed-length vs. proportional-to-content?",
+    a:"GiST's tsvector opclass stores a fixed-length superimposed-code signature per document instead of GIN's per-lexeme posting lists — smaller and cheaper to update per row (no entry-tree/posting-list maintenance proportional to document length), at the cost of being lossy (recheck always required) and having its false-positive rate creep up as more documents accumulate signature collisions. That's a genuine write-throughput-vs-read-efficiency tradeoff documented in PostgreSQL's own text search chapter: choose GiST when writes dominate and you can tolerate slower, recheck-heavy reads; choose GIN (the default recommendation) when reads dominate." },
+  { lvl:"PRINCIPAL", q:"You're adding a new PostgreSQL extension data type (say, vector embeddings) and want it to have a working index. Walk through exactly what you must supply, and where core trusts your code versus where it can verify it.", hint:"pg_am already exists — what do YOU add?",
+    a:"You don't add a new access method at all if an existing framework fits (this is the whole point) — you write an opclass against GiST or SP-GiST (or GIN, if your predicate is containment-shaped). Concretely: implement the required support functions in C (for GiST: consistent, union, penalty, picksplit, plus optionally distance for KNN and compress/decompress if your representation is lossy), then issue CREATE OPERATOR CLASS/CREATE OPERATOR FAMILY, which populates pg_opclass, pg_amop (which operators map to which strategy numbers), and pg_amproc (which C functions implement which support-function numbers). Core's amvalidate() checks your opfamily is catalog-complete — has the required support functions, strategy numbers make sense — but it can never verify your picksplit produces well-separated children or your consistent function is even correct; that's discovered by query results and performance in production, never at DDL time. This is exactly the boundary §6 draws: correctness of the FRAMEWORK is core's job; correctness and quality of YOUR functions is yours." },
+  { lvl:"PRINCIPAL", q:"Contrast BRIN's minmax and bloom opclasses: what statistic does each depend on, and describe one data distribution where minmax is useless but bloom works, and one where it's the reverse.", hint:"ordering vs. membership",
+    a:"minmax depends entirely on physical/value correlation — a range's (min,max) is only informative if nearby physical rows have nearby values. bloom depends on nothing about ordering at all — it answers 'could this range contain this exact value' regardless of where in the range that value's rows physically sit, at the cost of a tunable false-positive rate (p ≈ (1-e^(-kn/m))^k). Minmax is useless on a UUID or hashed customer-ID column (no meaningful order, so ranges span the whole domain) but bloom works fine there for equality lookups. Conversely, for a genuinely append-ordered timestamp column, minmax is close to perfect (tiny ranges, tight bounds, near-zero false positives by construction) while bloom would be strictly worse for range queries — a Bloom filter answers single-value membership, not 'is any value in this interval present,' so it doesn't even apply to BETWEEN-style predicates the way minmax naturally does." }
+]);
+
+/* ============================================================
+   10. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A GIN index has fastupdate=on at its default gin_pending_list_limit. After a large bulk INSERT, SELECTs against it are randomly 5-10x slower for a while, then recover. Why?",
+    opts:[ "The index is corrupted and needs REINDEX",
+           "The pending list hasn't been merged yet, so every scan must also linearly scan it, until the size limit or a vacuum forces a merge",
+           "Autovacuum is holding an exclusive lock on the whole index during reads",
+           "Table statistics are stale, so the planner keeps choosing a sequential scan" ],
+    a:1,
+    why:"This is a known, documented cost tradeoff, not corruption (A) or a locking bug (C) — reads simply aren't blocked by a pending list, they're slowed by having to scan it. It's also not a planning problem (D): the SAME index is used the whole time, just with worse constant-factor cost until ginInsertCleanup() (triggered by gin_pending_list_limit or VACUUM) folds the pending list into the entry tree." },
+  { q:"EXPLAIN ANALYZE on a GiST spatial query shows 'Rows Removed by Index Recheck: 340.' What does that number represent?",
+    opts:[ "Rows the planner mis-estimated and had to re-plan for",
+           "Rows whose bounding-box predicate matched (a false positive) but whose exact geometry, checked against the heap tuple, did not",
+           "Rows deleted by a concurrent transaction during the scan",
+           "Duplicate TIDs returned by an inefficient picksplit and filtered out" ],
+    a:1,
+    why:"GiST's bounding predicates can be lossy summaries (a box is not the shape inside it); the executor must recheck every candidate against the real heap tuple. 340 is exactly that count of false positives discarded post-recheck — nothing to do with planning (A), concurrency (C), or duplicate TIDs (D, which isn't what recheck removal means)." },
+  { q:"A table's pg_stats.correlation for its BRIN-indexed created_at column drops from 0.98 to 0.05 after a bulk UPDATE. What happens to the index?",
+    opts:[ "It becomes corrupted and must be rebuilt before it returns correct results",
+           "Its ranges' min/max now span nearly the whole domain, so it can no longer exclude almost any range — results stay correct, but pruning collapses",
+           "PostgreSQL automatically drops the index and falls back to a sequential scan",
+           "The index shrinks because fewer distinct values are summarized per range" ],
+    a:1,
+    why:"BRIN never becomes incorrect (A, C are both false) — it's a lossless summary structure whose USEFULNESS, not correctness, depends entirely on physical/value correlation. Low correlation means every range's min/max spans nearly the full domain, so the bitmap heap scan can no longer exclude ranges, degenerating toward reading almost everything. Its size (D) doesn't change either — pages_per_range and row count didn't change, only how informative each summary is." },
+  { q:"Before PostgreSQL 10, why were hash indexes considered dangerous to rely on in production?",
+    opts:[ "They didn't support NULL values",
+           "They weren't write-ahead logged, so a crash could silently corrupt one and they couldn't be used on streaming replicas",
+           "They required a manual REINDEX after every INSERT",
+           "They were removed from the codebase between versions 9.0 and 10" ],
+    a:1,
+    why:"The real, documented historical gap was crash-safety: no WAL logging meant no guaranteed recovery after a crash and no way to stream changes to a replica. NULLs (A) were never the issue; REINDEX-per-insert (C) never happened; the AM was never removed (D) — it was fixed in place by PG10's WAL-logging work." },
+  { q:"PostGIS added a working spatial index to PostgreSQL entirely as an extension, without patching the executor or planner. What specifically made that possible?",
+    opts:[ "PostGIS ships a modified PostgreSQL binary with spatial support compiled in",
+           "CREATE OPERATOR CLASS registers PostGIS's consistent/union/penalty/picksplit functions against the existing GiST access method via pg_opclass/pg_amop/pg_amproc",
+           "PostgreSQL's planner has spatial predicates hardcoded as a special case",
+           "PostGIS runs as a separate background worker process that intercepts spatial queries" ],
+    a:1,
+    why:"There's no modified binary (A) or spatial special-casing in the planner (C) — the planner only ever calls generic AM interfaces like amcostestimate. PostGIS supplies ordinary C functions and registers them via CREATE OPERATOR CLASS into the SAME catalogs (pg_opclass/pg_amop/pg_amproc) any opclass author uses, plugging into GiST's existing dispatch table. Not a background worker either (D) — it's synchronous index code called through the same amgetbitmap path as any other GiST opclass." },
+  { q:"Why is a GIN index on a tsvector column usually bigger than a plain B-tree over one scalar column, but vastly smaller than a naive B-tree with one row per (document, lexeme) pair?",
+    opts:[ "GIN compresses better than any B-tree, regardless of what's being indexed",
+           "GIN pays for one entry per distinct lexeme plus a compressed posting-list entry per occurrence — more key material than one scalar per row, but the posting lists compress via delta-encoded TIDs and share entry-tree nodes across occurrences of the same lexeme",
+           "GIN indexes are always exactly the size of the underlying table, regardless of content",
+           "The naive per-lexeme B-tree and GIN are the same size; GIN is only faster to query" ],
+    a:1,
+    why:"There's no universal 'GIN compresses better' claim (A) — GIN is bigger than a single-scalar B-tree precisely because it indexes many keys per row. The real reason it beats the naive per-(doc,lexeme) B-tree by orders of magnitude is structural: one entry-tree node per distinct lexeme shared across every document containing it, plus delta/varbyte-compressed posting lists instead of a full B-tree entry per occurrence. Size (C) does depend heavily on content (vocabulary size, document length), and GIN is both smaller AND faster than the naive scheme (D is wrong on the size claim)." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review a picksplit implementation for a living.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks and the §15 simulator — the model clicks fast once you can see the structures side by side."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz — GIN pending list merge */
+(function(){
+  const CORRECT = [
+    "INSERT arrives; new row's keys are extracted by extractValue()",
+    "Keys are appended to the unsorted pending list (no entry-tree descent)",
+    "Pending list grows across further inserts, page by page",
+    "gin_pending_list_limit is exceeded, or VACUUM/gin_clean_pending_list() runs",
+    "The pending list's entries are sorted by key",
+    "Sorted entries are merged into the entry tree / posting trees via the normal insert path",
+    "Pending list pages are freed for reuse; scans stop paying the linear-scan tax"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real merge lifecycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   11. SIMULATOR (§15) — the index chooser
+   ============================================================ */
+(function(){
+  const state = { shape:"text", corr:0.92, ds:null, tgt:null, results:null };
+  const DS = {};
+
+  /* ---------- geometry helpers ---------- */
+  function rectOverlap(a,b){ return !(a.x1<b.x0||a.x0>b.x1||a.y1<b.y0||a.y0>b.y1); }
+  function bboxOf(pts){ return { x0:Math.min(...pts.map(p=>p.x)), y0:Math.min(...pts.map(p=>p.y)), x1:Math.max(...pts.map(p=>p.x)), y1:Math.max(...pts.map(p=>p.y)) }; }
+  function buildBBoxTree(pts, leafSize){
+    function split(list){
+      if (list.length<=leafSize) return [{ pts:list, box:bboxOf(list) }];
+      const b = bboxOf(list);
+      const axis = (b.x1-b.x0) > (b.y1-b.y0) ? "x" : "y";
+      const sorted = [...list].sort((a,c)=>a[axis]-c[axis]);
+      const mid = Math.floor(sorted.length/2);
+      return [...split(sorted.slice(0,mid)), ...split(sorted.slice(mid))];
+    }
+    return split(pts);
+  }
+  function buildQuadtree(pts, box, leafSize){
+    function rec(list, b){
+      if (list.length<=leafSize || (b.x1-b.x0)<14) return [{ pts:list, box:b }];
+      const mx=(b.x0+b.x1)/2, my=(b.y0+b.y1)/2;
+      const quads = [ {x0:b.x0,y0:b.y0,x1:mx,y1:my}, {x0:mx,y0:b.y0,x1:b.x1,y1:my}, {x0:b.x0,y0:my,x1:mx,y1:b.y1}, {x0:mx,y0:my,x1:b.x1,y1:b.y1} ];
+      let out = [];
+      quads.forEach(q=>{ const inside = list.filter(p=>p.x>=q.x0&&p.x<q.x1+0.01&&p.y>=q.y0&&p.y<q.y1+0.01); if (inside.length) out = out.concat(rec(inside,q)); });
+      return out.length ? out : [{ pts:list, box:b }];
+    }
+    return rec(pts, box);
+  }
+  function buildKD1D(vals, leafSize){
+    const sorted = [...vals].sort((a,b)=>a-b);
+    function rec(v){ if (v.length<=leafSize) return [{ lo:v[0], hi:v[v.length-1] }]; const mid=Math.floor(v.length/2); return [...rec(v.slice(0,mid)), ...rec(v.slice(mid))]; }
+    return rec(sorted);
+  }
+  function groupByPrefix(vocab){ const g={}; vocab.forEach(w=>{ const k=w[0]; (g[k]=g[k]||[]).push(w); }); return g; }
+
+  /* ---------- dataset generators ---------- */
+  function genText(){
+    const VOCAB = ["index","query","plan","vacuum","buffer","lock","wal","replica","cache","btree","gin","gist","brin","hash","tuple","page","xid","checkpoint","cost","join"];
+    const N=110, docs=[];
+    for (let i=0;i<N;i++){
+      const k = 4+Math.floor(Math.random()*6);
+      const words = new Set();
+      while (words.size<k) words.add(VOCAB[Math.floor(Math.random()*VOCAB.length)]);
+      docs.push({ id:i, words:[...words] });
+    }
+    return { docs, vocab:VOCAB };
+  }
+  function genGeo(){
+    const N=130, centers=[[60,45],[205,40],[70,112],[195,115]], pts=[];
+    for (let i=0;i<N;i++){
+      const c = centers[Math.floor(Math.random()*centers.length)];
+      pts.push({ id:i, x:Math.min(255,Math.max(5,c[0]+(Math.random()-.5)*90)), y:Math.min(145,Math.max(5,c[1]+(Math.random()-.5)*70)) });
+    }
+    return { pts };
+  }
+  function genTags(){
+    const TAGS=["billing","auth","search","infra","mobile","growth","ml","support"], N=140, rows=[];
+    for (let i=0;i<N;i++) rows.push({ id:i, tag:TAGS[Math.floor(Math.random()*TAGS.length)] });
+    return { rows, tags:TAGS };
+  }
+  function genTimeBase(){ const N=140; const shuffled=[...Array(N).keys()].sort(()=>Math.random()-.5); return { N, shuffled }; }
+  function timeRows(base, corr){ return base.shuffled.map((sv,i)=>({ id:i, v: corr*i + (1-corr)*sv })); }
+
+  function pickTextTarget(ds){
+    const freq={}; ds.docs.forEach(d=>d.words.forEach(w=>freq[w]=(freq[w]||0)+1));
+    const goal = ds.docs.length*0.35; let best=Object.keys(freq)[0], bd=1e9;
+    Object.keys(freq).forEach(w=>{ const d=Math.abs(freq[w]-goal); if (d<bd){ bd=d; best=w; } });
+    return best;
+  }
+
+  /* ---------- per-AM cost/structure models ---------- */
+  function btreeCompute(shape, ds, tgt){
+    const perLeaf = 14;
+    if (shape==="time"){
+      const hitIds = ds.rows.filter(r=>r.v>=tgt.lo&&r.v<=tgt.hi).map(r=>r.id);
+      return { pages: Math.ceil(hitIds.length/perLeaf)+2, sizeKB: ds.rows.length*0.023, recheck:false, hitIds,
+        note:"Range predicate on the indexed scalar — the textbook B-tree shape. O(log N) descent, then a short run of sorted leaf pages." };
+    }
+    if (shape==="tags"){
+      const hitIds = ds.rows.filter(r=>r.tag===tgt).map(r=>r.id);
+      return { pages: Math.ceil(hitIds.length/perLeaf)+2, sizeKB: ds.rows.length*0.02, recheck:false, hitIds,
+        note:"Equality on a low-cardinality column still works fine — just one run of duplicate-key leaf entries." };
+    }
+    if (shape==="geo"){
+      const xmatch = ds.pts.filter(p=>p.x>=tgt.x0&&p.x<=tgt.x1).map(p=>p.id);
+      const trueHit = ds.pts.filter(p=>p.x>=tgt.x0&&p.x<=tgt.x1&&p.y>=tgt.y0&&p.y<=tgt.y1).map(p=>p.id);
+      return { pages: Math.ceil(xmatch.length/perLeaf)+2, sizeKB: ds.pts.length*0.016, recheck:false, hitIds:trueHit,
+        note:"A single-column B-tree (on x only) prunes on x; every candidate still needs an un-indexed Filter on y. No B-tree shape exists for true 2-D containment." };
+    }
+    return { pages: Math.max(6,Math.ceil(ds.docs.length/perLeaf)), sizeKB: ds.docs.length*0.012, recheck:false, hitIds:null, seq:true,
+      note:"No scalar ordering makes 'contains lexeme X' a contiguous range — without a supporting index this is a forced Seq Scan testing every row." };
+  }
+  function ginCompute(shape, ds, tgt){
+    if (shape==="text"){
+      const freq={}; ds.docs.forEach(d=>d.words.forEach(w=>freq[w]=(freq[w]||0)+1));
+      const keys = Object.keys(freq).sort();
+      const hitIds = ds.docs.filter(d=>d.words.includes(tgt)).map(d=>d.id);
+      const totalOcc = ds.docs.reduce((s,d)=>s+d.words.length,0);
+      return { pages: 1+Math.ceil((freq[tgt]||0)/40), sizeKB: keys.length*0.04+totalOcc*2.3/1024, recheck:false, hitIds,
+        keysPreview: keys.map(k=>({k,len:freq[k],hit:k===tgt})),
+        note:"Entry-tree descent to one lexeme, then a short compressed posting-list scan — exactly the shape GIN exists for." };
+    }
+    if (shape==="tags"){
+      const freq={}; ds.rows.forEach(r=>freq[r.tag]=(freq[r.tag]||0)+1);
+      const hitIds = ds.rows.filter(r=>r.tag===tgt).map(r=>r.id);
+      return { pages: 1+Math.ceil((freq[tgt]||0)/40), sizeKB: ds.tags.length*0.04+ds.rows.length*2.3/1024, recheck:false, hitIds,
+        keysPreview: ds.tags.map(k=>({k,len:freq[k]||0,hit:k===tgt})),
+        note:"Low cardinality is GIN's best case: one entry per tag, each with a long posting list — a single entry-tree hop finds everything." };
+    }
+    if (shape==="geo"){
+      const cell = p => Math.floor(p.x/40)+","+Math.floor(p.y/40);
+      const cellsInRect = []; for (let cx=Math.floor(tgt.x0/40); cx<=Math.floor(tgt.x1/40); cx++) for (let cy=Math.floor(tgt.y0/40); cy<=Math.floor(tgt.y1/40); cy++) cellsInRect.push(cx+","+cy);
+      const trueHit = ds.pts.filter(p=>p.x>=tgt.x0&&p.x<=tgt.x1&&p.y>=tgt.y0&&p.y<=tgt.y1).map(p=>p.id);
+      const counts={}; ds.pts.forEach(p=>{ const c=cell(p); counts[c]=(counts[c]||0)+1; });
+      const uniqueCells = Object.keys(counts).length;
+      return { pages: cellsInRect.length+1, sizeKB: uniqueCells*0.04+ds.pts.length*3/1024, recheck:true, hitIds:trueHit,
+        keysPreview: Object.keys(counts).slice(0,10).map(c=>({k:c,len:counts[c],hit:cellsInRect.includes(c)})),
+        note:"Grid-cell keys degrade toward one entry per point — no posting-list compression benefit, and boundary cells make this lossy." };
+    }
+    const hitIds = ds.rows.filter(r=>r.v>=tgt.lo&&r.v<=tgt.hi).map(r=>r.id);
+    return { pages: Math.ceil(hitIds.length/10)+3, sizeKB: ds.rows.length*0.045, recheck:false, hitIds,
+      keysPreview: ds.rows.slice(0,10).map(r=>({k:r.v.toFixed(1),len:1,hit:r.v>=tgt.lo&&r.v<=tgt.hi})),
+      note:"Values are already near-unique — posting lists are all length ~1. GIN degenerates into a bigger, slower B-tree with none of its compression payoff." };
+  }
+  function gistCompute(shape, ds, tgt){
+    if (shape==="geo"){
+      const leaves = buildBBoxTree(ds.pts, 8);
+      let hitIds=[];
+      leaves.forEach(l=>{ l.hit = rectOverlap(l.box,tgt); if (l.hit) l.pts.forEach(p=>{ if (p.x>=tgt.x0&&p.x<=tgt.x1&&p.y>=tgt.y0&&p.y<=tgt.y1) hitIds.push(p.id); }); });
+      const touched = leaves.filter(l=>l.hit).length;
+      return { pages: touched+2, sizeKB: ds.pts.length*0.032, recheck:true, hitIds, boxes:leaves,
+        note:"Bounding boxes are a lossy summary of the geometry inside — a box that only partially overlaps the query rect needs a heap recheck." };
+    }
+    if (shape==="text"){
+      const trueHit = ds.docs.filter(d=>d.words.includes(tgt)).map(d=>d.id);
+      return { pages: Math.ceil(ds.docs.length/24)+2, sizeKB: ds.docs.length*0.018, recheck:true, hitIds:trueHit,
+        note:"The built-in tsvector_ops GiST opclass stores a fixed-length signature per document instead of posting lists — cheaper to update, but lossy: every scan rechecks." };
+    }
+    if (shape==="time"){
+      const hitIds = ds.rows.filter(r=>r.v>=tgt.lo&&r.v<=tgt.hi).map(r=>r.id);
+      return { pages: Math.ceil(hitIds.length/12)+3, sizeKB: ds.rows.length*0.03, recheck:false, hitIds,
+        note:"btree_gist over a scalar builds interval bounding predicates that behave much like a B-tree — heavier entries, but exact (not lossy) for range containment." };
+    }
+    const hitIds = ds.rows.filter(r=>r.tag===tgt).map(r=>r.id);
+    return { pages: Math.ceil(ds.rows.length/12)+2, sizeKB: ds.rows.length*0.03, recheck:false, hitIds,
+      note:"With only 8 distinct tags scattered through physical order, leaf bounding intervals span almost the whole domain — no discriminating power, even though results stay exact." };
+  }
+  function spgistCompute(shape, ds, tgt){
+    if (shape==="geo"){
+      const quads = buildQuadtree(ds.pts, {x0:0,y0:0,x1:260,y1:150}, 8);
+      let hitIds=[];
+      quads.forEach(q=>{ q.hit = rectOverlap(q.box,tgt); if (q.hit) q.pts.forEach(p=>{ if (p.x>=tgt.x0&&p.x<=tgt.x1&&p.y>=tgt.y0&&p.y<=tgt.y1) hitIds.push(p.id); }); });
+      const touched = quads.filter(q=>q.hit).length;
+      return { pages: touched+2, sizeKB: ds.pts.length*0.024, recheck:false, hitIds, quads,
+        note:"Quadrants are disjoint by construction — a point belongs to exactly one, so there's no overlap to force extra visits, and no recheck." };
+    }
+    if (shape==="text"){
+      return { pages: ds.vocab.length, sizeKB: ds.docs.length*0.01, recheck:false, hitIds:null, seq:true, radix:groupByPrefix(ds.vocab),
+        note:"This radix trie partitions whole lexeme strings by shared prefix — built for prefix/pattern search (LIKE 'foo%'), not per-document containment. No opclass wires a per-lexeme trie to @@." };
+    }
+    if (shape==="time"){
+      const parts = buildKD1D(ds.rows.map(r=>r.v), 12);
+      const touched = parts.filter(p=>!(p.hi<tgt.lo||p.lo>tgt.hi)).length;
+      const hitIds = ds.rows.filter(r=>r.v>=tgt.lo&&r.v<=tgt.hi).map(r=>r.id);
+      return { pages: touched+2, sizeKB: ds.rows.length*0.026, recheck:false, hitIds, parts,
+        note:"A 1-D k-d-tree-style partition on value gives exact, non-overlapping ranges — efficient for range queries, without needing global rebalancing." };
+    }
+    const hitIds = ds.rows.filter(r=>r.tag===tgt).map(r=>r.id);
+    return { pages: 2, sizeKB: ds.tags.length*0.02+ds.rows.length*2.3/1024, recheck:false, hitIds,
+      note:"A radix trie over 8 distinct tag strings is effectively one flat level — a single node lookup finds the exact bucket." };
+  }
+  function brinCompute(shape, ds, tgt, corr){
+    const rsz = 12;
+    if (shape==="time"){
+      const ranges=[];
+      for (let i=0;i<ds.rows.length;i+=rsz){ const chunk=ds.rows.slice(i,i+rsz); const vals=chunk.map(r=>r.v); ranges.push({ lo:Math.min(...vals), hi:Math.max(...vals), ids:chunk.map(r=>r.id) }); }
+      let touched=0, hitIds=[];
+      ranges.forEach(r=>{ r.touched = !(r.hi<tgt.lo||r.lo>tgt.hi); if (r.touched){ touched++; r.ids.forEach(id=>{ const row=ds.rows.find(x=>x.id===id); if (row&&row.v>=tgt.lo&&row.v<=tgt.hi) hitIds.push(id); }); } });
+      return { pages: touched*rsz, sizeKB: ranges.length*40/1024, recheck:false, hitIds, ranges,
+        note:`At correlation≈${corr.toFixed(2)}, ${touched}/${ranges.length} ranges couldn't be excluded. ${corr>0.7?"High correlation keeps each range's min/max tight.":"Low correlation means most ranges span nearly the whole domain — BRIN degenerates toward a full scan."}` };
+    }
+    if (shape==="tags"){
+      const ranges=[];
+      for (let i=0;i<ds.rows.length;i+=rsz){ const chunk=ds.rows.slice(i,i+rsz); ranges.push({ ids:chunk.map(r=>r.id) }); }
+      let touched=0, hitIds=[];
+      ranges.forEach(r=>{ const trueContains = r.ids.some(id=>ds.rows.find(x=>x.id===id).tag===tgt); const fp = !trueContains && Math.random()<0.08; r.touched = trueContains||fp;
+        if (r.touched){ touched++; if (trueContains) r.ids.forEach(id=>{ if (ds.rows.find(x=>x.id===id).tag===tgt) hitIds.push(id); }); } });
+      return { pages: touched*rsz, sizeKB: ranges.length*80/1024, recheck:false, hitIds, ranges, bloom:true,
+        note:"Modeled with the bloom BRIN opclass (PG14+): a per-range Bloom filter answers 'could this range contain this tag' regardless of physical order, at the cost of an occasional false positive." };
+    }
+    if (shape==="geo"){
+      const ranges=[];
+      for (let i=0;i<ds.pts.length;i+=rsz){ const chunk=ds.pts.slice(i,i+rsz); const xs=chunk.map(p=>p.x); ranges.push({ lo:Math.min(...xs), hi:Math.max(...xs), ids:chunk.map(p=>p.id) }); }
+      let touched=0, hitIds=[];
+      ranges.forEach(r=>{ r.touched = !(r.hi<tgt.x0||r.lo>tgt.x1); if (r.touched){ touched++; r.ids.forEach(id=>{ const p=ds.pts.find(x=>x.id===id); if (p&&p.x>=tgt.x0&&p.x<=tgt.x1&&p.y>=tgt.y0&&p.y<=tgt.y1) hitIds.push(id); }); } });
+      return { pages: touched*rsz, sizeKB: ranges.length*40/1024, recheck:false, hitIds, ranges,
+        note:"Summarizing x-only min/max over insertion order, which has no relationship to spatial clustering here — most ranges can't be excluded. BRIN has no 2-D notion." };
+    }
+    const ranges=[]; for (let i=0;i<ds.docs.length;i+=rsz) ranges.push({ ids: ds.docs.slice(i,i+rsz).map(d=>d.id), touched:true });
+    return { pages: ranges.length*rsz, sizeKB: ranges.length*40/1024, recheck:false, hitIds:null, ranges, seq:true,
+      note:"BRIN has no opclass answering 'contains lexeme X' — a summary keyed on doc_id tells you nothing about lexeme content, so every range must be scanned." };
+  }
+
+  /* ---------- rendering ---------- */
+  function fmtKB(kb){ return kb<1?(kb*1024).toFixed(0)+" B" : kb<1024?kb.toFixed(1)+" KB" : (kb/1024).toFixed(2)+" MB"; }
+  function drawPoints(ctx, pts, hitIds){
+    ctx.clearRect(0,0,260,150);
+    const hs = new Set(hitIds||[]);
+    pts.forEach(p=>{ ctx.fillStyle = hs.has(p.id) ? "#4ade80" : "#5b6475"; ctx.beginPath(); ctx.arc(p.x,p.y,hs.has(p.id)?3:2,0,7); ctx.fill(); });
+  }
+  function drawRect(ctx, r, color){ ctx.strokeStyle=color; ctx.lineWidth=1.6; ctx.setLineDash([4,3]); ctx.strokeRect(r.x0,r.y0,r.x1-r.x0,r.y1-r.y0); ctx.setLineDash([]); }
+  function chips(container, total, hitCount, label){
+    const shown = Math.min(Math.max(total,1), 24);
+    let html = `<div style="font-size:9.5px;color:var(--dim);margin-bottom:5px">${label}</div><div>`;
+    for (let i=0;i<shown;i++) html += `<span class="tnode ${i<Math.min(hitCount,shown)?"hit":""}">${i+1}</span>`;
+    html += `</div>`;
+    if (total>shown) html += `<div style="font-size:9px;color:var(--dim);margin-top:4px">+${total-shown} more subtrees</div>`;
+    container.innerHTML = html;
+  }
+  function renderRadix(container, radix){
+    let html = "";
+    Object.keys(radix).sort().forEach(k=>{ html += `<div class="tnode" style="display:block;margin-bottom:3px">${k}→ ${radix[k].join(", ")}</div>`; });
+    container.innerHTML = `<div style="font-size:9.5px;color:var(--dim);margin-bottom:5px">radix trie by first letter (no @@ opclass)</div>${html}`;
+  }
+  function renderKD(container, parts, tgt){
+    container.innerHTML = parts.map(p=>{ const t=!(p.hi<tgt.lo||p.lo>tgt.hi); return `<div class="brinrow"><div class="brinbar ${t?"touch":"skip"}"><b style="left:0;right:0;background:${t?"#a78bfa":"#2a3446"};opacity:.6"></b></div></div>`; }).join("");
+  }
+  function renderBtreePanel(container, res, ds){
+    if (res.seq){ container.innerHTML = `<div style="font-size:10px;color:var(--dim);margin-bottom:6px">no usable key — forced Seq Scan of every heap page</div>` + Array.from({length:8}).map(()=>`<div class="btleaf hit">heap page — tested row-by-row</div>`).join(""); return; }
+    const n = Math.min(Math.round(res.pages), 10);
+    container.innerHTML = `<div style="max-height:160px;overflow-y:auto">${Array.from({length:n}).map((_,i)=>`<div class="btleaf ${i<Math.min(3,n)?"hit":""}">leaf page ${i+1}</div>`).join("")}</div>`;
+  }
+  function renderGinPanel(container, res){
+    if (!res.keysPreview){ container.innerHTML = `<div style="font-size:10.5px;color:var(--dim)">no natural key to extract for this predicate</div>`; return; }
+    const maxLen = Math.max(...res.keysPreview.map(k=>k.len),1);
+    container.innerHTML = res.keysPreview.slice(0,10).map(k=>`<div class="postrow"><span class="pk">${k.k}</span><div class="postbar ${k.hit?"hit":""}"><i style="width:${Math.max(4,k.len/maxLen*100)}%"></i></div><span>${k.len}</span></div>`).join("");
+  }
+  function renderGistPanel(container, shape, ds, tgt, res){
+    if (shape==="geo"){
+      container.innerHTML = `<canvas width="260" height="150"></canvas>`;
+      const ctx = container.querySelector("canvas").getContext("2d");
+      drawPoints(ctx, ds.pts, res.hitIds);
+      (res.boxes||[]).forEach(b=>{ ctx.strokeStyle=b.hit?"#4ade80":"#2a3446"; ctx.lineWidth=b.hit?2:1; ctx.strokeRect(b.box.x0,b.box.y0,b.box.x1-b.box.x0,b.box.y1-b.box.y0); });
+      drawRect(ctx, tgt, "#f78c6c");
+      return;
+    }
+    chips(container, Math.round(res.pages), Math.min(Math.round(res.pages), (res.hitIds?Math.ceil(res.hitIds.length/4):0)+1), "bounding-interval subtrees visited");
+  }
+  function renderSpgistPanel(container, shape, ds, tgt, res){
+    if (shape==="geo"){
+      container.innerHTML = `<canvas width="260" height="150"></canvas>`;
+      const ctx = container.querySelector("canvas").getContext("2d");
+      drawPoints(ctx, ds.pts, res.hitIds);
+      (res.quads||[]).forEach(q=>{ ctx.strokeStyle=q.hit?"#4ade80":"#2a3446"; ctx.lineWidth=q.hit?1.8:1; ctx.strokeRect(q.box.x0,q.box.y0,q.box.x1-q.box.x0,q.box.y1-q.box.y0); });
+      drawRect(ctx, tgt, "#f78c6c");
+      return;
+    }
+    if (shape==="text") return renderRadix(container, res.radix||{});
+    if (shape==="time") return renderKD(container, res.parts||[], tgt);
+    chips(container, res.pages, res.hitIds&&res.hitIds.length?1:0, "radix bucket lookups");
+  }
+  function renderBrinPanel(container, res){
+    if (!res.ranges){ container.innerHTML = `<div style="font-size:10.5px;color:var(--dim)">n/a</div>`; return; }
+    const show = res.ranges.slice(0,14);
+    container.innerHTML = `<div>${show.map(r=>{ const color = r.touched ? (res.bloom?"#ff9f43":"#4ade80") : "#2a3446"; return `<div class="brinrow"><div class="brinbar ${r.touched?"touch":"skip"}"><b style="left:0;right:0;background:${color};opacity:.55"></b></div></div>`; }).join("")}</div>
+      <div style="font-size:9px;color:var(--dim);margin-top:4px">${res.ranges.length} ranges total (showing first ${show.length})</div>`;
+  }
+  const AMLABELS = { btree:{n:"B-TREE",sub:"nbtree — sorted leaves"}, gin:{n:"GIN",sub:"entry tree + posting lists"}, gist:{n:"GiST",sub:"bounding predicates, lossy"}, spgist:{n:"SP-GiST",sub:"exact space partitions"}, brin:{n:"BRIN",sub:"block-range summaries"} };
+  function buildShell(){
+    el("idxsim").innerHTML = ["btree","gin","gist","spgist","brin"].map(k=>{
+      const a = AMLABELS[k];
+      return `<div class="ip" id="ip-${k}"><div class="ip-head">${a.n}<span class="ip-sub">${a.sub}</span></div><div class="ip-viz"></div><div class="ip-stats"></div></div>`;
+    }).join("");
+  }
+  function log2(msg){ const l=el("sim2-log"); const d=document.createElement("div"); d.textContent=msg; l.appendChild(d); while (l.children.length>60) l.removeChild(l.firstChild); l.scrollTop=l.scrollHeight; }
+  function queryDesc(shape,tgt){
+    if (shape==="text") return `SELECT * FROM docs WHERE tsv @@ to_tsquery('${tgt}')`;
+    if (shape==="geo") return `SELECT * FROM points WHERE geom && ST_MakeEnvelope(${tgt.x0|0},${tgt.y0|0},${tgt.x1|0},${tgt.y1|0})`;
+    if (shape==="time") return `SELECT * FROM events WHERE ts BETWEEN v(${tgt.lo.toFixed(0)}) AND v(${tgt.hi.toFixed(0)})`;
+    return `SELECT * FROM rows WHERE tag = '${tgt}'`;
+  }
+  function computeTarget(){
+    if (state.shape==="text") state.tgt = pickTextTarget(state.ds);
+    else if (state.shape==="geo") state.tgt = { x0:20, y0:10, x1:112, y1:82 };
+    else if (state.shape==="time") state.tgt = { lo:DS.timeBase.N*0.32, hi:DS.timeBase.N*0.48 };
+    else state.tgt = state.ds.tags[3];
+    el("sim-query-desc").textContent = queryDesc(state.shape, state.tgt);
+  }
+  function fullRender(animate){
+    const { shape, ds, tgt } = state;
+    const results = { btree: btreeCompute(shape,ds,tgt), gin: ginCompute(shape,ds,tgt), gist: gistCompute(shape,ds,tgt), spgist: spgistCompute(shape,ds,tgt), brin: brinCompute(shape,ds,tgt,state.corr) };
+    state.results = results;
+    ["btree","gin","gist","spgist","brin"].forEach((k,i)=>{
+      const paint = ()=>{
+        const panel = el("ip-"+k);
+        const viz = panel.querySelector(".ip-viz"), stats = panel.querySelector(".ip-stats");
+        if (k==="btree") renderBtreePanel(viz, results[k], ds);
+        else if (k==="gin") renderGinPanel(viz, results[k]);
+        else if (k==="gist") renderGistPanel(viz, shape, ds, tgt, results[k]);
+        else if (k==="spgist") renderSpgistPanel(viz, shape, ds, tgt, results[k]);
+        else renderBrinPanel(viz, results[k]);
+        stats.innerHTML = `<div class="r"><span>pages touched</span><b>${Math.max(1,Math.round(results[k].pages))}</b></div>
+          <div class="r"><span>index size (approx)</span><b>${fmtKB(results[k].sizeKB)}</b></div>
+          <div class="r"><span>heap recheck needed</span><b class="${results[k].recheck?"rk-y":"rk-n"}">${results[k].recheck?"YES":"no"}</b></div>`;
+        if (animate){ panel.classList.add("animating"); setTimeout(()=>panel.classList.remove("animating"), 500); log2(`${AMLABELS[k].n}: pages≈${Math.max(1,Math.round(results[k].pages))}, size≈${fmtKB(results[k].sizeKB)}, recheck=${results[k].recheck?"YES":"no"}`); }
+      };
+      if (animate) setTimeout(paint, i*260); else paint();
+    });
+  }
+  function onShapeChange(){
+    if (state.shape==="time"){ if (!DS.timeBase) DS.timeBase = genTimeBase(); state.ds = { rows: timeRows(DS.timeBase, state.corr) }; }
+    else if (state.shape==="text") state.ds = DS.text || (DS.text = genText());
+    else if (state.shape==="geo") state.ds = DS.geo || (DS.geo = genGeo());
+    else state.ds = DS.tags || (DS.tags = genTags());
+    computeTarget();
+    buildShell();
+    fullRender(false);
+    el("sim-sub").textContent = state.shape.toUpperCase();
+    el("corr-row").style.display = state.shape==="time" ? "" : "none";
+  }
+
+  document.querySelectorAll("#shape-chips .chip").forEach(c=>{
+    c.onclick = ()=>{
+      document.querySelectorAll("#shape-chips .chip").forEach(x=>x.classList.remove("on"));
+      c.classList.add("on");
+      state.shape = c.dataset.shape;
+      log2(`— switched dataset to ${state.shape} —`);
+      onShapeChange();
+    };
+  });
+  el("sim-corr").oninput = ()=>{
+    state.corr = +el("sim-corr").value/100;
+    el("sim-corr-val").textContent = state.corr.toFixed(2);
+    if (state.shape==="time"){ state.ds = { rows: timeRows(DS.timeBase, state.corr) }; computeTarget(); fullRender(false); }
+  };
+  el("sim-run").onclick = ()=>{ log2("— running query —"); fullRender(true); };
+
+  el("corr-row").style.display = "none";
+  onShapeChange();
+})();
+
+/* ============================================================
+   12. KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 15 covers the parser and query rewriter. Before the planner ever compares costs, it must decide which indexes on a table are even syntactically ELIGIBLE for a given WHERE clause — e.g. @> only matches opclasses whose opfamily lists that operator. At which pipeline stage do you think that eligibility check happens, and which catalog would it consult to answer 'does any index opfamily on this column support this operator'?",
+    a:"Not the parser — the parser only resolves tags @> ARRAY['x'] to a specific operator OID via pg_operator; it has no concept of indexes at all. Not the rewriter either — rule/view expansion rewrites the query tree, but doesn't touch index metadata. Eligibility is decided during PLANNING, in the optimizer's path-generation code (indxpath.c's clause-matching logic): for each index on the table, for each restriction clause, it checks pg_amop for a row matching (this index's opfamily, this operator, some strategy number). Only clauses that pass this filter become candidate index quals at all — cost estimation (amcostestimate) only ever runs on the survivors." },
+  { lvl:"THINK", q:"Suppose a table has BOTH a GIN and a GiST tsvector_ops index, and both opfamilies expose @@. What do you think determines which one the planner actually uses — and is that decision made before or after cost estimation?",
+    a:"Both indexes pass the eligibility filter (both opfamilies list @@) — eligibility is a hard yes/no gate, not a ranking. The actual choice is made AFTER that, by cost: the planner calls each eligible index's amcostestimate (gincostestimate vs gistcostestimate), gets back comparable startup/total cost and selectivity estimates, builds a Path for each, and lets the usual cheapest-total-cost comparison across all generated Paths pick the winner — the same mechanism that picks between a Seq Scan and an Index Scan for any predicate. Nothing about @@ specifically is special-cased; it's ordinary cost-based planning applied to two opfamilies that happen to agree on which operators they support." },
+  { lvl:"THINK", q:"A clause like tags @> ARRAY['x'] has to survive the rewriter (view/rule expansion, security_barrier quals, constant folding) with its shape intact for the planner to match it against a GIN opfamily entry at all. Predict one way rewriting could change that clause's shape enough that index matching silently fails — and why that's a real production footgun rather than a hypothetical.",
+    a:"Anything that wraps the indexed column or the operator's arguments in an expression the opfamily didn't register support functions for — an implicit type cast introduced by rewriting (e.g. the column ending up compared as tags::text[] against a differently-typed literal), or a view predicate that gets ANDed/ORed together with other conditions in a way that changes which side of the expression tree the operator call sits on — changes the expression's shape just enough that indxpath.c's pattern match against pg_amop no longer recognizes it as 'this operator, on this bare column.' The query still returns correct results; it silently falls back to a sequential scan with zero errors or warnings, which is exactly why 'my GIN index isn't being used and I don't know why' is a genuinely common production question — chapter 15 will give you the planner's own vocabulary (RestrictInfo, indexable clauses) for diagnosing it precisely." }
+]);
+
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-14"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-13.html"><span>←</span><span><span class="cn-lbl">PREV · CH 13</span><span class="cn-ttl">B-Tree Internals: Lehman & Yao in Production</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html" selected>CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">14 / 21</span></div><a class="cn-btn" href="pg-15.html"><span><span class="cn-lbl">NEXT · CH 15</span><span class="cn-ttl">Query Pipeline I: Parser, Analyzer & Rewriter</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>
+</body>
+</html>

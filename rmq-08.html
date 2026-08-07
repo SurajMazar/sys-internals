@@ -1,0 +1,2043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMQ-08 · Dead Lettering, TTL & Priority Queues — RabbitMQ Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#ff9f43; --pg-dim:rgba(255,159,67,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa; --amber:#ffd166;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(255,159,67,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(255,159,67,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(255,159,67,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(255,159,67,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(255,159,67,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(255,159,67,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:14px 18px 18px}
+  .sim-wrap{display:grid;grid-template-columns:1fr 280px;min-height:420px;border-top:1px solid var(--border);margin-top:12px}
+  @media(max-width:900px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:900px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* dlx/ttl/priority lab specific */
+  .qbox{border:1px dashed var(--border-hi);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+  .qbox .qb-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px;display:flex;justify-content:space-between}
+  .qmsgs{display:flex;flex-wrap:wrap;gap:5px;min-height:34px}
+  .msg{min-width:26px;height:26px;border-radius:7px;border:1px solid var(--border-hi);background:var(--panel-2);
+    display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:var(--muted);
+    animation:framein .25s;padding:0 4px;cursor:pointer}
+  .msg.poison{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.12)}
+  .msg.redelivered{border-color:var(--warn);color:var(--warn)}
+  .msg.sel{border-color:var(--pg);box-shadow:0 0 0 2px var(--pg-dim)}
+  .msg.expired{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.12);text-decoration:line-through}
+  .msg.stuck{border-color:var(--warn);color:var(--warn)}
+  .dlx-flow{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .dlx-node{flex:1;min-width:160px;border:1px solid var(--border-hi);background:var(--panel-2);border-radius:11px;padding:10px 11px}
+  .dlx-node .dn-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px;display:flex;justify-content:space-between}
+  .dlx-arrow{display:flex;align-items:center;justify-content:center;font-family:var(--mono);color:var(--dim);font-size:16px;min-width:20px}
+  .pri-lanes{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .pri-lane{flex:1;min-width:64px;border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px}
+  .pri-lane .pl-t{font-family:var(--mono);font-size:9.5px;color:var(--muted);text-align:center;margin-bottom:6px}
+  .pri-lane.top .pl-t{color:var(--pg)}
+  .pri-lane.starved{border-color:var(--bad)}
+  .pri-lane .pl-msgs{display:flex;flex-direction:column;gap:4px;min-height:30px}
+  .clane{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:10px 12px;margin-bottom:10px;transition:all .25s}
+  .clane.dead{opacity:.35;border-style:dashed}
+  .clane.busy{border-color:var(--pg)}
+  .clane .cl-head{display:flex;align-items:center;justify-content:space-between;font-family:var(--mono);font-size:11px;margin-bottom:6px}
+  .clane .cl-head b{color:var(--text)}
+  .clane .cl-tag{font-size:9.5px;color:var(--dim)}
+  .clane .cl-bar{height:6px;border-radius:3px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden;margin:4px 0}
+  .clane .cl-fill{height:100%;background:var(--pg);width:0%;transition:width .15s linear}
+  .xdeath-box{background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-top:8px;
+    font-family:var(--mono);font-size:10.5px;line-height:1.7;color:var(--muted);max-height:160px;overflow-y:auto}
+  .xdeath-box .xd-row{color:#c6cddb;border-bottom:1px dashed var(--border);padding-bottom:4px;margin-bottom:4px}
+  .xdeath-box .xd-row:last-child{border:none;margin:0;padding:0}
+  .xdeath-box .xd-row b{color:var(--pg)}
+
+  /* process tree in sim (kept for continuity of visual language) */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:160px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-rabbitmq.html">← RabbitMQ Internals</a>
+  <span class="crumb">RABBITMQ INTERNALS · <b>CH 08 / 12</b> · DEAD LETTERING</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: DLX/TTL/Priority</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 08</div>
+  <h1>Dead Lettering, TTL &<br><span class="grad">Priority Queues</span></h1>
+  <p class="lead">Three features that every RabbitMQ tutorial covers in a paragraph each, and every production
+  incident report covers in a page each. Dead lettering looks like "failed messages go somewhere safe" until you
+  ask exactly which four events trigger it, where the routing key comes from, and what happens the second time a
+  message bounces through the same two queues. TTL looks like "messages that get old go away" until you discover
+  the broker only ever looks at the <i>head</i> of the queue to decide that. Priority queues look like "important
+  messages jump the line" until the memory bill for 255 priority levels arrives, or a consumer's prefetch window
+  quietly ignores priority entirely. This chapter builds all three from first principles, then hands you a lab
+  where you can construct a real dead-letter topology, watch a message accumulate an <code>x-death</code> header
+  across hops, watch RabbitMQ drop a message mid-retry because of cycle detection, watch a long-TTL message block
+  an entire queue behind it, and watch a starved low-priority lane never get served.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Name the exact four triggers for dead lettering and trace where the routing key and exchange come from when <code>x-dead-letter-routing-key</code> is omitted.</div>
+    <div class="obj"><b>You will understand</b>The precise cycle-detection rule that makes a naive "DLX straight back to the source queue" retry topology silently lose messages on the very first bounce.</div>
+    <div class="obj"><b>You will derive</b>Why TTL expiry is only ever checked at the head of a queue, and what that means for a queue carrying mixed per-message TTLs.</div>
+    <div class="obj"><b>You will simulate</b>A full DLX pipeline with accumulating <code>x-death</code> headers, a head-of-queue TTL demonstration, and a priority-queue starvation lab.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">What happens to a message that isn't simply "delivered"?</h2>
+  <p class="lead">Every chapter so far has assumed the happy path: a message is published, routed, delivered, and
+  acknowledged. Real systems are full of messages that don't follow that path — a message whose handler throws on
+  a malformed field, a message that represents a price quote nobody should trust after two seconds, a message
+  carrying a VIP customer's cancellation request that should jump ahead of a bulk newsletter unsubscribe. None of
+  these are exotic; they are the ordinary shape of production traffic. What's exotic is how many engineers ship
+  systems handling all three without ever precisely defining what the broker is contractually obligated to do
+  about them.</p>
+  <p>"Dead lettering" sounds like it should mean "failed messages go to a safe place" — and broadly it does — but
+  that safe place is reached through exactly four distinct trigger conditions, not one generic notion of
+  "failure," and the routing decision for how a message gets there has a specific, learnable algorithm with at
+  least one surprise most engineers discover only in production: omit one configuration key and the message keeps
+  its <i>original</i> routing key rather than getting a sensible default. "TTL" sounds like it should mean "old
+  messages disappear" — and it does, eventually — but the mechanism that decides <i>when</i> "eventually" arrives
+  is not what most engineers assume, and the gap between assumption and mechanism has genuinely surprised
+  operators watching a queue's memory usage climb despite a short TTL being configured correctly. "Priority
+  queues" sound like they should mean "important messages get served first" — and they do, faithfully — but that
+  faithfulness has a real, unavoidable cost in memory and CPU, and a real, by-design failure mode: starvation of
+  low-priority work that never lets up as long as high-priority work keeps arriving.</p>
+  <p>All three features share a structural similarity worth naming up front: each one asks the broker to make a
+  decision about a message's fate that goes beyond "hand it to whichever consumer is next in line, in the order
+  it arrived." Each decision needs its own piece of process state, its own algorithm, and its own well-defined
+  edge case — and each edge case, unaddressed, turns into either silent message loss, a queue that quietly never
+  drains, or a consumer that quietly never gets served. This chapter derives all three mechanisms from the
+  problems they solve, not from the configuration keys that happen to control them.</p>
+  <div class="callout">
+    <div class="co-t">WHY THESE THREE FEATURES BELONG IN ONE CHAPTER</div>
+    <p>Dead lettering, TTL, and priority queues are usually taught as three unrelated bullet points in a features
+    list. They belong together because they are the three places where RabbitMQ's core delivery model — "a
+    queue is a strict FIFO of ready messages, handed out to consumers in arrival order until acked" (chapters 4
+    and 5) — is deliberately broken, on purpose, for a good reason, with a specific mechanism, and a specific
+    price. Understanding the price is the actual content of this chapter; the configuration keys are just how you
+    pay it.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">None of this shipped with AMQP 0-9-1 — all of it is RabbitMQ-specific</h2>
+  <p>Unlike delivery acknowledgement (chapter 5's territory, original protocol machinery), every mechanism in this
+  chapter is a RabbitMQ extension bolted onto the <code>queue.declare</code> arguments table (the
+  <code>x-*</code> prefix is the tell) or a policy applied after the fact. The order they arrived in tells its own
+  story about which problem the community hit first. Click through:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — dead lettering, TTL, and priority, in order</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY DEAD LETTERING SHIPPED BEFORE TTL FELT FINISHED</div>
+    <p>Dead lettering arrived first because it answers the more urgent operational question: "a message was
+    explicitly rejected — where does it go so it isn't just gone?" TTL's early implementations existed but the
+    combination of per-message <code>expiration</code> and per-queue <code>x-message-ttl</code> interacting with
+    dead lettering (an expired message needs a destination too) took longer to settle into the head-of-queue
+    semantics this chapter derives in §8 — it is not a coincidence that the mental model for "what happens to an
+    expired message" only became fully coherent once dead lettering already existed as its destination.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: handle all three problems entirely in application code</h2>
+  <p>Before reaching for <code>x-dead-letter-exchange</code>, <code>x-message-ttl</code>, or
+  <code>x-max-priority</code>, it's a reasonable instinct to solve all three problems the way you'd solve them in
+  any other queueing system that didn't offer broker-side help: catch the failure and requeue by hand, stamp a
+  timestamp and filter in the consumer, and run separate queues per priority level.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">python</span><span>naive_consumer.py — hand-rolled retry, expiry, and priority</span></div>
+    <pre><span class="k">def</span> <span class="f">on_message</span>(channel, method, properties, body):
+    payload = <span class="f">json</span>.loads(body)
+
+    <span class="c"># naive TTL: trust a client-stamped timestamp, filter after the fact</span>
+    <span class="k">if</span> <span class="f">time</span>.time() - payload[<span class="s">"published_at"</span>] &gt; <span class="n">30</span>:
+        channel.basic_ack(method.delivery_tag)     <span class="c"># "expired" — just drop it, silently</span>
+        <span class="k">return</span>
+
+    <span class="k">try</span>:
+        <span class="f">process</span>(payload)
+        channel.basic_ack(method.delivery_tag)
+    <span class="k">except</span> <span class="f">Exception</span>:
+        <span class="c"># naive dead-lettering: nack with requeue=True and hope it eventually works</span>
+        channel.basic_nack(method.delivery_tag, requeue=<span class="k">True</span>)
+
+<span class="c"># naive priority: three separate queues, consumer polls high before low</span>
+<span class="k">for</span> qname <span class="k">in</span> [<span class="s">"orders.high"</span>, <span class="s">"orders.med"</span>, <span class="s">"orders.low"</span>]:
+    channel.basic_consume(queue=qname, on_message_callback=on_message)</pre>
+  </div>
+
+  <p>Every piece of this is a reasonable first move, and every piece has a broker-level replacement this chapter
+  derives. Before deriving them, it's worth playing the naive retry path all the way forward — because the failure
+  mode it produces (chapter 5 touched this briefly; this chapter completes it) is exactly the gap dead lettering
+  was built to close.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The naive nack-and-requeue loop, played forward</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Three independent failures, each quantifiable</h2>
+  <p>Each of the three naive approaches above fails for a different, precise reason — not "it's inelegant," but
+  a concrete cost or an outright correctness bug.</p>
+  <ul class="plain">
+    <li><b>Naive retry has no exit condition.</b> As chapter 5 established, <code>nack(requeue=true)</code> on a
+      deterministically-failing message is an unbounded loop by construction: no counter, no backoff, no terminal
+      state. Measured in wall-clock terms, a poison message with a 5ms deliver→fail→nack round trip burns 200
+      attempts/second of one consumer's capacity, forever, until an operator intervenes by hand — that's not a
+      tail-latency problem, it's 100% of a worker's throughput redirected at zero completed work indefinitely.</li>
+    <li><b>Naive TTL filtering costs a full dequeue for every expired message, and trusts the wrong clock.</b>
+      The consumer still had to receive, deserialize, and inspect every "expired" message before discarding it —
+      work proportional to however many stale messages accumulated ahead of real ones, i.e. <b>O(messages
+      received)</b>, not O(messages actually processed). Worse, it trusts a timestamp the <i>publisher</i> stamped,
+      which silently breaks the moment publisher and consumer clocks drift, or a publisher's retry logic
+      re-stamps a message with a fresh timestamp on resend, defeating the entire point of the check.</li>
+    <li><b>Naive priority-via-separate-queues doesn't actually get you priority — it gets you three independent
+      FIFOs and a manual scheduling problem.</b> "Poll high before low" sounds like it enforces priority, but
+      each queue has its own message store, its own prefetch window, and no shared credit accounting: a consumer
+      that's mid-poll on the low queue when a high-priority message arrives doesn't preempt anything, and running
+      three separate <code>basic_consume</code> registrations means three times the per-consumer bookkeeping and
+      no single place the broker can answer "what's the single next message across all three, by priority."</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE COMMON THREAD</div>
+    <p>All three naive approaches move a broker-level policy decision into application code that has to be
+    written correctly on every consumer, every time, with no protocol-level enforcement. A single consumer that
+    forgets the naive TTL check, or nacks with <code>requeue=true</code> instead of <code>false</code>, or
+    subscribes to the queues in the wrong order, silently breaks the guarantee for the entire system — with
+    nothing in the broker's own bookkeeping able to detect it. The fix in each case is the same shape: move the
+    decision into the queue's own declared arguments, where the broker enforces it uniformly regardless of which
+    consumer code happens to be running.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three broker-enforced mechanisms, derived one at a time</h2>
+  <p>Each mechanism replaces one piece of the naive consumer above with a declared queue argument the broker
+  itself enforces — no client cooperation required, no way for one misbehaving consumer to silently violate the
+  policy for everyone else.</p>
+
+  <h3>Dead lettering: from "requeue and hope" to a declared destination</h3>
+  <div class="widget deck" id="deckDLX">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Deriving x-dead-letter-exchange and the routing-key surprise</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>The deck's end state is the real mechanism: a queue declared with <code>x-dead-letter-exchange</code> gives
+  the broker a destination for exactly four situations (full detail in §8): a message rejected or nacked with
+  <code>requeue=false</code>; a message whose TTL expired; a message dropped because the queue exceeded
+  <code>x-max-length</code> (or <code>x-max-length-bytes</code>); and, on quorum queues, a message whose
+  <code>x-delivery-limit</code> was exceeded. In every case the broker republishes the message to the configured
+  exchange using <code>x-dead-letter-routing-key</code> if one was declared — and, if it wasn't, using the
+  message's <b>original routing key</b>, unchanged. That last clause is the surprise the deck ends on: engineers
+  who assume an omitted routing key means "the DLX's default binding will catch it" are implicitly relying on the
+  original key still making sense as a binding key against the dead-letter exchange's bindings, which is often not
+  what they intended.</p>
+
+  <h3>TTL: two independent knobs, not one</h3>
+  <p>RabbitMQ actually gives you two separate TTL mechanisms that happen to produce the same visible effect
+  (message eventually vanishes from the queue) through different configuration surfaces: <code>x-message-ttl</code>
+  is a per-queue policy applied uniformly to every message that queue ever holds; <code>expiration</code> is a
+  per-message property the publisher sets, different for every message if it wants. Both are milliseconds, both
+  are optional, and — critically, foreshadowing §6 — <b>both are enforced the same way</b>, which is the actual
+  subject of this chapter's central derivation.</p>
+
+  <h3>Priority: N sub-queues wearing one queue's declaration</h3>
+  <p>Declaring a queue with <code>x-max-priority=N</code> doesn't create N separate AMQP-visible queues — it
+  creates one queue that internally partitions its ready messages into N+1 priority classes (0 through N) and,
+  on every dispatch, drains the highest non-empty class first. A single <code>basic_consume</code> registration
+  now sees a stream that's already priority-ordered, with none of the naive approach's manual polling.</p>
+
+  <div class="callout warn">
+    <div class="co-t">WHY ALL THREE ARE QUEUE-DECLARATION-TIME DECISIONS, NOT RUNTIME TOGGLES</div>
+    <p><code>x-dead-letter-exchange</code>, <code>x-message-ttl</code>, and <code>x-max-priority</code> are all
+    set when the queue is declared (or via a policy matched against the queue's name — the operationally
+    preferred approach, since policies can be changed without redeclaring the queue) and are immutable properties
+    of that queue's identity for its lifetime otherwise. This is a deliberate design constraint, not a limitation
+    someone forgot to lift: each of these mechanisms requires the queue process to maintain additional internal
+    state structures from the moment messages start arriving (a dead-letter destination to check on every
+    rejection, a priority-partitioned internal structure instead of a flat FIFO) — retrofitting that state onto a
+    queue that's already accumulated messages under a different internal representation is exactly the kind of
+    migration RabbitMQ sidesteps by making you declare a new queue instead.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Cycle detection, head-of-queue blocking, and starvation-by-design</h2>
+  <p>Each of the three mechanisms just derived is correct — and each has a sharp, well-defined edge most engineers
+  only meet in production.</p>
+
+  <h3>1. The classic retry-with-backoff topology, and exactly how it loses messages</h3>
+  <p>A very common pattern, reinvented independently by countless teams: give the source queue's DLX a
+  <b>delay/retry queue</b> instead of a terminal dead-letter queue. The retry queue has its own
+  <code>x-message-ttl</code> (the backoff interval) and its own <code>x-dead-letter-exchange</code> pointing
+  <i>back</i> at the source queue — so a failed message waits out the TTL in the retry queue, then automatically
+  reappears in the source queue for another attempt. It looks like free, broker-native retry-with-backoff, and for
+  exactly one bounce, it is.</p>
+  <div class="widget deck" id="deckCycle">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Why the retry-to-source topology silently drops the message</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <p>The precise rule (implemented in full in §8): RabbitMQ will not dead-letter a message into a queue that it
+  has already been dead-lettered <i>from</i>, earlier in the same unbroken chain of automatic dead-letterings —
+  it drops the message instead of republishing it. "Unbroken" is the key word: if a consumer explicitly requeues
+  the message in between (a real <code>basic.nack(requeue=true)</code>, a real redelivery it then fails again by
+  itself, anything that constitutes an actual new delivery attempt rather than an automatic broker-side bounce),
+  the cycle memory resets. A source→retry→source topology with <i>no consumer ever touching the message
+  in between</i> hits this rule on the very first automatic bounce back to the source queue — because the source
+  queue is, definitionally, already recorded as a queue this message was dead-lettered from. The message vanishes,
+  with no error, no log line at the application layer, nothing — exactly the kind of silent loss this whole
+  chapter has been building toward avoiding.</p>
+
+  <h3>2. TTL's head-of-queue rule: the actual reason "old messages disappear" is more subtle than it sounds</h3>
+  <p>Preview ahead of §8's full derivation: RabbitMQ does not scan a queue for expired messages. It checks
+  whether the message at the very <b>head</b> of the queue has expired, and only the head. If the head message's
+  TTL (or per-message <code>expiration</code>) hasn't elapsed yet, nothing behind it is inspected — even if a
+  message three positions back was published with a much shorter TTL that elapsed minutes ago. That message is not
+  gone; it is not being processed; it is sitting in the queue, counted in the queue's depth, consuming memory,
+  waiting for every message ahead of it to be consumed or expire first.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Preview — a long-TTL head message blocks everything behind it</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>head message's remaining TTL</label><input type="range" id="pv-ttl-head" min="0" max="100" value="70" step="1"><span class="val" id="pv-ttl-head-val">70%</span></div>
+      <div class="memlegend" id="pv-ttl-legend"></div>
+      <div class="memmap" id="pv-ttl-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="pv-ttl-note"></p>
+    </div>
+  </div>
+
+  <h3>3. Priority queues: real memory/CPU cost, and starvation as a designed-in property</h3>
+  <p>Every additional priority level is another internal partition the queue process must maintain — more
+  internal bookkeeping structures, more work per dispatch decision (checking "is the next-highest class
+  non-empty" costs something proportional to how many classes there are), and more memory overhead per queue,
+  multiplied across however many priority queues a cluster runs. <code>x-max-priority=255</code> because "priority
+  0-255 sounds thorough" is a common, expensive mistake — 5 is enough resolution for the overwhelming majority of
+  real prioritization schemes, and the marginal value of level 200 over level 20 is essentially never realized in
+  practice, while the marginal memory/CPU cost is paid on every single message dispatch regardless.</p>
+  <p>Starvation is not a bug in this design — it's the necessary consequence of what "priority" means. If
+  higher-priority messages keep arriving faster than the consumer can drain them, the highest non-empty class is,
+  by definition, never empty, and lower classes never get a turn. A system that guaranteed low-priority messages
+  eventually get served regardless of high-priority arrival rate wouldn't be a priority queue — it would be a
+  fairness queue with priority as a tiebreaker, a different (and also valid) design RabbitMQ does not implement.
+  §15's simulator makes this concrete: watch a low-priority lane's counter climb while it never once gets drained.</p>
+  <p>One more interaction worth internalizing before §8: priority does not override <b>prefetch</b> (chapter 5).
+  A consumer holding an unacked low-priority message inside its prefetch window is still occupying that window's
+  capacity — the broker cannot deliver a new higher-priority message to that consumer until it acks (or nacks)
+  what it's already holding, no matter how urgent the new arrival is. Priority reorders <i>what the queue offers
+  next</i>; it does not reach into a consumer's hands and swap out work already delivered.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">Twelve pieces of state, click through them</h2>
+  <p>Four trigger conditions, four routing/debugging mechanisms, two TTL knobs, and two priority-adjacent
+  mechanisms — twelve objects in total, each with a specific owner and a specific edge case.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">DEAD-LETTER TRIGGERS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="rejectTrigger">reject / nack(requeue=false)</div>
+          <div class="acard" data-p="ttlTrigger">TTL expiry</div>
+          <div class="acard" data-p="maxlenTrigger">x-max-length exceeded</div>
+          <div class="acard" data-p="dlimitTrigger">x-delivery-limit exceeded</div>
+        </div>
+        <div class="arch-row-label">ROUTING &amp; DEBUGGING</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="dlxExchange">x-dead-letter-exchange</div>
+          <div class="acard" data-p="dlxRoutingKey">x-dead-letter-routing-key</div>
+          <div class="acard" data-p="xdeathHeader">x-death header</div>
+          <div class="acard" data-p="cycleDetection">cycle detection</div>
+        </div>
+        <div class="arch-row-label">TTL MECHANISMS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="msgTTL">x-message-ttl / expiration</div>
+          <div class="acard" data-p="queueTTL">x-expires</div>
+        </div>
+        <div class="arch-row-label">PRIORITY &amp; ALTERNATIVES</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="priorityQueue">x-max-priority</div>
+          <div class="acard" data-p="delayedExchangePlugin">delayed-message-exchange plugin</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY x-max-length OVERFLOW HAS TWO BEHAVIOURS</div>
+    <p><code>x-overflow</code> controls what happens once a queue at its <code>x-max-length</code> (or
+    <code>x-max-length-bytes</code>) ceiling receives one more message. The default, <code>drop-head</code>, drops
+    (and, if a DLX is configured, dead-letters) the <i>oldest ready message</i> to make room — the new publish
+    always succeeds. The alternative, <code>reject-publish</code>, instead rejects the incoming publish itself
+    (the publisher sees a <code>basic.nack</code> if using confirms) and <b>nothing is dead-lettered</b>, because
+    nothing was ever enqueued in the first place — the message that would have overflowed never entered the
+    queue's bookkeeping at all. Confusing these two is a real source of "why isn't my overflow showing up in the
+    dead-letter queue" debugging sessions: under <code>reject-publish</code>, that's expected — check the
+    publisher's confirm channel, not the DLX.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The four triggers, the x-death header, cycle detection, head-of-queue TTL, and priority sub-queues</h2>
+
+  <h3>(a) The four triggers, precisely</h3>
+  <table class="cmp">
+    <tr><th>TRIGGER</th><th>WHO DECIDES</th><th>QUEUE TYPES</th></tr>
+    <tr><td>Reject / Nack, requeue=false</td><td>Consumer, explicitly</td><td>Classic, quorum</td></tr>
+    <tr><td>TTL expiry (queue or per-message)</td><td>Broker, on head-of-queue check</td><td>Classic, quorum</td></tr>
+    <tr><td>x-max-length / x-max-length-bytes exceeded, overflow=drop-head</td><td>Broker, at enqueue time</td><td>Classic, quorum</td></tr>
+    <tr><td>x-delivery-limit exceeded</td><td>Broker, tracking delivery count in the Raft log</td><td>Quorum only</td></tr>
+  </table>
+  <p>Every one of these four converges on the same republish mechanism once triggered: <code>rabbit_dead_letter</code>
+  takes the message, looks up the source queue's <code>x-dead-letter-exchange</code> argument, and republishes to
+  that exchange using <code>x-dead-letter-routing-key</code> if declared, or the message's original routing key
+  if not. Nothing about which of the four triggers fired changes this routing step — the reason is recorded
+  separately, in the header covered next.</p>
+
+  <h3>(b) The x-death header: one entry per (queue, reason) pair, not per hop</h3>
+  <p>A common misreading is that <code>x-death</code> grows by one array entry every single time a message is
+  dead-lettered. The actual rule is more precise and more useful for debugging: each entry is keyed by the pair
+  <b>(queue, reason)</b> — the queue the message was dead-lettered <i>from</i>, and why. If a message is
+  dead-lettered from the same queue for the same reason more than once (which, per §6, can only happen if a
+  consumer explicitly broke the cycle in between), the existing entry's <code>count</code> increments and its
+  <code>time</code> updates, rather than a new entry being appended. A genuinely new (queue, reason) pair —
+  moving to a different queue, or failing for a different reason at the same queue — gets its own entry, most
+  recent first. Each entry carries: <code>count</code>, <code>reason</code> (<code>rejected</code>,
+  <code>expired</code>, <code>maxlen</code>, or <code>delivery_limit_exceeded</code>), <code>queue</code>,
+  <code>exchange</code> (the exchange the message was originally published through before this hop),
+  <code>routing-keys</code>, and <code>time</code>. Reading this array top-to-bottom, in a debugger or a dead
+  letter queue's inspector, tells you the entire dead-letter history of a message without any application-level
+  logging.</p>
+
+  <h3>(c) Cycle detection, exactly</h3>
+  <p>The rule from §6, stated precisely: before dead-lettering a message into queue <i>T</i>, the broker checks
+  whether <i>T</i> already appears among the queues this message has been automatically dead-lettered <i>from</i>
+  since the last explicit requeue (a real consumer <code>nack(requeue=true)</code>, or an equivalent genuine
+  redelivery). If it does, the message is dropped instead of republished — routing it into <i>T</i> again would,
+  by construction, produce the exact same outcome that already happened, forever. An explicit requeue is treated
+  as a fresh delivery attempt and clears this memory, because a human or application decision intervened, not
+  because the broker assumes anything got fixed.</p>
+
+  <h3>(d) TTL: why only the head is ever checked</h3>
+  <p>Both TTL mechanisms are enforced by the same queue process (chapter 4's <code>rabbit_amqqueue_process</code>
+  / backing queue) at the same decision point: whenever the queue is about to consider its head message ready for
+  delivery (a new consumer polls, an existing consumer's prefetch frees a slot, a periodic internal check fires),
+  it first asks "has the head message's TTL elapsed?" If yes, it's dropped (dead-lettered if configured) and the
+  <i>new</i> head is checked the same way, in a loop, until a non-expired head is found or the queue empties —
+  this is exactly why a long-blocked backlog can vanish all at once the moment its blocker is finally removed
+  (§15 makes this visible). If no, delivery proceeds normally and <b>nothing behind the head is ever inspected</b>.</p>
+  <p>Derive why this is the only design that scales: a single Erlang process owns each queue (chapter 4's central
+  constraint), and that process is also handling every publish, every delivery, and every ack for that queue
+  serially. Scanning the entire ready-message list on every check to find "any" expired message, rather than just
+  the head, would cost <b>O(queue depth)</b> work per check, on the one process already doing everything else for
+  that queue — for a queue carrying tens of thousands of ready messages, that's tens of thousands of comparisons
+  paid repeatedly, on the critical path of ordinary delivery, to catch a case a head-only check will eventually
+  catch anyway once those messages reach the head. Checking only the head is <b>O(1)</b> per check, at the cost of
+  exactly the surprise this chapter keeps returning to: a message can be logically expired for an arbitrarily long
+  time while sitting, counted, in memory, behind a head message with a longer TTL.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Scan cost — head-only check vs. naive full-queue scan</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>queue depth (ready messages)</label><input type="range" id="ttlscan-depth" min="10" max="5000" value="500" step="10"><span class="val" id="ttlscan-depth-val">500</span></div>
+      <div class="memlegend" id="ttlscan-legend"></div>
+      <div class="memmap" id="ttlscan-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="ttlscan-note"></p>
+    </div>
+  </div>
+  <p>Separately, <code>x-expires</code> (queue TTL, not message TTL) auto-deletes the <i>entire queue</i> once it
+  has gone unused — no consumers, no <code>basic.get</code>, no redeclare — for the configured duration. It solves
+  a different problem entirely (leaked reply-to queues, abandoned temporary queues) and is checked on a much
+  coarser timer than per-message TTL, since it's a whole-queue lifecycle decision, not a per-message one.</p>
+
+  <h3>(e) Priority queues: N sub-queues inside one queue process</h3>
+  <div class="widget deck" id="deckPriority">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Deriving priority sub-queues from the naive separate-queues approach</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <p><code>rabbit_priority_queue</code> wraps the ordinary backing queue machinery from chapter 4 with one backing
+  queue <i>per declared priority level</i>, 0 through <code>x-max-priority</code>. A publish is routed into the
+  sub-queue matching its <code>priority</code> property (clamped into range, or into level 0 if unset); a dispatch
+  walks from the highest level downward and serves the first non-empty one. Nothing about message storage,
+  persistence, or the message store (chapter 4) changes — only which internal queue a given message's reference
+  lives in, and which internal queue dispatch consults first. This is why the memory/CPU cost scales with
+  <i>levels declared</i>, not messages held: an empty level-200 sub-queue still exists as a structure the dispatch
+  loop has to check on every delivery decision, and it costs exactly the same whether zero or a thousand messages
+  ever use it.</p>
+
+  <h3>(f) The delayed-message-exchange plugin: a different way to get a delay</h3>
+  <p>Rather than hand-building the retry/delay-queue topology from §6, the community
+  <code>rabbitmq-delayed-message-exchange</code> plugin implements an exchange type (<code>x-delayed-type</code>)
+  that stores a scheduled-for-later message internally (backed by Mnesia) and republishes it to its real
+  destination once the delay elapses — no separate delay queue, no TTL-triggered dead lettering, no cycle
+  detection to reason about. The tradeoffs are real: the delayed message lives in the exchange process's own
+  scheduling state until it fires, which is not replicated the way a quorum queue's Raft log is, so a node
+  failure before the delay elapses can lose the scheduled message entirely on classic-queue-equivalent durability
+  terms; timer-based delivery on a single Erlang process also means many thousands of simultaneously-scheduled
+  delayed messages compete for the same timer-management data structure, and delivery jitter grows under load in
+  a way a plain TTL+DLX topology (whose queue-level TTL degrades more predictably) generally does not.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">"Failed, stale, and important" — seven systems' worth of answers</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>DEAD-LETTER / RETRY MODEL</th><th>TTL MODEL</th><th>PRIORITY MODEL</th></tr>
+    <tr><td>RabbitMQ</td><td>Native DLX with 4 broker-enforced triggers, x-death header, cycle detection</td>
+      <td>Two independent knobs (queue + per-message), head-of-queue enforcement only</td>
+      <td>Native x-max-priority sub-queues; not supported the same way on quorum queues</td></tr>
+    <tr><td>Apache Kafka</td><td>No native DLQ — applications build a separate "retry topic" chain and republish by hand</td>
+      <td>Segment-based log retention, a totally different concept from per-message expiry</td>
+      <td><span class="pill b">No native message priority — ordering is strictly per-partition offset</span></td></tr>
+    <tr><td>Amazon SQS</td><td>Native redrive policy + DLQ, based on <code>maxReceiveCount</code></td>
+      <td><code>DelaySeconds</code> per message (delivery delay, not expiry) plus a queue-wide retention period</td>
+      <td><span class="pill b">No native priority — FIFO queues add ordering, not priority; needs separate queues per tier</span></td></tr>
+    <tr><td>Google Pub/Sub</td><td>Native dead-letter topic, configurable max delivery attempts</td>
+      <td>Per-subscription message retention duration; no per-message TTL property</td>
+      <td><span class="pill b">No native priority levels</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Max-deliver + advisory messages on exhaustion, no built-in DLX exchange concept</td>
+      <td><code>MaxAge</code> per stream — coarser than RabbitMQ's per-message granularity</td>
+      <td><span class="pill y">No native priority; ordering is per-stream sequence only</span></td></tr>
+    <tr><td>ActiveMQ / Artemis</td><td>Individual or shared DLQ per destination, natively configurable</td>
+      <td>JMS message expiration is a first-class per-message property, broker-enforced</td>
+      <td><span class="pill g">JMS priority (0-9) is native and broker-enforced, closest philosophical match to RabbitMQ here</span></td></tr>
+    <tr><td>Redis Streams</td><td><span class="pill b">No native DLX — a stuck Pending Entries List entry must be claimed and re-routed manually via XCLAIM</span></td>
+      <td>No native per-entry TTL beyond whole-stream trimming (MAXLEN/MINID)</td>
+      <td><span class="pill b">No native priority — consumer groups read strictly by stream order</span></td></tr>
+  </table>
+  <p>The pattern: RabbitMQ is unusually complete across all three axes simultaneously — most systems pick one or
+  two to support natively and leave the rest to application code. The price for that completeness is exactly what
+  this chapter has been deriving: more configuration surface, more edge cases (cycle detection, head-of-queue
+  blocking, per-level overhead) than a system that only solved one of the three problems would ever need to
+  expose.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">What scales with levels, what scales with depth, what's free</h2>
+  <ul class="plain">
+    <li><b>TTL enforcement is O(1) per delivery decision</b> regardless of queue depth — §8(d)'s head-only check,
+      the reason RabbitMQ can carry very deep queues with per-message TTL without a background scanning cost.</li>
+    <li><b>Priority-queue overhead is O(x-max-priority), not O(messages)</b> — declared levels cost memory and
+      per-dispatch CPU whether or not messages ever occupy them; this is why "5 is plenty, 255 is a mistake" is a
+      quantifiable claim, not a style preference.</li>
+    <li><b>Dead lettering adds exactly one extra internal republish</b> per triggered message — cheap relative to
+      an unbounded naive retry loop, but not free, and it happens on the queue process's ordinary critical path.</li>
+    <li><b>The x-death header itself is bounded by distinct (queue, reason) pairs actually visited</b>, not by
+      total dead-lettering events (§8(b)) — a message ping-ponging between the same two queues under cycle
+      detection is stopped after one bounce specifically so this header (and the underlying loop) can't grow
+      without bound.</li>
+  </ul>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Priority-level overhead — declared levels vs. per-dispatch cost</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>x-max-priority (declared levels)</label><input type="range" id="perf-levels" min="1" max="255" value="5" step="1"><span class="val" id="perf-levels-val">5</span></div>
+      <p style="font-size:13px;color:#c6cddb;margin-top:6px" id="perf-note"></p>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="230"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> relative memory overhead (index)</span>
+        <span><span style="color:var(--purple)">┈</span> relative per-dispatch CPU cost (index)</span>
+        <span><span style="color:var(--warn)">┆</span> your declared levels</span>
+      </div>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are analytic sketches showing shape, not calibrated benchmark output — both memory and CPU
+    overhead grow roughly linearly with declared levels in the real implementation, since each level is an
+    additional backing-queue structure the dispatch loop must be able to check; the chart's purpose is to make
+    "1 level" and "255 levels" visibly different costs for what's usually an identical practical need.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three stories: a blocked head, 255 priority levels, and a retry loop that lost messages quietly</h2>
+
+  <h3>Story 1: memory kept climbing despite a five-second TTL</h3>
+  <p>A commonly reported shape (echoed across RabbitMQ community forum threads and CloudAMQP's operational
+  writeups): a queue configured with a short per-message <code>expiration</code> for most traffic occasionally
+  received a small number of messages carrying a deliberately long TTL (a "hold for review" workflow, or simply a
+  publisher bug setting the wrong property). Once one of those long-TTL messages reached the head, every
+  short-TTL message published afterward queued up behind it — already logically expired, still fully counted in
+  queue depth and memory — until the long-TTL head message was finally consumed or timed out. Operators watching
+  a memory graph climb despite "TTL is set to five seconds everywhere" discovered, only after reading the
+  head-of-queue semantics closely, that a five-second TTL is not a promise about when a message disappears, only
+  about when it becomes <i>eligible</i> to disappear once it's at the front of the line.</p>
+
+  <h3>Story 2: x-max-priority=255, because "why not use the whole range"</h3>
+  <p>A team building an order-processing pipeline reasoned that since <code>x-max-priority</code> accepts values
+  up to 255, using the full range would give them "maximum flexibility" to fine-tune ordering later. In practice
+  only about four priority tiers were ever actually assigned to real messages — the other 250-odd declared levels
+  sat permanently empty, still costing memory and still being walked by every dispatch decision on that queue.
+  The team's own load testing eventually attributed a measurable fraction of per-message dispatch latency and
+  per-queue memory overhead directly to the unused priority levels, and the fix was exactly the guidance in §6:
+  collapse to five meaningful tiers, which is what community operational guidance has recommended since priority
+  queues shipped.</p>
+
+  <h3>Story 3: a retry queue that quietly ate messages instead of retrying them</h3>
+  <p>A team implemented the exact retry-with-backoff topology described in §6 — source queue's DLX pointing at a
+  delay queue with its own TTL and its own DLX pointing back at the source — expecting free, automatic
+  retry-with-backoff. For weeks it appeared to work: messages that failed once were retried once and usually
+  succeeded on the second attempt. The failures that didn't succeed on the second attempt, however, simply
+  disappeared — no error, no dead-letter queue entry, nothing — because the topology had no <i>third</i>
+  destination: every bounce back to the source queue hit cycle detection on the very next automatic dead-lettering
+  attempt, since nothing in the topology ever constituted an explicit consumer requeue to reset the chain. The
+  postmortem's conclusion, once the team read RabbitMQ's cycle-detection documentation closely, was the same one
+  this chapter reaches: an automatic retry-to-source topology needs an explicit, counted escape hatch to a
+  genuinely separate terminal dead-letter queue — the delivery-limit-based route quorum queues offer natively, or
+  a client-side attempt counter — not an assumption that bouncing forever is what "automatic retry" means.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the cycle-detection rule and the head-of-queue TTL check at a whiteboard?</h2>
+  <p>Think before revealing — every one of these has bitten a real production system somewhere in the wild.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: dead-letter routing, x-death, cycle detection, and TTL</h2>
+  <p>Where this chapter's concepts physically live. Files marked
+  <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">deps/rabbit/src/</span></div>
+<div>├── <span class="dir">dead_letter/</span></div>
+<div>│   └── <span class="fhl">● rabbit_dead_letter.erl</span> <span class="fnote">— chooses the DLX/routing key, builds and merges x-death entries, enforces cycle detection</span></div>
+<div>├── <span class="dir">queue/</span></div>
+<div>│   ├── <span class="fhl">● rabbit_amqqueue_process.erl</span> <span class="fnote">— gen_server2; the head-of-queue TTL check happens here, on the same process handling delivery</span></div>
+<div>│   ├── rabbit_variable_queue.erl <span class="fnote">— backing queue; drop_expired walks from the head only, in a loop</span></div>
+<div>│   └── <span class="fhl">● rabbit_priority_queue.erl</span> <span class="fnote">— wraps N backing queues, one per declared priority level, dispatch drains highest non-empty first</span></div>
+<div>├── <span class="dir">quorum/</span></div>
+<div>│   └── rabbit_fifo.erl <span class="fnote">— quorum-queue state machine; delivery count and x-delivery-limit live in the replicated Raft log itself</span></div>
+<div>└── <span class="dir">policy/</span></div>
+<div>    └── rabbit_policy.erl <span class="fnote">— resolves x-message-ttl / x-max-length / x-dead-letter-exchange from a matching policy rather than the declare-time arguments table</span></div>
+  </div></div>
+
+  <p>First, the core dead-letter routing decision — choosing the exchange and routing key, and merging the
+  x-death entry for this hop:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_dead_letter.erl — routing + x-death merge, simplified</span></div>
+    <pre><span class="f">dead_letter</span>(Msg, Reason, SourceQueue) -&gt;
+    Args = rabbit_amqqueue:<span class="f">arguments</span>(SourceQueue),
+    DLX  = <span class="f">arg</span>(Args, <span class="s">&lt;&lt;"x-dead-letter-exchange"&gt;&gt;</span>),
+    <span class="c">%% No dlx-routing-key declared? Keep the message's ORIGINAL routing key.</span>
+    RK   = <span class="k">case</span> <span class="f">arg</span>(Args, <span class="s">&lt;&lt;"x-dead-letter-routing-key"&gt;&gt;</span>) <span class="k">of</span>
+             <span class="k">undefined</span> -&gt; Msg#basic_message.routing_keys;
+             Explicit         -&gt; [Explicit]
+           <span class="k">end</span>,
+
+    Entry = #{queue =&gt; SourceQueue, reason =&gt; Reason,
+              exchange =&gt; Msg#basic_message.exchange_name,
+              <span class="s">'routing-keys'</span> =&gt; Msg#basic_message.routing_keys,
+              time =&gt; <span class="f">now_ms</span>()},
+    XDeath1 = <span class="f">merge_or_increment</span>(Msg#basic_message.x_death, Entry),
+
+    <span class="k">case</span> <span class="f">would_cycle</span>(XDeath1, DLX_target_queue(DLX, RK)) <span class="k">of</span>
+        <span class="k">true</span>  -&gt; <span class="f">drop_silently</span>(Msg);         <span class="c">%% §6/§8(c): the cycle-detection rule</span>
+        <span class="k">false</span> -&gt; rabbit_exchange:<span class="f">route_and_publish</span>(DLX, RK, Msg#basic_message{x_death = XDeath1})
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <p>Second, the x-death merge rule itself — why a repeated (queue, reason) pair increments rather than appends:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_dead_letter.erl — merge_or_increment, simplified</span></div>
+    <pre><span class="f">merge_or_increment</span>(XDeath, NewEntry) -&gt;
+    Key = {<span class="f">maps</span>:get(queue, NewEntry), <span class="f">maps</span>:get(reason, NewEntry)},
+    <span class="k">case</span> <span class="f">lists</span>:<span class="f">keyfind</span>(Key, 1, XDeath) <span class="k">of</span>
+        {Key, Existing} -&gt;
+            <span class="c">%% same (queue, reason) seen before in this header — bump count, refresh time</span>
+            Updated = Existing#{count =&gt; <span class="f">maps</span>:get(count, Existing) + <span class="n">1</span>, time =&gt; <span class="f">now_ms</span>()},
+            [ {Key, Updated} | <span class="f">lists</span>:<span class="f">keydelete</span>(Key, 1, XDeath) ];
+        <span class="k">false</span> -&gt;
+            <span class="c">%% genuinely new (queue, reason) pair — a fresh entry, most-recent first</span>
+            [ {Key, NewEntry#{count =&gt; <span class="n">1</span>}} | XDeath ]
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <p>Third, the head-of-queue TTL loop — checked on the same process, only ever at the front:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_variable_queue.erl — drop_expired, simplified</span></div>
+    <pre><span class="f">drop_expired</span>(BQS) -&gt;
+    <span class="k">case</span> <span class="f">peek_head</span>(BQS) <span class="k">of</span>
+        empty -&gt;
+            BQS;
+        {value, Msg} <span class="k">when</span> <span class="f">ttl_elapsed</span>(Msg) -&gt;
+            <span class="c">%% only the head is ever inspected — O(1) per check, not O(queue depth)</span>
+            BQS1 = <span class="f">maybe_dead_letter</span>(Msg, expired, BQS),
+            <span class="f">drop_expired</span>(<span class="f">pop_head</span>(BQS1));   <span class="c">%% loop: the NEW head might also already be expired</span>
+        {value, _NotExpiredYet} -&gt;
+            BQS   <span class="c">%% stop — nothing behind an unexpired head is ever examined</span>
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Encode the surprising default in the routing step itself, not a comment.</b> The
+    <code>undefined -&gt; original routing keys</code> branch in <code>dead_letter/1</code> reads, in the source,
+    as the exact behavior operators are surprised by — making the surprise a one-line pattern match rather than
+    buried prose keeps the implementation and the documentation in sync by construction. <b>2. Key the x-death
+    merge by (queue, reason), not by event.</b> This keeps the header's size bounded by the number of distinct
+    places a message has actually failed, not by how many times it failed there — a direct structural defense
+    against the same unbounded-growth problem cycle detection solves at the routing layer. <b>3. Make the TTL
+    check recursive on the new head, not a single check per call.</b> A single check-then-stop would leave a
+    backlog of already-expired messages sitting behind a just-removed blocker until the next unrelated trigger
+    happened to call <code>drop_expired</code> again — looping immediately is what produces §15's "they all
+    vanish at once" behavior instead of a slow trickle.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> — read them, they encode the
+  chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a message's full retry-with-backoff lifecycle</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click these events in the order they'd actually happen for a
+      message published to the source queue that ultimately gets dropped by cycle detection, then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The dead-letter, TTL & priority lab</h2>
+  <p>Three panels sharing one lab. <b>DLX pipeline</b>: inject a message that's rejected, one that overflows
+  <code>x-max-length</code>, and one that's exceeded its <code>x-delivery-limit</code> — watch each animate
+  through the topology with its <code>x-death</code> header building up, and watch a bounced retry get silently
+  dropped by cycle detection. <b>TTL head-of-queue</b>: queue up mixed-TTL messages behind a deliberately long-TTL
+  head message and watch them sit there, already expired, until the head is finally consumed — then watch them
+  all disappear in the same instant. <b>Priority queues</b>: watch sub-queues fill and drain, starve a low
+  priority lane on purpose, and toggle a held unacked message to see priority lose to prefetch.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">dead-letter / TTL / priority lab</span><span class="w-sub" id="sim-phase">DLX PIPELINE</span></div>
+    <div class="w-body">
+      <div class="toggle-row" id="sim-tabs">
+        <button class="chip on" id="tab-dlx">DLX pipeline</button>
+        <button class="chip" id="tab-ttl">TTL head-of-queue</button>
+        <button class="chip" id="tab-pri">Priority queues</button>
+      </div>
+
+      <!-- ===== DLX PANEL ===== -->
+      <div id="panel-dlx">
+        <div class="sim-wrap">
+          <div class="sim-stage">
+            <div class="dlx-flow">
+              <div class="dlx-node"><div class="dn-t"><span>SOURCE QUEUE</span><span id="dlx-source-depth">0</span></div><div class="qmsgs" id="dlx-source"></div></div>
+              <div class="dlx-arrow">→</div>
+              <div class="dlx-node"><div class="dn-t"><span>RETRY QUEUE (TTL 4s, DLX→source)</span><span id="dlx-retry-depth">0</span></div><div class="qmsgs" id="dlx-retry"></div></div>
+              <div class="dlx-arrow">→</div>
+              <div class="dlx-node"><div class="dn-t"><span>FINAL DEAD-LETTER QUEUE</span><span id="dlx-final-depth">0</span></div><div class="qmsgs" id="dlx-final"></div></div>
+            </div>
+            <div class="qbox">
+              <div class="qb-t"><span>DROPPED BY CYCLE DETECTION</span><span id="dlx-dropped-count">0</span></div>
+              <div class="qmsgs" id="dlx-dropped"></div>
+            </div>
+            <div class="xdeath-box" id="dlx-detail">Click any message chip above to inspect its x-death header.</div>
+          </div>
+          <div class="sim-side">
+            <div class="sim-ctl">
+              <div class="ctl-t">INJECT A FAILURE</div>
+              <div class="btns">
+                <button class="btn warn" id="dlx-inject-reject">reject (requeue=false)</button>
+                <button class="btn warn" id="dlx-inject-overflow">overflow x-max-length</button>
+                <button class="btn danger" id="dlx-inject-dlimit">delivery-limit exceeded</button>
+              </div>
+            </div>
+            <div class="sim-ctl">
+              <div class="ctl-t">SELECTED MESSAGE — <span id="dlx-selected-id">none</span></div>
+              <div class="btns">
+                <button class="btn good" id="dlx-manual-requeue" disabled>consumer manually requeues (resets cycle)</button>
+              </div>
+            </div>
+            <div class="sim-counters">
+              <div class="scounter"><div class="cv" id="dlx-cnt-published">0</div><div class="cl">published</div></div>
+              <div class="scounter"><div class="cv" id="dlx-cnt-final">0</div><div class="cl">reached DLQ</div></div>
+              <div class="scounter"><div class="cv" id="dlx-cnt-dropped" style="color:var(--bad)">0</div><div class="cl">dropped</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="slog" id="dlx-log"></div>
+      </div>
+
+      <!-- ===== TTL PANEL ===== -->
+      <div id="panel-ttl" style="display:none">
+        <div class="sim-wrap">
+          <div class="sim-stage">
+            <div class="qbox">
+              <div class="qb-t"><span>QUEUE (head is leftmost)</span><span>depth: <span id="ttl-depth">0</span></span></div>
+              <div class="qmsgs" id="ttl-queue"></div>
+            </div>
+            <p style="font-size:12px;color:var(--muted)" id="ttl-note"></p>
+          </div>
+          <div class="sim-side">
+            <div class="sim-ctl">
+              <div class="ctl-t">PUBLISH</div>
+              <div class="slider-row" style="margin:2px 0"><label>new message TTL</label><input type="range" id="ttl-new-ttl" min="1" max="30" value="3" step="1"><span class="val" id="ttl-new-ttl-val">3 s</span></div>
+              <div class="btns">
+                <button class="btn" id="ttl-publish">publish with this TTL</button>
+                <button class="btn warn" id="ttl-publish-blocker">publish long-TTL blocker at head</button>
+              </div>
+            </div>
+            <div class="sim-ctl">
+              <div class="ctl-t">CONSUMER</div>
+              <div class="btns"><button class="btn primary" id="ttl-consume-head">consume head now</button></div>
+            </div>
+            <div class="sim-counters">
+              <div class="scounter"><div class="cv" id="ttl-cnt-stuck" style="color:var(--warn)">0</div><div class="cl">expired, stuck</div></div>
+              <div class="scounter"><div class="cv" id="ttl-cnt-vanished">0</div><div class="cl">reaped total</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="slog" id="ttl-log"></div>
+      </div>
+
+      <!-- ===== PRIORITY PANEL ===== -->
+      <div id="panel-pri" style="display:none">
+        <div class="sim-wrap">
+          <div class="sim-stage">
+            <div class="slider-row"><label>x-max-priority levels</label><input type="range" id="pri-levels" min="2" max="10" value="4" step="1"><span class="val" id="pri-levels-val">4</span></div>
+            <div class="pri-lanes" id="pri-lanes"></div>
+            <p style="font-size:12px;color:var(--muted)" id="pri-starve-note"></p>
+            <div class="meter"><div class="m-l"><span>DECLARED-LEVEL OVERHEAD</span><span id="pri-cost-val">0%</span></div><div class="m-bar"><div class="m-fill" id="pri-cost-meter"></div></div></div>
+          </div>
+          <div class="sim-side">
+            <div class="sim-ctl">
+              <div class="ctl-t">PUBLISH</div>
+              <div class="btns">
+                <button class="btn" id="pri-publish-random">publish random priority</button>
+                <button class="chip" id="pri-flood-high">flood highest priority</button>
+              </div>
+            </div>
+            <div class="sim-ctl">
+              <div class="ctl-t">PREFETCH INTERACTION</div>
+              <div class="toggle-row" style="margin:4px 0"><button class="chip" id="pri-hold-unacked">consumer holds unacked low-priority msg</button></div>
+              <div class="btns"><button class="btn good" id="pri-ack-held" disabled>ack the held message</button></div>
+            </div>
+            <div class="sim-counters">
+              <div class="scounter"><div class="cv" id="pri-cnt-drained">0</div><div class="cl">drained</div></div>
+              <div class="scounter"><div class="cv" id="pri-cnt-waiting">0</div><div class="cl">waiting</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="slog" id="pri-log"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> DLX panel: inject "reject", watch it land in the retry queue with a one-entry x-death header,
+    then watch it get silently dropped the moment its TTL expires and cycle detection fires. <b>2.</b> Click the
+    dropped/retry message before it disappears, hit "consumer manually requeues," then inject another failure on
+    it — watch the x-death count for the same (queue, reason) pair increment instead of a new entry appearing.
+    <b>3.</b> Inject "delivery-limit exceeded" and watch it go straight to the final dead-letter queue, no bounce.
+    <b>4.</b> TTL panel: publish a long-TTL blocker, then several short-TTL messages behind it — watch the "expired,
+    stuck" counter climb while nothing leaves the queue, then hit "consume head now" repeatedly and watch a whole
+    backlog vanish at once once the blocker's gone. <b>5.</b> Priority panel: flood the highest priority lane and
+    watch a low lane's waiting count climb forever — then toggle "consumer holds unacked low-priority msg" and
+    watch delivery freeze entirely regardless of what's waiting in the top lane.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 9: three questions, no options</h2>
+  <p>No multiple choice here. Form a full answer in your head, then reveal. If a reveal surprises you, re-run the
+  relevant simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 08 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now name the four dead-letter triggers, trace exactly
+    where a routing key comes from when none is declared, state the cycle-detection rule precisely enough to
+    predict when a retry topology silently loses a message, and explain why a long-TTL message at the head of a
+    queue blocks every shorter-TTL message behind it. Chapter 9 turns to flow control and memory management — the
+    mechanisms that decide what happens when all of this chapter's queues (source, retry, dead-letter, and every
+    priority sub-queue) start competing for the same finite node memory at once.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="rmq-09.html" style="text-decoration:none;display:inline-flex;align-items:center">RMQ-09: Flow Control & Memory Management →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* qaCards renderer */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2007", l:"RabbitMQ 1.0", d:"<b>None of this chapter's machinery exists yet.</b> A rejected message with no consumer-side handling is simply gone; there is no TTL concept and no priority concept — just AMQP 0-9-1's core FIFO delivery model (chapters 1-5)." },
+  { yr:"2011-12", l:"dead lettering ships", d:"<b>x-dead-letter-exchange arrives</b> — the first of this chapter's three features, and not a coincidence which one came first: 'where does a rejected message go' was the more urgent operational question than 'when does a message expire' or 'which message goes first.'" },
+  { yr:"2012", l:"message & queue TTL ship", d:"<b>x-message-ttl, per-message expiration, and x-expires</b> land as declared-argument/policy features, giving dead lettering its second real trigger (TTL expiry) beyond explicit rejection." },
+  { yr:"2015", l:"RabbitMQ 3.5.0 — priority queues", d:"<b>x-max-priority ships</b>, the last of the three features — years after dead lettering and TTL, because 'important messages first' is a scheduling policy layered on top of a FIFO model the broker already had to support well first." },
+  { yr:"~2015-16", l:"delayed-message-exchange plugin (community)", d:"A community-maintained exchange type offering a different route to 'deliver this later' than a hand-built TTL+DLX delay queue — Mnesia-backed internal scheduling, with its own tradeoffs (§8f)." },
+  { yr:"2018-19", l:"RabbitMQ 3.8 — quorum queues + x-delivery-limit", d:"Quorum queues, built on the <code>ra</code> Raft library, track a real per-message delivery count in their replicated log for the first time — enabling <b>x-delivery-limit</b>: automatic dead-lettering after N redeliveries with zero client-side counting, the fourth trigger this chapter covers." },
+  { yr:"2021-22", l:"3.10-3.12 — dead-lettering reliability hardened for quorum queues", d:"Later 3.x releases tightened the guarantees around dead-lettering specifically from quorum queues, closing gaps where a node failure mid-dead-letter could previously produce weaker delivery guarantees than classic queues already had." },
+  { yr:"2023-24", l:"cycle-detection semantics documented explicitly", d:"RabbitMQ's own documentation makes the cycle-detection rule (§6/§8c) an explicit, named guarantee rather than an implementation detail — a direct response to exactly the kind of silent-message-loss postmortem §11's Story 3 describes." },
+  { yr:"2024", l:"4.0 — mirrored queues gone, this chapter's surface unchanged", d:"RabbitMQ 4.0 removes mirrored classic queues entirely (chapters 1/6's territory) while leaving dead lettering, TTL, and priority queues untouched — proof this chapter's mechanisms are orthogonal to which replication scheme sits underneath a queue." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[1].d;
+
+/* ============================================================
+   2. DECK: naive nack-requeue loop (§3)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckNaive", [
+    { stage: wrap(box("SOURCE QUEUE", cell("msg 401 — malformed field")+cell("msg 402")+cell("msg 403"))),
+      cap:`<b>Steady state.</b> Message 401 has a field the handler cannot parse. No DLX configured — this consumer's own <code>except</code> block is the only safety net.` },
+    { stage: wrap(box("CONSUMER", cell("basic_nack(401, requeue=True)","#ff9f43","rgba(255,159,67,.08)"))), cap:`<b>First failure.</b> The naive fix: nack and requeue, "just in case it's transient." Message 401 reappears at the front of the queue almost instantly.` },
+    { stage: wrap(box("SOURCE QUEUE — msg 401 back at head", cell("msg 401 — SAME malformed field","#f25c54","rgba(242,92,84,.1)")+cell("msg 402")+cell("msg 403"))),
+      cap:`<b>Redelivered.</b> Nothing about the message changed. The same handler will hit the same parse error, deterministically, on this exact input.` },
+    { stage: wrap(box("100% OF CAPACITY, ZERO COMPLETED WORK", cell("deliver → fail → nack → deliver → fail → nack → …","#f25c54"))),
+      cap:`<b>Verdict.</b> This loop has no counter, no backoff, no exit — msg 402 and 403 never get a turn because 401 keeps reclaiming the head. We need a broker-enforced destination for "this will never succeed," not another app-level try/except.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: deriving x-dead-letter-exchange (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckDLX", [
+    { stage: wrap(box("REQUIREMENT", cell("nack(requeue=false) needs a destination, not just 'gone'","#ff9f43","rgba(255,159,67,.08)"))),
+      cap:`<b>Start from the gap.</b> requeue=false correctly stops the poison loop — but the message still needs somewhere to go.` },
+    { stage: wrap(box("DECLARE x-dead-letter-exchange", cell("queue.declare(args={'x-dead-letter-exchange':'orders.dlx'})","#60a5fa"))),
+      cap:`<b>Give the queue a destination.</b> Any of the four triggers (§8a) now republishes to this exchange instead of discarding the message.` },
+    { stage: wrap(box("OPTIONAL: x-dead-letter-routing-key", cell("declared: 'orders.dlx' with rk='needs-review'","#a78bfa")+cell("omitted: rk = message's ORIGINAL routing key","#ffd166"))),
+      cap:`<b>Routing key choice.</b> Declare one to route deliberately. Omit it, and the broker reuses the message's original routing key unchanged — not a sensible default, the actual original key.` },
+    { stage: wrap(box("THE SURPRISE, CONCRETELY", cell("original rk = 'orders.created'","#8b94a7")+cell("orders.dlx has no binding for 'orders.created'","#f25c54","rgba(242,92,84,.1)")+cell("→ message silently unroutable at the DLX","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Why this bites teams.</b> Assuming an omitted routing key means "the DLX will catch it somehow" quietly breaks the moment the DLX's bindings don't happen to match the original key — an easy, common misconfiguration.` },
+    { stage: wrap(box("FULL MECHANISM", cell("4 triggers → rabbit_dead_letter → chosen exchange + routing key → x-death entry written","#4ade80"))),
+      cap:`<b>This is the real mechanism.</b> §8 covers all four triggers and the x-death header this routing step writes on every hop.` }
+  ]);
+})();
+
+/* ============================================================
+   4. DECK: cycle detection (§6/§8c)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckCycle", [
+    { stage: wrap(box("TOPOLOGY", cell("source queue, DLX → retry queue","#60a5fa")+cell("retry queue: TTL 4s, its own DLX → source","#60a5fa"))),
+      cap:`<b>The classic retry-with-backoff shape.</b> Looks like free automatic retry. No consumer ever touches this message in between hops.` },
+    { stage: wrap(box("HOP 1", cell("rejected at source","#ff9f43")+cell("x-death: [{queue:source, reason:rejected, count:1}]","#a78bfa"))),
+      cap:`<b>First bounce.</b> Message dead-lettered from source into retry. The header now records: this message has been dead-lettered FROM source.` },
+    { stage: wrap(box("HOP 2 ATTEMPT", cell("TTL expires in retry queue","#ffd166")+cell("retry's DLX wants to route it back → source","#ffd166"))),
+      cap:`<b>The bounce back.</b> The retry queue's own dead-letter config targets the source queue — exactly the queue this message's x-death already lists as a prior origin.` },
+    { stage: wrap(box("CYCLE CHECK", cell("target 'source' already in x-death's origin list","#f25c54","rgba(242,92,84,.1)")+cell("no explicit consumer requeue happened in between","#f25c54","rgba(242,92,84,.1)")+cell("→ MESSAGE DROPPED, not republished","#f25c54","rgba(242,92,84,.15)"))),
+      cap:`<b>Silent loss.</b> No error, no log line, no dead-letter queue entry. The message is gone — precisely the failure mode a naive automatic retry-to-source topology cannot avoid.` }
+  ]);
+})();
+
+/* ============================================================
+   5. PREVIEW SLIDER: head-of-queue TTL blocking (§6)
+   ============================================================ */
+(function(){
+  function render(){
+    const p = +el("pv-ttl-head").value;
+    el("pv-ttl-head-val").textContent = p+"%";
+    const blocked = Math.round(p*0.85);
+    const clear = Math.max(2, 100-blocked);
+    const segs = [
+      ["already-expired messages stuck behind the head", blocked, "#f25c54"],
+      ["head message's own remaining life", clear, "#ff9f43"],
+    ];
+    el("pv-ttl-map").innerHTML = segs.map(([lbl,v,c])=>
+      `<div class="seg" style="background:${c};width:${(v/(blocked+clear)*100).toFixed(2)}%" title="${lbl}: ${v}">${v}</div>`).join("");
+    el("pv-ttl-legend").innerHTML = segs.map(([lbl,v,c])=>`<span><span class="sw" style="background:${c}"></span>${lbl}</span>`).join("");
+    el("pv-ttl-note").innerHTML = p<20
+      ? `Head's remaining TTL is short — the queue drains close to real-time, almost nothing piles up behind it.`
+      : p>70
+      ? `Head's remaining TTL is long — a large share of the queue is composed of messages that are individually already expired but structurally invisible to the broker until this head message is finally consumed or times out itself.`
+      : `A moderate head TTL already produces a real backlog of logically-expired-but-stuck messages — this is exactly the shape §11's Story 1 describes discovering via a memory graph, not an error log.`;
+  }
+  el("pv-ttl-head").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   6. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  rejectTrigger:{ n:"reject / nack(requeue=false)", f:"rabbit_channel.erl → rabbit_dead_letter.erl", r:"A consumer explicitly says 'do not requeue this' via Basic.Reject or Basic.Nack. The only trigger under direct consumer control.", l:"Fires the instant the method frame is processed on the channel.", d:"If no DLX is configured on the source queue, the message is simply discarded — this trigger alone does not guarantee safety, only a DLX destination does." },
+  ttlTrigger:{ n:"TTL expiry", f:"rabbit_variable_queue.erl — drop_expired", r:"Either the queue's x-message-ttl policy or the message's own expiration property has elapsed, checked only at the head of the queue (§8d).", l:"Checked whenever the head message is considered for delivery, not on a fixed independent timer.", d:"A message can be logically expired far earlier than when this trigger actually fires, if it's stuck behind a longer-lived head message (§6, §15)." },
+  maxlenTrigger:{ n:"x-max-length exceeded", f:"rabbit_variable_queue.erl — enqueue path", r:"The queue has reached its configured x-max-length (or x-max-length-bytes) ceiling and a new message arrives.", l:"Checked synchronously on every publish once the queue is at capacity.", d:"Only dead-letters anything under the default x-overflow=drop-head. Under x-overflow=reject-publish, the new publish is rejected instead and nothing is ever dead-lettered (§7 callout)." },
+  dlimitTrigger:{ n:"x-delivery-limit exceeded", f:"rabbit_fifo.erl (quorum queues)", r:"A quorum queue's replicated Raft log has tracked this message's delivery count past the configured limit — the only trigger requiring zero client-side counting.", l:"Delivery count lives in the Raft log itself, incremented on every redelivery.", d:"Classic queues have no equivalent built-in counter — replicating this behavior there requires client-side attempt counting (chapter 5's fallback)." },
+  dlxExchange:{ n:"x-dead-letter-exchange", f:"rabbit_dead_letter.erl", r:"The exchange every triggered dead-letter republish is routed through — declared per-queue or via a matching policy.", l:"Immutable for the queue's lifetime once declared; policies can be updated without redeclaring the queue.", d:"If it points at an exchange that doesn't exist, or a routing key with no matching binding, the message is silently unroutable at the DLX — no error surfaces at the source queue." },
+  dlxRoutingKey:{ n:"x-dead-letter-routing-key", f:"rabbit_dead_letter.erl", r:"Optional override for the routing key used when republishing to the DLX.", l:"Set once at declare time, same immutability as the exchange itself.", d:"Omitted means the ORIGINAL routing key is preserved, not a sensible default — the single most common surprise in this chapter (§5, §8a)." },
+  xdeathHeader:{ n:"x-death header", f:"rabbit_dead_letter.erl — merge_or_increment", r:"An array of records, one per distinct (queue, reason) pair this message has been dead-lettered through, each carrying count/reason/queue/exchange/routing-keys/time.", l:"Grows only on a genuinely new (queue,reason) pair; a repeated pair increments the existing entry's count instead.", d:"Bounded specifically because cycle detection stops an unbroken automatic bounce after one repeat — otherwise this header (and the loop producing it) could grow without limit." },
+  cycleDetection:{ n:"cycle detection", f:"rabbit_dead_letter.erl — would_cycle", r:"Before dead-lettering into queue T, checks whether T already appears as an origin in this message's unbroken dead-letter chain; if so, drops the message instead.", l:"The memory this check relies on resets on any explicit consumer requeue — a genuine new delivery attempt, not an automatic bounce.", d:"The exact mechanism that makes a naive DLX-straight-back-to-source retry topology lose messages silently on the very first bounce (§6, §11 Story 3)." },
+  msgTTL:{ n:"x-message-ttl / expiration", f:"rabbit_variable_queue.erl", r:"Two independent TTL knobs — one per-queue (uniform), one per-message (set by the publisher) — enforced identically by the same head-of-queue check.", l:"Evaluated only when the message is at the head and about to be considered for delivery.", d:"Never scanned proactively across the whole queue — a short per-message TTL behind a longer one at the head simply waits (§6, §8d)." },
+  queueTTL:{ n:"x-expires", f:"rabbit_amqqueue_process.erl", r:"Auto-deletes the entire queue once it has gone unused (no consumers, no basic.get, no redeclare) for the configured duration.", l:"Checked on a coarse, whole-queue lifecycle timer, not per-message.", d:"Solves a different problem than message TTL — leaked reply-to and abandoned temporary queues, not stale application data." },
+  priorityQueue:{ n:"x-max-priority", f:"rabbit_priority_queue.erl", r:"Wraps N+1 backing queues (one per priority level 0..N) inside a single queue's declaration; dispatch drains the highest non-empty level first.", l:"Declared once; every level exists as a structure from that point on, used or not.", d:"Cost scales with declared levels, not messages held — 255 levels cost real memory/CPU even if only a handful are ever assigned (§6, §10)." },
+  delayedExchangePlugin:{ n:"delayed-message-exchange plugin", f:"community plugin — x-delayed-type exchange", r:"An alternative to a hand-built TTL+DLX delay queue: schedules a message internally (Mnesia-backed) and republishes it once a delay elapses.", l:"Scheduling state lives in the exchange process, not a replicated Raft log.", d:"A node failure before the delay elapses can lose the scheduled message on classic-queue-equivalent durability terms; heavy concurrent scheduling adds delivery jitter (§8f)." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON FAILURE / EDGE CASE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("cycleDetection");
+
+/* ============================================================
+   7. PREVIEW: head-only vs naive full-scan cost (§8d)
+   ============================================================ */
+(function(){
+  function render(){
+    const depth = +el("ttlscan-depth").value;
+    el("ttlscan-depth-val").textContent = depth;
+    const headOnly = 1;
+    const naive = depth;
+    const total = headOnly + naive;
+    const segs = [
+      ["head-only check (O(1)) — "+headOnly+" comparison", headOnly, "#4ade80"],
+      ["naive full-scan (O(depth)) — "+naive+" comparisons", naive, "#f25c54"],
+    ];
+    el("ttlscan-map").innerHTML = segs.map(([lbl,v,c])=>
+      `<div class="seg" style="background:${c};width:${Math.max(2,(v/total*100)).toFixed(2)}%" title="${lbl}">${v<=3?"":lbl.split(" — ")[1]}</div>`).join("");
+    el("ttlscan-legend").innerHTML = segs.map(([lbl,v,c])=>`<span><span class="sw" style="background:${c}"></span>${lbl}</span>`).join("");
+    el("ttlscan-note").innerHTML = `At a queue depth of <b style="color:var(--pg)">${depth}</b> ready messages, a naive full scan does <b style="color:var(--bad)">${naive}×</b> more comparison work than the real head-only check, on the same single Erlang process already handling every publish, delivery, and ack for this queue.`;
+  }
+  el("ttlscan-depth").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. DECK: deriving priority sub-queues (§8e)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckPriority", [
+    { stage: wrap(box("NAIVE: separate queues", cell("orders.high","#8b94a7")+cell("orders.med","#8b94a7")+cell("orders.low","#8b94a7")+cell("3 independent FIFOs, 3 prefetch windows","#f25c54","rgba(242,92,84,.08)"))),
+      cap:`<b>§4's problem restated.</b> No shared credit accounting, no single answer to "what's next across all three."` },
+    { stage: wrap(box("CANDIDATE: one queue, a 'priority' field", cell("scan all ready messages, find highest priority","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Tempting, but O(ready messages) per dispatch</b> — exactly the naive-scan problem TTL already taught us to avoid (§8d).` },
+    { stage: wrap(box("SOLUTION: N+1 backing queues, one per level", cell("level 9: [msgA]","#4ade80")+cell("level 5: [msgB, msgC]","#4ade80")+cell("level 0: [msgD]","#4ade80")+cell("dispatch: highest non-empty first","#ff9f43"))),
+      cap:`<b>rabbit_priority_queue.erl's actual design.</b> One queue's declaration, N+1 backing-queue structures underneath — O(levels) per dispatch, not O(messages).` },
+    { stage: wrap(box("THE COST THAT DOESN'T GO AWAY", cell("empty level-200 queue: still checked on every dispatch","#f25c54","rgba(242,92,84,.1)")+cell("5 levels: cheap. 255 levels: paid on every message, forever.","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Verdict.</b> Declare only the levels you'll actually use — §10 quantifies exactly how much each unused level costs.` }
+  ]);
+})();
+
+/* ============================================================
+   9. PERF CHART: priority-level overhead (§10)
+   ============================================================ */
+(function(){
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function memAt(levels){ return 4 + levels*1.6; }
+  function cpuAt(levels){ return 3 + levels*1.1; }
+  function render(){
+    const levels = +el("perf-levels").value;
+    el("perf-levels-val").textContent = levels;
+    el("perf-note").innerHTML = levels<=5
+      ? `At <b style="color:var(--pg)">${levels}</b> declared levels: overhead is negligible — this is the "5 is plenty" zone almost every real prioritization scheme needs.`
+      : levels>=100
+      ? `At <b style="color:var(--pg)">${levels}</b> declared levels: overhead is substantial and almost certainly wasted — the "255 is a mistake" zone, paid on every single dispatch regardless of whether upper levels ever hold a message.`
+      : `At <b style="color:var(--pg)">${levels}</b> declared levels: overhead is climbing steadily — worth asking whether this many distinct tiers are ever actually assigned to real messages.`;
+    const W = cv.width, H = cv.height, PAD=40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=1;x<=255;x+=2) xs.push(x);
+    const memYs = xs.map(memAt), cpuYs = xs.map(cpuAt);
+    const maxY = Math.max(...memYs, ...cpuYs)*1.08;
+    const X = v => PAD + (v-1)/254*(W-PAD-14);
+    const Y = v => H-26 - (v/maxY)*(H-46);
+    ctx.strokeStyle="#1c2330"; ctx.fillStyle="#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [1,50,100,150,200,255].forEach(v=>{ ctx.beginPath(); ctx.moveTo(X(v),10); ctx.lineTo(X(v),H-20); ctx.stroke(); ctx.fillText("N="+v, X(v)-12, H-6); });
+    ctx.strokeStyle="#ff9f43"; ctx.lineWidth=2; ctx.beginPath();
+    xs.forEach((x,i)=>{ const y=Y(memYs[i]); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+    ctx.stroke();
+    ctx.strokeStyle="#a78bfa"; ctx.setLineDash([5,4]); ctx.lineWidth=2; ctx.beginPath();
+    xs.forEach((x,i)=>{ const y=Y(cpuYs[i]); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.strokeStyle="#ffd166"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(levels),10); ctx.lineTo(X(levels),H-20); ctx.stroke(); ctx.setLineDash([]);
+  }
+  el("perf-levels").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   10. INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Name the four distinct triggers that cause a message to be dead-lettered.", hint:"one is fully consumer-driven, one is quorum-only",
+    a:"(1) The consumer rejects or nacks the message with requeue=false. (2) The message's TTL — either the queue's x-message-ttl or its own expiration property — elapses. (3) The queue exceeds its x-max-length (or x-max-length-bytes) and the default drop-head overflow behavior discards the oldest ready message. (4) On quorum queues only, the message's delivery count exceeds x-delivery-limit, tracked natively in the replicated Raft log. All four converge on the same republish mechanism once triggered." },
+  { lvl:"SENIOR", q:"A queue declares x-dead-letter-exchange but not x-dead-letter-routing-key. What routing key is actually used when a message is dead-lettered?", hint:"not the queue name, not empty",
+    a:"The message's original routing key, unchanged — the exact key it was published with, not a sensible default and not the name of the source queue. This only works cleanly if the dead-letter exchange has a binding that matches that original key; if it doesn't, the message is silently unroutable at the DLX with no error surfaced back at the source queue." },
+  { lvl:"STAFF", q:"Walk through reading a message's x-death header to determine it has bounced between two queues exactly twice with an explicit requeue in between.", hint:"count field, not array length",
+    a:"You'd expect to see a single entry (not two) for the (queue, reason) pair that recurred, with count=2 and a time reflecting the most recent occurrence — because x-death entries are keyed by (queue, reason), a repeated pair increments the existing entry rather than appending a new one. Seeing count=2 on one entry, rather than two separate array entries for the same queue and reason, is exactly the signal that this pair recurred with a genuine requeue breaking the cycle-detection memory in between — because without that requeue, the second occurrence would have been dropped instead of ever producing a second dead-letter event to record." },
+  { lvl:"STAFF", q:"Precisely state RabbitMQ's cycle-detection rule, and explain why a naive DLX-straight-back-to-source retry topology loses a message on its very first automatic bounce.", hint:"what does 'unbroken chain' mean operationally?",
+    a:"Before dead-lettering a message into queue T, the broker checks whether T already appears among the queues this message has been automatically dead-lettered from, within the current unbroken chain (no explicit consumer requeue since). If T is already in that set, the message is dropped instead of republished. A topology where a source queue's DLX points at a retry queue, and the retry queue's own DLX points straight back at the source, with no consumer ever touching the message in between, hits this rule on the very first bounce back: by the time the retry queue's TTL expires and tries to route the message back to the source, the source queue is already recorded as an origin from the very first dead-lettering event — so the second attempt is dropped, silently, with zero indication anywhere that it happened." },
+  { lvl:"STAFF", q:"Derive why RabbitMQ checks TTL expiry only at the head of a queue rather than scanning for any expired message.", hint:"who else is that process serving at the same time?",
+    a:"A single Erlang process owns each queue and is already handling every publish, delivery, and ack for it serially (chapter 4). Scanning the entire ready-message list for any expired message on every check would cost O(queue depth) work on that same process's critical path, repeatedly, to catch a case a head-only check will eventually catch anyway once those messages reach the front. Checking only the head keeps the cost O(1) per check — the price is that a message with a short TTL sitting behind a message with a longer TTL at the head can remain in the queue, fully counted in depth and memory, for far longer than its own TTL would suggest, until it actually becomes the head." },
+  { lvl:"PRINCIPAL", q:"When would you avoid x-max-priority entirely on a queue that genuinely needs 'important messages first' semantics, and what would you do instead on a quorum queue?", hint:"quorum queues don't support this the same way",
+    a:"Avoid it when the queue is a quorum queue, since quorum queues do not support x-max-priority the same way classic queues do — and also when the actual number of meaningfully distinct priority tiers is small enough (or unstable enough) that the memory/CPU overhead of declared levels isn't worth paying relative to a simpler alternative. On a quorum queue, a common substitute is routing important messages to a genuinely separate, dedicated queue (or exchange binding) that a consumer polls preferentially — reconstructing priority at the routing/consumer layer instead of the broker's internal dispatch layer, at the cost of the same coordination complexity §4 identified in the naive separate-queues approach, but without needing broker-native priority support that isn't available for that queue type." },
+  { lvl:"PRINCIPAL", q:"Steelman the delayed-message-exchange plugin against a hand-built TTL+DLX delay-queue topology, then argue the case for avoiding it.", hint:"what does the plugin remove, and what does it not replicate?",
+    a:"In its favor: it removes an entire piece of topology (no separate delay queue, no DLX pointing back, no cycle-detection reasoning required) and lets a single exchange declaration express 'deliver this later,' which is simpler to reason about and avoids §6's retry-to-source failure mode entirely since there's no automatic bounce-back chain at all. Against it: the scheduled-but-not-yet-fired message lives in the exchange process's own internal state (Mnesia-backed, not a replicated Raft log the way a quorum queue's data is), so a node failure before the delay elapses can lose it on classic-queue-equivalent durability terms; and because delivery timing depends on a single process's internal timer management, a workload scheduling many thousands of delayed messages concurrently sees delivery jitter grow under load in a way a plain queue-level TTL — which degrades more predictably, being just another message sitting in an ordinary, already-well-understood queue — generally does not." }
+]);
+
+/* ============================================================
+   11. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Which of the following is NOT one of the four triggers for dead lettering?",
+    opts:[ "A consumer rejects a message with requeue=false",
+           "A message's TTL elapses",
+           "A consumer gracefully cancels its subscription",
+           "A quorum queue's x-delivery-limit is exceeded" ],
+    a:2,
+    why:"The four real triggers are: reject/nack with requeue=false, TTL expiry, x-max-length exceeded (under drop-head overflow), and x-delivery-limit exceeded on quorum queues. A consumer cancelling its subscription is an ordinary lifecycle event with no dead-lettering implication at all — any messages it hadn't acked yet are simply requeued via the ordinary channel-death mechanism (chapter 5), not dead-lettered." },
+  { q:"A queue declares x-dead-letter-exchange but omits x-dead-letter-routing-key. What routing key does the republished message actually carry?",
+    opts:[ "An empty routing key",
+           "The name of the source queue",
+           "The message's original, unchanged routing key",
+           "RabbitMQ refuses to dead-letter the message until a routing key is declared" ],
+    a:2,
+    why:"Omitting x-dead-letter-routing-key does not mean 'use a sensible default' — it means the message keeps its original routing key exactly as published. This only routes correctly if the dead-letter exchange happens to have a binding matching that original key; if not, the message becomes silently unroutable at the DLX." },
+  { q:"What does it mean when an x-death header entry's count field is 2, rather than seeing two separate array entries for the same queue and reason?",
+    opts:[ "The message was dead-lettered from that queue for that reason twice, with cycle-detection memory reset by an explicit requeue in between",
+           "The broker made a duplicate delivery due to a network glitch",
+           "The message was dead-lettered to two different exchanges",
+           "x-death entries always start at count=2 and this is the default" ],
+    a:0,
+    why:"x-death entries are keyed by (queue, reason); a repeated occurrence of the same pair increments count on the existing entry rather than appending a new one. Seeing count=2 specifically implies the cycle was broken by a genuine explicit requeue in between the two occurrences — otherwise the second occurrence would have been dropped by cycle detection instead of ever being recorded." },
+  { q:"A source queue's DLX points at a retry queue, and the retry queue's own DLX points straight back at the source queue, with no consumer ever touching the message in between. What happens to a message that fails once?",
+    opts:[ "It retries forever, exactly as intended",
+           "It bounces to the retry queue once, then is dropped by cycle detection on the very next automatic attempt to route it back to the source",
+           "RabbitMQ automatically detects the loop and raises a channel exception",
+           "It succeeds on the second attempt because retry queues always give it a fresh delivery context" ],
+    a:1,
+    why:"The source queue is already recorded as an origin in the message's x-death chain from the first bounce. When the retry queue's TTL expires and its DLX attempts to route the message back into the source queue, that queue is already in the unbroken chain (no explicit requeue occurred), so the message is dropped instead of republished — silently, with no exception raised anywhere." },
+  { q:"Why does RabbitMQ check TTL expiry only at the head of a queue instead of scanning the whole queue for expired messages?",
+    opts:[ "Because scanning the whole queue would cost O(queue depth) work on the same single process handling all other operations for that queue",
+           "Because TTL is only a decorative feature with no real enforcement",
+           "Because only the head message is ever allowed to have a TTL set",
+           "Because scanning would require a second Erlang process per queue" ],
+    a:0,
+    why:"Each queue is owned by a single Erlang process that also handles publishing, delivery, and acks serially. A full scan for any expired message would cost O(queue depth) on every check, on that same process's critical path. A head-only check is O(1) per check — the tradeoff is that a shorter-TTL message stuck behind a longer-TTL head message can remain in the queue well past its own logical expiry." },
+  { q:"A team declares x-max-priority=255 for 'maximum flexibility' but only ever assigns four real priority tiers. What is the actual cost of the other 251 declared levels?",
+    opts:[ "None — unused levels are free until a message actually uses them",
+           "Memory and per-dispatch CPU overhead paid continuously, regardless of whether those levels ever hold a message",
+           "RabbitMQ automatically collapses unused levels at runtime",
+           "The extra levels only cost something if x-max-length is also set" ],
+    a:1,
+    why:"Priority-queue overhead scales with declared levels, not messages held — each level is a backing-queue structure the dispatch loop must be able to check on every delivery decision, whether or not it's ever populated. 255 declared levels cost real memory and CPU on every single dispatch even if only four are ever actually used; 5 is enough resolution for the overwhelming majority of real prioritization schemes." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review a dead-letter topology PR unsupervised.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5-6's decks and §8's derivation, then try the simulator — cycle detection clicks fast once you watch a message get dropped yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "A message is published to the source queue and delivered to a consumer",
+    "The consumer's handler fails and calls Basic.Nack(requeue=false)",
+    "The source queue's x-dead-letter-exchange routes it onward; no routing key was declared, so the original one is reused",
+    "An x-death entry is written recording queue=source, reason=rejected, count=1",
+    "The message lands in the retry queue and its x-message-ttl countdown begins",
+    "The TTL elapses while the message is still at the head of the retry queue",
+    "The retry queue's own DLX attempts to route the message back to the source queue",
+    "Cycle detection finds 'source' already recorded as an origin — the message is dropped instead of redelivered"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real lifecycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 9 covers flow control and memory management. Predict: if a broken consumer lets a dead-letter queue accumulate thousands of undeliverable poison messages, how does that interact with vm_memory_high_watermark and publisher flow control?",
+    a:"A dead-letter queue is an ordinary queue — its messages count fully toward node memory just like any other queue's, and once the node crosses its configured memory high watermark, RabbitMQ's flow control mechanism blocks publishers cluster-wide, regardless of which queue is actually responsible for the memory pressure. A silently-growing dead-letter queue is therefore not a contained, isolated problem — left unmonitored, it can eventually throttle publishing across the entire node, including publishers with nothing to do with whatever originally failed." },
+  { lvl:"THINK", q:"Predict how N declared priority sub-queues interact with per-queue memory reporting and the flow-control mechanisms chapter 9 covers.",
+    a:"Since each declared priority level is its own internal backing-queue structure with its own overhead, a priority queue's reported per-queue memory is higher than an equivalent plain queue even before accounting for message bodies — meaning a fleet of priority queues, especially ones over-provisioned with unused levels (§6, §10), contributes disproportionately to whatever aggregate memory figure chapter 9's alarms and flow control are watching, for structural reasons that have nothing to do with actual message volume." },
+  { lvl:"THINK", q:"Predict how TTL-expired-but-not-yet-reaped messages sitting behind a blocked head (§6, §15) affect a queue's reported memory footprint, and whether a memory alarm could fire before those messages are ever truly gone.",
+    a:"Those messages are still fully present in the queue's backing store and still fully counted in whatever memory accounting the queue process reports — 'logically expired' carries no special discount in memory terms until the head-of-queue check actually reaps them. That means a memory alarm can absolutely fire on the strength of a backlog that is, from an application's perspective, already worthless — the broker has no way to know that until it does the one check it's actually designed to do: look at the head." }
+]);
+
+/* ============================================================
+   12. SIMULATOR (§15) — DLX pipeline / TTL / priority lab
+   ============================================================ */
+(function(){
+  const TICK_MS = 250;
+
+  /* ---------- tabs ---------- */
+  const tabs = { dlx: el("tab-dlx"), ttl: el("tab-ttl"), pri: el("tab-pri") };
+  const panels = { dlx: el("panel-dlx"), ttl: el("panel-ttl"), pri: el("panel-pri") };
+  const phaseLabels = { dlx:"DLX PIPELINE", ttl:"TTL HEAD-OF-QUEUE", pri:"PRIORITY QUEUES" };
+  function selectTab(which){
+    Object.keys(tabs).forEach(k=>{
+      tabs[k].classList.toggle("on", k===which);
+      panels[k].style.display = k===which ? "" : "none";
+    });
+    el("sim-phase").textContent = phaseLabels[which];
+  }
+  tabs.dlx.onclick = ()=>selectTab("dlx");
+  tabs.ttl.onclick = ()=>selectTab("ttl");
+  tabs.pri.onclick = ()=>selectTab("pri");
+
+  /* ============================================================
+     DLX PANEL
+     ============================================================ */
+  const D = {
+    nextId: 1,
+    messages: [],           // {id, xdeath:[{queue,reason,exchange,rk,count,time}], sinceRequeue:Set, loc, retryDeadline}
+    selected: null,
+    cnt: { published:0, final:0, dropped:0 }
+  };
+  const RETRY_TTL_MS = 4000;
+  const dlxLog = el("dlx-log");
+  function dlog(lv, msg){
+    const d = document.createElement("div"); d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    dlxLog.appendChild(d);
+    while (dlxLog.children.length > 60) dlxLog.removeChild(dlxLog.firstChild);
+    dlxLog.scrollTop = dlxLog.scrollHeight;
+  }
+  function newMsg(){
+    const m = { id: D.nextId++, xdeath: [], sinceRequeue: new Set(), loc: "source", retryDeadline: null };
+    D.messages.push(m); D.cnt.published++;
+    return m;
+  }
+  function xdeathPush(m, queue, reason){
+    const existing = m.xdeath.find(e=>e.queue===queue && e.reason===reason);
+    if (existing){ existing.count++; existing.time = Date.now(); }
+    else m.xdeath.unshift({ queue, reason, exchange:"orders-x", rk:"orders.created", count:1, time: Date.now() });
+  }
+  function deadLetterTo(m, targetLoc, targetName, fromName, reason){
+    if (m.sinceRequeue.has(targetName)){
+      m.loc = "dropped"; D.cnt.dropped++;
+      dlog("BAD", `msg ${m.id}: cycle detected — already dead-lettered from '${targetName}' in this chain — DROPPED, not republished`);
+      return;
+    }
+    m.sinceRequeue.add(fromName);
+    xdeathPush(m, fromName, reason);
+    m.loc = targetLoc;
+    if (targetLoc === "retry") m.retryDeadline = Date.now() + RETRY_TTL_MS;
+    if (targetLoc === "final") D.cnt.final++;
+    dlog(targetLoc==="dropped"?"BAD":"WARN", `msg ${m.id}: dead-lettered from '${fromName}' (${reason}) → ${targetLoc}`);
+  }
+  el("dlx-inject-reject").onclick = ()=>{
+    const m = newMsg();
+    dlog("LOG", `msg ${m.id} published, delivered, handler throws — Basic.Nack(requeue=false)`);
+    deadLetterTo(m, "retry", "retry", "source", "rejected");
+  };
+  el("dlx-inject-overflow").onclick = ()=>{
+    const m = newMsg();
+    dlog("LOG", `msg ${m.id} published — source queue at x-max-length, drop-head overflow evicts the oldest ready message`);
+    deadLetterTo(m, "retry", "retry", "source", "maxlen");
+  };
+  el("dlx-inject-dlimit").onclick = ()=>{
+    const m = newMsg();
+    m.sinceRequeue.add("source");
+    xdeathPush(m, "source", "delivery_limit_exceeded");
+    m.loc = "final"; D.cnt.final++;
+    dlog("OK", `msg ${m.id}: quorum queue x-delivery-limit exceeded — routed straight to the final dead-letter queue, no retry`);
+  };
+  el("dlx-manual-requeue").onclick = ()=>{
+    const m = D.messages.find(x=>x.id===D.selected);
+    if (!m || (m.loc!=="retry" && m.loc!=="source")) return;
+    m.sinceRequeue.clear();
+    if (m.loc==="retry") m.retryDeadline = Date.now() + RETRY_TTL_MS;
+    dlog("OK", `msg ${m.id}: consumer explicitly requeued (nack requeue=true) — cycle-detection memory reset`);
+  };
+  function selectMsg(id){
+    D.selected = id;
+    const m = D.messages.find(x=>x.id===id);
+    el("dlx-selected-id").textContent = id;
+    el("dlx-manual-requeue").disabled = !m || (m.loc!=="retry" && m.loc!=="source");
+    if (!m){ el("dlx-detail").textContent = "Click any message chip above to inspect its x-death header."; return; }
+    el("dlx-detail").innerHTML = m.xdeath.length
+      ? m.xdeath.map(e=>`<div class="xd-row"><b>queue:</b> ${e.queue} &nbsp; <b>reason:</b> ${e.reason} &nbsp; <b>count:</b> ${e.count}<br><b>exchange:</b> ${e.exchange} &nbsp; <b>routing-keys:</b> [${e.rk}] &nbsp; <b>time:</b> ${new Date(e.time).toLocaleTimeString()}</div>`).join("")
+      : `<div class="xd-row">no x-death entries yet — this message hasn't been dead-lettered</div>`;
+  }
+  function chip(m){
+    const cls = m.loc==="dropped" ? "expired" : (m.xdeath.length ? "redelivered" : "");
+    return `<div class="msg ${cls} ${D.selected===m.id?"sel":""}" data-id="${m.id}">${m.id}</div>`;
+  }
+  function renderDLX(){
+    const source = D.messages.filter(m=>m.loc==="source");
+    const retry = D.messages.filter(m=>m.loc==="retry");
+    const final = D.messages.filter(m=>m.loc==="final");
+    const dropped = D.messages.filter(m=>m.loc==="dropped");
+    el("dlx-source-depth").textContent = source.length;
+    el("dlx-retry-depth").textContent = retry.length;
+    el("dlx-final-depth").textContent = final.length;
+    el("dlx-dropped-count").textContent = dropped.length;
+    el("dlx-source").innerHTML = source.map(chip).join("") || `<span style="font-family:monospace;font-size:10px;color:var(--dim)">empty</span>`;
+    el("dlx-retry").innerHTML = retry.map(chip).join("") || `<span style="font-family:monospace;font-size:10px;color:var(--dim)">empty</span>`;
+    el("dlx-final").innerHTML = final.map(chip).join("") || `<span style="font-family:monospace;font-size:10px;color:var(--dim)">empty</span>`;
+    el("dlx-dropped").innerHTML = dropped.map(chip).join("") || `<span style="font-family:monospace;font-size:10px;color:var(--dim)">none</span>`;
+    el("dlx-cnt-published").textContent = D.cnt.published;
+    el("dlx-cnt-final").textContent = D.cnt.final;
+    el("dlx-cnt-dropped").textContent = D.cnt.dropped;
+    document.querySelectorAll("#panel-dlx .msg").forEach(c=> c.onclick = ()=>selectMsg(+c.dataset.id));
+  }
+  function tickDLX(){
+    const now = Date.now();
+    D.messages.forEach(m=>{
+      if (m.loc==="retry" && m.retryDeadline!==null && now >= m.retryDeadline){
+        m.retryDeadline = null;
+        deadLetterTo(m, "source", "source", "retry", "expired");
+      }
+    });
+    renderDLX();
+  }
+
+  /* ============================================================
+     TTL PANEL
+     ============================================================ */
+  const T = { nextId:1, queue:[], vanished:0 };
+  const ttlLog = el("ttl-log");
+  function tlog(lv, msg){
+    const d = document.createElement("div"); d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    ttlLog.appendChild(d);
+    while (ttlLog.children.length > 60) ttlLog.removeChild(ttlLog.firstChild);
+    ttlLog.scrollTop = ttlLog.scrollHeight;
+  }
+  el("ttl-new-ttl").oninput = e=> el("ttl-new-ttl-val").textContent = e.target.value+" s";
+  el("ttl-publish").onclick = ()=>{
+    const ttl = +el("ttl-new-ttl").value * 1000;
+    T.queue.push({ id: T.nextId++, ttl, publishedAt: Date.now() });
+    tlog("LOG", `published msg with TTL ${ttl/1000}s, joins the tail`);
+  };
+  el("ttl-publish-blocker").onclick = ()=>{
+    const m = { id: T.nextId++, ttl: 30000, publishedAt: Date.now(), blocker: true };
+    T.queue.unshift(m);
+    tlog("WARN", `published a 30s long-TTL BLOCKER directly at the head — nothing behind it will be reaped until it's gone`);
+  };
+  el("ttl-consume-head").onclick = ()=>{
+    if (!T.queue.length){ tlog("WARN","queue is empty"); return; }
+    const head = T.queue.shift();
+    T.vanished++;
+    tlog("OK", `consumer took msg ${head.id} off the head — checking the new head for a cascade of already-expired messages`);
+    cascadeExpire();
+  };
+  function cascadeExpire(){
+    const now = Date.now();
+    let dropped = 0;
+    while (T.queue.length && (now - T.queue[0].publishedAt) >= T.queue[0].ttl){
+      const gone = T.queue.shift();
+      T.vanished++; dropped++;
+    }
+    if (dropped) tlog("OK", `head-of-queue check cascaded: ${dropped} already-expired message(s) reaped in the same instant`);
+  }
+  function renderTTL(){
+    const now = Date.now();
+    el("ttl-depth").textContent = T.queue.length;
+    let stuck = 0;
+    el("ttl-queue").innerHTML = T.queue.slice(0,40).map((m,i)=>{
+      const remain = m.ttl - (now - m.publishedAt);
+      const isHead = i===0;
+      const expired = remain <= 0;
+      if (expired && !isHead) stuck++;
+      const cls = m.blocker ? "redelivered" : (expired ? "expired" : (isHead ? "" : ""));
+      const label = m.blocker ? `B${m.id}` : (expired ? `${m.id}✕` : `${m.id}`);
+      return `<div class="msg ${cls}" title="remaining ${(remain/1000).toFixed(1)}s">${label}</div>`;
+    }).join("") + (T.queue.length>40 ? `<div class="msg" style="color:var(--dim)">+${T.queue.length-40}</div>` : "")
+      || `<span style="font-family:monospace;font-size:10.5px;color:var(--dim)">empty</span>`;
+    el("ttl-cnt-stuck").textContent = stuck;
+    el("ttl-cnt-vanished").textContent = T.vanished;
+    el("ttl-note").innerHTML = T.queue.length && (now - T.queue[0].publishedAt) < T.queue[0].ttl
+      ? `Head message (leftmost) still has <b>${Math.max(0,((T.queue[0].ttl-(now-T.queue[0].publishedAt))/1000)).toFixed(1)}s</b> left — nothing behind it is being inspected, no matter how expired it already is.`
+      : `Head is expired or the queue is empty — the next head-of-queue check (a publish, a consume, or the periodic tick) will reap it and cascade into whatever's now exposed.`;
+  }
+
+  /* ============================================================
+     PRIORITY PANEL
+     ============================================================ */
+  const P = { levels: 4, lanes: [], drained:0, flood:false, holdUnacked:false, heldMsg:null };
+  const priLog = el("pri-log");
+  function plog(lv, msg){
+    const d = document.createElement("div"); d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    priLog.appendChild(d);
+    while (priLog.children.length > 60) priLog.removeChild(priLog.firstChild);
+    priLog.scrollTop = priLog.scrollHeight;
+  }
+  function rebuildLanes(){
+    P.lanes = []; for (let i=0;i<P.levels;i++) P.lanes.push([]);
+  }
+  rebuildLanes();
+  el("pri-levels").oninput = e=>{
+    P.levels = +e.target.value; el("pri-levels-val").textContent = P.levels;
+    rebuildLanes();
+    const cost = Math.min(100, P.levels*1.6);
+    el("pri-cost-val").textContent = Math.round(cost)+"%";
+    const meter = el("pri-cost-meter"); meter.style.width = cost+"%"; meter.className = "m-fill "+(cost>66?"hot":cost>30?"warm":"");
+  };
+  el("pri-levels").dispatchEvent(new Event("input"));
+  el("pri-publish-random").onclick = ()=>{
+    const lvl = Math.floor(Math.random()*P.levels);
+    P.lanes[lvl].push({ id: "m"+Math.floor(Math.random()*9000+1000), waitTicks:0 });
+    plog("LOG", `published to priority level ${lvl}`);
+  };
+  el("pri-flood-high").onclick = ()=>{
+    P.flood = !P.flood;
+    el("pri-flood-high").classList.toggle("on", P.flood);
+    plog(P.flood?"WARN":"LOG", P.flood ? `flooding highest priority (level ${P.levels-1}) every tick` : "flood stopped");
+  };
+  el("pri-hold-unacked").onclick = ()=>{
+    P.holdUnacked = !P.holdUnacked;
+    el("pri-hold-unacked").classList.toggle("on", P.holdUnacked);
+    if (P.holdUnacked && !P.heldMsg){
+      P.heldMsg = { id:"held-"+Math.floor(Math.random()*900) };
+      plog("WARN", `consumer's single prefetch slot now holds unacked low-priority msg ${P.heldMsg.id} — no new deliveries until it acks, regardless of priority`);
+      el("pri-ack-held").disabled = false;
+    } else if (!P.holdUnacked){
+      plog("LOG", "prefetch-hold scenario cleared");
+    }
+  };
+  el("pri-ack-held").onclick = ()=>{
+    if (!P.heldMsg) return;
+    plog("OK", `consumer acked ${P.heldMsg.id} — prefetch slot free, highest-priority draining resumes`);
+    P.heldMsg = null; P.holdUnacked = false;
+    el("pri-hold-unacked").classList.remove("on");
+    el("pri-ack-held").disabled = true;
+  };
+  function tickPriority(){
+    if (P.flood) P.lanes[P.levels-1].push({ id:"m"+Math.floor(Math.random()*9000+1000), waitTicks:0 });
+    P.lanes.forEach(l=> l.forEach(m=> m.waitTicks++));
+    if (!P.holdUnacked){
+      for (let i=P.levels-1;i>=0;i--){
+        if (P.lanes[i].length){ P.lanes[i].shift(); P.drained++; break; }
+      }
+    }
+  }
+  function renderPriority(){
+    const root = el("pri-lanes");
+    root.innerHTML = "";
+    let waiting = 0, starvedAny = false;
+    for (let i=P.levels-1;i>=0;i--){
+      const lane = P.lanes[i];
+      waiting += lane.length;
+      const maxWait = lane.reduce((mx,m)=>Math.max(mx,m.waitTicks),0);
+      const starved = maxWait > 24;
+      if (starved) starvedAny = true;
+      const d = document.createElement("div");
+      d.className = "pri-lane" + (i===P.levels-1?" top":"") + (starved?" starved":"");
+      d.innerHTML = `<div class="pl-t">L${i}${i===P.levels-1?" (top)":""}</div><div class="pl-msgs">${
+        lane.slice(0,6).map(m=>`<div class="msg ${starved?"stuck":""}" style="width:100%">${m.id}</div>`).join("")
+      }${lane.length>6?`<div class="msg" style="width:100%;color:var(--dim)">+${lane.length-6}</div>`:""}</div>`;
+      root.appendChild(d);
+    }
+    el("pri-cnt-drained").textContent = P.drained;
+    el("pri-cnt-waiting").textContent = waiting;
+    el("pri-starve-note").innerHTML = P.holdUnacked
+      ? `<span style="color:var(--warn)">Draining is PAUSED — the consumer's only prefetch slot is occupied by an unacked low-priority message. Priority cannot help here; ack it to resume.</span>`
+      : starvedAny
+      ? `<span style="color:var(--bad)">A lower lane has been waiting a long time without being drained — this is starvation working exactly as designed, not a bug.</span>`
+      : `Highest non-empty lane drains first, every tick.`;
+  }
+
+  /* ---------- shared driver ---------- */
+  setInterval(()=>{ tickDLX(); renderTTL(); tickPriority(); renderPriority(); }, TICK_MS);
+  dlog("OK", "DLX pipeline ready — source → retry (TTL 4s) → back to source, or straight to the final DLQ on delivery-limit");
+  tlog("HINT", "Try: publish a long-TTL blocker, then several short-TTL messages, then watch 'expired, stuck' climb before you consume the head.");
+  plog("HINT", "Try: flood the highest priority lane, then watch a low lane's waiting count climb without ever draining.");
+  renderDLX(); renderTTL(); renderPriority();
+})();
+
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["rmq-08"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#ff9f43"><a class="cn-btn" href="rmq-07.html"><span>←</span><span><span class="cn-lbl">PREV · CH 07</span><span class="cn-ttl">Streams: The Log Comes to RabbitMQ</span></span></a><div class="cn-mid"><a class="cn-home" href="course-rabbitmq.html">☰ RabbitMQ Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="rmq-01.html">CH 01 · Genesis: AMQP & Why Erlang</option><option value="rmq-02.html">CH 02 · Connections, Channels & the Frame Protocol</option><option value="rmq-03.html">CH 03 · Exchanges, Bindings & Routing Algorithms</option><option value="rmq-04.html">CH 04 · Classic Queues: The Queue Process Internals</option><option value="rmq-05.html">CH 05 · Delivery: ACK, NACK, Confirms & Prefetch</option><option value="rmq-06.html">CH 06 · Quorum Queues: Raft Inside the Broker</option><option value="rmq-07.html">CH 07 · Streams: The Log Comes to RabbitMQ</option><option value="rmq-08.html" selected>CH 08 · Dead Lettering, TTL & Priority Queues</option><option value="rmq-09.html">CH 09 · Flow Control & Memory Management</option><option value="rmq-10.html">CH 10 · Clustering, Federation & Shovel</option><option value="rmq-11.html">CH 11 · Persistence, Disk Layout & Recovery</option><option value="rmq-12.html">CH 12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</option></select><span class="cn-prog">08 / 12</span></div><a class="cn-btn" href="rmq-09.html"><span><span class="cn-lbl">NEXT · CH 09</span><span class="cn-ttl">Flow Control & Memory Management</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

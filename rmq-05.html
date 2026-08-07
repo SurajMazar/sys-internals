@@ -1,0 +1,1882 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMQ-05 · Delivery: ACK, NACK, Confirms & Prefetch — RabbitMQ Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#ff9f43; --pg-dim:rgba(255,159,67,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa; --amber:#ffd166;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(255,159,67,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(255,159,67,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(255,159,67,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(255,159,67,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(255,159,67,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(255,159,67,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:520px}
+  @media(max-width:900px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:900px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* delivery-lab specific: queue + consumer lanes */
+  .qbox{border:1px dashed var(--border-hi);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+  .qbox .qb-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px;display:flex;justify-content:space-between}
+  .qmsgs{display:flex;flex-wrap:wrap;gap:5px;min-height:34px}
+  .msg{width:26px;height:26px;border-radius:7px;border:1px solid var(--border-hi);background:var(--panel-2);
+    display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:var(--muted);
+    animation:framein .25s}
+  .msg.poison{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.12)}
+  .msg.redelivered{border-color:var(--warn);color:var(--warn)}
+  .clane{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:10px 12px;margin-bottom:10px;transition:all .25s}
+  .clane.dead{opacity:.35;border-style:dashed}
+  .clane.busy{border-color:var(--pg)}
+  .clane .cl-head{display:flex;align-items:center;justify-content:space-between;font-family:var(--mono);font-size:11px;margin-bottom:6px}
+  .clane .cl-head b{color:var(--text)}
+  .clane .cl-tag{font-size:9.5px;color:var(--dim)}
+  .clane .cl-bar{height:6px;border-radius:3px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden;margin:4px 0}
+  .clane .cl-fill{height:100%;background:var(--pg);width:0%;transition:width .15s linear}
+  .clane .cl-unacked{display:flex;flex-wrap:wrap;gap:4px;min-height:22px;margin-top:4px}
+  .clane .cl-stats{display:flex;gap:12px;font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px}
+  .clane .cl-stats b{color:var(--pg)}
+  .publane{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+
+  /* process tree in sim (kept for continuity of visual language) */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-rabbitmq.html">← RabbitMQ Internals</a>
+  <span class="crumb">RABBITMQ INTERNALS · <b>CH 05 / 12</b> · DELIVERY</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Tags & Confirms</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 05</div>
+  <h1>Delivery: ACK, NACK,<br><span class="grad">Confirms & Prefetch</span></h1>
+  <p class="lead">Every RabbitMQ deployment eventually asks the same question twice, on two different wires, and
+  conflates the two answers into one mental model when it shouldn't. On the <b>consumer side</b>: has the broker
+  actually been told a message was handled, or did it just get pushed onto a socket? On the <b>publisher side</b>:
+  has the broker actually made the message durable, or did the client just finish a local <code>write()</code>
+  call? These are independent contracts — <code>Basic.Ack</code>/<code>Basic.Nack</code> answer the first,
+  publisher confirms answer the second — and the valve that sits between "how fast can the broker push" and
+  "how fast can a consumer actually keep up" is <code>Basic.Qos</code>, prefetch. This chapter derives all three
+  from first principles, then builds a delivery lab where you can crash consumers, feed them poison messages, and
+  watch the fairness-versus-throughput tradeoff move under your own prefetch slider.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain precisely what a delivery tag is, why it's per-channel, and why the unacked set lives on the channel process, not the queue.</div>
+    <div class="obj"><b>You will understand</b>Why an unbounded nack-requeue loop on a single bad message is a mathematical certainty, not a bug — and the two real fixes.</div>
+    <div class="obj"><b>You will derive</b>The correct prefetch value from round-trip time and per-message processing time, and see both failure extremes on a chart.</div>
+    <div class="obj"><b>You will simulate</b>A multi-consumer delivery lab: kill a consumer mid-processing, watch redelivery, and toggle publisher confirms to see the latency they cost.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">"Delivered" is not the same event as "handled"</h2>
+  <p class="lead">A TCP <code>send()</code> returning successfully tells you exactly one thing: the kernel on the
+  sending machine copied your bytes into a socket buffer. It says nothing about whether the receiving process
+  ever read them, nothing about whether that process is still alive by the time it would have, and nothing about
+  whether whatever business logic was supposed to run against that data actually ran. A message broker built on
+  top of "the socket write succeeded" as its notion of delivery is building reliability on a signal that was never
+  designed to carry that meaning.</p>
+  <p>Concretely: <code>Basic.Deliver</code> is the AMQP method the broker uses to hand a message to a consumer on
+  a channel. The instant the broker has framed that method and its content onto the wire, has anything actually
+  been guaranteed? No — the consumer's process could be killed by the OOM killer one microsecond after the bytes
+  land in its socket buffer, before a single line of the handler runs. If the broker's bookkeeping treats "sent" as
+  "done" — removes the message from the queue the moment it writes the frame — that message is gone. Not
+  redelivered, not logged, not recoverable. Silently gone.</p>
+  <p>Symmetrically, on the publish side: a producer calling <code>channel.basic_publish(...)</code> and having that
+  call return without an exception tells you the client library successfully wrote a frame to its own local socket
+  buffer. It does <i>not</i> tell you the broker received it, routed it to a durable queue, or wrote it to disk
+  before a subsequent node restart. Two separate "did this actually happen" questions, on two separate wires, each
+  needing its own explicit protocol answer — not because AMQP is being pedantic, but because at every one of these
+  boundaries a real, physical failure (a crashed process, a partition, an unflushed page cache) can turn "sent" and
+  "done" into two different truths.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS CHAPTER SPLITS CLEANLY IN TWO</div>
+    <p>Consumer acknowledgement and publisher confirmation are <b>mechanically independent</b> — different frames,
+    different delivery tags, different failure modes, and (critically) no ordering relationship between them
+    imposed by the protocol. A message can be acked by its consumer while its publisher's confirm is still
+    in flight; a message can be <code>Basic.Return</code>ed to its publisher as unroutable and <i>still</i> receive
+    a publisher ack, because "routed to zero queues" and "safely handled by the broker" are, again, two different
+    questions (§6 makes this exact interaction precise). Keep the two halves separate in your head throughout this
+    chapter — conflating them is the single most common production RabbitMQ misunderstanding.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Acks were in the protocol from day one; confirms were not</h2>
+  <p>Unlike some of RabbitMQ's later engineering (quorum queues, streams), consumer acknowledgement is original
+  AMQP 0-8/0-9-1 protocol machinery — the working group considered "did the consumer handle this" a first-class
+  concern from the start. Publisher-side confidence took a different, more interesting path: the spec's original
+  answer (transactions) worked but was priced out of practicality, and RabbitMQ's team shipped a pragmatic
+  extension years later that the rest of the ecosystem eventually treated as a de facto standard. Click through:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the ack/confirm/prefetch protocol surface, in order</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · BASIC.NACK IS NOT IN THE ORIGINAL SPEC</div>
+    <p>It's a common surprise: <code>Basic.Reject</code> is the AMQP 0-9-1 standard method for "I will not accept
+    this message" — one delivery tag at a time, no <code>multiple</code> flag, requeue true or false.
+    <code>Basic.Nack</code> is a <b>RabbitMQ-specific extension</b> layered on afterward specifically to add the
+    <code>multiple</code> flag (batch-nack a whole range the way <code>Basic.Ack</code> already could) — a gap the
+    original spec simply didn't cover. It's now supported so widely (most 0-9-1 client libraries, other brokers
+    that emulate RabbitMQ's extensions) that engineers routinely assume it was always part of the standard. It
+    wasn't; it's a case study in how a popular implementation's extension becomes ecosystem convention.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: auto-ack — trust the socket write</h2>
+  <p>The simplest possible consumer configuration in AMQP sets <code>no_ack=true</code> (most client libraries call
+  this <code>auto_ack</code>). Under this mode the broker considers a message fully delivered — and removes it from
+  the queue — the instant it writes the <code>Basic.Deliver</code> frame. There is no delivery tag the consumer is
+  expected to do anything with; there is no unacked set for this consumer at all.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">python</span><span>naive_consumer.py — auto_ack=True, annotated</span></div>
+    <pre><span class="k">def</span> <span class="f">on_message</span>(channel, method, properties, body):
+    <span class="c"># By the time this callback is even INVOKED, the broker has already</span>
+    <span class="c"># forgotten this message existed — it was removed from the queue</span>
+    <span class="c"># the moment the frame was written to the socket, not when this</span>
+    <span class="c"># function returns, or even starts.</span>
+    result = <span class="f">process_payment</span>(body)          <span class="c"># ← if the process dies HERE...</span>
+    <span class="f">write_to_ledger</span>(result)                   <span class="c"># ...or dies HERE, the message is unrecoverable.</span>
+
+channel.basic_consume(
+    queue=<span class="s">"payments"</span>,
+    on_message_callback=on_message,
+    auto_ack=<span class="k">True</span>,                            <span class="c"># the entire naive solution is this one flag</span>
+)</pre>
+  </div>
+
+  <p>It is not an unreasonable starting point — it gets one thing right: zero protocol chatter beyond the delivery
+  itself, no <code>Basic.Ack</code> frames, no broker-side bookkeeping of an unacked set per channel. For metrics
+  counters and other truly loss-tolerant streams, auto-ack is the <i>correct</i> choice, not a shortcut. The
+  problem is that most consumers are not metrics counters, and the stepper below plays forward exactly the failure
+  auto-ack cannot detect, let alone recover from.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Auto-ack under a mid-batch consumer crash</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The math: the loss window is unbounded, and there is no valve</h2>
+  <p>Quantify what the deck just showed. Under auto-ack, define the <b>in-flight window</b> as every message the
+  broker has written to the socket but the consumer's application code has not yet finished processing. Under
+  explicit acknowledgement this window is bounded by prefetch (§8 derives the exact number); under auto-ack,
+  <b>nothing bounds it at all</b> — the broker will write frames onto the socket as fast as the kernel accepts
+  them, which is usually far faster than any real handler can process them.</p>
+  <ul class="plain">
+    <li><b>Unbounded loss on crash.</b> If a consumer's process dies after accepting <i>N</i> messages from its
+      local socket/library buffer but before finishing them, all <i>N</i> are gone — not requeued, because the
+      broker already considered them delivered and discarded its only record of them. <i>N</i> is bounded only by
+      how far ahead of processing the socket buffer and client library got, which under auto-ack is exactly the
+      quantity nothing is designed to limit.</li>
+    <li><b>No back-pressure signal exists.</b> <code>Basic.Qos</code> (prefetch) is defined in terms of the
+      <i>unacknowledged</i> message count on a channel — under auto-ack that count is definitionally always
+      effectively zero from the broker's perspective (messages are "acked" the instant they're sent), so prefetch
+      has nothing to gate. A slow consumer cannot signal "stop sending" to the broker at the protocol level;
+      it can only build an ever-larger backlog in its own process memory.</li>
+    <li><b>The failure is invisible until it's catastrophic.</b> Nothing errors, nothing logs, no queue depth
+      alarms fire — from the broker's point of view every one of those messages was successfully delivered.
+      The first symptom is usually a downstream data-consistency bug discovered days later, not an operational
+      alert at the moment of loss.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>A consumer processing 500 messages/sec can easily have a client-library prefetch/OS-buffer window of several
+    thousand messages already "delivered" and sitting in local memory or the library's internal queue at any given
+    instant, especially if a downstream call (a slow HTTP request, a lock-contended DB write) stalls processing for
+    even a second or two. Under auto-ack, a crash during that stall doesn't lose a handful of messages — it loses
+    every message the socket and client library had already accepted and forgotten about, with zero broker-side
+    visibility that anything went wrong.</p>
+  </div>
+  <p>The fix needs two independent pieces, worth separating cleanly exactly the way we did in the naive-fanout
+  chapters: <b>(a)</b> the broker must not consider a message "done" until the consumer explicitly says so, and
+  <b>(b)</b> once that's true, something has to bound how many "not yet done" messages the broker is allowed to
+  have outstanding to any one consumer at a time, or a slow consumer just accumulates an unbounded backlog instead
+  of losing one. §5 derives both.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Two separate derivations: explicit acks with a credit window, and asynchronous confirms</h2>
+  <p>These are genuinely two different problems wearing similar clothes. Work through the consumer side first —
+  how does the broker know a message was handled, and how does it avoid flooding a slow consumer — then the
+  publisher side — how does a producer know a message is safely durable without paying for a synchronous
+  round trip on every single message.</p>
+
+  <h3>Consumer side: from "trust the socket" to "explicit, tagged, credit-limited"</h3>
+  <div class="widget deck" id="deckAck">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Deriving delivery tags, Basic.Ack and prefetch</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>The deck's final state is the real protocol: every message delivered on a channel carries a
+  <b>delivery tag</b> — a 64-bit counter, monotonically increasing, <i>scoped to that one channel</i>. The
+  consumer calls <code>Basic.Ack(delivery_tag, multiple)</code> when done; the broker only then removes the
+  message from the durability-relevant part of its bookkeeping. <code>Basic.Qos(prefetch_count)</code> caps how
+  many unacked messages the broker will let accumulate before it stops delivering more — the credit window that
+  turns "unbounded backlog" into "a number you chose."</p>
+
+  <div class="callout warn">
+    <div class="co-t">WHY PER-CHANNEL, NOT GLOBAL OR PER-CONNECTION</div>
+    <p>A delivery tag only has meaning as an instruction back to <i>the channel that issued it</i> —
+    <code>Basic.Ack</code> is sent on a channel, and the broker interprets the tag against that channel's own
+    unacked-set, not some node-wide table. Making the counter per-channel means two independent channels — even
+    on the same connection, even in the same process — never contend on a shared atomic increment, and never need
+    to coordinate at all: <code>rabbit_channel</code> is already a single-threaded gen_server2 process handling one
+    channel's protocol traffic serially, so a private, unshared counter is simply a field in that process's own
+    state, incremented with zero synchronization cost. A global counter would force every publish and every ack
+    across the entire node through one contended piece of shared state for no semantic benefit — acks are
+    inherently a channel-scoped conversation, not a node-scoped one.</p>
+  </div>
+
+  <h3>Publisher side: from "hope" to synchronous transactions to asynchronous confirms</h3>
+  <div class="widget deck" id="deckConfirm">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Deriving publisher confirms from AMQP transactions' failure</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>The AMQP 0-9-1 spec's own answer to "does the publisher know it's safe" is the <code>Tx</code> class:
+  <code>Tx.Select</code> puts a channel into transaction mode; every publish since the last commit is only
+  durably applied when <code>Tx.Commit</code> returns. It works, and it is honest — but §6 quantifies exactly why
+  it was abandoned in practice. <b>Confirms</b> (<code>Confirm.Select</code>) are RabbitMQ's answer: the broker
+  assigns each published message on a confirm-mode channel a sequence number, and asynchronously sends back
+  <code>Basic.Ack</code> (reusing the same method name as consumer acks, on the publisher's channel this time)
+  once the message is safely handled — persisted to disk if the message and its queue are durable, or simply
+  enqueued if not. The publisher never blocks a socket write waiting for it; it tracks outstanding sequence
+  numbers and reconciles as acks stream back, possibly batched via <code>multiple</code>, possibly out of order
+  relative to publish order.</p>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Requeue storms, poison loops, mistuned prefetch, and a durability triad nobody checks at runtime</h2>
+  <p>Explicit acks plus a credit window plus asynchronous confirms is the right architecture — and it has four
+  real, physical costs that every operator eventually meets in production:</p>
+
+  <h3>1. Channel/connection death requeues everything, all at once, near the head</h3>
+  <p>This is the entire durability contract for in-flight work, stated precisely: <b>if a channel or its owning
+  connection terminates for any reason while messages are in its unacked set, the broker automatically requeues
+  every one of them.</b> That's the safety property — but it has a sharp edge. A consumer with
+  <code>prefetch_count=500</code> that crashes mid-batch doesn't lose work (good), but it also doesn't requeue
+  those 500 messages gently: they reappear as a burst, and because a requeued message is reinserted essentially at
+  the front of its queue rather than the back, <b>ordering is not preserved across a redelivery</b> — a fact
+  applications that assume strict FIFO consistently get wrong. A message published fifth can be redelivered ahead
+  of a message published third, because "put it back roughly where a not-yet-delivered message would sensibly go"
+  was never a promise to preserve the original global sequence, only to not lose the message.</p>
+
+  <h3>2. The poison-message loop is a mathematical certainty, not an edge case</h3>
+  <p>Consider a message that will <i>always</i> fail processing — a malformed payload, a foreign-key reference
+  that will never resolve, a bug in the handler triggered by this specific input. The naive, "safe-looking" fix is:
+  catch the exception, call <code>Basic.Nack(requeue=true)</code> so the message "isn't lost." Follow that logic
+  forward: the broker puts the message back, near the head, immediately eligible for redelivery; the very next
+  available consumer (often the same one, an instant later) receives it again; it fails again; it's nacked with
+  requeue again. <b>Nothing in this loop terminates.</b> There is no decrementing counter, no backoff, no
+  escape hatch — just an infinite cycle bounded only by the round-trip latency of deliver→process→nack, consuming
+  100% of one consumer's capacity (or, worse, blocking an entire single-consumer queue if the poison message
+  sits at the head) while contributing zero completed work.</p>
+  <div class="callout deep">
+    <div class="co-t">THE TWO REAL FIXES — NEITHER IS "TRY HARDER IN THE HANDLER"</div>
+    <p><b>Dead-lettering with a delivery limit</b> (chapter 8's territory): quorum queues can track a delivery
+    count and, once it exceeds <code>x-delivery-limit</code>, automatically route the message to a configured
+    dead-letter exchange instead of redelivering it again — the loop is broken by the broker itself, with no
+    client cooperation required. <b>Client-side counting</b>: stamp an attempt counter into message headers on
+    first failure (or use the broker-provided <code>x-delivery-count</code> header on quorum queues), and once a
+    threshold is hit, nack with <code>requeue=false</code> and publish to a manual retry/dead-letter queue instead.
+    Both fixes share the same shape: <i>something must count</i>, because <code>redelivered</code> alone
+    (next paragraph) cannot.</p>
+  </div>
+
+  <h3>3. The redelivered flag is a hint, not a count</h3>
+  <p><code>redelivered</code> is a single boolean the broker sets on a <code>Basic.Deliver</code> when it believes
+  this message has been sent to <i>some</i> consumer before — it is not a counter, it does not distinguish a
+  first redelivery from a fiftieth, and the broker itself documents it as best-effort (a broker crash and restart
+  can legitimately cause a message to be redelivered without the flag surviving, or set when, strictly, it
+  needn't be). Treating <code>redelivered</code> as a retry counter — "reject it if redelivered is true twice" — is
+  a category error; it can be true on attempt two exactly as often as attempt two hundred.</p>
+
+  <h3>4. Prefetch is a single knob balancing two things that pull in opposite directions</h3>
+  <p>A small live preview, ahead of §8's full derivation and §15's simulator: drag prefetch here and watch two
+  numbers move in opposite directions — this is the entire chapter's central tension in miniature.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Preview — prefetch trades fairness for throughput</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>prefetch_count</label><input type="range" id="pv-prefetch" min="1" max="50" value="1" step="1"><span class="val" id="pv-prefetch-val">1</span></div>
+      <div class="memlegend" id="pv-legend"></div>
+      <div class="memmap" id="pv-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="pv-note"></p>
+    </div>
+  </div>
+
+  <h3>5. The durability triad is silent about which piece you forgot</h3>
+  <p>A message survives a broker restart only if <b>all three</b> of the following hold: the message was published
+  with <code>delivery_mode=2</code> (persistent), the queue it landed in was declared <code>durable=true</code>,
+  <i>and</i> the exchange it was routed through was declared <code>durable=true</code>. Miss any one — publish
+  transient to a durable queue, or route a persistent message through a transient exchange whose binding doesn't
+  survive a restart — and you silently lose the guarantee with <b>no runtime error at publish time</b>. The broker
+  accepts the publish, confirms it (confirms only promise "safely handled given the durability you configured," not
+  "durable regardless of what you configured"), and the gap only becomes visible at the next restart, which by
+  definition is the worst possible moment to discover it.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">Six objects, click through them</h2>
+  <p>Delivery reliability, end to end, decomposes into six pieces of state and one flow-control gate. Nothing
+  here is exotic — it's the same "small stateful objects owned by a process" pattern the rest of this course keeps
+  returning to, applied specifically to the question "what have I sent, and what has come back."</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">CONSUMER SIDE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="tag">delivery tag</div>
+          <div class="acard" data-p="unacked">unacked set</div>
+          <div class="acard" data-p="qos">Basic.Qos (prefetch)</div>
+        </div>
+        <div class="arch-row-label">PUBLISHER SIDE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="confirm">confirm tracker</div>
+          <div class="acard" data-p="return">Basic.Return</div>
+        </div>
+        <div class="arch-row-label">SHARED FAILURE PATH (chapter 8 owns the destination)</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="dlx">dead-letter exchange — where messages go when nack(requeue=false) or a delivery limit is exceeded</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY THE UNACKED SET LIVES ON THE CHANNEL, NOT THE QUEUE</div>
+    <p>A message can be delivered from a queue to any of several consumers spread across several channels and
+    connections. Once delivered, whether it's "done" is entirely a fact about <i>that specific delivery</i> — which
+    channel it went out on, which delivery tag it got there. The queue process's job is producing an ordered
+    stream of messages and eventually being told "this one's done, drop it" or "this one's back, requeue it"; it
+    doesn't need to track deliveries itself once handed off. The channel process is the natural owner because it's
+    already the thing that assigned the delivery tag and is already being monitored for liveness by the queues it
+    consumes from — when it dies, the queues it delivered to are exactly the queues that need to hear about it.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Delivery tags, the unacked set, requeue-on-death, and deriving the right prefetch</h2>
+
+  <h3>(a) The delivery tag: a per-channel counter, nothing more</h3>
+  <p>Inside <code>rabbit_channel</code>'s gen_server2 state is an integer, <code>next_tag</code>, starting at 1 and
+  incremented by exactly one for every <code>Basic.Deliver</code> (and every <code>Basic.Get</code>) the channel
+  sends. There is no encoding trick — no queue identity, no timestamp, no node id packed into the bits. It is
+  deliberately the simplest possible monotonic counter, because its only job is to be a key the channel itself can
+  look up later in its own unacked table. That table — conceptually <code>#{DeliveryTag => {QueuePid, MsgId}}</code>
+  — is exactly what a <code>Basic.Ack(delivery_tag=N)</code> resolves against: find the entry for <i>N</i>, tell
+  that queue "this one's confirmed handled, you can drop your copy," and remove the entry.</p>
+
+  <h3>(b) Basic.Ack, Basic.Nack, Basic.Reject, and the multiple flag</h3>
+  <table class="cmp">
+    <tr><th>METHOD</th><th>ORIGIN</th><th>SCOPE</th><th>EFFECT</th></tr>
+    <tr><td>Basic.Ack</td><td>AMQP 0-9-1 spec</td><td>one tag, or with <code>multiple=true</code> every unacked tag ≤ this one on the channel</td><td>Message(s) considered handled; dropped from the queue's unacked/durable bookkeeping</td></tr>
+    <tr><td>Basic.Reject</td><td>AMQP 0-9-1 spec</td><td>exactly one tag — no <code>multiple</code></td><td><code>requeue=true</code>: reinserted near head. <code>requeue=false</code>: dropped or dead-lettered if a DLX is configured</td></tr>
+    <tr><td>Basic.Nack</td><td>RabbitMQ extension</td><td>one tag, or with <code>multiple=true</code> a whole range — the capability Reject was missing</td><td>Same requeue/drop/dead-letter semantics as Reject, but batchable like Ack</td></tr>
+  </table>
+  <p>The <code>multiple</code> flag exists purely to amortize round trips: acking (or nacking) delivery tag 500
+  with <code>multiple=true</code> is a single frame that resolves every outstanding tag from the last ack point
+  through 500 — the standard pattern for a consumer that processes a batch and acks once at the end rather than
+  once per message.</p>
+
+  <h3>(c) What actually happens when a channel dies mid-delivery</h3>
+  <p>Every queue a channel has consumed from holds a monitor on that channel's process. When the channel
+  terminates — a client disconnect, an uncaught protocol violation, the process crashing — every monitoring
+  queue receives a <code>'DOWN'</code> message and walks its own record of what it delivered to that channel's
+  consumer(s), reinserting anything still unacked. This is not a special recovery code path bolted on after the
+  fact: it's the ordinary supervision/monitor mechanism from chapter 1, applied to "messages this process was
+  trusted with." No coordinator process polls for dead channels; the queues that care are already watching.</p>
+
+  <div class="widget deck" id="deckCrash">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A channel dies with 4 unacked messages in flight</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(d) Deriving the correct prefetch value</h3>
+  <p>Model one consumer's steady-state throughput as a function of <code>prefetch_count</code> (<b>P</b>), the
+  network round-trip time to send an ack and receive the next batch of deliveries (<b>RTT</b>), and the
+  per-message processing time (<b>T</b>). With prefetch <i>P</i>, the broker keeps up to <i>P</i> messages
+  outstanding, so the consumer can be processing message <i>k</i> while message <i>k+1</i>...<i>k+P-1</i> are
+  already sitting in its local buffer — the ack round trip for early messages in the window overlaps with
+  processing later ones, provided the window is wide enough to hide the RTT entirely: that requires
+  <b>P·T ≥ RTT</b>, i.e. <b>P ≥ RTT / T</b>. Round up for jitter (network variance, GC pauses, occasional slow
+  messages) and you get the practical rule: <b>prefetch ≈ ⌈RTT / T⌉, rounded up further for safety margin.</b> Below
+  that value, the consumer periodically drains its window and stalls waiting on an ack round trip it hasn't
+  overlapped — throughput becomes RTT-bound instead of processing-bound.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Prefetch derivation — RTT, processing time, throughput</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>round-trip time (RTT)</label><input type="range" id="pf-rtt" min="1" max="100" value="20" step="1"><span class="val" id="pf-rtt-val">20 ms</span></div>
+      <div class="slider-row"><label>processing time / msg</label><input type="range" id="pf-proc" min="1" max="50" value="5" step="1"><span class="val" id="pf-proc-val">5 ms</span></div>
+      <div class="slider-row"><label>your prefetch_count</label><input type="range" id="pf-pre" min="1" max="80" value="4" step="1"><span class="val" id="pf-pre-val">4</span></div>
+      <p style="font-size:13px;color:#c6cddb;margin-top:6px" id="pf-derived"></p>
+      <div class="chartbox"><canvas id="pf-chart" width="740" height="230"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> achieved throughput (msgs/sec)</span>
+        <span><span style="color:var(--purple)">┈</span> theoretical max (1/T)</span>
+        <span><span style="color:var(--warn)">┆</span> your prefetch</span>
+      </div>
+    </div>
+  </div>
+
+  <p>Both extremes are real, deliberate operating points, not mistakes: <code>prefetch=1</code> gives every
+  competing consumer on a shared queue perfectly fair round-robin access (nobody can grab a second message until
+  they've acked the first) at the cost of paying a full RTT per message when RTT is non-trivial relative to
+  processing time. <code>prefetch=0</code> (unlimited) removes the flow-control valve entirely: the broker pushes
+  every ready message as fast as the socket accepts writes, so whichever consumer's socket drains fastest — often
+  simply whichever connected first — can end up buffering the queue's entire backlog locally while siblings sit
+  idle, and that consumer's crash then requeues (and redelivers, ordering-scrambled per §6) the whole hoard at once.</p>
+
+  <h3>(e) Global vs per-consumer QoS</h3>
+  <p><code>Basic.Qos(prefetch_count, global)</code> has meant, since RabbitMQ 3.3 (2014), <code>global=false</code>
+  by default: the prefetch limit applies <i>per consumer</i> registered on that channel — each consumer on a
+  multi-consumer channel gets its own independent window of <i>P</i> unacked messages. Set <code>global=true</code>
+  and the same limit instead caps the <i>sum</i> across every consumer sharing the channel — useful when you want
+  one shared, bounded in-flight budget regardless of how many consumers happen to be registered, at the cost of
+  one busy consumer being able to starve its siblings' share of that shared window.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Delivery guarantees, seven systems' worth</h2>
+  <p>"At-least-once with explicit acknowledgement and a flow-control credit window" is RabbitMQ's specific answer;
+  read the spread below as proof that every other serious system answers "how do you know it was handled, and how
+  do you keep a consumer from being flooded" with a genuinely different mechanism and a genuinely different price.</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>CONSUMER ACK MODEL</th><th>FLOW CONTROL</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>RabbitMQ</td><td>Per-message <code>Basic.Ack</code>/<code>Nack</code>, delivery tag per channel, auto-requeue on channel death</td>
+      <td><code>Basic.Qos</code> prefetch — a tunable in-flight credit window</td>
+      <td><span class="pill b">requeue reorders</span> <span class="pill b">poison loop needs a delivery-limit fix</span></td></tr>
+    <tr><td>Apache Kafka</td><td>Consumer commits an <b>offset</b>, not a per-message ack — implicitly acks everything up to it</td>
+      <td>Pull-based: consumer fetches at its own pace; no broker-pushed credit window</td>
+      <td><span class="pill y">a batch failure re-processes the whole uncommitted batch, not one message</span></td></tr>
+    <tr><td>Amazon SQS</td><td><b>Visibility timeout</b>: a message becomes invisible on receive, deleted explicitly on success, reappears automatically on timeout</td>
+      <td>Long/short polling; <code>MaxNumberOfMessages</code> per receive (≤10)</td>
+      <td><span class="pill b">timeout-based redelivery risks duplicate processing if the timeout is too short for real work</span></td></tr>
+    <tr><td>Google Pub/Sub</td><td>Ack deadline per message (extendable); nack forces immediate redelivery</td>
+      <td>Client-library flow control (max outstanding messages/bytes) — conceptually close to prefetch</td>
+      <td><span class="pill y">deadline extension is a client responsibility; forgetting it duplicates work</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Explicit ack, nack, or "in progress" (extend processing time) per message, similar shape to RabbitMQ's</td>
+      <td><code>MaxAckPending</code> — directly analogous to prefetch_count</td>
+      <td><span class="pill g">closest philosophical match to RabbitMQ's model</span> <span class="pill y">smaller ecosystem of routing features around it</span></td></tr>
+    <tr><td>ActiveMQ / Artemis</td><td>JMS acknowledgement modes: AUTO_ACKNOWLEDGE, CLIENT_ACKNOWLEDGE, DUPS_OK, plus transacted sessions</td>
+      <td>Consumer <code>prefetchSize</code>, same purpose as RabbitMQ's, different default philosophy (large default window)</td>
+      <td><span class="pill y">JMS's ack modes are coarser and less explicit than per-message Ack/Nack with a multiple flag</span></td></tr>
+    <tr><td>Redis Streams</td><td>Consumer groups track a <b>Pending Entries List</b>; <code>XACK</code> removes an entry; <code>XCLAIM</code> reassigns stale ones</td>
+      <td>No native broker-pushed credit window — client reads in batches via <code>COUNT</code></td>
+      <td><span class="pill b">idle/stale-consumer detection and reclaim (XCLAIM) is a manual operational step, not automatic</span></td></tr>
+  </table>
+  <p>The recurring pattern: everyone needs <i>some</i> mechanism to say "this specific piece of work is not yet
+  confirmed done" (a delivery tag, an offset, a visibility timeout, a pending-entries list) and <i>some</i>
+  mechanism to bound how much unconfirmed work can pile up on one consumer (prefetch, `MaxAckPending`, poll
+  batch size, client flow control). RabbitMQ's specific trade is granularity: per-message tags with a
+  <code>multiple</code> batching flag are more precise than an offset or a visibility timeout, at the cost of
+  more protocol chatter than a pure offset commit.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">What you can predict about throughput and memory before benchmarking</h2>
+  <p>From §8's derivation alone, several concrete performance properties follow:</p>
+  <ul class="plain">
+    <li><b>Throughput under prefetch <i>P</i>, RTT <i>R</i>, processing time <i>T</i>:</b> approximately
+      <code>min(1/T, P/R)</code> messages/sec — processing-bound once <i>P</i> is large enough to hide the round
+      trip, RTT-bound below that. The chart below makes the knee in this curve visible.</li>
+    <li><b>Unacked-set memory is O(prefetch × message-reference-size)</b> per consumer, not O(message body size) —
+      classic queues keep the actual payload in the message store/queue index (chapter 4); the channel's unacked
+      table holds lightweight references, so raising prefetch by 10× costs kilobytes, not megabytes, on the
+      channel process — the real cost of high prefetch is the fairness/ordering exposure from §6, not memory.</li>
+    <li><b>Confirm-tracking memory is O(unconfirmed publishes)</b> on the publisher's client side — an application
+      publishing faster than the broker confirms accumulates its own unbounded backlog symmetric to §4's consumer
+      problem; well-behaved publisher libraries apply their own outstanding-confirm limit for exactly this reason.</li>
+    <li><b>Dead-lettering (delivery-limit) adds one extra internal republish</b> per poison message before it's
+      out of the hot path for good — cheap relative to an unbounded loop, but not free; it's still a
+      re-route-and-requeue operation on the broker's critical path once per exhausted message.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Confirms latency — transient vs durable+confirm publish path</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>publish rate</label><input type="range" id="cf-rate" min="10" max="5000" value="500" step="10"><span class="val" id="cf-rate-val">500/s</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="cf-transient">transient, no confirm (fire-and-forget)</button>
+        <button class="chip" id="cf-durable">delivery_mode=2 + durable queue + confirm.select</button>
+      </div>
+      <div class="chartbox"><canvas id="cf-chart" width="740" height="240"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> per-message confirm latency (ms, model units)</span>
+        <span><span style="color:var(--warn)">┆</span> your publish rate</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="cf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are analytic sketches tuned to show shape, not calibrated benchmark output: fire-and-forget
+    publishing has no broker round trip to wait on at all from the publisher's perspective, so its "latency" here
+    is just enqueue-side overhead; durable+confirm pays a real fsync-adjacent cost per batch of confirmed messages
+    plus the network round trip for the ack frame, which is why RabbitMQ (like most brokers) batches fsyncs across
+    concurrently-published messages rather than syncing per message — the same batching insight that makes
+    confirms roughly two orders of magnitude cheaper than AMQP transactions' one-fsync-per-commit model (§6).</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three stories: a forgotten ack, a poison loop, and a default nobody read</h2>
+
+  <h3>Story 1: the "prefetch=0 by default" trap that RabbitMQ's own docs now warn about</h3>
+  <p>For years, many client library quickstarts and tutorials shipped examples with no <code>Basic.Qos</code> call
+  at all — meaning unlimited prefetch, the default when a consumer never sets it. Teams that copy-pasted those
+  examples into production workloads with multiple consumers on a shared queue routinely discovered, only after a
+  round of complaints about "why is one worker doing all the work while the others sit idle," that unlimited
+  prefetch means the broker delivers as fast as sockets accept — one fast-draining consumer can vacuum an entire
+  backlog before its slower siblings receive a single message. RabbitMQ's own documentation has since added an
+  explicit callout recommending a bounded prefetch (starting guidance is commonly cited as "somewhere between 10
+  and a few hundred, tuned to your processing time," directly following this chapter's RTT/T derivation) as a
+  default operational practice, not an edge-case tuning exercise.</p>
+
+  <h3>Story 2: consumer_timeout (RabbitMQ 3.12, 2022) — turning a silent leak into a loud failure</h3>
+  <p>Before 3.12, a consumer that received a message and simply never acked it (a bug, a deadlock, a forgotten
+  code path) left that message parked in the channel's unacked set indefinitely — invisible unless an operator
+  went looking at per-channel unacked counts, and meanwhile counting against that channel's prefetch window
+  forever, quietly reducing its effective throughput to zero without any error being raised anywhere.
+  RabbitMQ 3.12 introduced <code>consumer_timeout</code> (default 30 minutes, configurable): if a delivery isn't
+  acked within that window, the broker force-closes the channel with a protocol error, requeueing the stuck
+  message via the exact channel-death mechanism §8 describes — converting an invisible, permanent stall into a
+  loud, immediately diagnosable failure. Several teams migrating to 3.12+ discovered long-running batch-style
+  consumers (deliberately holding messages unacked for tens of minutes by design) tripping this new default and
+  had to explicitly raise the timeout — a reminder that a safety default protecting the common case can surprise
+  the deliberately unusual one.</p>
+
+  <h3>Story 3: an under-provisioned retry queue turns one poison message into a five-alarm incident</h3>
+  <p>A commonly reported shape (echoed across CloudAMQP's and Bloomberg's public operational writeups on
+  RabbitMQ consumer patterns): a single malformed message — often the result of a schema change on the publisher
+  side that the consumer's older deserializer can't parse — enters a queue whose consumer code catches the
+  deserialization exception and nacks with <code>requeue=true</code>, exactly the §6 poison loop. Because the
+  queue in question had only one consumer and no dead-letter configuration, that one bad message pinned 100% of
+  the consumer's throughput in an infinite redeliver-fail-requeue cycle, and every legitimate message published
+  behind it queued up unprocessed for the duration — turning a single malformed record into what looked, from a
+  monitoring dashboard, like a total processing outage. The fix in every one of these postmortems is the same:
+  a dead-letter exchange with a delivery limit (or client-side attempt counting) is not an optional hardening
+  step, it is the difference between a single bad record and a total consumer outage.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the ack/confirm split and the prefetch formula at a whiteboard?</h2>
+  <p>Think before revealing — this is Staff-interview depth around a topic that looks simple until someone asks
+  you to derive the numbers instead of quoting them.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: the unacked table and the QoS limiter</h2>
+  <p>Where this chapter's concepts physically live. Files marked
+  <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">deps/rabbit/src/</span></div>
+<div>├── <span class="dir">channels/</span></div>
+<div>│   ├── <span class="fhl">● rabbit_channel.erl</span> <span class="fnote">— gen_server2; owns next_tag, the unacked table, and the QoS/prefetch limiter for this channel</span></div>
+<div>│   └── rabbit_limiter.erl <span class="fnote">— the credit-tracking module Basic.Qos configures; decides "may I deliver more?"</span></div>
+<div>├── <span class="dir">queue/</span></div>
+<div>│   ├── <span class="fhl">● rabbit_amqqueue_process.erl</span> <span class="fnote">— gen_server2; monitors consuming channels, requeues on 'DOWN'</span></div>
+<div>│   ├── <span class="fhl">● rabbit_variable_queue.erl</span> <span class="fnote">— tracks which messages are "pending ack" vs "ready", per queue</span></div>
+<div>│   └── rabbit_fifo.erl <span class="fnote">— quorum-queue equivalent: delivery tracking + x-delivery-count live in the Raft log itself (ch. 6+/8)</span></div>
+<div>├── <span class="dir">confirms/</span></div>
+<div>│   ├── <span class="fhl">● rabbit_confirms.erl</span> <span class="fnote">— per-channel structure tracking outstanding publisher-confirm sequence numbers</span></div>
+<div>│   └── rabbit_msg_store.erl <span class="fnote">— where a persistent message is fsync'd before a confirm can be sent for it (ch. 5's durability triad)</span></div>
+<div>└── <span class="dir">dead_letter/</span></div>
+<div>    └── rabbit_dead_letter.erl <span class="fnote">— republishes a nack(requeue=false)'d or delivery-limit-exceeded message to its DLX (ch. 8)</span></div>
+  </div></div>
+
+  <p>First, the shape of the channel's unacked bookkeeping and what <code>Basic.Ack</code> actually does to it,
+  simplified but structurally faithful:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_channel.erl — handling Basic.Ack, simplified</span></div>
+    <pre><span class="f">handle_method</span>(#<span class="s">'basic.ack'</span>{delivery_tag = Tag, multiple = Multiple}, _, State) -&gt;
+    <span class="c">%% unacked_message_q is THIS channel's own table — private state,</span>
+    <span class="c">%% never shared with any other channel, never touched by another process.</span>
+    {Acked, Remaining} = <span class="f">collect_acks</span>(State#ch.unacked_message_q, Tag, Multiple),
+
+    <span class="c">%% Tell each queue that delivered one of these messages: it's handled.</span>
+    <span class="k">lists</span>:<span class="f">foreach</span>(<span class="k">fun</span>({_Tag, QPid, MsgId}) -&gt;
+        rabbit_amqqueue:<span class="f">ack</span>(QPid, [MsgId], self())
+    <span class="k">end</span>, Acked),
+
+    {noreply, State#ch{unacked_message_q = Remaining}}.</pre>
+  </div>
+
+  <p>Second, what a queue does when it receives the monitor <code>'DOWN'</code> for a channel that still had
+  unacked deliveries outstanding — the actual requeue-on-death mechanism:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_amqqueue_process.erl — channel death handling, simplified</span></div>
+    <pre><span class="f">handle_info</span>({<span class="s">'DOWN'</span>, _Ref, process, ChPid, _Reason}, State) -&gt;
+    <span class="c">%% Every message this queue delivered to ChPid and never heard an</span>
+    <span class="c">%% ack for is still sitting in THIS queue's own "pending ack" set —</span>
+    <span class="c">%% the channel never held the message itself, only the bookkeeping.</span>
+    Unacked = rabbit_variable_queue:<span class="f">pending_ack_for_channel</span>(State#q.backing_queue_state, ChPid),
+
+    <span class="c">%% Reinsert near the front — these were already "ready to go" a</span>
+    <span class="c">%% moment ago, so they don't go through fresh-publish ordering.</span>
+    <span class="c">%% This is exactly why redelivery does not preserve global FIFO (ch.5 §6).</span>
+    BQS1 = rabbit_variable_queue:<span class="f">requeue</span>(Unacked, State#q.backing_queue_state),
+
+    {noreply, State#q{backing_queue_state = BQS1}}.</pre>
+  </div>
+
+  <p>Third, the QoS limiter's core decision — whether the channel is currently allowed to accept another
+  delivery from a queue at all:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_limiter.erl — the prefetch gate, simplified</span></div>
+    <pre><span class="f">can_send</span>(Limiter = #limiter{prefetch_count = Prefetch, in_flight = InFlight}, _QPid) <span class="k">when</span>
+    Prefetch =:= <span class="n">0</span> <span class="k">orelse</span> InFlight &lt; Prefetch -&gt;
+    <span class="c">%% Prefetch 0 means "no limit" — the historically dangerous default</span>
+    <span class="c">%% Story 1 (§11) describes. Otherwise: only say yes while there is</span>
+    <span class="c">%% still room under the credit window.</span>
+    {<span class="k">true</span>, Limiter#limiter{in_flight = InFlight + <span class="n">1</span>}};
+<span class="f">can_send</span>(Limiter, _QPid) -&gt;
+    {<span class="k">false</span>, Limiter}. <span class="c">%% queue holds the message; consumer gets it once an ack frees credit</span></pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Put the credit-tracking state as close as possible to the thing being throttled.</b> The limiter lives
+    on the channel, right next to the unacked table it's gating — no separate coordinator process, no round trip
+    to ask permission; a queue asking "can I deliver?" is a synchronous, in-process check against the channel's own
+    counters. <b>2. Let the queue keep owning the actual message until it's provably safe to forget it.</b> The
+    channel's unacked table never holds message bodies, only identifiers — the queue (backed by the message
+    store, chapter 4) is the durable source of truth throughout, so a channel crash loses only bookkeeping,
+    never data. <b>3. Make the dangerous default explicit in the code path, not buried in a config file.</b>
+    <code>prefetch_count =:= 0</code> as a guard clause reads, in the source itself, as "no limit" — the same
+    fact §11's Story 1 shows engineers routinely miss when it's just a number in documentation.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> — read them, they encode the
+  chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a message's life from delivery to dead-letter</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click these events in the order they'd actually happen for a message that ultimately gets dead-lettered after repeated failures, then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The delivery lab: prefetch, acks, and failure, live</h2>
+  <p>A queue feeds three consumers, each with its own adjustable processing time. Drag the shared prefetch slider
+  and watch queue depth, each consumer's unacked set, and per-consumer throughput move — including watching one
+  fast consumer vacuum the whole backlog when prefetch is high. Then break things: kill a consumer mid-processing
+  and watch its unacked messages requeue and reappear elsewhere marked <code>redelivered=true</code>; inject a
+  poison message and watch it burn one consumer in an infinite nack-requeue loop until you dead-letter it; close
+  a channel with outstanding acks; and toggle publisher confirms to see the in-flight publish window and the
+  latency cost of durable+confirm versus fire-and-forget.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">orders queue — delivery lab</span><span class="w-sub" id="sim-phase">RUNNING</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="publane" id="pub-lane">PUBLISHER · confirms: <b id="pub-mode-l" style="color:var(--pg)">OFF (fire-and-forget)</b> · in-flight unconfirmed: <b id="pub-inflight">0</b> · last confirm latency: <b id="pub-latency">–</b></div>
+          <div class="qbox">
+            <div class="qb-t"><span>READY QUEUE</span><span>depth: <span id="q-depth">0</span></span></div>
+            <div class="qmsgs" id="q-msgs"></div>
+          </div>
+          <div id="consumer-lanes"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">FLOW CONTROL</div>
+            <div class="slider-row" style="margin:2px 0"><label>prefetch_count</label><input type="range" id="sim-prefetch" min="1" max="30" value="3" step="1"><span class="val" id="sim-prefetch-val">3</span></div>
+            <div class="btns">
+              <button class="btn" id="sim-publish1">publish ×1</button>
+              <button class="btn" id="sim-publishN">publish ×20</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">FAILURE INJECTION</div>
+            <div class="btns">
+              <button class="btn danger" id="sim-kill">kill random consumer</button>
+              <button class="btn danger" id="sim-closech">close channel (outstanding acks)</button>
+              <button class="btn warn" id="sim-poison">inject poison message</button>
+              <button class="btn good" id="sim-deadletter">dead-letter the poison msg</button>
+              <button class="btn" id="sim-revive">revive dead consumers</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">PUBLISHER CONFIRMS</div>
+            <div class="toggle-row" style="margin:4px 0">
+              <button class="chip on" id="sim-conf-off">fire-and-forget</button>
+              <button class="chip" id="sim-conf-on">durable + confirm.select</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-delivered">0</div><div class="cl">delivered</div></div>
+            <div class="scounter"><div class="cv" id="cnt-acked">0</div><div class="cl">acked</div></div>
+            <div class="scounter"><div class="cv" id="cnt-requeued" style="color:var(--bad)">0</div><div class="cl">requeued</div></div>
+          </div>
+          <div style="padding:11px 15px">
+            <div class="meter"><div class="m-l"><span>POISON LOOP BURN</span><span id="m-poison-v">0%</span></div><div class="m-bar"><div class="m-fill" id="m-poison"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Set prefetch to 1, publish ×20 — watch delivery round-robin fairly but slowly across all three
+    consumers. Raise prefetch to 30 and re-publish — watch whichever consumer has the shortest processing time
+    vacuum most of the backlog while the slow one barely gets any. <b>2.</b> Kill a consumer mid-processing —
+    watch its unacked messages reappear in the ready queue marked <code>redelivered</code>, then get picked up by
+    a survivor. <b>3.</b> Inject a poison message and watch the poison-loop-burn meter climb toward 100% on
+    whichever consumer keeps drawing it — then hit "dead-letter the poison msg" and watch the loop break instantly.
+    <b>4.</b> Close a channel with several unacked messages outstanding — same requeue mechanism as a kill, framed
+    as a deliberate channel close instead of a process crash. <b>5.</b> Toggle publisher confirms on and watch the
+    in-flight unconfirmed counter and per-message confirm latency appear where fire-and-forget showed nothing.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 6: three questions, no options</h2>
+  <p>No multiple choice here. Form a full answer in your head, then reveal. If a reveal surprises you, re-run the
+  relevant simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 05 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now explain why acks and confirms are independent
+    contracts, derive the correct prefetch value from RTT and processing time, and name the exact mechanism —
+    channel death, monitored by every queue it consumed from — that makes in-flight work durable. Chapter 6 leaves
+    a single node behind: clustering, and the metadata store (Mnesia, moving to Khepri) that makes exchanges,
+    queues, and bindings agree across every node in a cluster.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="rmq-06.html" style="text-decoration:none;display:inline-flex;align-items:center">RMQ-06: Clustering & Mnesia/Khepri Metadata →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* qaCards renderer */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2003–06", l:"acks in the draft from day one", d:"<b>Consumer acknowledgement is original AMQP protocol machinery.</b> The working group treated 'did the consumer actually handle this' as a first-class concern from the earliest drafts — <code>Basic.Ack</code> and <code>Basic.Reject</code> ship as part of the spec, not bolted on later." },
+  { yr:"2006–08", l:"AMQP 0-8 → 0-9-1, Tx class included", d:"<b>The Tx class (Tx.Select/Tx.Commit/Tx.Rollback)</b> is the spec's original answer to publisher confidence — synchronous, transactional, and (as §6 derives) roughly two orders of magnitude slower per message than what would eventually replace it in practice." },
+  { yr:"2007", l:"RabbitMQ 1.0", d:"RabbitMQ ships implementing the full 0-8/0-9-1 ack surface: per-channel delivery tags, <code>Basic.Qos</code> prefetch, <code>Basic.Reject</code> — everything this chapter's consumer side describes was present from the first release." },
+  { yr:"~2009–10", l:"Basic.Nack — a RabbitMQ extension", d:"<b>RabbitMQ adds <code>Basic.Nack</code></b> as a non-standard extension specifically to give reject-style semantics a <code>multiple</code> flag — batch-nacking a range of delivery tags the way <code>Basic.Ack</code> already could, a capability <code>Basic.Reject</code> never had." },
+  { yr:"2011", l:"publisher confirms ship", d:"<b>RabbitMQ introduces <code>confirm.select</code></b> — asynchronous, pipelined publisher acknowledgement, explicitly framed by the team as the fix for AMQP transactions' throughput problem. Widely enough adopted that other brokers and protocol extensions later converged on similar 'confirm' semantics." },
+  { yr:"2014", l:"RabbitMQ 3.3 — per-consumer QoS becomes default", d:"<b>Basic.Qos(global=false) becomes the default</b>, meaning prefetch is applied per-consumer rather than summed across every consumer on a channel — a behavior change significant enough that the release notes call it out explicitly, since it silently changes throughput characteristics for any channel with more than one consumer." },
+  { yr:"2019", l:"quorum queues (3.8) track delivery count natively", d:"RabbitMQ 3.8 ships quorum queues built on the <code>ra</code> Raft library — for the first time, a queue type tracks a real <b>delivery count</b> per message in its replicated log, enabling <code>x-delivery-limit</code>: automatic dead-lettering after N redeliveries, without any client-side counting (ch. 8's territory, foreshadowed here because it's the real fix for §6's poison loop)." },
+  { yr:"2021", l:"3.9 — streams arrive, a very different delivery model", d:"RabbitMQ 3.9's streams introduce offset-based, non-destructive reads (chapter 9) — a deliberate contrast to this chapter's destructive, ack-and-remove classic/quorum-queue model, for workloads that want Kafka-style replay instead of per-message ack bookkeeping." },
+  { yr:"2022", l:"3.12 — consumer_timeout", d:"<b>RabbitMQ 3.12 adds <code>consumer_timeout</code></b> (default 30 min): a channel holding a delivery unacked longer than the timeout is force-closed by the broker, requeueing the stuck message — converting the previously silent 'forgot to ack' failure mode into an immediate, loud protocol error (§11 Story 2)." },
+  { yr:"2024", l:"4.0 — mirrored queues gone, delivery semantics unchanged", d:"RabbitMQ 4.0 removes mirrored classic queues entirely (chapter 1/6's territory) but leaves this chapter's ack/nack/confirm/prefetch surface untouched — proof that the delivery contract this chapter covers is orthogonal to which queue type or replication scheme sits underneath it." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===4 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[4].d;
+
+/* ============================================================
+   2. DECK: auto-ack crash (§3) — canvas-free box animation
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckNaive", [
+    { stage: wrap(box("QUEUE (durable, 4 messages ready)", cell("msg 101")+cell("msg 102")+cell("msg 103")+cell("msg 104"))),
+      cap:`<b>Steady state.</b> Four messages sit ready. Consumer has <code>auto_ack=true</code> — no delivery tags, no unacked table.` },
+    { stage: wrap(box("QUEUE (now empty — all 'delivered')", cell("(empty)","#5b6475")), box("CONSUMER — local buffer", cell("msg 101 — done, written to ledger","#4ade80")+cell("msg 102 — processing…","#ff9f43")+cell("msg 103 — queued in library buffer","#8b94a7")+cell("msg 104 — queued in library buffer","#8b94a7"))),
+      cap:`<b>The broker already forgot all four.</b> The instant each <code>Basic.Deliver</code> frame was written, the queue dropped its copy. From the broker's point of view, delivery = done. Messages 103 and 104 haven't even started processing yet.` },
+    { stage: wrap(box("QUEUE", cell("(empty)","#5b6475")), box("CONSUMER PROCESS — CRASHED", cell("msg 101 — done","#4ade80")+cell("msg 102 — LOST mid-processing","#f25c54","rgba(242,92,84,.12)")+cell("msg 103 — LOST, never started","#f25c54","rgba(242,92,84,.12)")+cell("msg 104 — LOST, never started","#f25c54","rgba(242,92,84,.12)"))),
+      cap:`<b>The process dies.</b> Messages 102, 103, 104 are gone — not requeued, not logged, not flagged anywhere. The broker has no record that they were ever anything but successfully delivered.` },
+    { stage: wrap(box("WHAT NOBODY OBSERVES", cell("no error in broker logs","#f25c54")+cell("no queue-depth alarm","#f25c54")+cell("no protocol-level signal at all","#f25c54"))),
+      cap:`<b>Verdict.</b> Three messages vanished and the system that should have told you had no mechanism to. We need the broker to keep its own copy until the consumer explicitly says "done" — §5 derives exactly that.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: deriving ack + prefetch (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckAck", [
+    { stage: wrap(box("REQUIREMENT", cell("broker must not drop its copy until consumer says done","#ff9f43","rgba(255,159,67,.08)"))),
+      cap:`<b>Start from §4's gap.</b> The broker needs to keep every delivered-but-unconfirmed message somewhere, and needs a way for the consumer to say "this one, specifically, is done."` },
+    { stage: wrap(box("EVERY DELIVERY GETS A TAG", cell("Basic.Deliver(tag=1, msg=101)","#60a5fa")+cell("Basic.Deliver(tag=2, msg=102)","#60a5fa")+cell("Basic.Deliver(tag=3, msg=103)","#60a5fa"))),
+      cap:`<b>Introduce the delivery tag.</b> A per-channel monotonic counter. Now "done" can be said precisely: <code>Basic.Ack(tag=2)</code> means exactly message 102, no ambiguity.` },
+    { stage: wrap(box("BROKER KEEPS AN UNACKED SET", cell("channel's unacked table: {1→101, 2→102, 3→103}","#a78bfa"))),
+      cap:`<b>The broker's copy lives until acked.</b> Nothing is dropped from durability bookkeeping at delivery time anymore — only at ack time. A crash before ack means the message is still recoverable (chapter 8's death-triggered requeue).` },
+    { stage: wrap(box("BUT NOTHING YET LIMITS HOW MANY", cell("broker could still push 500,000 unacked messages to one slow socket","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Correctness alone isn't enough.</b> We fixed "lost forever" but not "unbounded backlog" — a slow consumer can still accumulate every message in the queue as unacked state before it's processed any of them.` },
+    { stage: wrap(box("Basic.Qos(prefetch_count = N)", cell("broker stops delivering once N are unacked on this consumer","#4ade80")+cell("consumer acks → credit frees → broker resumes","#4ade80"))),
+      cap:`<b>The credit window.</b> Prefetch caps the in-flight window at a number you choose. This is the complete consumer-side model: tag + unacked set + credit limit. §8 derives what N should actually be.` }
+  ]);
+})();
+
+/* ============================================================
+   4. DECK: deriving confirms from Tx's failure (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckConfirm", [
+    { stage: wrap(box("CANDIDATE A — AMQP transactions", cell("Tx.Select","#60a5fa")+cell("publish, publish, publish…","#60a5fa")+cell("Tx.Commit ← blocks until fsync'd","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>The spec's own answer.</b> Correct and simple to reason about — but <code>Tx.Commit</code> is a synchronous round trip that waits for a real disk fsync. One commit per message (the naive usage pattern) means one fsync round trip per message.` },
+    { stage: wrap(box("THE COST, MEASURED IN ORDERS OF MAGNITUDE", cell("~100x slower than pipelined async acking, in practice reports","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Quantify it.</b> A disk fsync is milliseconds; a network round trip is sub-millisecond on a LAN. Serializing "publish → wait for fsync → next publish" means throughput is bounded by fsync latency, not network or CPU — commonly cited at roughly two orders of magnitude slower than a pipelined alternative.` },
+    { stage: wrap(box("CANDIDATE B — just don't wait", cell("publish, publish, publish… no ack at all","#8b94a7"))),
+      cap:`<b>Fire-and-forget.</b> Fast — but back to §1's original problem: the publisher has zero signal that anything was ever durably handled. Not a fix, a regression to "hope."` },
+    { stage: wrap(box("CANDIDATE C — Confirm.Select ✓", cell("publish msg 1, 2, 3… (no blocking)","#4ade80")+cell("broker: Basic.Ack(tag=1)","#4ade80")+cell("broker: Basic.Ack(tag=3, multiple=true) ← covers 2 and 3","#4ade80"))),
+      cap:`<b>Pipeline the round trip instead of serializing it.</b> The broker assigns each publish a sequence number and acks asynchronously, batchable via <code>multiple</code>, as soon as it's safely handled — no publish ever blocks waiting for the previous message's fsync. This is what actually shipped, and why.` }
+  ]);
+})();
+
+/* ============================================================
+   5. DECK: channel death mid-delivery (§8c)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckCrash", [
+    { stage: wrap(box("CHANNEL — unacked set", cell("tag 41 → msg A","#60a5fa")+cell("tag 42 → msg B","#60a5fa")+cell("tag 43 → msg C","#60a5fa")+cell("tag 44 → msg D","#60a5fa")), box("QUEUE", cell("monitoring channel pid","#a78bfa"))),
+      cap:`<b>Steady state.</b> Four messages delivered, none acked yet. The queue that sent them holds a monitor on this channel's process — ordinary supervision machinery, not special-cased recovery code.` },
+    { stage: wrap(box("CHANNEL PROCESS — CRASHED", cell("×  linked/monitored process terminates","#f25c54","rgba(242,92,84,.12)"))),
+      cap:`<b>The channel dies</b> — client disconnect, uncaught protocol error, doesn't matter which. The BEAM delivers a 'DOWN' message to every process monitoring it, exactly like chapter 1's supervision trees.` },
+    { stage: wrap(box("QUEUE receives 'DOWN'", cell("walks its own pending-ack record for this channel","#ffd166")+cell("finds: A, B, C, D still unacked","#ffd166"))),
+      cap:`<b>The queue, not the channel, held the real data all along.</b> The channel's unacked table was only ever bookkeeping (message ids); the queue's backing store still has the actual messages.` },
+    { stage: wrap(box("REQUEUED — near the head", cell("A, B, C, D reinserted ahead of newer messages","#4ade80")), box("NEXT DELIVERY", cell("redelivered = true on all four","#ff9f43"))),
+      cap:`<b>Requeue, not loss.</b> All four come back — the durability contract held. But notice: they go back near the head, not the tail, which is exactly why a redelivery after a crash can jump ahead of messages published later but never yet delivered — ordering is not preserved across this event.` }
+  ]);
+})();
+
+/* ============================================================
+   6. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  tag:{ n:"delivery tag", f:"rabbit_channel.erl — field next_tag", r:"A per-channel monotonic 64-bit counter, incremented once per Basic.Deliver/Basic.Get. The only key the channel needs to resolve a later Basic.Ack/Nack against its own unacked table.", l:"Reset to 1 whenever a new channel is opened; meaningless outside the channel that issued it.", d:"Never persisted independently — if the channel dies, the tags it issued die with it; the messages themselves survive via requeue, but any in-flight tag numbering restarts fresh on redelivery." },
+  unacked:{ n:"unacked set", f:"rabbit_channel.erl — field unacked_message_q", r:"A table mapping this channel's outstanding delivery tags to (queue pid, message id) pairs — bookkeeping only, never the message body itself.", l:"Grows on every delivery, shrinks on every Ack/Nack/Reject; bounded in size by prefetch_count.", d:"On channel death, every queue referenced in this table receives a monitor 'DOWN' and requeues its share — the entire durability contract for in-flight work, stated in one sentence." },
+  qos:{ n:"Basic.Qos (prefetch)", f:"rabbit_limiter.erl", r:"A credit counter gating how many unacked messages a consumer (or, in global mode, a whole channel) may accumulate before the broker stops delivering more.", l:"Set once per channel or per consumer via Basic.Qos; can be changed at runtime.", d:"prefetch_count=0 means unlimited — historically the default when unset, and the single most common source of the 'one consumer vacuums the queue' complaint (§11)." },
+  confirm:{ n:"confirm tracker", f:"rabbit_confirms.erl", r:"Per-channel structure (on a channel in Confirm.Select mode) tracking which publish sequence numbers are still awaiting a Basic.Ack from the broker.", l:"Created when Confirm.Select is called; every subsequent publish gets the next sequence number.", d:"A publisher-side concern to manage too — publishing far faster than confirms return builds an unbounded backlog symmetric to the consumer-side problem this whole chapter starts from." },
+  return:{ n:"Basic.Return", f:"rabbit_channel.erl — handling of the mandatory flag", r:"Sent back to the publisher when a mandatory-flagged message cannot be routed to any queue at all — a separate signal from the confirm ack.", l:"Fired synchronously at publish/routing time, before any confirm for that message is sent.", d:"Can occur alongside a Basic.Ack for the very same message: 'unroutable' and 'safely handled by the broker' are independent facts — the broker did its job (told you nobody will get it) and still confirms the publish succeeded as an operation." },
+  dlx:{ n:"dead-letter exchange", f:"rabbit_dead_letter.erl (chapter 8)", r:"The configured destination for a message that is nack'd/rejected with requeue=false, or (quorum queues) exceeds x-delivery-limit — the actual mechanism that terminates §6's poison loop.", l:"Configured per-queue via the x-dead-letter-exchange argument; entirely optional, which is why unconfigured queues are exposed to the infinite loop.", d:"Not covered in depth until chapter 8 — this chapter only needs you to know it exists as the escape hatch requeue=true can never provide on its own." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON FAILURE / EDGE CASE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("unacked");
+
+/* ============================================================
+   7. PREVIEW SLIDER: prefetch fairness vs throughput (§6)
+   ============================================================ */
+(function(){
+  function render(){
+    const p = +el("pv-prefetch").value;
+    el("pv-prefetch-val").textContent = p;
+    // fairness: decreases as prefetch rises (one consumer can hoard more)
+    const fairness = Math.max(2, 100 - (p-1)*2.6);
+    // throughput: rises with prefetch then plateaus (RTT-hiding effect), modeled simply
+    const throughput = Math.min(100, 18 + p*10);
+    const segs = [
+      ["fairness across competing consumers", fairness, "#4ade80"],
+      ["raw throughput headroom", throughput, "#ff9f43"],
+    ];
+    el("pv-map").innerHTML = segs.map(([lbl,v,c])=>
+      `<div class="seg" style="background:${c};width:${(v/(fairness+throughput)*100).toFixed(2)}%" title="${lbl}: ${v.toFixed(0)}">${v.toFixed(0)}</div>`).join("");
+    el("pv-legend").innerHTML = segs.map(([lbl,v,c])=>`<span><span class="sw" style="background:${c}"></span>${lbl}</span>`).join("");
+    el("pv-note").innerHTML = p===1
+      ? `At <b style="color:var(--pg)">prefetch=1</b>: maximal fairness — no consumer can ever be more than one message ahead of any other — at the cost of paying a full ack round trip between every delivery.`
+      : p>=25
+      ? `At <b style="color:var(--pg)">prefetch=${p}</b>: throughput headroom is high, but fairness has collapsed — a fast consumer can accumulate dozens of messages before a slow sibling gets its first one.`
+      : `At <b style="color:var(--pg)">prefetch=${p}</b>: a middle ground — some throughput headroom, fairness still meaningful. §8 derives the actual number you want from RTT and processing time, rather than guessing.`;
+  }
+  el("pv-prefetch").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. PREFETCH DERIVATION CHART (§8d)
+   ============================================================ */
+(function(){
+  const cv = el("pf-chart"), ctx = cv.getContext("2d");
+  function throughputAt(P, rtt, proc){
+    // steady-state model: min(processing-bound, RTT-bound)
+    const procBound = 1000/proc; // msgs/sec if never RTT-limited
+    const rttBound = (P*1000)/(rtt + proc*0 + rtt*0 + rtt); // simplistic: P messages per RTT window once RTT-bound
+    // more careful model: time to clear a window of P messages ~ max(P*proc, rtt) if pipelined; per-window throughput:
+    const windowTime = Math.max(P*proc, rtt + proc);
+    const perWindowThroughput = (P*1000)/windowTime;
+    return Math.min(procBound, perWindowThroughput);
+  }
+  function render(){
+    const rtt = +el("pf-rtt").value, proc = +el("pf-proc").value, pre = +el("pf-pre").value;
+    el("pf-rtt-val").textContent = rtt+" ms";
+    el("pf-proc-val").textContent = proc+" ms";
+    el("pf-pre-val").textContent = pre;
+    const needed = Math.ceil(rtt/proc);
+    const achieved = throughputAt(pre, rtt, proc);
+    const theoretical = 1000/proc;
+    el("pf-derived").innerHTML = `Derived minimum: <b style="color:var(--pg)">prefetch ≥ ⌈RTT/T⌉ = ⌈${rtt}/${proc}⌉ = ${needed}</b>. At your current prefetch of <b style="color:var(--pg)">${pre}</b>, achieved throughput ≈ <b style="color:var(--pg)">${achieved.toFixed(1)} msgs/sec</b> out of a theoretical max of <b style="color:var(--purple)">${theoretical.toFixed(1)} msgs/sec</b> (processing-bound ceiling). ${pre<needed ? "You are RTT-bound — raise prefetch to close the gap." : "You have enough prefetch to hide the round trip — you are processing-bound, the best you can do without speeding up the handler itself."}`;
+    const W = cv.width, H = cv.height, PAD=40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=1;x<=80;x++) xs.push(x);
+    const ys = xs.map(x=>throughputAt(x, rtt, proc));
+    const maxY = Math.max(...ys, theoretical)*1.1;
+    const X = v => PAD + (v-1)/79*(W-PAD-14);
+    const Y = v => H-26 - (v/maxY)*(H-46);
+    ctx.strokeStyle="#1c2330"; ctx.fillStyle="#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [1,20,40,60,80].forEach(v=>{ ctx.beginPath(); ctx.moveTo(X(v),10); ctx.lineTo(X(v),H-20); ctx.stroke(); ctx.fillText("P="+v, X(v)-10, H-6); });
+    // theoretical max dashed
+    ctx.strokeStyle="#a78bfa"; ctx.setLineDash([5,4]); ctx.beginPath(); ctx.moveTo(X(1),Y(theoretical)); ctx.lineTo(X(80),Y(theoretical)); ctx.stroke(); ctx.setLineDash([]);
+    // curve
+    ctx.strokeStyle="#ff9f43"; ctx.lineWidth=2; ctx.beginPath();
+    xs.forEach((x,i)=>{ const y=Y(ys[i]); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+    ctx.stroke();
+    // marker at current prefetch
+    ctx.strokeStyle="#ffd166"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(pre),10); ctx.lineTo(X(pre),H-20); ctx.stroke(); ctx.setLineDash([]);
+  }
+  el("pf-rtt").oninput = render;
+  el("pf-proc").oninput = render;
+  el("pf-pre").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   9. CONFIRMS LATENCY CHART (§10)
+   ============================================================ */
+(function(){
+  let durable = false;
+  const cv = el("cf-chart"), ctx = cv.getContext("2d");
+  function latencyAt(rate, isDurable){
+    if (!isDurable) return 0.3 + rate*0.0004; // fire-and-forget: negligible, tiny queueing effect
+    // durable+confirm: batched fsync amortizes with rate, but floor cost + contention rises at extreme rates
+    const batchBenefit = Math.max(1, Math.log2(rate/10+1));
+    return Math.max(2.5, 14/batchBenefit) + Math.pow(rate/5000, 2)*8;
+  }
+  function render(){
+    const rate = +el("cf-rate").value;
+    el("cf-rate-val").textContent = rate+"/s";
+    el("cf-transient").classList.toggle("on", !durable);
+    el("cf-durable").classList.toggle("on", durable);
+    const W=cv.width, H=cv.height, PAD=40;
+    ctx.clearRect(0,0,W,H);
+    const xs=[]; for(let x=10;x<=5000;x+=50) xs.push(x);
+    const ys = xs.map(x=>latencyAt(x, durable));
+    const maxY = Math.max(...ys)*1.15;
+    const X = v => PAD + (v-10)/4990*(W-PAD-14);
+    const Y = v => H-26-(v/maxY)*(H-46);
+    ctx.strokeStyle="#1c2330"; ctx.fillStyle="#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [10,1000,2000,3000,4000,5000].forEach(v=>{ ctx.beginPath(); ctx.moveTo(X(v),10); ctx.lineTo(X(v),H-20); ctx.stroke(); ctx.fillText(v, X(v)-10, H-6); });
+    ctx.strokeStyle="#ff9f43"; ctx.lineWidth=2; ctx.beginPath();
+    xs.forEach((x,i)=>{ const y=Y(ys[i]); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+    ctx.stroke();
+    ctx.strokeStyle="#ffd166"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(rate),10); ctx.lineTo(X(rate),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = latencyAt(rate, durable);
+    el("cf-note").innerHTML = durable
+      ? `At <b>${rate}/s</b> with <b style="color:var(--pg)">delivery_mode=2 + durable queue + confirm.select</b>: modeled per-message confirm latency ≈ <b style="color:var(--pg)">${here.toFixed(2)} ms</b> — batched fsyncs amortize cost across concurrently in-flight publishes, which is exactly why confirms beat transactions' one-fsync-per-commit model by roughly two orders of magnitude, without giving up the durability guarantee.`
+      : `At <b>${rate}/s</b> with <b style="color:var(--pg)">fire-and-forget</b> (no confirm, and/or transient message + non-durable queue): modeled latency ≈ <b style="color:var(--pg)">${here.toFixed(2)} ms</b> — fast, because there is nothing to wait for. The cost is invisible here and entirely real elsewhere: zero signal that any message actually survived a broker restart.`;
+  }
+  el("cf-rate").oninput = render;
+  el("cf-transient").onclick = ()=>{ durable=false; render(); };
+  el("cf-durable").onclick = ()=>{ durable=true; render(); };
+  render();
+})();
+
+/* ============================================================
+   10. INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Why are consumer acknowledgements and publisher confirms described as mechanically independent, and what's a concrete example that proves it?", hint:"Basic.Return + confirm, together",
+    a:"They run on different channels (a publisher's channel vs a consumer's channel), use different delivery-tag namespaces, and answer different questions: 'did the consumer finish handling this' versus 'did the broker durably accept this publish.' The clearest proof is mandatory + confirms interacting: a message published with the mandatory flag that cannot be routed to any queue triggers a Basic.Return (telling the publisher 'nobody will ever receive this') and can still receive a Basic.Ack on the same channel (telling the publisher 'the publish operation itself completed as you configured it'). A message can be simultaneously returned and acked — proof the two signals track genuinely different facts, not a single combined notion of 'success.'" },
+  { lvl:"SENIOR", q:"A consumer nacks a failing message with requeue=true and it comes right back seconds later. Is this a bug in the broker?", hint:"trace the loop mechanically",
+    a:"No — it's the mechanically correct, expected behavior of requeue=true, and that's exactly the problem. Nack-with-requeue means 'put this back, it's eligible for redelivery again' with no built-in retry counter, backoff, or escape condition. If the message will always fail the same way, this is a deterministic infinite loop by construction, not a broker malfunction. The fix isn't 'stop the broker from doing this' — it's using a delivery limit with dead-lettering, or client-side attempt counting, so the loop has an exit condition the broker or client explicitly enforces." },
+  { lvl:"STAFF", q:"Derive the minimum useful prefetch_count from round-trip time and per-message processing time, and state the assumption the formula depends on.", hint:"when does the ack round trip stop being on the critical path?",
+    a:"With prefetch P, up to P messages can be outstanding at once, so while message k is mid-processing, messages k+1 through k+P-1 can already be delivered and the acks for earlier messages can be in flight — the round trip is hidden behind processing as long as the window is wide enough to cover it: P·T ≥ RTT, i.e., P ≥ RTT/T. The assumption baked into this is that the consumer can genuinely process P messages concurrently or in a tight enough pipeline that RTT and processing time actually overlap in wall-clock time — if the consumer processes strictly one at a time with no pipelining of network I/O against compute, raising prefetch buys you a bigger buffer but doesn't change the fundamental per-message serial cost." },
+  { lvl:"STAFF", q:"Why does requeuing a message near the head of the queue, rather than the tail, break global FIFO ordering — and why is that an acceptable price?", hint:"what ordering guarantee did AMQP ever actually promise?",
+    a:"A requeued message is being reinserted as 'ready to redeliver' at essentially the position a not-yet-delivered message already occupies conceptually — the broker's cheapest, most natural implementation choice, not a deliberate ordering feature. The result is that a message originally published before others, but requeued after a crash, can be redelivered ahead of messages published later that were never touched. This is an acceptable price because AMQP's FIFO guarantee was always specifically 'messages are delivered from a queue in the order they were originally enqueued, absent redelivery' — it never promised that a redelivery preserves that original ordering relative to the rest of the queue's ongoing flow, because guaranteeing that would require significantly more bookkeeping (effectively re-sorting by original sequence on every redelivery) for a guarantee most at-least-once consumers don't actually need: they need 'not lost,' not 'still perfectly ordered after a crash.'" },
+  { lvl:"STAFF", q:"Contrast global=true and global=false Basic.Qos semantics, and explain a scenario where the 'wrong' choice causes a real production problem.", hint:"one shared budget vs one budget each",
+    a:"global=false (the default since RabbitMQ 3.3) gives each consumer registered on a channel its own independent prefetch window; global=true instead caps the sum of unacked messages across every consumer on that channel. A team that assumes global semantics while running per-consumer (the actual default) will under-provision: they compute a channel-wide budget of, say, 100 and set prefetch_count=100 expecting it to be shared, but because it's actually applied per-consumer, five consumers on one channel can each independently hold 100 unacked messages — 500 total, five times their intended memory and fairness budget. This is a very real footgun precisely because the semantics quietly changed in 3.3 and plenty of production code and tutorials still discuss it as if it were a single shared number." },
+  { lvl:"PRINCIPAL", q:"Steelman keeping AMQP transactions as the default reliability mechanism instead of moving to publisher confirms. What does Tx actually get you that confirms don't, and why did the ecosystem decide it didn't matter enough?", hint:"what does 'commit' let you compose that a stream of independent acks doesn't?",
+    a:"Tx.Commit gives you an actual atomic batch boundary: either every publish since the last commit is durably applied, or none are — useful if an application genuinely needs 'these N messages become visible together, or not at all' semantics, which independent per-message confirms don't provide (each message is independently acked/nacked; there's no cross-message atomicity). The ecosystem decided this mattered less than throughput because in practice, most publishing workloads don't need cross-message atomicity — they need 'know whether each message individually made it,' which confirms answer at a fraction of the latency cost. Applications that genuinely need atomic multi-message visibility have generally been steered toward designing the atomicity into the message content itself (a single message describing a compound event) or an idempotent/outbox pattern upstream, rather than paying Tx's fsync-per-commit tax for every publish." },
+  { lvl:"PRINCIPAL", q:"consumer_timeout force-closes a channel that hasn't acked in 30 minutes by default. Argue both why this default is correct and why it's dangerous for at least one legitimate workload.", hint:"who benefits from the loud failure, and who gets surprised by it?",
+    a:"It's correct as a default because the previous behavior — a stuck unacked message sitting silently forever, consuming prefetch credit and giving no operational signal — is a strictly worse failure mode for the overwhelming majority of consumers, which process messages in milliseconds to seconds; converting an invisible permanent stall into a loud, immediately diagnosable protocol error is a clear net win for that population. It's dangerous for legitimate long-running-per-message consumers — batch jobs that deliberately hold a delivery unacked for tens of minutes while doing substantial work per message (a large file transform, a long-running external API call) — because for them, the new default actively kills a channel that was behaving exactly as designed, and the fix (raising consumer_timeout, or acking more granularly with smaller units of work) requires the operator to know this default exists and consciously override it, which not everyone does before hitting it in production." }
+]);
+
+/* ============================================================
+   11. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"What does a delivery tag's scope tell you about where it can be used?",
+    opts:[ "It is globally unique across the entire node and can be acked on any channel",
+           "It is unique per connection and can be acked on any channel of that connection",
+           "It is unique and meaningful only within the channel that issued it — Basic.Ack must be sent on that same channel",
+           "It is unique per queue, and any consumer of that queue can ack using it" ],
+    a:2,
+    why:"Delivery tags are a per-channel monotonic counter with no meaning outside the channel that assigned them. Basic.Ack/Nack/Reject referencing a tag must be sent on that same channel — the broker's unacked table is channel-scoped state, not connection-wide or node-wide or queue-wide. This is exactly why the counter can be an unsynchronized field in the channel's own process state." },
+  { q:"A consumer's channel dies (client crash) while it has 12 unacked messages outstanding. What happens to those 12 messages?",
+    opts:[ "They are lost — the broker already considered them delivered",
+           "They are automatically requeued by every queue that delivered them, having monitored the channel process",
+           "They remain in a permanent limbo state until an operator manually intervenes",
+           "They are automatically dead-lettered, since a crash counts as a rejection" ],
+    a:1,
+    why:"This is the core durability contract: every queue that delivered a message to that channel holds a monitor on the channel process, and on 'DOWN' it requeues its share of the unacked set. Nothing is lost (option A describes auto-ack, not explicit-ack behavior), nothing requires manual intervention, and nothing is dead-lettered automatically just because of a crash — dead-lettering only happens on explicit nack(requeue=false) or exceeding a delivery limit." },
+  { q:"Why is Basic.Nack described as a RabbitMQ extension rather than original AMQP 0-9-1?",
+    opts:[ "Because RabbitMQ implements it differently from the spec in an incompatible way",
+           "Because the original spec's Basic.Reject only handles one delivery tag at a time with no multiple/batch flag, and Nack was added specifically to support batching",
+           "Because Nack requires a paid RabbitMQ license to use",
+           "Because Nack only works with quorum queues, not classic queues" ],
+    a:1,
+    why:"Basic.Reject is the AMQP 0-9-1 standard method for rejecting a message, but it only ever addresses one delivery tag — there's no multiple flag. RabbitMQ added Basic.Nack afterward as a non-standard extension purely to close that gap, giving reject-style semantics the same batch/cumulative capability Basic.Ack already had. It's not a licensing distinction, not an incompatible reimplementation, and it works on classic queues too." },
+  { q:"With prefetch_count=1, what is the primary cost, and what is the primary benefit?",
+    opts:[ "Cost: unbounded memory growth. Benefit: maximum throughput",
+           "Cost: a full ack round trip is on the critical path between every delivered message, hurting throughput. Benefit: maximal fairness across competing consumers",
+           "Cost: messages can be lost on crash. Benefit: simpler client code",
+           "Cost: the broker cannot detect consumer death. Benefit: lower broker CPU usage" ],
+    a:1,
+    why:"prefetch=1 means the broker will never have more than one unacked message outstanding to that consumer, so it must wait for an ack before sending the next one — the RTT is fully exposed on the critical path, one round trip per message. The benefit is that no consumer can ever get more than one message ahead of any sibling competing for the same queue, which is the most fair possible distribution. It doesn't cause memory growth, doesn't lose messages, and doesn't affect crash detection or broker CPU in any special way." },
+  { q:"A message is published with the mandatory flag, fails to route to any queue, and the channel is in confirm mode. What can legitimately happen?",
+    opts:[ "The publisher receives only a Basic.Return and no confirm, since the message clearly wasn't 'handled'",
+           "The publisher receives only a Basic.Ack, since Basic.Return and confirms are mutually exclusive on the same channel",
+           "The publisher can receive both a Basic.Return (unroutable) and a Basic.Ack (confirming the publish operation completed) for the same message",
+           "The broker closes the connection, since an unroutable mandatory message is a protocol violation" ],
+    a:2,
+    why:"Basic.Return and publisher confirms answer independent questions — 'did this reach a queue' versus 'did the broker safely finish handling the publish request as configured' — so both can fire for the same message. An unroutable mandatory message is not a protocol violation (routing to zero queues is a valid, if often undesired, outcome), so the connection is not closed." },
+  { q:"Why was consumer_timeout (RabbitMQ 3.12) added, given that consumer acknowledgement already existed for over a decade?",
+    opts:[ "To speed up message processing on fast consumers",
+           "To convert a previously silent failure mode — a delivery left unacked forever, quietly consuming prefetch credit — into a loud, immediately diagnosable protocol error",
+           "To replace Basic.Qos as the primary flow-control mechanism",
+           "To enforce a maximum message size for large payloads" ],
+    a:1,
+    why:"Before consumer_timeout, a bug that left a delivery permanently unacked (a deadlock, a forgotten code path) created an invisible stall: the message sat in the channel's unacked set forever, silently reducing that channel's effective prefetch headroom, with no error raised anywhere. consumer_timeout force-closes the channel (requeueing the message via the ordinary death mechanism) if an ack doesn't arrive within the configured window, turning a silent, permanent problem into an immediate, visible one. It doesn't affect message size limits, doesn't replace Basic.Qos, and isn't about speeding up fast consumers — it targets stuck ones." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review a client library's ack handling PR unsupervised.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5's decks and §8's derivation, then try the simulator — the model clicks fast once you crash a consumer yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Basic.Deliver hands the message to a consumer with a fresh, channel-scoped delivery tag",
+    "The message enters the channel's unacked set; the queue still holds the real data",
+    "The consumer's handler throws on a malformed field it cannot parse",
+    "The consumer calls Basic.Nack(requeue=true), unaware this exact failure will repeat",
+    "The message is redelivered almost immediately, redelivered=true, to the next available consumer",
+    "The same handler throws again — the loop has run enough times to cross x-delivery-limit",
+    "The queue automatically republishes the message to its configured dead-letter exchange",
+    "The message is safely parked in the dead-letter queue, no longer burning consumer capacity"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real lifecycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 6 covers clustering. Predict: when a queue's messages must be replicated across nodes, does the requeue-on-channel-death mechanism this chapter described need to change at all, or does it stay exactly the same?",
+    a:"The requeue mechanism itself doesn't need to change — it's a property of the channel/queue relationship (a monitor firing, a pending-ack set being walked), entirely orthogonal to how many nodes the queue's data lives on. What does change is which process is authoritative for 'is this message still unacked': for a quorum queue, that's a question answered by consulting the Raft log's leader, not a single classic-queue process's local state, and the leader must be reachable for the requeue to be recorded durably. The mechanism generalizes; the source of truth for the underlying data does not stay a single unreplicated process." },
+  { lvl:"THINK", q:"This chapter showed prefetch=1 gives perfect fairness at the cost of a round trip per message. Quorum queues (chapter 7) replicate every operation through Raft consensus before it's considered committed. Predict how that changes the RTT term in this chapter's prefetch formula.",
+    a:"RTT in this chapter's formula was 'consumer round trip to the broker' — but for a quorum queue, an operation (including recording an ack) isn't considered durable until a majority of Raft replicas have agreed, which is itself a multi-node round trip, not a single hop. So the effective RTT term for a quorum queue's ack path is at least the Raft commit latency, typically larger than a classic queue's single-process in-memory operation — meaning the derived minimum prefetch (⌈RTT/T⌉) is generally higher for quorum queues than classic queues at the same processing time, to hide a longer round trip." },
+  { lvl:"THINK", q:"Design exercise: sketch, using only this chapter's mechanics, how you'd build a 'retry with exponential backoff' pattern for a message that fails processing, without relying on any feature from a later chapter.",
+    a:"Nack with requeue=false (never requeue=true, which has no backoff or limit), and instead of losing the message, republish it yourself to the same queue with a small application-level delay — e.g., hold it in your own consumer, sleep, then re-publish with an incremented retry-count header, escalating the delay each time and finally routing to a manual failure queue once a threshold is hit. This reconstructs, entirely with this chapter's primitives (nack, requeue=false, republish, headers), the same shape that chapter 8's TTL-plus-dead-letter-exchange pattern will later give you for free at the broker level — a good check that you understand why the built-in mechanism exists, not just how to invoke it." }
+]);
+
+/* ============================================================
+   12. SIMULATOR (§15) — the delivery lab
+   ============================================================ */
+(function(){
+  const TICK_MS = 150;
+  const S = {
+    prefetch: 3,
+    queue: [],
+    nextMsgId: 1,
+    confirmMode: false,
+    pubInflight: 0,
+    poisonBurn: 0,
+    cnt: { delivered:0, acked:0, requeued:0 },
+    consumers: [
+      { id:"c1", label:"consumer-1", alive:true, procTime:35, unacked:[], ackedCount:0, deliveredCount:0, ackTimes:[] },
+      { id:"c2", label:"consumer-2", alive:true, procTime:70, unacked:[], ackedCount:0, deliveredCount:0, ackTimes:[] },
+      { id:"c3", label:"consumer-3", alive:true, procTime:110, unacked:[], ackedCount:0, deliveredCount:0, ackTimes:[] }
+    ]
+  };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function hasPoisonAnywhere(){
+    if (S.queue.some(m=>m.poison)) return true;
+    return S.consumers.some(c=>c.unacked.some(m=>m.poison));
+  }
+
+  /* ---------- lane skeleton (built once) ---------- */
+  const lanesRoot = el("consumer-lanes");
+  S.consumers.forEach(c=>{
+    const d = document.createElement("div");
+    d.className = "clane";
+    d.id = "lane-"+c.id;
+    d.innerHTML = `
+      <div class="cl-head"><b>${c.label}</b><span class="cl-tag" id="cl-tag-${c.id}"></span></div>
+      <div class="slider-row" style="margin:2px 0 4px">
+        <label style="min-width:120px;font-size:10.5px">processing time</label>
+        <input type="range" min="5" max="200" step="5" value="${c.procTime}" id="proc-${c.id}">
+        <span class="val" id="proc-${c.id}-val">${c.procTime} ms</span>
+      </div>
+      <div class="cl-bar"><div class="cl-fill" id="cl-fill-${c.id}"></div></div>
+      <div class="cl-unacked" id="cl-unacked-${c.id}"></div>
+      <div class="cl-stats" id="cl-stats-${c.id}"></div>`;
+    lanesRoot.appendChild(d);
+    el("proc-"+c.id).oninput = e=>{ c.procTime = +e.target.value; el("proc-"+c.id+"-val").textContent = c.procTime+" ms"; };
+  });
+
+  function dispatch(){
+    S.consumers.forEach(c=>{
+      if (!c.alive) return;
+      while (c.unacked.length < S.prefetch && S.queue.length > 0){
+        const m = S.queue.shift();
+        c.unacked.push(Object.assign(m, { remain: c.procTime }));
+        c.deliveredCount++; S.cnt.delivered++;
+        if (m.poison) log("WARN", `${c.label} ← Basic.Deliver(tag, msg ${m.id} POISON)`);
+      }
+    });
+  }
+
+  function process(){
+    S.consumers.forEach(c=>{
+      if (!c.alive) return;
+      c.unacked = c.unacked.filter(m=>{
+        m.remain -= TICK_MS;
+        if (m.remain > 0) return true;
+        if (m.poison){
+          m.redelivered = true;
+          S.queue.unshift(m);
+          S.cnt.requeued++;
+          S.poisonBurn = Math.min(100, S.poisonBurn + 16);
+          log("WARN", `${c.label}: handler threw on msg ${m.id} — Basic.Nack(requeue=true) — back at head of queue`);
+          return false;
+        } else {
+          c.ackedCount++; S.cnt.acked++; c.ackTimes.push(Date.now());
+          S.poisonBurn = Math.max(0, S.poisonBurn - 1);
+          return false;
+        }
+      });
+    });
+  }
+
+  function crashConsumer(c, reason){
+    if (!c || !c.alive) return;
+    c.alive = false;
+    const n = c.unacked.length;
+    for (let i=c.unacked.length-1;i>=0;i--){ const m=c.unacked[i]; m.redelivered = true; S.queue.unshift(m); }
+    c.unacked = [];
+    S.cnt.requeued += n;
+    log("FATAL", `${reason} on ${c.label} — ${n} unacked message(s) requeued via monitor 'DOWN'`);
+  }
+
+  el("sim-prefetch").oninput = e=>{ S.prefetch = +e.target.value; el("sim-prefetch-val").textContent = S.prefetch; };
+
+  el("sim-publish1").onclick = ()=> publish(1);
+  el("sim-publishN").onclick = ()=> publish(20);
+  function publish(n){
+    for (let i=0;i<n;i++){
+      const m = { id: S.nextMsgId++, poison:false, redelivered:false };
+      S.queue.push(m);
+      if (S.confirmMode){
+        S.pubInflight++;
+        const latency = 8 + Math.random()*10;
+        setTimeout(()=>{ S.pubInflight = Math.max(0,S.pubInflight-1); el("pub-latency").textContent = latency.toFixed(1)+" ms"; }, latency*3);
+      }
+    }
+    log("LOG", `published ${n} message(s)${S.confirmMode?" — awaiting broker confirm":" — fire-and-forget, no wait"}`);
+  }
+
+  el("sim-kill").onclick = ()=>{
+    const alive = S.consumers.filter(c=>c.alive);
+    if (!alive.length){ log("WARN","no live consumers left to kill"); return; }
+    crashConsumer(alive[Math.floor(Math.random()*alive.length)], "consumer process crashed — connection lost");
+  };
+  el("sim-closech").onclick = ()=>{
+    const withWork = S.consumers.filter(c=>c.alive && c.unacked.length>0);
+    const pool = withWork.length ? withWork : S.consumers.filter(c=>c.alive);
+    if (!pool.length){ log("WARN","no live consumers to close a channel on"); return; }
+    crashConsumer(pool[Math.floor(Math.random()*pool.length)], "Channel.Close received with outstanding unacked deliveries");
+  };
+  el("sim-revive").onclick = ()=>{
+    let n=0;
+    S.consumers.forEach(c=>{ if(!c.alive){ c.alive=true; n++; } });
+    if (n) log("OK", `${n} consumer(s) reconnected — fresh channel, empty unacked set`);
+    else log("WARN","every consumer is already alive");
+  };
+  el("sim-poison").onclick = ()=>{
+    if (hasPoisonAnywhere()){ log("WARN","a poison message is already active in the system"); return; }
+    const m = { id: S.nextMsgId++, poison:true, redelivered:false };
+    S.queue.push(m);
+    log("WARN", `poison message ${m.id} published — its handler will fail deterministically every time`);
+  };
+  el("sim-deadletter").onclick = ()=>{
+    let found = null;
+    const qi = S.queue.findIndex(m=>m.poison);
+    if (qi>=0){ found = S.queue.splice(qi,1)[0]; }
+    if (!found){
+      for (const c of S.consumers){
+        const ci = c.unacked.findIndex(m=>m.poison);
+        if (ci>=0){ found = c.unacked.splice(ci,1)[0]; break; }
+      }
+    }
+    if (found){ S.poisonBurn = 0; log("OK", `poison message ${found.id} exceeded its delivery limit — dead-lettered, loop broken`); }
+    else log("WARN","no active poison message to dead-letter");
+  };
+  el("sim-conf-off").onclick = ()=>{ S.confirmMode=false; el("sim-conf-off").classList.add("on"); el("sim-conf-on").classList.remove("on"); log("LOG","publisher confirms OFF — fire-and-forget"); };
+  el("sim-conf-on").onclick  = ()=>{ S.confirmMode=true; el("sim-conf-on").classList.add("on"); el("sim-conf-off").classList.remove("on"); log("LOG","publisher confirms ON — durable + confirm.select, tracking in-flight window"); };
+
+  function render(){
+    el("sim-prefetch-val").textContent = S.prefetch;
+    el("q-depth").textContent = S.queue.length;
+    const shown = S.queue.slice(0,30);
+    el("q-msgs").innerHTML = shown.map(m=>`<div class="msg ${m.poison?"poison":""} ${m.redelivered?"redelivered":""}">${m.id}</div>`).join("")
+      + (S.queue.length>30 ? `<div class="msg" style="color:var(--dim)">+${S.queue.length-30}</div>` : "")
+      || `<span style="font-family:monospace;font-size:10.5px;color:var(--dim)">empty</span>`;
+
+    const now = Date.now();
+    S.consumers.forEach(c=>{
+      const lane = el("lane-"+c.id);
+      lane.classList.toggle("dead", !c.alive);
+      lane.classList.toggle("busy", c.alive && c.unacked.length>0);
+      el("cl-tag-"+c.id).textContent = c.alive ? `${c.unacked.length}/${S.prefetch} unacked` : "DEAD — awaiting revive";
+      el("cl-fill-"+c.id).style.width = Math.min(100, c.unacked.length/S.prefetch*100)+"%";
+      el("cl-unacked-"+c.id).innerHTML = c.unacked.length
+        ? c.unacked.map(m=>`<div class="msg ${m.poison?"poison":""} ${m.redelivered?"redelivered":""}">${m.id}</div>`).join("")
+        : `<span style="font-family:monospace;font-size:10px;color:var(--dim)">${c.alive?"idle":"—"}</span>`;
+      c.ackTimes = c.ackTimes.filter(t=>now-t < 3000);
+      const rate = c.ackTimes.length/3;
+      el("cl-stats-"+c.id).innerHTML = `<span>throughput <b>${rate.toFixed(1)}/s</b></span><span>acked <b>${c.ackedCount}</b></span><span>delivered <b>${c.deliveredCount}</b></span>`;
+    });
+
+    el("cnt-delivered").textContent = S.cnt.delivered;
+    el("cnt-acked").textContent = S.cnt.acked;
+    el("cnt-requeued").textContent = S.cnt.requeued;
+    el("m-poison-v").textContent = Math.round(S.poisonBurn)+"%";
+    const pf = el("m-poison"); pf.style.width = S.poisonBurn+"%"; pf.className = "m-fill " + (S.poisonBurn>66?"hot":S.poisonBurn>30?"warm":"");
+    el("pub-mode-l").textContent = S.confirmMode ? "ON (durable + confirm.select)" : "OFF (fire-and-forget)";
+    el("pub-inflight").textContent = S.pubInflight;
+    if (!S.confirmMode) el("pub-latency").textContent = "–";
+  }
+
+  setInterval(()=>{ dispatch(); process(); render(); }, TICK_MS);
+  log("OK","LOG:  three consumers registered, prefetch=3, queue empty");
+  log("HINT","Try: publish ×20 at high prefetch → watch the fastest consumer vacuum most of the backlog. Then kill it mid-processing.");
+  publish(6);
+  render();
+})();
+
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["rmq-05"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#ff9f43"><a class="cn-btn" href="rmq-04.html"><span>←</span><span><span class="cn-lbl">PREV · CH 04</span><span class="cn-ttl">Classic Queues: The Queue Process Internals</span></span></a><div class="cn-mid"><a class="cn-home" href="course-rabbitmq.html">☰ RabbitMQ Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="rmq-01.html">CH 01 · Genesis: AMQP & Why Erlang</option><option value="rmq-02.html">CH 02 · Connections, Channels & the Frame Protocol</option><option value="rmq-03.html">CH 03 · Exchanges, Bindings & Routing Algorithms</option><option value="rmq-04.html">CH 04 · Classic Queues: The Queue Process Internals</option><option value="rmq-05.html" selected>CH 05 · Delivery: ACK, NACK, Confirms & Prefetch</option><option value="rmq-06.html">CH 06 · Quorum Queues: Raft Inside the Broker</option><option value="rmq-07.html">CH 07 · Streams: The Log Comes to RabbitMQ</option><option value="rmq-08.html">CH 08 · Dead Lettering, TTL & Priority Queues</option><option value="rmq-09.html">CH 09 · Flow Control & Memory Management</option><option value="rmq-10.html">CH 10 · Clustering, Federation & Shovel</option><option value="rmq-11.html">CH 11 · Persistence, Disk Layout & Recovery</option><option value="rmq-12.html">CH 12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</option></select><span class="cn-prog">05 / 12</span></div><a class="cn-btn" href="rmq-06.html"><span><span class="cn-lbl">NEXT · CH 06</span><span class="cn-ttl">Quorum Queues: Raft Inside the Broker</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

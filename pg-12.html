@@ -1,0 +1,1876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-12 · VACUUM, Autovacuum & the Anatomy of Bloat — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* process tree in sim */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+  .strunk{width:2px;height:14px;background:var(--border-hi);margin:0 auto}
+  .saux{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0 10px}
+  .snode.aux{font-size:9.5px;padding:5px 8px;color:var(--muted);cursor:default}
+  .snode.aux.off{opacity:.25}
+  .snode.aux.busy{border-color:var(--warn);color:var(--warn)}
+  .sbe-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:8px 0 6px;text-align:center}
+  .sbe{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;min-height:64px;align-content:flex-start}
+  .snode.be{animation:framein .25s}
+  .snode.be.idle{color:var(--muted)}
+  .snode.be.active{border-color:var(--ok);color:var(--ok)}
+  .snode.be.long{border-color:var(--warn);color:var(--warn)}
+  .snode.be.startup{border-color:var(--purple);color:var(--purple)}
+  .snode.be.crash{border-color:var(--bad);background:rgba(242,92,84,.15);color:var(--bad);animation:shake .35s}
+  .snode.be.sigq{border-color:var(--warn);opacity:.5}
+  .snode.be.sel{box-shadow:0 0 0 2px var(--pg)}
+  .sim-shm{margin:12px auto 0;max-width:430px}
+  .sim-shm .shm{text-align:center}
+  .waitq{font-family:var(--mono);font-size:10px;color:var(--warn);text-align:center;margin-top:8px;min-height:14px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- chapter-12 additions: tuple/page grid + xmin badges ---------- */
+  .pgrid{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0}
+  .pcell{width:23px;height:23px;border-radius:5px;border:1px solid var(--border-hi);display:flex;align-items:center;
+    justify-content:center;font-family:var(--mono);font-size:8.5px;color:var(--muted);background:var(--panel-2);
+    transition:all .25s}
+  .pcell.live{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.08)}
+  .pcell.dead{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.14)}
+  .pcell.unused{opacity:.28;border-style:dashed}
+  .pcell.frozen{border-color:var(--purple);color:var(--purple);background:rgba(167,139,250,.12)}
+  .xline{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:6px 0;flex-wrap:wrap}
+  .xline b{color:var(--warn)}
+  .lp-row{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+  .lp{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:7px;padding:5px 9px;font-family:var(--mono);
+    font-size:10.5px;color:var(--muted);transition:all .3s}
+  .lp.normal{border-color:var(--ok);color:var(--ok)}
+  .lp.dead{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.1)}
+  .lp.unused{opacity:.3;border-style:dashed}
+  .bloatbar{height:10px;border-radius:5px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden;display:flex}
+  .bloatbar .bl-live{background:var(--ok)} .bloatbar .bl-dead{background:var(--bad)}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 12 / 21</b> · VACUUM & BLOAT</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 12</div>
+  <h1>VACUUM, Autovacuum &<br><span class="grad">the Anatomy of Bloat</span></h1>
+  <p class="lead">MVCC (chapter 5) buys concurrency by never overwriting a row in place: every <code>UPDATE</code>
+  and <code>DELETE</code> leaves the old row version on disk, because some concurrent snapshot might still need it.
+  Nobody ever comes back to erase it synchronously — that job was deliberately deferred to a background process.
+  This chapter derives <b>why</b> that deferral was the only sane choice, and then goes all the way down into
+  <code>vacuumlazy.c</code>: the three-phase algorithm, the line-pointer state machine, the visibility map, and the
+  PostgreSQL 17 rewrite that replaced a hard-coded array with a radix tree.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain exactly why an index entry can never point at a reused line pointer, and how that forces a two-pass algorithm.</div>
+    <div class="obj"><b>You will understand</b>What actually holds back the xmin horizon, and why a single idle transaction can bloat a whole cluster.</div>
+    <div class="obj"><b>You will predict</b>How many index vacuum passes a given <code>maintenance_work_mem</code> forces, pre- and post-PG17 TidStore.</div>
+    <div class="obj"><b>You will simulate</b>A live bloat lab: crank up writes, pin the horizon, and watch autovacuum fight back — or lose.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">MVCC's bill comes due later, and somebody has to pay it</h2>
+  <p class="lead">Chapter 5 established the deal: PostgreSQL never blocks a reader on a writer, or a writer on a
+  reader, because every transaction sees a private, consistent snapshot of the database as of some point in time.
+  The mechanism that makes this cheap is equally simple to state and expensive to ignore: an <code>UPDATE</code>
+  does not modify a row — it inserts a brand-new heap tuple with a fresh <code>xmin</code>, and marks the old tuple's
+  <code>xmax</code> as the deleting transaction's ID. A <code>DELETE</code> only ever sets <code>xmax</code>. The old
+  row version is not touched, moved, or freed. It just sits there, on disk, now called a <b>dead tuple</b>.</p>
+  <p>That is the entire problem in one sentence: <b>PostgreSQL's write path only ever adds bytes; nothing in the
+  write path ever removes them.</b> Every row you update ten times a second leaves ten dead copies per second
+  somewhere in the table's pages, forever, unless a second, independent process comes back later and reclaims them.
+  Three consequences follow immediately, and each is a separate reason the "later" process cannot be optional:</p>
+  <ul class="plain">
+    <li><b>Disk usage is unbounded without reclamation.</b> A table that is logically 10 GB of live rows can
+      physically occupy 100 GB if updates outrun cleanup — the classic meaning of <span class="term"
+      data-def="A table or index occupying more disk space than its live row count would require, because dead or reusable space hasn't been reclaimed.">bloat</span>.</li>
+    <li><b>Index entries rot along with the heap.</b> Every non-HOT update to an indexed column adds a new index
+      entry pointing at the new heap tuple <i>and</i> leaves the old entry pointing at the now-dead one. An index
+      scan can walk straight into garbage if nothing ever prunes it — so cleanup is not just a heap problem, it's
+      an index problem with a stricter correctness constraint (§7 derives exactly why).</li>
+    <li><b>Transaction IDs are a finite, wrapping resource.</b> <code>xmin</code>/<code>xmax</code> are 32-bit
+      counters. If a table's oldest unfrozen row version is never revisited, the 32-bit XID space eventually wraps,
+      and a row that looks "old" can suddenly look "in the future" — <span class="term" data-def="When XID counters wrap around, an old xmin can appear to be from a not-yet-started transaction, making committed rows look invisible. PostgreSQL treats approaching wraparound as an existential threat and will eventually refuse writes to prevent it.">transaction ID wraparound</span>,
+      which is not a performance problem, it is a correctness and data-loss threat serious enough that PostgreSQL
+      will shut a database down to <code>read-only</code> mode rather than risk it.</li>
+  </ul>
+  <p>So the question this chapter answers from first principles is: <b>given that MVCC guarantees no in-place
+  overwrite, who cleans up, when, and how do they know it's safe?</b> The answer PostgreSQL chose — a background
+  reclaimer decoupled from the transactions that create the garbage — is not the only possible answer (InnoDB and
+  Oracle both organize "the old version" differently), but every design in this space ends up needing some version
+  of the same background process, for the same underlying reason: <i>you cannot know it is safe to free a row
+  version at the moment you stop needing it, because you don't know what other transaction might still need it.</i></p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE REST OF THE COURSE</div>
+    <p>VACUUM is the process that keeps three separate promises solvent at once: bounded disk usage, correct
+    indexes, and a transaction ID counter that never wraps. Every one of those promises is a <i>background</i>
+    promise — nothing in the foreground query path enforces them. That single design fact explains almost every
+    operational vacuum incident you will ever debug: bloat is always a symptom of the background process falling
+    behind the foreground one, and diagnosing it always means asking <i>why didn't the sweep keep up, or why
+    couldn't it reclaim what it found?</i> — which is exactly the shape of §11's incidents.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a manual DBA chore to a self-driving subsystem</h2>
+  <p>VACUUM is one of the oldest commands in the codebase and one of the most rewritten subsystems underneath a
+  stable name. Click through — every event on this timeline removed one manual step or one hard limit from the
+  cleanup story, and the story is still not finished (PG 17's rewrite is the most recent chapter, not the last).</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from manual VACUUM to TidStore</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY IT'S CALLED "VACUUM"</div>
+    <p>The name predates autovacuum by two decades: from the earliest Postgres releases, <code>VACUUM</code> was a
+    DBA-issued SQL command — you ran it in <code>cron</code>, at 3 a.m., against tables you knew were update-heavy,
+    and hoped you picked the right frequency. There was no daemon, no threshold, no notion of "this table needs it
+    now" — only a human's judgment and a crontab. Everything from 8.1 onward is the project incrementally replacing
+    that human judgment with instrumentation: dead-tuple counters, scale factors, freeze ages, and eventually a
+    launcher process that makes the decision no operator has to remember to make.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: reclaim inline, the moment you delete</h2>
+  <p>Derive it honestly. If the problem is "dead tuples accumulate because nothing reclaims them immediately," the
+  most obvious fix is: <b>make the deleting/updating transaction reclaim the space itself, synchronously, as part
+  of committing.</b> No separate process, no scheduling, no scanning — the transaction that created the garbage
+  cleans up its own garbage before anyone else even notices it existed.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>strawman.c — inline reclaim on delete/update</span></div>
+    <pre><span class="k">void</span>
+<span class="f">heap_delete_naive</span>(Relation rel, ItemPointer tid, TransactionId xid)
+{
+    HeapTupleHeader tup = <span class="f">fetch_tuple</span>(rel, tid);
+
+    <span class="c">/* Mark it dead — this part is real and necessary either way */</span>
+    tup-&gt;t_xmax = xid;
+    tup-&gt;t_infomask &amp;= ~HEAP_XMAX_INVALID;
+
+    <span class="c">/* THE NAIVE PART: reclaim the slot right now, in this transaction,
+     * instead of waiting for a background process to notice later.   */</span>
+    <span class="k">if</span> (<span class="f">CurrentTransactionCommits</span>())
+    {
+        <span class="f">MarkLinePointerUnused</span>(rel, tid);   <span class="c">/* free it immediately   */</span>
+        <span class="f">RemoveIndexEntriesFor</span>(rel, tid);   <span class="c">/* and its index entries */</span>
+    }
+}</pre>
+  </div>
+
+  <p>This is not a silly idea — it is exactly how a naive single-writer key-value store, or a simple B-tree file
+  format with no concurrent readers, would legitimately work: delete a key, free its slot, done. It even has real
+  precedent in the relational world: this is close in spirit to what <b>InnoDB</b> and <b>Oracle</b> appear to do
+  from the outside — a delete looks "gone" almost immediately to new transactions. The naive design's appeal is
+  that it collapses two problems (mark dead, reclaim space) into one code path with no scheduling problem at all:
+  there is no autovacuum to tune, no dead-tuple backlog, no bloat, because nothing is ever allowed to accumulate.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">You cannot reclaim what a concurrent snapshot might still need</h2>
+  <p>The naive design's fatal assumption is hiding in the phrase "as soon as you delete it." <b>As soon as</b> for
+  whom? MVCC's entire value proposition is that a transaction which began earlier keeps seeing the database as it
+  was when its snapshot was taken — that is what "repeatable read" and "serializable" mean operationally. If
+  transaction A opens a snapshot at time T0, and transaction B deletes a row at T1 &gt; T0, the row must still be
+  <i>visible to A</i> for as long as A's transaction runs, however long that is. Reclaim the line pointer the
+  instant B commits, and the next thing A's query does — a sequential scan, an index lookup that resolves to that
+  <code>tid</code> — reads whatever new tuple has since been written into that slot, or reads freed, reused garbage.
+  That is not merely a bug; it is <span class="term" data-def="A serializability violation where a transaction reads data that logically shouldn't exist for it — either mutated rows it should see as unchanged, or garbage from a slot recycled underneath it.">a correctness violation</span>, and it is silent — no error, just a wrong answer.</p>
+  <p>So the honest fix to the naive design is: "reclaim it only once no transaction's snapshot could possibly still
+  need it" — which is precisely the condition PostgreSQL calls the <b><span class="term" data-def="The oldest transaction ID for which any currently-running transaction, prepared transaction, or replication consumer might still need to see earlier row versions. Anything with xmax older than this horizon is truly dead and reclaimable.">xmin horizon</span></b> (tracked via the shared <code>ProcArray</code>, chapter 5). But computing that horizon requires
+  looking at <i>every other backend's snapshot</i> — which is exactly the kind of shared, contended, global state
+  a per-transaction inline reclaim would have to consult on every single delete. Do the math on what that costs:</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Assume a modest OLTP workload: 5,000 row deletions/updates per second, and computing "is it safe to reclaim
+    this tid yet" requires a horizon check against the shared process array — a shared-memory read under a lock
+    that every other backend also needs for its own snapshot. At 5,000 checks/sec you've turned a per-row decision
+    into 5,000 contended shared-memory operations/sec <i>in addition to</i> the snapshot-taking each of those
+    transactions already does for its own reads. And even if you paid that cost, the answer is usually "no, not
+    yet" — a horizon rarely advances between one commit and the next, so most of those checks would do work only
+    to conclude "leave it dead a little longer," meaning the naive design would frequently degrade into exactly
+    the deferred-cleanup shape it was trying to avoid, except now paid per-transaction instead of once in the
+    background. Meanwhile, with <i>zero</i> reclamation of any kind, dead tuples in a table under constant update
+    load grow linearly and without bound: at 5,000 updates/sec sustained, one hour is 18 million dead rows added
+    to that one table, with no mechanism to ever remove them.</p>
+  </div>
+  <p>Note carefully what InnoDB and Oracle actually do, because it is easy to over-read "looks gone immediately" as
+  "no background process needed." Both systems still relocate the <i>old version</i> somewhere — an undo segment —
+  and both still require a background actor (InnoDB's <b>purge thread</b>, Oracle's undo-retention machinery) to
+  decide when no active read view needs that undo record anymore and reclaim it. They have moved <i>where</i> the
+  old version lives (out of the primary data structure, into a separate log), not eliminated the fundamental problem
+  that reclamation must wait for the oldest concurrent reader. §9 compares the three shapes in detail.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three candidates for "who decides it's safe, and when"</h2>
+  <p>If reclamation must wait for a horizon, the design space narrows to: <i>who computes the horizon and acts on
+  it, and how often?</i> Step through the three candidates PostgreSQL's design space actually contains — the third
+  is what shipped, but the second was seriously prototyped and shelved, which is instructive in its own right.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Eliminating the candidates</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: DECOUPLING WRITE LATENCY FROM CLEANUP COST</div>
+    <p>A background sweep with its own independent read of the heap means a fast OLTP transaction never pays for
+    cleanup it didn't ask for — it pays only the small, fixed cost of setting <code>xmax</code> and moving on.
+    Cleanup cost is instead paid later, amortized, by a process that can be paced, throttled, and even skipped
+    under load (§6's cost-based delay). That's the actual shape of the trade: foreground latency stays flat and
+    predictable, and the price is a background process that must scan the whole heap and can fall behind — which
+    is precisely the failure mode the rest of this chapter is about.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">A background sweep is not free, and it can lose the race</h2>
+  <p>Choosing "background sweep, own read of the heap" solves the correctness problem from §4, but it inherits two
+  new problems that are the entire subject of the rest of this chapter, and it is worth being precise about both
+  before looking at the architecture that manages them:</p>
+  <ul class="plain">
+    <li><b>The sweep itself costs I/O and CPU.</b> To find dead tuples, something has to actually read every page of
+      the heap (or at least every page that might contain one) and every page of every index that might reference
+      one. That is not a free background tick — it competes with foreground queries for buffer-pool slots, disk
+      bandwidth, and CPU, on the very same table that's under active load. Run it flat-out and you can measurably
+      slow down the OLTP traffic you're trying to protect; this is exactly why the shipped design needs a
+      <b>cost-based throttle</b> (<code>vacuum_cost_limit</code>, <code>autovacuum_vacuum_cost_delay</code>, §10) —
+      an admission that "just scan it" is not good enough on its own.</li>
+    <li><b>If the sweep falls behind, dead tuples accumulate anyway — bloat by a different route.</b> The sweep can
+      only reclaim tuples older than the xmin horizon (§4). If the horizon itself stops advancing — a long-running
+      transaction, an idle-in-transaction session, an unconsumed logical replication slot, or a standby with
+      <code>hot_standby_feedback</code> on all pin it in place — the background process can run continuously and
+      still reclaim <i>nothing</i>, because every dead tuple it finds is still newer than the horizon. This is the
+      single most common real bloat incident in production (§11), and it is a direct, mechanical consequence of the
+      design choice made in §5, not a bug in the sweep.</li>
+  </ul>
+  <p>So the final architecture has to solve a genuinely two-sided problem: run often and cheaply enough that it
+  doesn't fall behind under normal load, and throttle itself enough that it doesn't starve the foreground when it
+  does run — while accepting that neither guarantee holds if something external (a stuck transaction) breaks the
+  horizon assumption entirely. §7 is the architecture built to manage exactly that tension.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">Launcher, workers, and the three-phase lazy vacuum</h2>
+  <p>The shipped design has two levels. At the top, a supervisor decides <i>which</i> table needs attention and
+  <i>when</i> — that's the autovacuum launcher/worker machinery. Underneath, for any single table, a fixed
+  three-phase algorithm — <b>heap scan → index vacuum → heap vacuum</b> — does the actual reclamation, in that
+  strict order, for a reason that is worth deriving before you read a line of the implementation: <b>an index entry
+  must never be allowed to reference a heap line pointer that has since been marked reusable</b>, because if it
+  did, a later insert could reuse that slot for an unrelated tuple, and the stale index entry would silently
+  resolve to the wrong row. Every index referencing a dead <code>tid</code> must be cleaned <i>before</i> that
+  <code>tid</code>'s heap slot becomes reusable — hence heap scan (find and freeze/mark candidates) must complete
+  before index vacuum (strip references), which must complete before the second heap pass (actually free the slot).
+  Click through the components below; the detail pane cites the real source files §13 walks in full.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">SUPERVISOR</div>
+        <div class="arch-grid"><div class="acard" data-p="launcher">autovacuum launcher</div></div>
+        <div class="arch-row-label">EPHEMERAL WORKERS (up to autovacuum_max_workers)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="worker">autovacuum worker</div>
+          <div class="acard" data-p="worker">autovacuum worker …N</div>
+        </div>
+        <div class="arch-row-label">THE THREE PHASES (per table, per worker)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="heapscan">1 · heap scan</div>
+          <div class="acard" data-p="indexvac">2 · index vacuum</div>
+          <div class="acard" data-p="heapvac">3 · heap vacuum</div>
+        </div>
+        <div class="arch-row-label">SHARED STATE THE WORKER CONSULTS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="vm">visibility map</div>
+          <div class="acard" data-p="fsm">free space map</div>
+          <div class="acard" data-p="tidstore">dead-tuple store (TidStore)</div>
+          <div class="acard" data-p="procarray">xmin horizon / ProcArray</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">GONE BUT INSTRUCTIVE: HOT MEANS SOMETIMES VACUUM ISN'T NEEDED AT ALL</div>
+    <p>Not every dead tuple waits for a vacuum worker. If an <code>UPDATE</code> touches no column referenced by any
+    index, and the new tuple fits on the same heap page as the old one, <code>heap_update()</code>
+    (<code>access/heap/heapam.c</code>) can create a <span class="term" data-def="A tuple whose creation required no new index entries because it's chained to its predecessor on the same page via ctid; index lookups follow the chain rather than needing a fresh pointer.">heap-only tuple</span> (HOT, since 8.3) —
+    the new version is chained to the old one via <code>ctid</code> with no new index entries at all. Opportunistic
+    pruning (<code>pruneheap.c</code>'s <code>heap_page_prune</code>, invoked whenever a backend dirties that page
+    anyway) can then reclaim the old HOT tuple's line pointer <i>immediately</i>, with no index cleanup required,
+    because no index ever pointed at it. HOT doesn't replace vacuum — it reduces how much work vacuum has to do,
+    and specifically removes index bloat as a side effect of ordinary foreground traffic.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Line pointers, dead-tuple storage, and the three phases in full</h2>
+  <p>Now the mechanism at the level you'd need to patch it: <b>(a)</b> what a line pointer actually is and its state
+  machine, <b>(b)</b> the three-phase algorithm walked on a concrete heap+index, <b>(c)</b> how dead TIDs are stored
+  in memory and why that storage structure is the single biggest scalability lever vacuum has, and <b>(d)</b> page
+  skipping via the visibility/freeze map and aggressive vacuum.</p>
+
+  <h3>(a) ItemId, LP_NORMAL, LP_DEAD, LP_UNUSED</h3>
+  <p>Every heap page is a header, an array of fixed-size <b><span class="term" data-def="A 4-byte struct (lp_off, lp_flags, lp_len) at a fixed slot in the page header; it is the level of indirection that lets a tuple move within a page or be marked dead/unused without changing the tid index entries reference.">ItemId</span></b>
+  slots (line pointers) growing down from the top, and variable-length tuple data growing up from the bottom. An
+  index entry never points directly at bytes on disk — it points at a <code>(block, offset)</code> pair, the
+  <code>offset</code> being an index into that page's line-pointer array. That indirection is exactly what makes
+  the whole reclamation scheme possible: the line pointer can change state — or even point somewhere else on the
+  page — without forcing every index that references it to be rewritten, <i>provided</i> the state transitions obey
+  strict rules. A line pointer is always in one of:</p>
+  <div class="lp-row">
+    <div class="lp normal">LP_NORMAL — live/dead-not-yet-pruned tuple, lp_off points at real tuple bytes</div>
+    <div class="lp dead">LP_DEAD — tuple bytes gone or ignorable, slot remembers "something used to be here"</div>
+    <div class="lp unused">LP_UNUSED — slot is free; a future insert may claim it</div>
+  </div>
+  <p>The critical invariant: <b>a line pointer becomes <code>LP_UNUSED</code> — reusable — only after every index
+  that might reference it has been vacuumed.</b> Until then it sits at <code>LP_DEAD</code>: a tombstone that says
+  "an index might still name this slot; don't you dare reuse it, but you no longer need to keep the tuple's actual
+  data around." This is the entire reason the algorithm needs two heap passes around one index pass, not one.</p>
+
+  <h3>(b) The three-phase algorithm, step by step</h3>
+  <p>Walk a tiny heap page and its one index through a complete lazy vacuum run. Watch specifically when the line
+  pointer changes state, and why the index pass has to sit in the middle rather than at the end.</p>
+
+  <div class="widget deck" id="deckPhases">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">lazy_scan_heap() → index ambulkdelete() → lazy_vacuum_heap_rel()</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(c) Where the dead TIDs live between phase 1 and phase 2</h3>
+  <p>Phase 1 cannot vacuum indexes tuple-by-tuple as it finds dead rows — it has to finish scanning (or fill its
+  budget), then hand a <i>batch</i> of collected TIDs to each index's bulk-delete routine, because a full index scan
+  per dead tuple would be absurd. That means every dead TID found in phase 1 has to be held in memory until phase 2
+  runs. For most of PostgreSQL's history that memory was a single flat, sorted array of <code>ItemPointerData</code>
+  (6 bytes each), allocated once up front and sized off <code>maintenance_work_mem</code> — but capped, in practice,
+  around what a single <code>palloc</code> can hand back (historically bounded near 1 GB), which works out to a hard
+  ceiling of roughly 178 million TIDs <i>no matter how much memory you gave it</i>. Once that array filled, vacuum
+  had no choice but to stop the heap scan early, run an index vacuum + heap vacuum pass immediately to drain it, and
+  then resume scanning — an extra full index scan per array-fill, on every index, for tables bloated enough to need
+  it.</p>
+  <p><b>PostgreSQL 17</b> replaced that array with <b><code>TidStore</code></b>
+  (<code>src/backend/access/common/tidstore.c</code>): an adaptive radix tree keyed on block number, storing the
+  set of dead offsets per block far more compactly than 6 bytes/TID once TIDs cluster (which they do — dead rows
+  bunch up on the same pages under real update patterns), with no artificial 1 GB ceiling — it scales with however
+  much <code>maintenance_work_mem</code> you actually grant it, and can be built in shared memory for parallel
+  vacuum workers to share directly. Drag the slider below and watch the practical difference in passes required.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">maintenance_work_mem vs. index vacuum passes required</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>maintenance_work_mem</label><input type="range" id="mwm-slider" min="16" max="4096" value="64" step="16"><span class="val" id="mwm-val">64 MB</span></div>
+      <div class="slider-row"><label>dead tuples to vacuum</label><input type="range" id="dt-slider" min="1" max="800" value="120" step="1"><span class="val" id="dt-val">120 M</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="mwm-legacy">pre-17: flat array (6 B/TID, ~1 GB cap)</button>
+        <button class="chip" id="mwm-tidstore">PG 17: TidStore (radix tree, no hard cap)</button>
+      </div>
+      <div class="memmap" id="mwm-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="mwm-note"></p>
+    </div>
+  </div>
+
+  <h3>(d) Page skipping: the visibility map and aggressive vacuum</h3>
+  <p>Scanning every page of a huge, mostly-unchanged table on every vacuum run would be wasteful, so <code>lazy_scan_heap</code>
+  consults the <b>visibility map</b> (<code>access/heap/visibilitymap.c</code>, one bit added in 8.4, a second in
+  9.6) before touching a page at all. The <b>all-visible</b> bit means every tuple on that page is visible to every
+  possible current and future snapshot — no dead tuples, nothing to prune — so a normal vacuum can skip the page's
+  tuple-level scan entirely (it's also what lets index-only scans, added 9.2, skip a heap fetch for visibility
+  checking). The <b>all-frozen</b> bit (9.6) is stricter: it means additionally every tuple's <code>xmin</code> is
+  already frozen, so there is nothing left to do for wraparound purposes either — a normal vacuum can skip such a
+  page completely, for both pruning and freezing.</p>
+  <p>That second bit exists because of a case the all-visible bit alone couldn't handle: a page can be all-visible
+  (no dead tuples) while still holding un-frozen <code>xmin</code> values, which is exactly what an
+  <b>anti-wraparound (aggressive) vacuum</b> — triggered when a table's <code>age(relfrozenxid)</code> passes
+  <code>autovacuum_freeze_max_age</code> (default 200,000,000) — must still visit and freeze, or the whole point of
+  running it is defeated. An aggressive vacuum is therefore defined precisely as one that <b>may skip only
+  all-frozen pages</b>, never merely all-visible ones; a regular vacuum may skip anything all-visible. This is why
+  an aggressive vacuum on a table that's been all-visible for years but never fully frozen can suddenly do far more
+  I/O than any prior run on the same table — it's visiting pages every previous, non-aggressive vacuum was
+  correctly allowed to ignore.</p>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT "SECOND HEAP PASS" ACTUALLY DOES</div>
+    <p>After every index has stripped its references to the collected TIDs, <code>lazy_vacuum_heap_rel</code> (or
+    the equivalent inline path when there are no indexes to wait for) revisits exactly those heap pages, flips each
+    reclaimed line pointer from <code>LP_DEAD</code> to <code>LP_UNUSED</code>, records the newly-freed space in the
+    <b>free space map</b> (<code>storage/freespace/freespace.c</code>) so future inserts can find it, and — if the
+    page now has no remaining dead tuples — sets its visibility-map bit. Notice what does <i>not</i> happen: the
+    heap file does not shrink. <code>LP_UNUSED</code> means "available for reuse within this file," not "returned
+    to the operating system." §12 covers why that distinction is the source of a very common misunderstanding
+    about what <code>VACUUM</code> is supposed to do to a table's on-disk size.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same deferred-cleanup problem, four ways</h2>
+  <p>Every MVCC system faces exactly the problem §4 derived: old versions must outlive their invalidating
+  transaction, and something must reclaim them once no snapshot needs them anymore. The systems below all chose
+  <i>where</i> the old version lives and <i>who</i> reclaims it — no one avoided the problem entirely:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>OLD-VERSION STORAGE</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>Old row stays in-place in the heap; a background sweep (autovacuum) prunes it later</td>
+      <td><span class="pill g">simple heap format</span> <span class="pill g">no undo replay on crash</span> <span class="pill g">reads never touch a log</span></td>
+      <td><span class="pill b">table bloat if sweep falls behind</span> <span class="pill b">two-pass heap/index algorithm</span> <span class="pill y">needs tuning at scale</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td>Old versions reconstructed from undo log entries in rollback segments</td>
+      <td><span class="pill g">primary table stays compact</span> <span class="pill g">in-place updates</span></td>
+      <td><span class="pill b">purge thread can fall behind → long history list</span> <span class="pill b">undo tablespace growth mirrors Postgres's bloat problem, one layer down</span></td></tr>
+    <tr><td>Oracle</td><td>Old versions in the UNDO tablespace, retained per <code>undo_retention</code></td>
+      <td><span class="pill g">tunable retention window</span> <span class="pill g">SMON-assisted space management</span></td>
+      <td><span class="pill b">ORA-01555 "snapshot too old" if a long query outlives its undo</span> <span class="pill y">undo tablespace sizing is its own tuning discipline</span></td></tr>
+    <tr><td>SQLite</td><td>WAL-mode: readers see an older WAL snapshot; no per-row MVCC</td>
+      <td><span class="pill g">no separate reclaimer process at all</span> <span class="pill g">trivial single-writer model</span></td>
+      <td><span class="pill b">a long-held read transaction blocks WAL checkpointing — the same "who's still watching?" problem, at file-level granularity</span></td></tr>
+    <tr><td>zheap (Postgres, abandoned)</td><td>Prototype: in-place updates + undo log, closer to InnoDB/Oracle's shape</td>
+      <td><span class="pill g">would have shrunk/eliminated update bloat</span> <span class="pill g">smaller tables for update-heavy workloads</span></td>
+      <td><span class="pill b">undo replay on crash recovery is hard to get right</span> <span class="pill b">interactions with logical decoding & snapshots</span> <span class="pill y">shelved ~2021, complexity exceeded the payoff at the time</span></td></tr>
+  </table>
+  <p>Read it as a proof by exhaustion again: <b>every MVCC design needs a background reclaimer of some kind; the
+  only real choice is where the "old version" is physically stored and how tightly that storage location couples
+  to the primary data structure.</b> PostgreSQL keeps old versions <i>in the same file</i> as live rows — simpler
+  crash recovery (no undo log to replay before you can trust the heap), no extra I/O structure to maintain — at the
+  cost of the primary table itself being where bloat shows up, directly, in the thing your queries scan. InnoDB and
+  Oracle move that cost into a separate structure (undo/rollback segments), which keeps the primary table
+  compact but doesn't remove the underlying accounting problem — it just relocates it, and gives it a different
+  name (history list length, undo retention) with the same root cause: a snapshot somewhere hasn't let go yet.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">The big-O, the throttle math, and the shared budget</h2>
+  <p>The cost model for a single lazy vacuum run on one table is straightforward to state and easy to get wrong in
+  practice: the heap scan is <b>O(heap pages)</b> — bounded further by how many pages the visibility map lets it
+  skip — and each index vacuum pass is <b>O(index size)</b>, because a B-tree bulk-delete (<code>ambulkdelete</code>)
+  has no way to jump directly to entries for specific TIDs; it walks the whole structure checking each entry against
+  the collected dead-TID set. That second fact is why the index phase, not the heap scan, dominates cost on tables
+  with several large indexes — and why the number of <i>passes</i> (§8c) multiplies an already-expensive O(index
+  size) term. A table needing 3 index-fill passes pays for 3 full scans of every index on it, not one.</p>
+  <p>Disk access pattern matters as much as big-O: the heap scan is sequential by block, which is cheap on both
+  spinning disks and SSDs, but the visibility-map-guided skip pattern is what actually determines how much of that
+  sequential scan happens at all — a table that is 95% all-visible only pays for scanning the 5% that changed since
+  the last run, which is the entire point of the map. Aggressive vacuums forfeit part of that skip (§8d), which is
+  exactly why they show up as I/O spikes relative to routine ones on the same table.</p>
+  <p>Foreground impact is bounded by <span class="term" data-def="An accounting scheme: every page touched during vacuum accrues a cost (hit/miss/dirty), and once the accrued cost crosses a limit, the worker sleeps briefly before continuing — trading vacuum wall-clock time for reduced contention with foreground queries.">cost-based vacuum delay</span>.
+  Each page a worker touches accrues cost — <code>vacuum_cost_page_hit</code> (already in shared buffers, default 1),
+  <code>vacuum_cost_page_miss</code> (had to be read from disk, default 2 as of PG 16, lowered from 10 in earlier
+  releases to reflect that a cache miss on modern storage is far cheaper relative to a hit than it was on
+  spinning disks), and <code>vacuum_cost_page_dirty</code> (the page had to be written, default 20 — by far the
+  most expensive unit, because dirtying triggers WAL and eventual checkpoint I/O). Once the running total for a
+  worker exceeds <code>vacuum_cost_limit</code> (default 200; <code>autovacuum_vacuum_cost_delay</code> defaults to
+  2 ms since PG 12, versus 20 ms in older releases — a ten-fold increase in default aggressiveness), that worker
+  sleeps for <code>autovacuum_vacuum_cost_delay</code> milliseconds before resuming. Crucially, the limit is not
+  per-worker in isolation: PostgreSQL divides the effective cost budget across all <i>currently active</i> autovacuum
+  workers, so raising <code>autovacuum_max_workers</code> alone does not raise total vacuum I/O throughput — it
+  slices the same aggregate budget into more, smaller shares, which mostly helps when the bottleneck is <i>which
+  table gets attention</i> rather than <i>how fast any one table gets vacuumed</i>.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Cost-based delay: passes and duration vs. dead tuples</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>vacuum_cost_limit</label><input type="range" id="pf-limit" min="50" max="2000" value="200" step="10"><span class="val" id="pf-limit-val">200</span></div>
+      <div class="slider-row"><label>autovacuum_vacuum_cost_delay</label><input type="range" id="pf-delay" min="0" max="20" value="2" step="1"><span class="val" id="pf-delay-val">2 ms</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="pf-tidstore">PG 17 TidStore</button>
+        <button class="chip" id="pf-legacy">pre-17 array (1 GB cap)</button>
+      </div>
+      <div class="chartbox"><canvas id="pf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> vacuum duration (relative)</span>
+        <span><span style="color:var(--bad)">━</span> index passes required</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="pf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch tuned to reproduce the qualitative shape real vacuum runs show: duration
+    rising roughly linearly with dead-tuple count, then jumping in steps ("sawtoothing") each time the dead-tuple
+    store fills and forces another full index pass — a step that arrives far sooner under the legacy array's ~1 GB
+    cap than under PG 17's TidStore at the same <code>maintenance_work_mem</code>. Real durations depend on actual
+    index sizes, storage latency, and concurrent load; the point is the <i>shape</i>, and specifically that raising
+    <code>maintenance_work_mem</code> only helps the legacy array up to its hard ceiling, while TidStore keeps
+    benefiting well past it.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents you will eventually meet</h2>
+
+  <h3>Incident 1: the replication slot nobody dropped</h3>
+  <p>A logical replication consumer (a CDC pipeline, an analytics sync) disconnects and is never reconnected or
+  cleaned up, but its <span class="term" data-def="A durable marker telling PostgreSQL to retain WAL and the row versions a logical or physical replica might still need, even if that replica never reconnects.">replication slot</span> stays
+  registered. PostgreSQL keeps the slot's <code>catalog_xmin</code>/<code>xmin</code> pinned indefinitely, holding
+  the entire cluster's xmin horizon at the moment the consumer vanished — exactly the scenario §6 predicted.
+  Autovacuum keeps running on schedule, keeps scanning, and keeps finding the same tuples "not yet safe to remove."
+  Tables that see moderate update traffic can bloat 10–50× over days to weeks before anyone notices — usually
+  first as disk usage alerts, or as query plans that suddenly prefer sequential scans over indexes because the
+  planner's row-count estimates no longer match a table whose live rows are now a small fraction of its pages.
+  <b>Diagnosis</b>: <code>pg_replication_slots</code> shows a slot with <code>active = false</code> and a very old
+  <code>restart_lsn</code>/<code>xmin</code>; cross-reference against <code>pg_stat_activity</code> and
+  <code>pg_stat_replication</code> to confirm nothing is consuming it. <b>Fix</b>: drop the orphaned slot
+  (<code>pg_drop_replication_slot</code>) or fix the consumer so it reconnects — then autovacuum's next pass on the
+  affected tables reclaims the entire backlog at once, which is itself worth pacing (see incident 3).</p>
+
+  <h3>Incident 2: a billion-row table that "never" gets vacuumed</h3>
+  <p>A table sized to a billion rows sits on the default <code>autovacuum_vacuum_scale_factor = 0.2</code> and
+  <code>autovacuum_vacuum_threshold = 50</code>. The trigger formula is <code>dead_tuples &gt; threshold + scale_factor
+  × reltuples</code> — at a billion rows that's roughly <b>200 million dead tuples</b> before autovacuum even fires.
+  For an update-heavy table that is an enormous, multi-gigabyte backlog to let build before cleanup starts, and once
+  it does start, the run itself is correspondingly huge and slow, competing with foreground traffic for the whole
+  duration — so operators sometimes see it as "autovacuum never seems to run" when in fact it is running,
+  extremely rarely, on a very long delay, exactly as configured. <b>Fix</b>: per-table
+  overrides via <code>ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = 0.02, autovacuum_vacuum_cost_delay = 0,
+  autovacuum_vacuum_cost_limit = 1000)</code> (or similar) — dropping the scale factor makes the trigger fire on a
+  fixed few-million-row backlog regardless of table size, and loosening the cost delay/limit for that one table lets
+  its (now much smaller, more frequent) runs finish before the next backlog builds. This is the standard "large
+  table" tuning pattern: scale-factor-based triggering is calibrated for small-to-medium tables and needs an
+  absolute floor on huge ones.</p>
+
+  <h3>Incident 3: an anti-wraparound storm across many tables at once</h3>
+  <p>A cluster with many tables created or bulk-loaded around the same time — a common pattern after a migration or
+  a data warehouse refresh — can have their <code>relfrozenxid</code> ages cross <code>autovacuum_freeze_max_age</code>
+  (default 200,000,000) within a short window of each other. Every one of those tables now qualifies for an
+  <b>aggressive</b> vacuum simultaneously, and aggressive vacuums cannot skip all-visible-but-not-all-frozen pages
+  (§8d) — so each one does substantially more I/O than a routine pass would, and several run concurrently (bounded
+  by <code>autovacuum_max_workers</code>), producing a visible I/O and CPU spike that lines up suspiciously with
+  "nothing changed in the application." <b>Mitigation</b>: proactively run <code>VACUUM (FREEZE)</code> on large,
+  slow-changing tables during a maintenance window well before they'd hit the threshold organically, so freezing
+  work is spread out on your schedule rather than the wraparound clock's; alternately, raise
+  <code>vacuum_cost_limit</code>/lower <code>autovacuum_vacuum_cost_delay</code> specifically during the maintenance
+  window so the forced runs complete faster once they do start. The underlying lesson is that anti-wraparound
+  vacuum is not optional or skippable — deprioritizing it only delays it into a larger, more synchronized event.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is the depth a Staff/Principal interview (or a pgsql-hackers thread)
+  actually expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>vacuumlazy.c</code> and friends</h2>
+  <p>Where everything from this chapter lives. Files marked <span style="color:var(--warn)">●</span> are this
+  chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/</span></div>
+<div>├── <span class="dir">access/heap/</span></div>
+<div>│   ├── <span class="fhl">● vacuumlazy.c</span> <span class="fnote">— lazy_scan_heap(), the three-phase driver, dead-tuple accounting</span></div>
+<div>│   ├── pruneheap.c <span class="fnote">— heap_page_prune(): LP_DEAD detection, HOT-chain collapsing</span></div>
+<div>│   ├── heapam.c <span class="fnote">— heap_update()/heap_delete(): where xmax gets set, where HOT tuples are chosen</span></div>
+<div>│   └── <span class="fhl">● visibilitymap.c</span> <span class="fnote">— all-visible / all-frozen bit storage, set/clear/test API</span></div>
+<div>├── <span class="dir">access/common/</span></div>
+<div>│   └── <span class="fhl">● tidstore.c</span> <span class="fnote">— PG17: radix-tree dead-TID storage, replaces the flat array</span></div>
+<div>├── <span class="dir">commands/</span></div>
+<div>│   ├── <span class="fhl">● vacuum.c</span> <span class="fnote">— ExecVacuum(): command dispatch, options parsing, VACUUM FULL routing</span></div>
+<div>│   └── analyze.c <span class="fnote">— statistics refresh, often runs alongside autovacuum</span></div>
+<div>├── <span class="dir">postmaster/</span></div>
+<div>│   └── <span class="fhl">● autovacuum.c</span> <span class="fnote">— launcher + worker; relation_needs_vacanalyze(); cost-limit sharing across workers</span></div>
+<div>├── <span class="dir">storage/freespace/</span></div>
+<div>│   └── freespace.c <span class="fnote">— FSM: where reclaimed line-pointer space gets advertised to future inserts</span></div>
+<div>└── <span class="dir">storage/ipc/</span>procarray.c <span class="fnote">— ProcArray / GetOldestXmin(): the xmin horizon vacuum must respect</span></div>
+  </div></div>
+
+  <p>Four simplified-but-structurally-faithful excerpts. First, the trigger math every autovacuum decision reduces
+  to — this is the function that decides whether your table gets touched at all:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>autovacuum.c — relation_needs_vacanalyze(), simplified</span></div>
+    <pre><span class="k">static void</span>
+<span class="f">relation_needs_vacanalyze</span>(Oid relid, AutoVacOpts *opts, PgStat_StatTabEntry *tabentry,
+                         <span class="k">bool</span> *dovacuum, <span class="k">bool</span> *doanalyze, <span class="k">bool</span> *wraparound)
+{
+    <span class="k">float</span> vac_scale_factor = opts-&gt;vacuum_scale_factor &gt;= <span class="n">0</span>
+        ? opts-&gt;vacuum_scale_factor : autovacuum_vac_scale;      <span class="c">/* default 0.2 */</span>
+    <span class="k">float</span> vac_base_thresh   = opts-&gt;vacuum_threshold &gt;= <span class="n">0</span>
+        ? opts-&gt;vacuum_threshold : autovacuum_vac_thresh;        <span class="c">/* default 50  */</span>
+
+    <span class="k">float</span> reltuples = <span class="f">estimated_live_tuples</span>(relid);   <span class="c">/* from pg_class */</span>
+    <span class="k">float</span> vacthresh = vac_base_thresh + vac_scale_factor * reltuples;
+
+    <span class="c">/* The formula every "why isn't autovacuum running" incident reduces to:
+     * a table needs (threshold + scale_factor × reltuples) dead rows
+     * before it is even a CANDIDATE for a routine vacuum.             */</span>
+    *dovacuum = (tabentry-&gt;dead_tuples &gt; vacthresh);
+
+    <span class="c">/* Independent of dead-tuple count entirely: age-based forcing.  */</span>
+    TransactionId relfrozenxid = <span class="f">get_relfrozenxid</span>(relid);
+    <span class="k">if</span> (<span class="f">TransactionIdIsValid</span>(relfrozenxid) &amp;&amp;
+        <span class="f">TransactionIdPrecedesOrEquals</span>(relfrozenxid + autovacuum_freeze_max_age,
+                                        <span class="f">ReadNextTransactionId</span>()))
+    {
+        *dovacuum = <span class="k">true</span>;
+        *wraparound = <span class="k">true</span>;      <span class="c">/* AGGRESSIVE: cannot skip all-visible-only pages */</span>
+    }
+
+    <span class="k">float</span> anl_scale_factor = opts-&gt;analyze_scale_factor &gt;= <span class="n">0</span>
+        ? opts-&gt;analyze_scale_factor : autovacuum_anl_scale;     <span class="c">/* default 0.1 */</span>
+    <span class="k">float</span> anlthresh = (opts-&gt;analyze_threshold &gt;= <span class="n">0</span>
+        ? opts-&gt;analyze_threshold : autovacuum_anl_thresh) + anl_scale_factor * reltuples;
+    *doanalyze = (tabentry-&gt;changes_since_analyze &gt; anlthresh);
+}</pre>
+  </div>
+
+  <p>Next, the conceptual core of phase 1's line-pointer classification — real vacuum pruning is more involved
+  (multi-tuple HOT chains, multiple visibility outcomes), but this captures the decision that matters:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>pruneheap.c — heap_page_prune(), conceptual core</span></div>
+    <pre><span class="k">void</span>
+<span class="f">heap_page_prune</span>(Relation rel, Buffer buf, TransactionId oldest_xmin, TidStore *dead_items)
+{
+    Page page = <span class="f">BufferGetPage</span>(buf);
+    <span class="k">int</span> nline = <span class="f">PageGetMaxOffsetNumber</span>(page);
+
+    <span class="k">for</span> (<span class="k">int</span> off = <span class="n">1</span>; off &lt;= nline; off++)
+    {
+        ItemId lp = <span class="f">PageGetItemId</span>(page, off);
+        <span class="k">if</span> (!<span class="f">ItemIdIsUsed</span>(lp))
+            <span class="k">continue</span>;
+
+        HeapTupleHeader tup = (HeapTupleHeader) <span class="f">PageGetItem</span>(page, lp);
+
+        <span class="c">/* HEAPTUPLE_DEAD: xmax committed AND older than the xmin horizon —
+         * no snapshot anywhere can still need this version.            */</span>
+        <span class="k">if</span> (<span class="f">HeapTupleSatisfiesVacuum</span>(tup, oldest_xmin, buf) == HEAPTUPLE_DEAD)
+        {
+            <span class="f">ItemIdSetDead</span>(lp);                  <span class="c">/* LP_NORMAL -&gt; LP_DEAD  */</span>
+            <span class="f">TidStoreSetBlockOffsets</span>(dead_items, <span class="f">BufferGetBlockNumber</span>(buf), off);
+        }
+        <span class="c">/* HEAPTUPLE_RECENTLY_DEAD: xmax committed but NEWER than the
+         * horizon — some snapshot might still need it. Left alone.     */</span>
+    }
+    <span class="c">/* Note: a LP_DEAD slot here still blocks reuse until every index
+     * has had its matching entries stripped in phase 2.                */</span>
+}</pre>
+  </div>
+
+  <p>Finally, the second heap pass — the only code path allowed to turn <code>LP_DEAD</code> into
+  <code>LP_UNUSED</code>, and only because it runs strictly after index vacuum has completed:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>vacuumlazy.c — lazy_vacuum_heap_page(), conceptual core</span></div>
+    <pre><span class="k">static void</span>
+<span class="f">lazy_vacuum_heap_page</span>(Relation rel, BlockNumber blkno, Buffer buf,
+                       TidStore *dead_items, VacRelStats *stats)
+{
+    Page page = <span class="f">BufferGetPage</span>(buf);
+
+    <span class="c">/* PRECONDITION, enforced by call order in the driver: every index
+     * on `rel` has already run ambulkdelete() against `dead_items`.
+     * If that hasn't happened, calling this early is a correctness bug. */</span>
+    OffsetNumber *offsets = <span class="f">TidStoreGetBlockOffsets</span>(dead_items, blkno);
+
+    <span class="k">for</span> (<span class="k">int</span> i = <span class="n">0</span>; offsets[i] != InvalidOffsetNumber; i++)
+    {
+        ItemId lp = <span class="f">PageGetItemId</span>(page, offsets[i]);
+        <span class="f">ItemIdSetUnused</span>(lp);                 <span class="c">/* LP_DEAD -&gt; LP_UNUSED, now reusable */</span>
+    }
+
+    <span class="f">PageRepairFragmentation</span>(page);          <span class="c">/* compact free space on the page   */</span>
+    <span class="f">MarkBufferDirty</span>(buf);
+    <span class="f">XLogInsert</span>(RM_HEAP2_ID, XLOG_HEAP2_VACUUM);
+
+    <span class="f">FreeSpaceMapUpdate</span>(rel, blkno, <span class="f">PageGetFreeSpace</span>(page));   <span class="c">/* FSM: this page has room */</span>
+    <span class="k">if</span> (<span class="f">PageIsAllVisible</span>(page, ...))
+        <span class="f">visibilitymap_set</span>(rel, blkno, ...VM_ALL_VISIBLE...);
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Two heap passes around one index pass isn't a workaround — it's the only order that's ever correct.</b>
+    Any implementation that reused a line pointer before every index was cleaned would be one <code>INSERT</code>
+    away from a stale index entry pointing at unrelated data. <b>2. Cost-based delay instead of a hard I/O rate
+    limiter</b> — the cost accounting (hit/miss/dirty) approximates the actual expense of different page operations
+    rather than a blunt "N MB/sec" cap, so a run touching mostly cached, clean pages proceeds fast while one forcing
+    writes (dirty pages) is throttled harder automatically, without the operator having to characterize the
+    workload in advance. <b>3. Per-table <code>reloptions</code> exist because one global scale factor cannot be
+    right for both a 10,000-row config table and a 10-billion-row events table</b> — the formula in
+    <code>relation_needs_vacanalyze</code> is linear in <code>reltuples</code>, and linear formulas need a knob per
+    table once the table sizes span many orders of magnitude, which real schemas always do.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — one lazy vacuum run</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from launcher wakeup to relfrozenxid advancing. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The bloat lab, live</h2>
+  <p>One table under a configurable write workload, with a live autovacuum loop fighting it. Crank up the write
+  rate, raise <code>autovacuum_vacuum_scale_factor</code>, and open a long-running transaction or a stale
+  replication slot to watch bloat run away — exactly as §6 and §11 predicted. Then fix it: close the pin, lower the
+  scale factor, add workers, raise the cost limit, and watch the backlog get reclaimed.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">bloat lab — one table, live autovacuum</span><span class="w-sub" id="sim-phase">IDLE</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="xline">xmin horizon: <b id="bl-horizon">tick 0</b> <span id="bl-pin-note" style="color:var(--dim)"></span></div>
+          <div class="xline">table size: <b id="bl-pages">0</b> pages · bloat: <b id="bl-bloatpct">0%</b></div>
+          <div class="pgrid" id="bl-pgrid"></div>
+          <div class="chartbox"><canvas id="bl-chart" width="700" height="150"></canvas></div>
+          <div class="chart-legend">
+            <span><span style="color:var(--bad)">━</span> bloat %</span>
+            <span><span style="color:var(--pg)">━</span> dead tuples (M, scaled)</span>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">WORKLOAD</div>
+            <div class="slider-row" style="margin:2px 0"><label style="min-width:0;flex:1">write rate (rows/s)</label><span class="val" id="bl-wr-val" style="min-width:50px">400</span></div>
+            <input type="range" id="bl-wr" min="0" max="3000" value="400" step="50" style="width:100%;accent-color:var(--pg)">
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">AUTOVACUUM CONFIG</div>
+            <div class="slider-row" style="margin:2px 0"><label style="min-width:0;flex:1">vacuum_scale_factor</label><span class="val" id="bl-sf-val" style="min-width:50px">0.20</span></div>
+            <input type="range" id="bl-sf" min="1" max="50" value="20" step="1" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:8px 0 2px"><label style="min-width:0;flex:1">cost_delay (ms)</label><span class="val" id="bl-cd-val" style="min-width:50px">2</span></div>
+            <input type="range" id="bl-cd" min="0" max="20" value="2" step="1" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:8px 0 2px"><label style="min-width:0;flex:1">cost_limit</label><span class="val" id="bl-cl-val" style="min-width:50px">200</span></div>
+            <input type="range" id="bl-cl" min="50" max="2000" value="200" step="50" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:8px 0 2px"><label style="min-width:0;flex:1">max_workers</label><span class="val" id="bl-mw-val" style="min-width:50px">1</span></div>
+            <input type="range" id="bl-mw" min="1" max="6" value="1" step="1" style="width:100%;accent-color:var(--pg)">
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">HORIZON PINS</div>
+            <div class="btns">
+              <button class="btn warn" id="bl-txn">open long transaction</button>
+              <button class="btn danger" id="bl-slot">open stale repl. slot</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="bl-cnt-runs">0</div><div class="cl">vac runs</div></div>
+            <div class="scounter"><div class="cv" id="bl-cnt-reclaimed">0</div><div class="cl">M reclaimed</div></div>
+            <div class="scounter"><div class="cv" id="bl-cnt-passes" style="color:var(--warn)">0</div><div class="cl">extra passes</div></div>
+          </div>
+          <div style="padding:11px 15px">
+            <div class="meter"><div class="m-l"><span>VACUUM I/O BUDGET</span><span id="bl-io-v">0%</span></div><div class="m-bar"><div class="m-fill" id="bl-io"></div></div></div>
+            <div class="meter"><div class="m-l"><span>DEAD / LIVE RATIO</span><span id="bl-ratio-v">0%</span></div><div class="m-bar"><div class="m-fill" id="bl-ratio"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="bl-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Crank write rate high, leave defaults — watch the backlog cross the trigger threshold and
+    autovacuum start reclaiming it in real time. <b>2.</b> Open a long transaction while writes continue — watch
+    vacuum keep running but reclaim nothing, and bloat keep climbing. <b>3.</b> Close the transaction — watch the
+    next run drain the entire backlog at once. <b>4.</b> Raise <code>scale_factor</code> to 0.5 on a big simulated
+    table — watch the trigger threshold become a huge number and runs become rare. <b>5.</b> Push
+    <code>maintenance_work_mem</code>-equivalent capacity down (via extreme dead-tuple counts) and watch "extra
+    passes" climb — the same mechanism as §8's slider, now inside a live feedback loop.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 13: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head (or out loud), <i>then</i> reveal. If any
+  reveal surprises you, re-run the relevant simulator experiment.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 12 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now trace a dead tuple from the moment
+    <code>xmax</code> is set to the moment its line pointer becomes <code>LP_UNUSED</code>, explain why that path
+    has to run heap→index→heap, and reason about maintenance_work_mem, TidStore, and the cost-based throttle with
+    real numbers. Chapter 13 goes inside the structure vacuum spends half its time cleaning: the B-tree — its page
+    layout, its own bottom-up deletion optimization for non-HOT updates, and why <code>REINDEX CONCURRENTLY</code>
+    exists at all.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="pg-13.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-13: B-Tree Internals →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1990s", l:"manual VACUUM", d:"<b>VACUUM ships as a plain SQL command, run by hand.</b> No daemon, no threshold, no autopilot — a DBA decides which tables need it and schedules it in cron, typically overnight. Getting the frequency wrong in either direction was entirely the operator's problem: too rarely and tables bloated; too often and the DBA burned I/O for no benefit." },
+  { yr:"2003", l:"pg_autovacuum (contrib)", d:"<b>An external, opt-in daemon.</b> Before autovacuum was integrated into the server, <code>pg_autovacuum</code> shipped as a separate contrib program that connected over libpq and issued VACUUM commands on a schedule it computed itself — the first attempt to replace human judgment with dead-tuple instrumentation, but bolted on rather than built in." },
+  { yr:"2005", l:"autovacuum in core (8.1)", d:"<b>Autovacuum becomes a real background process</b>, supervised by the postmaster like any other auxiliary process (chapter 1) instead of an external client. This is also where the <b>launcher/worker split</b> takes shape: a resident launcher process wakes on <code>autovacuum_naptime</code> and asks the postmaster to fork workers, because a single connection can only ever see one database and a cluster usually has several." },
+  { yr:"2008", l:"HOT + defaults-on (8.3)", d:"<b>Two changes land together and compound.</b> Heap-Only Tuples (HOT) let non-indexed-column updates avoid creating new index entries at all, letting opportunistic pruning reclaim old versions without waiting for a vacuum worker to touch the table. In the same release, autovacuum is switched <b>on by default</b> — before this, plenty of production clusters ran with no autovacuum at all unless someone explicitly enabled it, which is exactly the kind of latent bloat risk this chapter's incidents describe." },
+  { yr:"2009", l:"visibility map (8.4)", d:"<b>The all-visible bit arrives.</b> A page whose visibility-map bit is set contains no dead tuples requiring pruning, so a routine vacuum can skip scanning it entirely. This single bit also lays the groundwork for index-only scans (9.2), which use it to skip a heap fetch purely for MVCC visibility checking when the index itself has enough data to answer the query." },
+  { yr:"2016", l:"freeze map (9.6)", d:"<b>A second visibility-map bit: all-frozen.</b> All-visible alone doesn't mean 'nothing left to do' — a page can be free of dead tuples yet still hold un-frozen <code>xmin</code> values that an anti-wraparound vacuum must still visit. The freeze map lets even <i>aggressive</i> vacuums skip pages that truly need nothing, closing a gap that had made every anti-wraparound run scan the entire table regardless of how much of it had already been frozen." },
+  { yr:"2017–2021", l:"zheap prototype", d:"<b>The road not taken.</b> An EnterpriseDB-led effort to prototype an alternative heap format — in-place updates with old versions moved into an undo log, InnoDB/Oracle-style — aiming to eliminate update-driven bloat at the source rather than clean it up afterward. It surfaced real, hard problems: undo must be replayed correctly during crash recovery before the heap can be trusted, and undo-based old-row storage interacts awkwardly with logical decoding's need to reconstruct historical row images. The project was shelved around 2021; §9 and §5 return to why." },
+  { yr:"2024", l:"TidStore (17)", d:"<b>The flat dead-tuple array is replaced by a radix tree.</b> <code>src/backend/access/common/tidstore.c</code> stores collected dead TIDs far more compactly, removes the practical ~1 GB array ceiling that used to force extra index-vacuum passes on heavily bloated tables, and can live in shared memory so parallel vacuum workers share one structure instead of duplicating it. §8c and §10 quantify the difference." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+
+/* ============================================================
+   2. DECK: candidates eliminated (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:190px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:6px 9px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...a)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${a.join("")}</div>`;
+  stepper("deckCandidates", [
+    { stage: box("CANDIDATE A · per-tuple reference counting",
+        cell("every snapshot open: counter++ on tuples it might touch") +
+        cell("every snapshot close: counter-- ") +
+        cell("reclaim when counter hits 0", "#f25c54", "rgba(242,92,84,.08)")),
+      cap:`<b>Rejected.</b> A shared counter touched on every snapshot open/close turns MVCC's core operation — starting a transaction — into a write against contended shared state for every tuple that transaction might ever see, which is unbounded and unknowable in advance. This is the reference-counting approach garbage collectors use for objects; databases don't have a fixed, enumerable set of "referents" per row the way a language runtime has pointers.` },
+    { stage: box("CANDIDATE B · synchronous purge thread per writer",
+        cell("writer commits") +
+        cell("writer's own thread walks affected pages, checks horizon, frees now", "#f25c54", "rgba(242,92,84,.08)") +
+        cell("next writer blocked behind this one's cleanup")),
+      cap:`<b>Rejected.</b> Coupling cleanup 1:1 to the writer that created the garbage means every commit's latency now includes a horizon check plus however much reclaim work happens to be safe at that instant — turning a fixed-cost commit into a variable-cost one, and reintroducing exactly the "cleanup cost inline with the write path" problem §4 quantified, just with extra steps. It also duplicates work: N concurrent writers each re-deriving the same horizon independently.` },
+    { stage: box("CANDIDATE C · background sweep, own read of the heap ✓",
+        cell("commit: only set xmax, return immediately", "#4ade80", "rgba(74,222,128,.06)") +
+        cell("separately: a worker wakes, computes ITS OWN horizon once, scans, reclaims", "#4ade80", "rgba(74,222,128,.06)") +
+        cell("cost paid later, amortized, throttleable")),
+      cap:`<b>Chosen.</b> The writer's commit path stays O(1) — set <code>xmax</code>, done. A separate process computes the horizon once per its own run (not once per commit) and does the actual scanning and freeing on its own schedule, which can be paced independently of foreground traffic. This is "lazy vacuum" — lazy in the literal sense of deferred, not sloppy.` },
+    { stage: box("THE ROAD NOT TAKEN · zheap: in-place update + undo log",
+        cell("UPDATE rewrites the row in place") +
+        cell("old version copied into a separate undo log") +
+        cell("undo discarded once no snapshot needs it — still needs a background discard worker", "#ff9f43", "rgba(255,159,67,.08)")),
+      cap:`<b>Prototyped, then shelved (~2021).</b> Notice this still needs background reclamation — a "discard worker" freeing old undo once safe — so it doesn't eliminate the need for candidate C's shape, it relocates where the reclaimed bytes live (out of the primary heap, into undo). What made it hard wasn't the update path — it was everything downstream that assumed the heap never changes shape underneath a running query: crash recovery has to replay undo correctly before the heap can be trusted at all, and logical decoding (chapter 19) needs to reconstruct historical row images, which is straightforward when old versions simply sit in the heap and much less so when they've been moved into a log with its own retention and replay rules.` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  launcher:{ n:"autovacuum launcher", f:"src/backend/postmaster/autovacuum.c", r:"Wakes every autovacuum_naptime (default 60s), asks pg_stat data for each database's neediest tables via relation_needs_vacanalyze(), and — because it cannot fork itself — signals the postmaster to start a worker for the database that needs attention most. One launcher process, resident for the cluster's lifetime.", l:"Started once at cluster startup, supervised like any auxiliary process (chapter 1); if it dies the postmaster restarts it.", d:"If it stops running (crash, or autovacuum=off cluster-wide), no new autovacuum runs start anywhere — the entire subsystem depends on this one process waking up on schedule." },
+  worker:{ n:"autovacuum worker", f:"postmaster/autovacuum.c → commands/vacuum.c → access/heap/vacuumlazy.c", r:"An ephemeral process forked to vacuum (and/or analyze) the tables of one database that crossed their thresholds. Up to autovacuum_max_workers (default 3) can run concurrently across the cluster, sharing one aggregate cost-based I/O budget (§10).", l:"Born per job; exits when its list of due tables is exhausted.", d:"Killed mid-run: safe. Vacuum is designed to be interruptible — whatever it already committed (via WAL, per-page) stays committed, and a later run picks up wherever thresholds still say work is needed." },
+  heapscan:{ n:"phase 1 · heap scan", f:"access/heap/vacuumlazy.c (lazy_scan_heap) + pruneheap.c (heap_page_prune)", r:"Walks heap pages (skipping all-visible ones for routine vacuums, §8d), prunes HOT chains, classifies each tuple via HeapTupleSatisfiesVacuum, and for anything HEAPTUPLE_DEAD flips its line pointer to LP_DEAD and records the TID in the dead-tuple store.", l:"Runs first, always; may pause partway through to drain the dead-tuple store into phases 2+3 if it fills (§8c), then resumes.", d:"Never advances relfrozenxid on its own — that only happens once phases 2 and 3 have run for whatever this scan collected." },
+  indexvac:{ n:"phase 2 · index vacuum", f:"each index AM's ambulkdelete (e.g. access/nbtree/nbtdedup.c family for btree)", r:"For every index on the table, a full index scan removes every entry pointing at a TID in the collected dead-tuple set. This is O(index size), not O(dead tuples) — a B-tree has no way to jump straight to entries for arbitrary TIDs.", l:"Runs once per pass, after heap scan collects (or fills up on) a batch of dead TIDs, before any of those TIDs' heap slots can be freed.", d:"Skipping this phase is not a valid optimization under any circumstance if the table has indexes — it's the correctness gate for phase 3, not an optional cleanup pass." },
+  heapvac:{ n:"phase 3 · second heap pass", f:"access/heap/vacuumlazy.c (lazy_vacuum_heap_rel / lazy_vacuum_heap_page)", r:"Revisits exactly the heap pages holding the now-index-cleaned dead TIDs, flips their line pointers from LP_DEAD to LP_UNUSED, updates the free space map, and sets the visibility-map bit if the page has no dead tuples left.", l:"Runs after phase 2 for the same batch; if phase 1 had to drain mid-scan, this runs multiple times per overall vacuum.", d:"This is the only phase that changes how much free, reusable space the table advertises — it's why disk usage from an operator's perspective doesn't drop until this phase actually runs, even though phase 1 already 'found' the garbage." },
+  vm:{ n:"visibility map", f:"access/heap/visibilitymap.c", r:"A compact bitmap, roughly 2 bits per heap page, tracking all-visible (8.4) and all-frozen (9.6). Consulted by lazy_scan_heap to skip pages, and by index-only scans to skip a heap visibility check.", l:"Updated at the end of phase 3 for pages that became fully clean; cleared immediately by any backend that inserts/updates/deletes on that page.", d:"A stale (incorrectly set) all-visible bit would be a serious correctness bug — index-only scans trust it completely — which is why it's only ever set inside vacuum's own carefully ordered code path." },
+  fsm:{ n:"free space map", f:"storage/freespace/freespace.c", r:"A tree of per-page free-space summaries backends consult before extending a relation, so new tuples reuse space vacuum has freed instead of always appending new pages.", l:"Updated by phase 3 as it frees line pointers; consulted by every ordinary INSERT/UPDATE looking for room.", d:"An out-of-date FSM just means a wasted probe or two, not corruption — it's an optimization structure, not a source of truth about tuple visibility." },
+  tidstore:{ n:"dead-tuple store (TidStore)", f:"access/common/tidstore.c (PG17); flat array in earlier releases", r:"Holds every TID collected in phase 1 until phases 2/3 consume it. PG17's radix tree replaces the old flat, sorted ItemPointerData array and removes its practical ~1 GB size ceiling (§8c).", l:"Allocated at the start of a vacuum run, sized against maintenance_work_mem; freed when the run completes.", d:"Filling this structure mid-scan is what forces an extra, unscheduled index-vacuum + heap-vacuum pass — the single biggest lever on multi-pass vacuum cost for very bloated tables." },
+  procarray:{ n:"xmin horizon / ProcArray", f:"storage/ipc/procarray.c (GetOldestXmin and friends)", r:"The shared structure vacuum consults once per run to determine which dead tuples are truly reclaimable — anything with xmax older than this horizon is HEAPTUPLE_DEAD; anything newer is HEAPTUPLE_RECENTLY_DEAD and must be left alone (§4).", l:"Continuously updated as backends start/end transactions; read (not written) by vacuum at the start of its scan.", d:"If this horizon stops advancing — a long transaction, an idle-in-transaction session, an unconsumed replication slot, hot_standby_feedback from a replica — vacuum can run forever and reclaim nothing. This single structure is the mechanism behind every incident in §11." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">FAILURE MODE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("launcher");
+
+/* ============================================================
+   4. DECK: three-phase vacuum on a concrete heap+index (§8b)
+   ============================================================ */
+(function(){
+  function lps(states){
+    return `<div class="lp-row">` + states.map((s,i)=>{
+      const cls = s==="dead" ? "dead" : s==="unused" ? "unused" : "normal";
+      const lbl = s==="dead" ? "LP_DEAD" : s==="unused" ? "LP_UNUSED" : "LP_NORMAL";
+      return `<div class="lp ${cls}">slot ${i+1}<br>${lbl}</div>`;
+    }).join("") + `</div>`;
+  }
+  function idx(entries){
+    return `<div style="font-family:var(--mono);font-size:11px;margin-top:10px">
+      <div style="color:var(--dim);font-size:9.5px;letter-spacing:.08em;margin-bottom:6px">INDEX entries (on col a)</div>
+      ${entries.map(e=>`<div class="lp ${e.dead?'dead':'normal'}" style="margin-bottom:5px">a=${e.k} → tid(1,${e.slot})${e.dead?' ⚠ dangling':''}</div>`).join("")}
+      </div>`;
+  }
+  stepper("deckPhases", [
+    { stage: `<div style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:8px">HEAP PAGE 1 — before vacuum: two rows updated twice each, old versions still present</div>` + lps(["normal","normal","normal","normal"]) + idx([{k:5,slot:3},{k:9,slot:4}]),
+      cap:`<b>Starting state.</b> Slots 1–2 are old, already-dead versions of rows whose current versions live in slots 3–4. The index (on column <code>a</code>) correctly points only at the live slots — nothing dangling yet. This is what a page looks like right before an autovacuum worker picks up the table.` },
+    { stage: `<div style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:8px">PHASE 1 — heap_page_prune(): classify + mark LP_DEAD, collect TIDs</div>` + lps(["dead","dead","normal","normal"]) + idx([{k:5,slot:3},{k:9,slot:4}]) + `<div style="margin-top:10px;font-family:var(--mono);font-size:10.5px;color:var(--pg)">TidStore collected: (blk 1, off 1), (blk 1, off 2)</div>`,
+      cap:`<b>Phase 1: heap scan.</b> <code>HeapTupleSatisfiesVacuum</code> finds slots 1–2 are HEAPTUPLE_DEAD (their xmax precedes the horizon) — <code>ItemIdSetDead</code> flips them to LP_DEAD, and their (block, offset) pairs go into the TidStore. Note: <b>the index has not been touched yet</b>, and still (correctly, if stale-looking) has no reason to know slots 1–2 are gone — nothing in the index ever pointed at them anyway in this example, since they were never the current version any index entry referenced.` },
+    { stage: `<div style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:8px">PHASE 2 — index ambulkdelete(): full index scan against the TidStore</div>` + lps(["dead","dead","normal","normal"]) + idx([{k:5,slot:3},{k:9,slot:4}]) + `<div class="callout" style="margin:10px 0 0"><div class="co-t">WHY THIS SCANS THE WHOLE INDEX</div><p style="margin:0">Even though nothing in this tiny example needed removing, real ambulkdelete calls walk every leaf page of the index checking each entry's tid against the dead-TID set — there's no way to seek directly to "entries for slots 1–2" in a structure ordered by key value, not by tid.</p></div>`,
+      cap:`<b>Phase 2: index vacuum.</b> Every index on the table runs its bulk-delete routine against the full TidStore batch. This is the expensive phase (§10): O(index size), every pass, on every index. In this toy example the index had no stale entries to remove — but on any table where an update touched an indexed column, this is exactly where those entries get stripped, and only after this completes is it safe to reuse slots 1–2.` },
+    { stage: `<div style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:8px">PHASE 3 — lazy_vacuum_heap_page(): LP_DEAD → LP_UNUSED, FSM + VM updated</div>` + lps(["unused","unused","normal","normal"]) + idx([{k:5,slot:3},{k:9,slot:4}]) + `<div style="margin-top:10px;font-family:var(--mono);font-size:10.5px;color:var(--ok)">FSM: page 1 now advertises 2 free slots · VM: not yet all-visible (indexes still have live refs)</div>`,
+      cap:`<b>Phase 3: second heap pass.</b> Only now — after phase 2 has guaranteed no index references slots 1–2 — does <code>ItemIdSetUnused</code> flip them to LP_UNUSED. The free space map immediately advertises the reclaimed room to future inserts. The table's file does not shrink by a single byte; it simply has more reusable interior space. If this were the table's only remaining dirty page, relfrozenxid could now advance to reflect that everything left is frozen or fresh.` }
+  ]);
+})();
+
+/* ============================================================
+   5. maintenance_work_mem vs passes widget (§8c)
+   ============================================================ */
+(function(){
+  let mode = "legacy"; // legacy | tidstore
+  function render(){
+    const mwm = +el("mwm-slider").value;         // MB
+    const dt  = +el("dt-slider").value;           // millions of dead tuples
+    el("mwm-val").textContent = mwm + " MB";
+    el("dt-val").textContent = dt + " M";
+    el("mwm-legacy").classList.toggle("on", mode==="legacy");
+    el("mwm-tidstore").classList.toggle("on", mode==="tidstore");
+
+    let capacityM;   // millions of TIDs this maintenance_work_mem can hold
+    if (mode === "legacy"){
+      const bytesPerTid = 6;
+      const capBytes = Math.min(mwm * 1024 * 1024, 1024*1024*1024); // ~1GB hard ceiling
+      capacityM = capBytes / bytesPerTid / 1e6;
+    } else {
+      const bytesPerTid = 1.4; // radix tree exploits locality; illustrative only
+      capacityM = (mwm * 1024 * 1024) / bytesPerTid / 1e6;
+    }
+    const passes = Math.max(1, Math.ceil(dt / capacityM));
+    const segs = [];
+    const perPass = Math.min(capacityM, dt);
+    for (let p=0; p<passes; p++){
+      const amt = Math.min(capacityM, dt - p*capacityM);
+      segs.push([`pass ${p+1}: ${amt.toFixed(1)}M`, Math.max(amt,0.3), p%2? "#60a5fa" : "#8ab8ff"]);
+    }
+    const total = segs.reduce((s,x)=>s+x[1],0) || 1;
+    el("mwm-map").innerHTML = segs.map(([n,v,c])=>
+      `<div class="seg" style="background:${c};width:${(v/total*100).toFixed(2)}%">${n}</div>`).join("");
+    el("mwm-note").innerHTML = mode==="legacy"
+      ? `At ${mwm} MB, the legacy flat array (capped near 1 GB regardless of setting) holds ≈ <b style="color:var(--pg)">${capacityM.toFixed(1)} million</b> TIDs per pass → vacuuming ${dt} M dead tuples needs <b style="color:var(--warn)">${passes}</b> full index-vacuum pass(es) on every index. Raising maintenance_work_mem past ~${Math.round(1024*1024*1024/6/1e6)}M-tuple equivalent (~1 GB of array) buys nothing further — the array's own size ceiling, not your setting, becomes the limit.`
+      : `At ${mwm} MB, PG17's TidStore holds ≈ <b style="color:var(--pg)">${capacityM.toFixed(1)} million</b> TIDs per pass (radix-tree compression makes clustered dead TIDs far cheaper than 6 bytes each) → the same ${dt} M dead tuples need only <b style="color:var(--ok)">${passes}</b> pass(es). No artificial ceiling — raising maintenance_work_mem keeps buying capacity.`;
+  }
+  el("mwm-slider").oninput = render;
+  el("dt-slider").oninput = render;
+  el("mwm-legacy").onclick = ()=>{ mode="legacy"; render(); };
+  el("mwm-tidstore").onclick = ()=>{ mode="tidstore"; render(); };
+  render();
+})();
+
+/* ============================================================
+   6. PERFORMANCE CHART: cost delay + passes (§10)
+   ============================================================ */
+(function(){
+  let tidstore = true;
+  const cv = el("pf-chart"), ctx = cv.getContext("2d");
+  function capacityM(mwmEquivMB, useTidStore){
+    if (useTidStore) return (mwmEquivMB*1024*1024)/1.4/1e6;
+    return Math.min(mwmEquivMB*1024*1024, 1024*1024*1024)/6/1e6;
+  }
+  function model(deadM, limit, delay, useTidStore){
+    const fixedMwm = 128; // illustrative fixed maintenance_work_mem for this chart's x-axis sweep
+    const cap = capacityM(fixedMwm, useTidStore);
+    const passes = Math.max(1, Math.ceil(deadM/cap));
+    // throughput scales with limit, inversely with delay (small constant avoids /0)
+    const throughput = limit / (delay + 0.4);
+    const baseDurationPerM = 5000 / throughput; // illustrative relative units
+    const duration = deadM * baseDurationPerM * (1 + (passes-1)*0.65); // extra passes add index-rescan overhead
+    return { passes, duration };
+  }
+  function render(){
+    const limit = +el("pf-limit").value, delay = +el("pf-delay").value;
+    el("pf-limit-val").textContent = limit;
+    el("pf-delay-val").textContent = delay + " ms";
+    el("pf-tidstore").classList.toggle("on", tidstore);
+    el("pf-legacy").classList.toggle("on", !tidstore);
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=1; x<=2000; x*=1.08) xs.push(x);
+    let maxD = 0, maxP = 0;
+    const pts = xs.map(d=>{ const m = model(d, limit, delay, tidstore); maxD=Math.max(maxD,m.duration); maxP=Math.max(maxP,m.passes); return m; });
+    const X = n => PAD + (Math.log10(n)/Math.log10(2000)) * (W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [1,10,100,1000,2000].forEach(n=>{ ctx.beginPath(); ctx.moveTo(X(n),10); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText(n+"M", X(n)-10, H-6); });
+    function curve(get, max, color, stepped){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      let prevY = null;
+      xs.forEach((n,i)=>{
+        const y = H-24 - (get(pts[i])/max)*(H-44);
+        const x = X(n);
+        if (i===0){ ctx.moveTo(x,y); } else if (stepped && prevY!==null){ ctx.lineTo(x, prevY); ctx.lineTo(x,y); } else { ctx.lineTo(x,y); }
+        prevY = y;
+      });
+      ctx.stroke();
+    }
+    curve(m=>m.duration, maxD, "#60a5fa", false);
+    curve(m=>m.passes, maxP, "#f25c54", true);
+    const dtSliderVal = 120; // reference marker, illustrative "your table" size
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(dtSliderVal),10); ctx.lineTo(X(dtSliderVal),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(dtSliderVal, limit, delay, tidstore);
+    el("pf-note").innerHTML = `At <b>${limit}</b> cost_limit / <b>${delay} ms</b> delay, ${tidstore?"TidStore":"the legacy array"}: a table with ~${dtSliderVal}M dead tuples needs <b style="color:var(--warn)">${here.passes}</b> index-vacuum pass(es), relative duration <b style="color:var(--pg)">${here.duration.toFixed(0)}</b> units. ${delay===0?"Cost delay at 0 removes throttling entirely — fastest vacuum, maximum foreground contention.":"Raising cost_limit or lowering cost_delay both increase the effective I/O budget per unit time; remember that budget is shared across all concurrently active autovacuum workers, not multiplied by them."}`;
+  }
+  el("pf-limit").oninput = render;
+  el("pf-delay").oninput = render;
+  el("pf-tidstore").onclick = ()=>{ tidstore=true; render(); };
+  el("pf-legacy").onclick = ()=>{ tidstore=false; render(); };
+  render();
+})();
+
+/* ============================================================
+   7. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"What actually holds back the xmin horizon, and how would you diagnose each cause?", hint:"four distinct culprits, four distinct system views",
+    a:"Four mechanisms can pin the horizon: (1) a long-running transaction, visible in pg_stat_activity as an old xact_start with any state; (2) an idle-in-transaction session — same view, state = 'idle in transaction', often the most dangerous because it looks harmless; (3) a replication slot (physical or logical) that isn't being consumed, visible in pg_replication_slots via an old restart_lsn/xmin with active = false; (4) a standby with hot_standby_feedback = on sending back an old xmin because it's lagging or running a long query itself, visible via pg_stat_replication on the primary. All four produce the identical symptom — autovacuum runs, finds dead tuples, and can't reclaim them — so diagnosis always starts by checking all four views, not assuming which one it is." },
+  { lvl:"SENIOR", q:"Why doesn't a plain VACUUM shrink a table's file size, and what does VACUUM FULL do differently?", hint:"LP_UNUSED vs returned to the OS",
+    a:"Plain VACUUM's second heap pass turns LP_DEAD line pointers into LP_UNUSED and records the freed space in the free space map — the space becomes reusable by future inserts into the same file, but the file itself isn't truncated (except for a narrow case: fully-empty pages at the very end of the file can sometimes be truncated). VACUUM FULL takes a completely different path: it rewrites the entire table into a new relfilenode containing only live tuples, in compact order, then swaps it in — which requires an ACCESS EXCLUSIVE lock for the whole operation (no reads or writes against the table), and the old file's space is only released after the swap completes. pg_repack achieves a similar compaction online by building a shadow table and using triggers to capture concurrent changes, applying them afterward, and only taking a brief exclusive lock at the final swap — trading extra disk space and complexity for far less downtime." },
+  { lvl:"STAFF", q:"Why must index vacuum always run as a full pass between the two heap passes — could you skip it for indexes you're confident weren't touched?", hint:"what does the index actually know about which TIDs are stale?",
+    a:"An index entry only stores a key value and a TID — it has no way to know, without being told, whether that TID's line pointer has since been marked dead. Skipping index vacuum for 'indexes you're confident weren't touched' requires proving no row referenced by that index had any of its indexed columns' underlying tuple version removed — which is exactly what phase 1 discovers, not what you can know in advance. The one legitimate skip is HOT: if an update never changed an indexed column, no new index entry was created in the first place, so there's nothing for that index to clean for that particular update — but that's a property enforced at update time (heap_update's HOT eligibility check), not a decision vacuum makes ad hoc per index." },
+  { lvl:"STAFF", q:"A billion-row table is essentially never vacuumed under default settings. Derive the exact backlog size before autovacuum even considers it, and the two GUCs you'd change.", hint:"the formula is linear in reltuples",
+    a:"relation_needs_vacanalyze triggers when dead_tuples exceeds autovacuum_vacuum_threshold (default 50) + autovacuum_vacuum_scale_factor (default 0.2) × reltuples. At 1 billion rows that's ~50 + 200,000,000 ≈ 200 million dead tuples before the table is even a candidate. Fix: ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = 0.02) (or lower) to shrink the multiplicative term to a manageable ~20 million-row backlog regardless of table size, and typically pair it with a lower autovacuum_vacuum_cost_delay / higher autovacuum_vacuum_cost_limit for that table so the now-more-frequent runs actually finish quickly instead of competing endlessly with fresh backlog." },
+  { lvl:"STAFF", q:"You suspect a table is bloated. pgstattuple says 40% dead space; a quick estimation query based on pg_class.reltuples and relpages says something different. Which do you trust, and why do both exist?", hint:"one reads the whole table, one reads cached statistics",
+    a:"pgstattuple physically scans the table (or in its approximate variants, a sample) to count live vs. dead tuples directly — accurate as of the scan, but expensive and I/O-heavy on a large table, which is exactly why it isn't run casually. The estimation approach (reltuples/relpages from pg_class, refreshed by VACUUM and ANALYZE, compared against current relpages from pg_relation_size) is cheap but only as fresh as the last vacuum/analyze — on a table with a stale relfrozenxid-driven vacuum history or heavy recent churn, reltuples can be meaningfully wrong. Trust pgstattuple's number when you need ground truth for a specific incident; trust the cheap estimate for routine, cluster-wide bloat dashboards where scanning every table directly isn't affordable." },
+  { lvl:"PRINCIPAL", q:"Steelman zheap's in-place-update-plus-undo design, then steelman keeping the current in-heap approach. Why did the project stall rather than ship?", hint:"crash recovery and logical decoding are the two hard downstream dependents",
+    a:"Zheap's case: update-heavy tables would stay compact indefinitely — no separate reclaim-vs-reuse cycle for the common case, closer to InnoDB/Oracle's space efficiency, and potentially fewer full-table vacuum scans since garbage never accumulates in the primary structure at all. The current design's case: crash recovery only ever has to trust WAL replay against a heap whose old versions are just... still there — there's no separate undo log whose own consistency must be established before the heap can be considered valid, which is a meaningfully simpler crash-safety argument. It stalled primarily because everything downstream of 'the heap can change shape via undo replay' needed re-derivation: logical decoding (chapter 19) reconstructs historical tuple images by reading WAL and expects heap-shaped stability assumptions; crash recovery ordering between undo application and heap consistency needed new invariants; and the payoff — better space efficiency for a subset of workloads — had to clear an unusually high bar given how foundational the heap format is to everything else in the codebase." },
+  { lvl:"PRINCIPAL", q:"Design question: your fleet has a mix of 10,000-row config tables and 5-billion-row event tables sharing one postgresql.conf. Propose a tuning strategy, and justify it from the trigger formula, not folklore.", hint:"the formula has one additive and one multiplicative term",
+    a:"The trigger formula dead_tuples > threshold + scale_factor × reltuples has an additive term (threshold, good for small tables — a config table needs only ~50 dead rows to qualify) and a multiplicative term (scale_factor × reltuples, which dominates on huge tables and is why the default 0.2 is far too generous past roughly ten million rows). The correct strategy is per-table reloptions, not a single cluster-wide value: leave small/medium tables on cluster defaults where the additive term already does sensible work, and for every table past a size threshold you choose (say, >50M rows), explicitly lower autovacuum_vacuum_scale_factor (often toward 0.01–0.05) so the multiplicative term stops dominating, while raising autovacuum_vacuum_cost_limit / lowering autovacuum_vacuum_cost_delay for those same tables so the resulting more-frequent runs complete before the next backlog accumulates. A single global scale_factor cannot serve both ends of a size distribution that spans six orders of magnitude — that's not a tuning failure, it's what the formula's shape guarantees." }
+]);
+
+/* ============================================================
+   8. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why must index vacuum run strictly between the two heap passes, rather than after both?",
+    opts:[ "Indexes are slower to write to, so running them last avoids lock contention",
+           "A line pointer can only become reusable (LP_UNUSED) after every index referencing it has been cleaned — otherwise a new tuple could reuse the slot while a stale index entry still points at it",
+           "PostgreSQL's planner requires up-to-date index statistics before the heap can be modified",
+           "It's a historical accident from before HOT existed and could be reordered safely today" ],
+    a:1,
+    why:"The entire two-pass structure exists to enforce one invariant: no index may ever reference a heap slot that's been reused for something else. Phase 1 only marks tuples LP_DEAD (a tombstone, still 'claimed'); phase 3 only marks them LP_UNUSED (truly free) — and phase 3 running before phase 2 finished would let a fresh INSERT claim a slot some index still names. Option A misdescribes the cost (it's about correctness, not lock contention); C invents a planner dependency; D is false — the ordering is load-bearing today, HOT or not, because HOT only removes the need for index cleanup on tuples that never had new index entries in the first place." },
+  { q:"A table has been all-visible for months but was never fully frozen. An anti-wraparound (aggressive) vacuum runs on it. What happens that a routine vacuum wouldn't have done?",
+    opts:[ "Nothing different — all-visible pages are always skipped regardless of vacuum type",
+           "It rewrites the whole table into a new relfilenode, like VACUUM FULL",
+           "It visits and freezes pages that are all-visible but not all-frozen, which routine vacuums are allowed to skip entirely",
+           "It drops and rebuilds every index on the table" ],
+    a:2,
+    why:"A routine (non-aggressive) vacuum may skip any page whose all-visible bit is set. An aggressive vacuum has a stricter rule: it may only skip pages that are all-frozen. A page can be all-visible (no dead tuples) yet still hold un-frozen xmin values — exactly the case here — and only an aggressive vacuum is obligated to visit and freeze it, which is why anti-wraparound runs can suddenly do far more I/O on a table that looked 'clean' by ordinary vacuum's standard. Option B describes VACUUM FULL, an unrelated command; D describes REINDEX, not vacuum." },
+  { q:"maintenance_work_mem is generous, but a vacuum run on a heavily bloated table still triggers multiple index-vacuum passes pre-PG17. Why?",
+    opts:[ "maintenance_work_mem only applies to CREATE INDEX, not to VACUUM",
+           "The dead-tuple array's practical size was capped near 1 GB regardless of maintenance_work_mem, limiting it to roughly 178 million TIDs at 6 bytes each",
+           "autovacuum_max_workers was set too low",
+           "Multiple passes are unrelated to memory and only happen when there are multiple indexes" ],
+    a:1,
+    why:"Before PG17's TidStore, dead TIDs were held in a flat, sorted array sized off maintenance_work_mem but bounded in practice near a 1 GB allocation — about 178 million ItemPointerData entries at 6 bytes each — no matter how much memory you granted beyond that point. Once the array filled mid-scan, vacuum had to stop, run an index-vacuum + heap-vacuum pass to drain it, then resume — the exact mechanism the §8c/§8 slider widget demonstrates. Option C confuses parallelism across tables with per-table pass count; D is simply false — passes are driven by dead-TID volume vs. store capacity, independent of index count (though more indexes make each pass costlier, not more frequent)." },
+  { q:"Autovacuum keeps running on a table but n_dead_tup in pg_stat_user_tables never seems to drop. What's the most likely explanation, consistent with this chapter's model?",
+    opts:[ "autovacuum_naptime is set too high",
+           "The table has too many indexes for vacuum to keep up",
+           "Something is holding the xmin horizon behind the point where these dead tuples became dead, so they're classified HEAPTUPLE_RECENTLY_DEAD, not HEAPTUPLE_DEAD, and can't be reclaimed yet",
+           "maintenance_work_mem is set to zero" ],
+    a:2,
+    why:"HeapTupleSatisfiesVacuum only classifies a tuple as HEAPTUPLE_DEAD — reclaimable — if its xmax precedes the current xmin horizon. If a long transaction, an idle-in-transaction session, an unconsumed replication slot, or hot_standby_feedback holds that horizon behind the tuples' death, vacuum runs, scans, and finds nothing it's allowed to remove: exactly the symptom described. Naptime (A) affects how often vacuum runs, not whether it can reclaim once it does; too many indexes (B) affects duration, not whether reclamation succeeds; maintenance_work_mem at zero (D) isn't a valid configuration and wouldn't produce this specific symptom." },
+  { q:"vacuum_cost_page_dirty defaults higher than vacuum_cost_page_hit or vacuum_cost_page_miss. Why does dirtying a page cost more in this accounting scheme?",
+    opts:[ "Dirty pages take longer to read from disk",
+           "Dirtying a page means it must eventually be written back and generates WAL, both real downstream I/O costs that a simple read (hit or miss) doesn't incur",
+           "It's an arbitrary historical default with no technical justification",
+           "Dirty pages block other backends from reading the table" ],
+    a:1,
+    why:"vacuum_cost_page_hit (default 1, already-cached page) and vacuum_cost_page_miss (default 2, had to be read from disk) both only account for read cost. vacuum_cost_page_dirty (default 20) accounts for a page vacuum itself modified — which means a WAL record was generated and the page will eventually need to be written back by the checkpointer or bgwriter — real, deferred I/O that wouldn't otherwise have happened at that moment. Weighting it far higher makes the cost-based throttle reflect actual downstream expense rather than just the immediate read. Dirty pages don't block reads (D is false) and reading a dirty page isn't inherently slower than a clean one (A is false)." },
+  { q:"Autovacuum's cost limit is shared across active workers rather than applied per-worker. What is the direct consequence of raising autovacuum_max_workers alone, without changing autovacuum_vacuum_cost_limit?",
+    opts:[ "Total vacuum I/O throughput increases proportionally with worker count",
+           "Each worker gets a smaller slice of the same aggregate budget, so more tables can be attended to concurrently, but the total I/O rate spent on vacuuming doesn't scale up with worker count",
+           "Extra workers sit idle until the cost limit is manually raised",
+           "It has no effect because autovacuum_max_workers only controls ANALYZE, not VACUUM" ],
+    a:1,
+    why:"The cost-based delay budget (vacuum_cost_limit, distributed across autovacuum_vacuum_cost_limit if set) is an aggregate ceiling divided among currently active workers, not a per-worker allowance multiplied by worker count. More workers therefore mostly buys you the ability to make progress on more tables at once — useful when the bottleneck is 'too many tables need attention and only one is getting it' — without raising the total I/O rate spent on vacuuming, which is still governed by the shared limit. To actually raise throughput you need to raise the limit (or lower the delay) directly, alongside or instead of adding workers." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could patch vacuumlazy.c tomorrow.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks, then the simulator experiments — the mechanism clicks fast once you cause bloat yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "autovacuum launcher wakes on autovacuum_naptime, scores tables against dead-tuple thresholds",
+    "launcher asks the postmaster to fork an autovacuum worker for the needy database",
+    "worker computes the xmin horizon once via ProcArray (GetOldestXmin)",
+    "phase 1: heap_page_prune() classifies tuples, marks LP_DEAD, fills the TidStore",
+    "phase 2: every index runs ambulkdelete() against the collected dead TIDs",
+    "phase 3: lazy_vacuum_heap_page() flips LP_DEAD → LP_UNUSED, updates FSM + visibility map",
+    "worker checks whether relfrozenxid can now be advanced",
+    "worker exits; launcher's next wake reassesses remaining thresholds"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real run, start to finish</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 13 will show that non-HOT updates leave stale B-tree entries that PostgreSQL's own bottom-up index deletion tries to clean up opportunistically, ahead of vacuum. Predict: why would the B-tree code want to do some of vacuum's job itself, given everything this chapter just showed about vacuum's cost model?",
+    a:"Because index vacuum (§10) is O(index size) per pass and only runs on vacuum's schedule — potentially long after an update leaves a stale entry behind. If the B-tree access method can cheaply notice, during ordinary insert traffic into a page, that some existing entries point at dead-looking TIDs, it can opportunistically remove them immediately — much like HOT pruning does for the heap — trading a small amount of extra work on the insert path for avoiding index bloat that would otherwise wait for a full vacuum pass. It's the same trade this whole chapter has been making at a different layer: pay a little, often, in the foreground, to avoid paying a lot, rarely, in the background." },
+  { lvl:"THINK", q:"This chapter showed VACUUM FULL rewrites a table into a new relfilenode under an ACCESS EXCLUSIVE lock. Predict what REINDEX CONCURRENTLY (chapter 13) must do differently to avoid that same lock, and what it has to give up to achieve it.",
+    a:"To avoid an exclusive lock, REINDEX CONCURRENTLY has to build the new index alongside the old one while the table stays fully readable and writable — meaning it must track concurrent inserts/updates happening during the build and fold them in, similar in spirit to how CREATE INDEX CONCURRENTLY works. What it gives up is atomicity of a single fast swap: it takes multiple transactions and validation passes to reach a consistent, complete index safely, and it temporarily needs double the disk space (old and new index coexisting). You now have the vocabulary — relfilenode, exclusive lock, concurrent build — to predict the shape of that mechanism before you read it." },
+  { lvl:"THINK", q:"Design exercise: you must add a per-table 'insert-mostly, rarely updated' hint that changes autovacuum's behavior. Using only this chapter's trigger formula and phase structure, sketch what such a hint should actually change.",
+    a:"An insert-mostly table accumulates almost no dead tuples (nothing to reclaim), so the ordinary dead_tuples > threshold + scale_factor × reltuples trigger rarely fires — yet it still needs periodic vacuuming purely to freeze rows before autovacuum_freeze_max_age forces an expensive aggressive pass, and to keep the visibility map current for index-only scans. The right hint (which is close to what autovacuum_vacuum_insert_threshold/scale_factor actually do, added in PG13) should trigger vacuum based on inserted-row count rather than dead-row count, running phase 1's freezing and visibility-map-setting work on a steady, proactive cadence — cheaply, since phase 2/3 have almost nothing to do — rather than waiting for either a dead-tuple backlog that will never arrive or a wraparound deadline that arrives all at once." }
+]);
+
+/* ============================================================
+   9. SIMULATOR (§15) — the bloat lab
+   ============================================================ */
+(function(){
+  const S = {
+    tick:0, paused:false,
+    liveTuples: 4_000_000, deadTuples: 0,
+    tuplesPerPage: 90,
+    writeRate: 400,       // rows/sec turned into dead tuples
+    scaleFactor: 0.20,
+    baseThresh: 50,
+    costDelay: 2, costLimit: 200, workers: 1,
+    txnOpen:false, slotOpen:false,
+    horizonTick: 0,
+    jobs: [],             // active vacuum jobs: {startedTick, target, reclaimed, phase, progress}
+    runs:0, reclaimedTotalM:0, extraPasses:0,
+    bloatHist: [], deadHist: []
+  };
+  const logEl = el("bl-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function pinned(){ return S.txnOpen || S.slotOpen; }
+  function threshold(){ return S.baseThresh + S.scaleFactor * S.liveTuples; }
+
+  function maybeStartJob(){
+    if (S.jobs.length >= S.workers) return;
+    if (S.deadTuples <= threshold()) return;
+    const capacityPerPass = 40_000_000; // TidStore-equivalent capacity, illustrative
+    const target = pinned() ? 0 : S.deadTuples;
+    S.jobs.push({ startedTick:S.tick, target, collected:0, passesDone:0, phase:"heap-scan", progress:0, capacityPerPass, snapshotDead:S.deadTuples });
+    S.runs++;
+    log("LOG", `autovacuum worker started: table "events" (dead_tuples=${(S.deadTuples/1e6).toFixed(1)}M > threshold=${(threshold()/1e6).toFixed(1)}M)`);
+    if (pinned()) log("WARN", "xmin horizon is pinned — this run's heap scan will classify most dead rows as RECENTLY_DEAD, not DEAD");
+  }
+
+  function tickJobs(dt){
+    const perWorkerBudget = (S.costLimit / Math.max(1,S.jobs.length)) / (S.costDelay*0.5+1);
+    S.jobs = S.jobs.filter(job=>{
+      job.progress += perWorkerBudget * dt * 0.02;
+      if (job.phase === "heap-scan"){
+        job.collected = Math.min(job.snapshotDead, job.progress * 6_000_000);
+        if (job.collected >= job.capacityPerPass && job.collected < job.snapshotDead){
+          job.phase = "index-vacuum"; job.progress = 0;
+          S.extraPasses++;
+          log("WARN", `dead-tuple store full at ${(job.capacityPerPass/1e6).toFixed(0)}M TIDs — pausing heap scan to run an index vacuum pass (pass #${job.passesDone+1})`);
+          return true;
+        }
+        if (job.collected >= job.snapshotDead){ job.phase = "index-vacuum"; job.progress = 0; return true; }
+        return true;
+      }
+      if (job.phase === "index-vacuum"){
+        if (job.progress > 4){
+          job.phase = "heap-vacuum-2"; job.progress = 0;
+          log("LOG", "index vacuum pass complete — every index scanned against collected TIDs");
+        }
+        return true;
+      }
+      if (job.phase === "heap-vacuum-2"){
+        if (job.progress > 2){
+          job.passesDone++;
+          const justCollected = job.collected;
+          if (job.collected < job.snapshotDead){
+            // resume heap scan for the remainder
+            job.phase = "heap-scan"; job.progress = 0;
+            return true;
+          }
+          // job fully done
+          const reclaimed = pinned() ? 0 : job.snapshotDead;
+          S.deadTuples = Math.max(0, S.deadTuples - reclaimed);
+          S.reclaimedTotalM += reclaimed/1e6;
+          if (reclaimed > 0){
+            log("OK", `vacuum finished: reclaimed ${(reclaimed/1e6).toFixed(1)}M dead tuples across ${job.passesDone} index pass(es)`);
+            if (!pinned()) log("HINT", "relfrozenxid advanced; FSM now advertises the freed space to new inserts");
+          } else {
+            log("WARN", "vacuum finished: 0 tuples reclaimed — xmin horizon held every collected TID as RECENTLY_DEAD");
+          }
+          return false; // job done, remove
+        }
+        return true;
+      }
+      return true;
+    });
+  }
+
+  function render(){
+    el("sim-phase").textContent = S.jobs.length ? "VACUUMING" : "IDLE";
+    el("sim-phase").style.color = S.jobs.length ? "var(--warn)" : "var(--ok)";
+    el("bl-horizon").textContent = "tick " + S.horizonTick;
+    el("bl-pin-note").textContent = pinned() ? (S.txnOpen && S.slotOpen ? "(pinned by long txn + repl. slot)" : S.txnOpen ? "(pinned by long transaction)" : "(pinned by stale replication slot)") : "(advancing normally)";
+    el("bl-pin-note").style.color = pinned() ? "var(--bad)" : "var(--dim)";
+    const totalTuples = S.liveTuples + S.deadTuples;
+    const pages = Math.ceil(totalTuples / S.tuplesPerPage);
+    const idealPages = Math.ceil(S.liveTuples / S.tuplesPerPage);
+    const bloatPct = pages>0 ? Math.max(0, (1 - idealPages/pages) * 100) : 0;
+    el("bl-pages").textContent = pages.toLocaleString();
+    el("bl-bloatpct").textContent = bloatPct.toFixed(1) + "%";
+    el("bl-bloatpct").style.color = bloatPct>40 ? "var(--bad)" : bloatPct>15 ? "var(--warn)" : "var(--ok)";
+
+    // page grid: sample ~36 cells scaled to bloat ratio
+    const N = 36;
+    const deadCells = Math.round(N * Math.min(1, S.deadTuples/(totalTuples||1)));
+    let cells = "";
+    for (let i=0;i<N;i++){
+      const isDead = i < deadCells;
+      const cls = isDead ? "dead" : "live";
+      cells += `<div class="pcell ${cls}">${isDead?"D":"L"}</div>`;
+    }
+    el("bl-pgrid").innerHTML = cells;
+
+    el("bl-cnt-runs").textContent = S.runs;
+    el("bl-cnt-reclaimed").textContent = S.reclaimedTotalM.toFixed(1);
+    el("bl-cnt-passes").textContent = S.extraPasses;
+
+    const ioPct = Math.min(100, Math.round((S.jobs.length ? (S.costLimit/(S.costDelay*0.5+1))/6 : 0)));
+    el("bl-io-v").textContent = ioPct + "%";
+    const iof = el("bl-io"); iof.style.width = ioPct+"%"; iof.className = "m-fill " + (ioPct>70?"hot":ioPct>40?"warm":"");
+    const ratioPct = Math.min(100, (S.deadTuples/(totalTuples||1))*100);
+    el("bl-ratio-v").textContent = ratioPct.toFixed(1) + "%";
+    const rf = el("bl-ratio"); rf.style.width = ratioPct+"%"; rf.className = "m-fill " + (ratioPct>40?"hot":ratioPct>15?"warm":"");
+
+    S.bloatHist.push(bloatPct); if (S.bloatHist.length>200) S.bloatHist.shift();
+    S.deadHist.push(S.deadTuples/1e6); if (S.deadHist.length>200) S.deadHist.shift();
+    drawChart();
+  }
+
+  function drawChart(){
+    const cv = el("bl-chart"), ctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle = "#1c2330"; ctx.lineWidth = 1;
+    for (let g=0; g<=4; g++){ const y = 10 + g*(H-30)/4; ctx.beginPath(); ctx.moveTo(20,y); ctx.lineTo(W-10,y); ctx.stroke(); }
+    function line(hist, max, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      hist.forEach((v,i)=>{
+        const x = 20 + (i/199)*(W-30);
+        const y = H-20 - Math.min(v/max,1)*(H-30);
+        i? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+      });
+      ctx.stroke();
+    }
+    line(S.bloatHist, 100, "#f25c54");
+    const maxDead = Math.max(10, ...S.deadHist);
+    line(S.deadHist, maxDead, "#60a5fa");
+    ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.fillText("bloat % (red) · dead tuples M scaled (blue)", 20, H-4);
+  }
+
+  function tick(){
+    if (S.paused) return;
+    S.tick++;
+    const dt = 0.25;
+    S.deadTuples += S.writeRate * dt;
+    if (!pinned()) S.horizonTick = S.tick;
+    maybeStartJob();
+    tickJobs(dt);
+    render();
+  }
+  setInterval(tick, 250);
+
+  el("bl-wr").oninput = e=>{ S.writeRate = +e.target.value; el("bl-wr-val").textContent = S.writeRate; };
+  el("bl-sf").oninput = e=>{ S.scaleFactor = +e.target.value/100; el("bl-sf-val").textContent = S.scaleFactor.toFixed(2); };
+  el("bl-cd").oninput = e=>{ S.costDelay = +e.target.value; el("bl-cd-val").textContent = S.costDelay; };
+  el("bl-cl").oninput = e=>{ S.costLimit = +e.target.value; el("bl-cl-val").textContent = S.costLimit; };
+  el("bl-mw").oninput = e=>{ S.workers = +e.target.value; el("bl-mw-val").textContent = S.workers; };
+  el("bl-txn").onclick = ()=>{
+    S.txnOpen = !S.txnOpen;
+    el("bl-txn").textContent = S.txnOpen ? "close long transaction" : "open long transaction";
+    el("bl-txn").classList.toggle("danger", S.txnOpen);
+    log(S.txnOpen?"WARN":"LOG", S.txnOpen ? "BEGIN issued at tick "+S.tick+"; session left idle-in-transaction — xmin horizon now pinned" : "long transaction closed — xmin horizon free to advance again");
+  };
+  el("bl-slot").onclick = ()=>{
+    S.slotOpen = !S.slotOpen;
+    el("bl-slot").textContent = S.slotOpen ? "drop stale repl. slot" : "open stale repl. slot";
+    log(S.slotOpen?"WARN":"LOG", S.slotOpen ? "replication slot created, consumer immediately disconnects — slot's xmin pins the horizon" : "pg_drop_replication_slot() — horizon released");
+  };
+
+  log("OK", "autovacuum launcher: naptime tick, scanning thresholds");
+  log("HINT", "Try: raise write rate, open a long transaction, watch bloat run away — then close it and watch the backlog drain.");
+  render();
+})();
+
+/* ============================================================
+   10. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-12"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-11.html"><span>←</span><span><span class="cn-lbl">PREV · CH 11</span><span class="cn-ttl">Checkpoints & Crash Recovery</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html" selected>CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">12 / 21</span></div><a class="cn-btn" href="pg-13.html"><span><span class="cn-lbl">NEXT · CH 13</span><span class="cn-ttl">B-Tree Internals: Lehman & Yao in Production</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

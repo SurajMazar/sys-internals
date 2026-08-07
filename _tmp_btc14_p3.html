@@ -1,0 +1,214 @@
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The Lightning node: one channel's full machinery, plus the network around it</h2>
+  <p>Click any component to see what it does, which BOLT (Basis Of Lightning Technology) specification defines it,
+  and what happens if it's missing or compromised. The channel itself is only half the picture — routing a payment
+  through strangers needs a second layer entirely: a gossiped map of the network and a way to construct a route
+  through it without revealing that route to anyone but you.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">ON-CHAIN (touched twice per channel lifetime)</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="funding">funding transaction — 2-of-2 multisig (P2WSH) locking channel capacity</div></div>
+        <div class="arch-row-label">PER-PARTY STATE (never leaves the two channel peers)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="commit">commitment transaction (asymmetric)</div>
+          <div class="acard" data-p="htlc">HTLC output scripts</div>
+          <div class="acard" data-p="revstore">revocation secret store (shachain)</div>
+        </div>
+        <div class="arch-row-label">NETWORK LAYER (gossiped to every node)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="gossip">channel graph (announcements + updates)</div>
+          <div class="acard" data-p="onion">Sphinx onion construction</div>
+          <div class="acard" data-p="invoice">BOLT11 invoice / BOLT12 offer</div>
+        </div>
+        <div class="arch-row-label">SURVIVAL INFRASTRUCTURE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="watchtower">watchtower</div>
+          <div class="acard" data-p="forceclose">force-close path</div>
+          <div class="acard" data-p="mempool">mempool / fee bumping</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT'S DELIBERATELY NOT ON THIS DIAGRAM</div>
+    <p>There is no global channel-balance registry, no central router, and no on-chain record of who paid whom
+    through a channel — only that a channel with some total capacity was opened and, eventually, closed with some
+    final split. Every payment in between is known only to the parties directly involved in each hop. This is a
+    privacy property paid for with a UX cost you will feel directly in §10 and §15: nobody, including the paying
+    node, can be certain a route works until they try it, because the one thing the network deliberately does not
+    gossip is each channel's <i>directional</i> available liquidity.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The bytes, the keys, and the state machine, in order</h2>
+  <p>Four pieces, built in the order a real channel needs them: <b>(a)</b> the commitment transaction's exact
+  output layout, <b>(b)</b> the revocation key/secret machinery — including the storage trick that makes it
+  practical, <b>(c)</b> HTLCs as the primitive that makes a multi-hop payment atomic, <b>(d)</b> the onion packet
+  that lets a route exist without any hop seeing it.</p>
+
+  <h3>(a) The commitment transaction: two outputs become up to 2 + 2·N_htlc</h3>
+  <p>Every commitment transaction spends the single funding outpoint and pays out according to BOLT #3. In its
+  simplest form (no in-flight HTLCs) it has exactly two outputs, and they are <i>not</i> symmetric between the two
+  versions Alice and Bob each hold:</p>
+  <ul class="plain">
+    <li><b><code>to_local</code></b> — pays the owner of <i>this</i> copy of the commitment, but only after a
+      relative delay <code>to_self_delay</code> (typically hundreds of blocks, negotiated at open) enforced by
+      <code>OP_CHECKSEQUENCEVERIFY</code> — <i>unless</i> the spend instead reveals the revocation key for this
+      exact commitment, in which case the counterparty can take it immediately, no delay.</li>
+    <li><b><code>to_remote</code></b> — pays the counterparty directly, immediately spendable (a plain P2WPKH
+      output, one confirmation and it's theirs) — since it is not this party's own delayed output, there is nothing
+      to punish there.</li>
+  </ul>
+  <p>Because <code>to_local</code> in Alice's copy pays Alice-with-a-delay while <code>to_remote</code> in that same
+  copy pays Bob-immediately, and Bob's copy is the mirror image, the two parties are holding <i>different
+  transactions</i> that nonetheless encode the identical balance split. That asymmetry is precisely the requirement
+  derived in §6: only the broadcaster's own funds are ever delayed, which is what gives the other party a window to
+  react.</p>
+
+  <div class="callout">
+    <div class="co-t">THE OBSCURED COMMITMENT NUMBER — A REAL BOLT #3 DETAIL WORTH KNOWING</div>
+    <p>A channel's commitment transactions must all spend the same funding outpoint, so they'd normally be trivially
+    linkable and orderable by anyone who saw two of them. BOLT #3 hides the sequence number: the 48-bit commitment
+    index is XORed with a value derived from both parties' <code>payment_basepoint</code>s
+    (<code>SHA256(open_payment_basepoint || accept_payment_basepoint)</code>, lower 48 bits), and the result is
+    split across the transaction's <code>nLockTime</code> (lower 24 bits, with the upper byte forced to
+    <code>0x20</code> so parsers don't mistake it for a real locktime) and the input's <code>nSequence</code> (lower
+    24 bits, with the top bits forced to mark it non-final). An outside observer sees two numbers that look like
+    protocol noise; only the two channel parties can recover which commitment number produced them — a small,
+    characteristic Lightning move: hide metadata inside fields the base layer already validates for something else,
+    rather than adding new fields that would need a soft fork.</p>
+  </div>
+
+  <h3>(b) Revocation: one basepoint, one per-commitment secret, and a tree that stores neither in full</h3>
+  <p>Deriving a fresh throwaway key pair for every single commitment and remembering each one individually is the
+  §6 cost made concrete. BOLT #3 avoids it with two linked constructions.</p>
+  <p><b>First</b>, the revocation key itself is not a random per-state secret — it's a combination. Each party
+  publishes a long-term <code>revocation_basepoint</code> once, at channel open. For commitment number <i>i</i>,
+  the actual key that can sweep a revoked <code>to_local</code> output is derived by tweaking that basepoint with
+  the counterparty's <b>per-commitment secret</b> for state <i>i</i> — elliptic-curve point/scalar arithmetic from
+  chapter 4, applied so that knowing the basepoint alone reveals nothing, but basepoint + the one secret for state
+  <i>i</i> reveals exactly the key needed to punish state <i>i</i>, and nothing about any other state.</p>
+  <p><b>Second</b> — the storage trick. Rather than remember every per-commitment secret handed over, BOLT #3
+  Appendix D specifies <b>shachain</b>: secrets are generated from one 32-byte seed by a deterministic bit-flip
+  procedure, so a party who once held the seed can regenerate <i>any</i> past secret on demand, and a party who
+  <i>receives</i> secrets (and must give up the seed-holder's ability to regenerate, since revealing a secret must
+  not reveal the seed) needs to retain at most 47 secrets to derive all 2⁴⁸ possible ones below any given index.
+  Drag the slider — this calls the exact algorithm, live, on your commitment index:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">shachain: generate_from_seed(seed, I) — live</span><span class="w-sub">DRAG THE INDEX</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>commitment index I</label><input type="range" id="sc-idx" min="0" max="1023" value="5" step="1"><span class="val" id="sc-idx-val">5</span></div>
+      <p style="font-size:12px;color:var(--muted);margin:6px 0">Demo uses a 10-bit index (0–1023) for a readable bit strip; production BOLT #3 uses the full 48-bit field. Each highlighted bit below is a position where <code>generate_from_seed</code> flips that bit of the running value and re-hashes with the real SHA-256 implementation used throughout this course.</p>
+      <div class="bitstrip" id="sc-bits"></div>
+      <div class="codeblock" style="margin-top:14px">
+        <div class="cb-head"><span class="lang">trace</span><span>derivation steps for I = <span id="sc-idx-lbl">5</span></span></div>
+        <pre id="sc-trace" style="font-size:11.5px"></pre>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:8px">Result — <code>per_commitment_secret(I)</code>: <span id="sc-result" style="color:var(--pg);font-family:var(--mono)"></span></p>
+    </div>
+  </div>
+
+  <h3>(c) HTLCs: the primitive that makes a stranger-to-stranger payment atomic</h3>
+  <p>Revocable commitments solve cheating <i>within</i> one channel. They say nothing about paying someone you have
+  no channel with at all — which, in a network where opening a direct channel with every counterparty is exactly
+  the on-chain cost explosion §1 ruled out, is the common case. You need to route through intermediaries you do not
+  trust, without ever letting an intermediary either steal the funds or take a fee without actually forwarding.</p>
+  <p>Derive the mechanism from the requirement. Carol (the final recipient) generates a random 32-byte secret
+  <b>R</b> (the <i>preimage</i>) and gives Alice (the sender) only its hash <b>H = SHA-256(R)</b>, packaged as a
+  BOLT11 invoice. Alice cannot pay Carol directly — no channel — but she has a channel with Bob, who has a channel
+  with Carol. Alice offers Bob a conditional payment: <i>"this output is yours if you reveal a preimage of H within
+  144 blocks; otherwise it reverts to me."</i> This is a <b>Hash Time-Locked Contract</b> — a special HTLC output on
+  the commitment transaction, not a separate transaction. Bob cannot claim it without knowing R, and only Carol
+  knows R. So Bob extends the identical offer to Carol — same hash H, but a <i>shorter</i> timeout, say 100 blocks.
+  Carol, who has R, claims Bob's HTLC immediately by revealing R on their shared commitment update. Bob now holds
+  R. He turns around and uses that same R to claim Alice's HTLC before her 144-block timeout. Money moved
+  Alice → Bob → Carol, Bob never had to be trusted with anything except forwarding correctly, and if he tries to
+  claim from Alice without paying Carol, he cannot — he doesn't have R until Carol reveals it, and Carol has no
+  reason to reveal it without being paid.</p>
+
+  <div class="widget deck" id="deckHtlc">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A 3-hop HTLC payment, state by state</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">WHY THE TIMEOUT MUST STRICTLY DECREASE TOWARD THE DESTINATION</div>
+    <p>Bob only turns his knowledge of R into a claim against Alice <i>after</i> Carol reveals it to him. If Bob's
+    outgoing timeout to Carol expired at the same block height as his incoming timeout from Alice, a slow or
+    congested mempool could let Alice's HTLC time out and revert to her <i>before</i> Bob finishes claiming from
+    Carol and turning around — leaving Bob having paid Carol out of his own pocket with no way to recover it from
+    Alice. Each hop therefore subtracts a safety margin, the <code>cltv_expiry_delta</code>, from the timeout it
+    received before offering it onward — commonly tens of blocks per hop in real deployments (implementation
+    defaults vary; on the order of 40 blocks is typical, with the final recipient's own minimum, BOLT11's
+    <code>min_final_cltv_expiry_delta</code>, commonly around 18). The direct cost: a route's <i>total</i> worst-case
+    lock time is the sum of every hop's delta, so a 6-hop route can tie up Alice's outbound HTLC for several times
+    longer than a 1-hop route, even though the payment itself settles in milliseconds — capital that is committed,
+    not spent, for the entire timeout window if something upstream stalls.</p>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE PRIVACY LEAK HTLCs CANNOT FIX — AND WHAT PTLCs DO ABOUT IT</div>
+    <p>Every hop's HTLC uses the identical hash H — it has to, or Bob couldn't prove to Carol he's forwarding the
+    same payment Alice is funding. That means any two nodes who both happen to be on the route (or who collude, or
+    who simply watch enough of the network) can correlate "an HTLC with hash H passed through me and also through
+    you" and infer they're part of the same payment, even without knowing the sender or recipient. Chapter 13's
+    Taproot machinery offers a fix: replace the hash-lock with a <b>point-time-locked contract (PTLC)</b>, where
+    each hop's condition is "produce a valid Schnorr signature under this specific curve point," built with an
+    <b>adaptor signature</b>. The point Carol reveals to complete the payment can be <i>randomized independently at
+    every hop</i> via the same key-blinding math MuSig2 uses for aggregation, so no single correlating value crosses
+    the whole route. PTLCs also compress naturally — an adaptor-signature spend looks identical to a normal
+    single-sig spend on-chain, unlike an HTLC's distinctive hash-and-timelock script. As of this writing PTLC
+    support is experimental in the major implementations, not yet a deployed default — an honest case of "the fix
+    is designed and mostly prototyped, not yet how payments actually route."</p>
+  </div>
+
+  <h3>(d) Sphinx onion routing: a fixed 1,300-byte envelope, no matter how many hops</h3>
+  <p>Even with PTLCs fixing the hash-correlation leak, a route is still useless privacy-wise if each hop can see
+  the entire path or count how many hops remain. BOLT #4 adapts the <b>Sphinx</b> packet format (Danezis &
+  Goldberg, 2009) so that every intermediary sees only: the immediate next hop, the amount and timeout to forward,
+  and cryptographic material it cannot use to learn anything else. The construction Alice builds is layered
+  encryption — she encrypts Carol's instructions, then Bob's instructions wrapping that, using a fresh shared
+  secret with each hop derived via Diffie–Hellman from a single ephemeral key she generates once. Each hop peels
+  exactly one layer and cannot see what's inside the next.</p>
+  <p>The field that makes this actually hide the route length is fixed-size padding. Drag the hop count below — the
+  total onion payload stays exactly 1,300 bytes regardless, because unused hop slots are filled with pseudorandom
+  padding indistinguishable from real, still-encrypted hop data:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Onion packet — fixed size hides hop count</span><span class="w-sub">DRAG HOPS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>route hops (1–20)</label><input type="range" id="onion-hops" min="1" max="20" value="3" step="1"><span class="val" id="onion-hops-val">3</span></div>
+      <div class="onionlegend" id="onion-legend"></div>
+      <div class="onionmap" id="onion-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="onion-note"></p>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">WHAT EACH HOP ACTUALLY LEARNS — AND CANNOT LEARN</div>
+    <p>Bob, forwarding for Alice, learns: the previous hop (Alice, since she's his direct peer), the next hop
+    (Carol), the amount to forward, and the CLTV to set. He cannot learn: how many hops came before Alice, how many
+    come after Carol, or the total route length — the padding is bitwise indistinguishable from a real, still-onion-
+    wrapped next layer. A per-hop HMAC lets each node detect tampering (a modified packet fails the check and the
+    payment fails cleanly) without revealing what was tampered with. This is why a failed payment in Lightning
+    returns an <i>encrypted</i> error, onion-wrapped back through the same path Alice built — only Alice, holding
+    the original shared secrets, can decrypt which hop reported the failure and why (§10 returns to this).</p>
+  </div>
+</section>

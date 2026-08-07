@@ -1,0 +1,681 @@
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 07</div>
+  <h1>Streams: <span class="grad">The Log Comes to RabbitMQ</span></h1>
+  <p class="lead">Every queue you have met so far — classic, mirrored, quorum — shares one property: consuming a
+  message removes it. That single decision, correct for a work queue, makes three entire workloads either
+  impossible or brutally expensive. RabbitMQ 3.9 answered by importing an idea from outside the AMQP world
+  entirely: an immutable, append-only log, bolted onto the broker as a new queue type called a <b>stream</b>.
+  This chapter derives why, and then goes inside <code>osiris</code> — the library that makes it real.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain exactly which three workloads destroy-on-consume queues cannot serve, with the numbers.</div>
+    <div class="obj"><b>You will understand</b>Why streams replicate through their own protocol instead of Ra/Raft, and what guarantee that trades away.</div>
+    <div class="obj"><b>You will predict</b>Storage growth under fan-out for a queue-per-group design versus a shared stream.</div>
+    <div class="obj"><b>You will simulate</b>Replay, retention truncation, and super-stream partitioning against a live queue for comparison.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Destroy-on-consume is a feature — until it isn't</h2>
+  <p class="lead">A classic or quorum queue is, at its core, a FIFO with acknowledgement: a message sits in the
+  queue until some consumer takes delivery and acks it, at which point <code>rabbit_variable_queue</code> (or
+  <code>rabbit_fifo</code> for quorum queues) removes it from the data structure entirely. That is exactly the
+  right model for a work queue — a task should be done by exactly one worker, then gone. But it is the wrong
+  model for at least three workloads that show up constantly in real systems, and no amount of clever queue
+  configuration fixes them, because the limitation is structural, not tunable.</p>
+  <ul class="plain">
+    <li><b>Replay.</b> A new consumer — a fresh analytics job, a rebuilt read model, a developer debugging
+      yesterday's incident — cannot read history. The messages it needs were already acked and destroyed by
+      whichever consumer got them first. There is no "rewind" on a queue, because a queue has no notion of a
+      position; it only has "what's currently in here."</li>
+    <li><b>Large fan-out.</b> If five independent teams each need every message (an order-events stream feeding
+      billing, fulfillment, analytics, fraud, and a data warehouse), the only AMQP-native way is five separate
+      queues, each bound to the same exchange, each holding its own full copy of every message. Storage and the
+      routing/enqueue cost inside <code>rabbit_exchange_type_*</code> both scale <b>linearly with the number of
+      consumer groups</b>, not with the number of distinct messages.</li>
+    <li><b>Very high throughput with many consumers.</b> Chapter 4 derived the one-process-per-queue ceiling:
+      every classic queue is a single Erlang process (<code>rabbit_amqqueue_process</code>) executing a
+      receive loop, and every consumer attached to it is more work funneled through that one mailbox — credit
+      accounting, delivery bookkeeping, per-consumer dispatch. Quorum queues spread writes across a Raft group
+      but still funnel client-facing delivery through one leader-side process. Past a few thousand
+      messages/sec fanned out to dozens of consumers, that single process becomes the bottleneck no matter how
+      much CPU the box has spare.</li>
+  </ul>
+  <p>All three symptoms have the same root cause: <b>a queue is a mutable collection with delivery baked into
+  removal.</b> What you actually want for these workloads is something Kafka proved out years earlier — an
+  append-only log where reading is a pure function of a position, and that position lives with the reader, not
+  with the data. RabbitMQ's answer is not "become Kafka"; it's "add a log-shaped queue type that lives inside
+  the broker you already run, wired into the exchange/binding model you already use."</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE REST OF THIS CHAPTER</div>
+    <p>Everything below follows from one substitution: replace "remove on ack" with "append forever (until
+    retention), track a reader's position separately." Storage, replication, the wire protocol, even the failure
+    model — all of it is downstream of that one structural change. Keep asking, section by section: what did we
+    have to build because the data is no longer removed?</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From "just use more queues" to a native log</h2>
+  <p>Streams did not appear in a vacuum — they arrived after several years of the ecosystem hitting the fan-out
+  and replay walls repeatedly, and after RabbitMQ had already rebuilt its replication story once (quorum queues,
+  chapter 5) using Raft via the <code>ra</code> library. Click through the timeline; notice how each entry
+  either creates the pain streams solve, or supplies a piece streams reuse.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the road to osiris</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY NOT JUST EMBED KAFKA?</div>
+    <p>The RabbitMQ core team considered and rejected running an embedded log engine borrowed wholesale from
+    another project. The reasoning: RabbitMQ's value proposition is routing (exchanges, bindings, topic
+    patterns) plus operational simplicity (one broker, one clustering story, one protocol family with an
+    optional second one). Bolting on a foreign storage engine would mean two replication systems, two consistency
+    models, and two sets of operational runbooks glued together at the seams. Building <code>osiris</code> as a
+    small, purpose-specific Erlang library — reusing the existing cluster membership, the existing exchange/
+    binding layer for routing messages <i>into</i> a stream, and a new coordinator built on the Raft library
+    already in the codebase — kept the "one broker" promise intact. You'll see the cost of that choice in §6.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: fan out to N durable queues</h2>
+  <p>Before osiris existed, this was the actual production workaround, and it is worth taking seriously because
+  it already gets the routing half right: bind a durable queue per consumer group to the exchange that carries
+  your events. Each group gets a private, ordered, fully-acknowledged copy of the stream. No new broker feature
+  required — just topology.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">bash</span><span>naive_fanout.sh — one queue per consumer group, wired to a topic exchange</span></div>
+    <pre><span class="c"># the exchange every "order.events" message is published to already exists</span>
+rabbitmqadmin declare exchange name=order.events type=topic durable=true
+
+<span class="c"># billing, fulfillment, analytics, fraud, warehouse — five teams, five private copies</span>
+<span class="k">for</span> GROUP <span class="k">in</span> billing fulfillment analytics fraud warehouse; <span class="k">do</span>
+  rabbitmqadmin declare queue name=order.events.<span class="n">$GROUP</span> durable=true
+  rabbitmqadmin declare binding source=order.events destination=order.events.<span class="n">$GROUP</span> \
+    routing_key=<span class="s">"#"</span>
+<span class="k">done</span>
+
+<span class="c"># replay for a NEW group ("a 6th team joins next quarter")? declare queue #6 —</span>
+<span class="c"># and it only ever sees messages published AFTER it was created. History is gone.</span></pre>
+  </div>
+
+  <p>This is not a bad instinct — it is the correct AMQP-native pattern for fan-out, and RabbitMQ's exchange
+  layer (chapter 2) is genuinely good at replicating one publish into N bindings cheaply at the routing layer.
+  The topology above will run in production today, will preserve per-group ordering, and needs zero new broker
+  code. It already handles fan-out for the groups <i>that exist at publish time</i>. The two things it cannot do
+  are the two things §1 called out: a group created after the fact has no history, and every group past the
+  first is a full second (third, fourth…) copy of the data sitting on disk.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The math: storage and process cost scale with N, not with the data</h2>
+  <p>Quantify what "five copies" actually costs, and what happens as N grows or throughput rises.</p>
+  <div class="callout bad">
+    <div class="co-t">THE STORAGE ARITHMETIC</div>
+    <p>A stream of 50 million 2&nbsp;KB events (≈100&nbsp;GB of payload) fanned out to 5 consumer groups via the
+    naive topology needs <b>5 × 100&nbsp;GB = 500&nbsp;GB</b> — not because the data changed, but because AMQP
+    queues have no concept of "the same message, read from two positions." Add a 6th consumer group next quarter
+    and you're at 600&nbsp;GB, permanently, for data that is logically identical across all six copies. A stream
+    holding that same 100&nbsp;GB serves 6, 60, or 600 independent readers from <b>one</b> stored copy — storage
+    is a function of retention, not of consumer count. That is the single biggest line item this chapter
+    justifies.</p>
+  </div>
+  <ul class="plain">
+    <li><b>No replay, ever, for anyone.</b> Once a message is acked in any of the five queues, it is gone from
+      that queue specifically — but more importantly, there is no queue anywhere holding "everything since the
+      beginning" unless you deliberately create one and never consume from it (and then you've just invented,
+      badly, an append-only log — which is the point of this chapter).</li>
+    <li><b>Per-process fan-out cost.</b> Five queues means five <code>rabbit_amqqueue_process</code> (or five
+      Raft groups for quorum queues) each independently doing routing acceptance, confirms, and per-consumer
+      credit bookkeeping for the <i>same logical event</i>. At high publish rates this is 5× the CPU and 5× the
+      replication I/O of a single logical write — the fan-out cost is paid at write time, on every node that
+      mirrors or replicates each of the five queues.</li>
+    <li><b>Consumer scaling within one group still hits the ch.4 ceiling.</b> Even a single one of those five
+      queues, if 200 independent consumers attach to it for parallel processing, funnels all 200 consumers'
+      credit and delivery bookkeeping through the same one queue process (or Raft leader). More queues do not
+      fix a throughput ceiling inside any one of them.</li>
+  </ul>
+  <p>So the naive topology is not wrong, exactly — it is the correct AMQP-native answer to a question ("how do I
+  fan out to today's known consumers") that is narrower than the one that actually matters ("how do I let
+  anyone, present or future, read this data at their own pace without multiplying storage"). Something has to
+  change about what "consuming" means.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three candidates for "a log inside RabbitMQ"</h2>
+  <p>Once you accept that consuming must stop meaning destroying, there are a small number of honest ways to get
+  there. Step through them — each was seriously discussed on the RabbitMQ mailing lists and issue tracker before
+  osiris shipped in 3.9.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Eliminating the alternatives</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE DECIDING PRINCIPLE</div>
+    <p>Candidate C won not because it's clever, but because it's the only option where a RabbitMQ operator keeps
+    exactly one cluster, one membership model, one set of TLS certs, one monitoring dashboard — and gets a log.
+    Everything in §7 onward is osiris paying for that promise.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">Streams are not free replay — read the fine print</h2>
+  <p>A native log solves §1's three problems, but it is not a magic "infinite, free, instant" primitive. Every
+  cost below is a direct consequence of building the log <i>inside</i> the AMQP broker rather than as a
+  standalone system, and you will hit each one operationally:</p>
+  <ul class="plain">
+    <li><b>Bounded storage, always.</b> A stream is not a substitute for a data warehouse. <code>max-age</code>
+      and <code>max-length-bytes</code> are mandatory-in-practice retention limits — without them a stream grows
+      until it fills the disk. "Replay" means "replay within retention," not "replay since the dawn of time."</li>
+    <li><b>Protocol translation tax over AMQP 0-9-1.</b> A stream exposed to an ordinary AMQP client looks like a
+      queue (<code>x-queue-type=stream</code>), which means every message still gets individually framed,
+      individually delivered, and subject to normal channel/connection machinery — none of the chunk-level
+      batching that makes the native path fast. You pay full AMQP overhead per message unless you switch clients.</li>
+    <li><b>Replication is intentionally lighter than Raft.</b> Osiris's leader→follower push is faster than Ra's
+      per-entry consensus, but it does not give you Ra's log-matching guarantee. §8 makes this precise: there is
+      a narrow window around leader failure where an unacknowledged tail can be lost, a guarantee quorum queues
+      do not have to make.</li>
+    <li><b>Super streams add a partitioning problem you now own.</b> Splitting one stream into K partitioned
+      streams for scale-out means picking a partition key and a K up front; like Kafka partitions, K is
+      operationally painful to change later without a migration, because a partitioning key's mapping to
+      partitions is a function of K itself.</li>
+    <li><b>Single active consumer adds a failover pause.</b> Ordered processing across a consumer group means
+      only one member is active at a time — which means a promotion delay (detect death → pick next → resume)
+      every time that member disconnects, exactly the class of pause partition-based Kafka consumer groups also
+      have to manage.</li>
+  </ul>
+  <p>None of this is an argument against streams — it's the honest cost side of the ledger you need before
+  choosing them over a quorum queue for a given workload. §9 makes the choice explicit.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">A stream, end to end</h2>
+  <p>A stream is a queue-shaped object registered with the same <code>amqqueue</code> abstraction every other
+  queue type uses, but its data path is entirely different underneath. Click any component to see its role, its
+  module, and what happens when it fails.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">CLIENTS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="amqpclient">AMQP 0-9-1 client</div>
+          <div class="acard" data-p="streamclient">stream protocol client (:5552)</div>
+        </div>
+        <div class="arch-row-label">ROUTING (unchanged from every other queue type)</div>
+        <div class="arch-grid"><div class="acard" data-p="exchange">exchange + bindings</div></div>
+        <div class="arch-row-label">STREAM QUEUE TYPE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="streamqueue">rabbit_stream_queue</div>
+          <div class="acard" data-p="coordinator">rabbit_stream_coordinator (Ra)</div>
+        </div>
+        <div class="arch-row-label">DATA PATH (osiris)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="writer">osiris_writer (leader)</div>
+          <div class="acard" data-p="replica1">osiris_replica (follower)</div>
+          <div class="acard" data-p="replica2">osiris_replica (follower)</div>
+        </div>
+        <div class="arch-row-label">DISK, PER REPLICA</div>
+        <div class="arch-grid">
+          <div class="acard shmcard" data-p="segments">segment files (.segment) + index files (.index)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE ROUTING LAYER DOESN'T KNOW STREAMS EXIST</div>
+    <p>This is deliberate reuse: a stream's queue record is bound to exchanges exactly like a classic or quorum
+    queue. <code>rabbit_exchange_type_topic</code> and friends route a message to a stream the same way they'd
+    route to any other queue — by appending it to the queue's mailbox for enqueue. The divergence starts one
+    layer down, inside <code>rabbit_stream_queue</code>'s implementation of the standard queue-type callbacks,
+    which hands the message to <code>osiris_writer</code> instead of to a variable-queue or a Raft log.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Inside osiris: chunks, segments, replication, offsets</h2>
+  <p>Four mechanisms to get precise about: <b>(a)</b> the on-disk chunk/segment/index format, <b>(b)</b>
+  leader→follower replication and why it isn't Raft, <b>(c)</b> the offset model, and <b>(d)</b> retention.</p>
+
+  <h3>(a) Chunks are the unit of everything</h3>
+  <p>Osiris never writes one message at a time to disk or over the wire — it batches pending messages into a
+  <b>chunk</b>: a header (chunk id = the offset of its first message, message count, a CRC32, a timestamp, the
+  writer's epoch) followed by the messages themselves, back to back. The chunk, not the message, is what gets
+  fsynced, what gets shipped to followers, and — critically for the stream protocol — what gets handed to a
+  subscriber verbatim. This is the direct analogue of the Kafka course's chapter 3 (segments + index files): same
+  idea, same reason (sequential I/O, batched fsyncs, batched network sends), independently arrived at.</p>
+
+  <div class="widget deck" id="deckChunk">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Life of a published message</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>On disk, a stream's data directory holds a sequence of <code>&lt;offset&gt;.segment</code> files (each
+  capped by <code>stream_max_segment_size_bytes</code>, default 500&nbsp;MB) and a matching
+  <code>&lt;offset&gt;.index</code> file per segment: a sparse table of <code>{offset → file position, timestamp}</code>
+  entries written every N chunks, letting a reader seeking to an arbitrary offset or timestamp binary-search the
+  index instead of scanning the segment from byte zero. Exactly the same trade Kafka makes — sparse index,
+  linear scan for the last few entries — because it's the same problem (bounded index size vs. seek precision).</p>
+
+  <h3>(b) Replication: leader-push, not Raft consensus</h3>
+  <p>This is the nuance worth over-learning. <code>osiris_writer</code> runs on the stream's leader node: it
+  accepts writes, appends the chunk to its own local segment, and <b>pushes</b> the chunk to every
+  <code>osiris_replica</code> process (one per follower node) over a plain TCP connection — no leader election
+  per write, no majority-commit-before-ack on the write path itself. Each replica appends what it receives to
+  its own local segment and periodically reports back the offset it has durably written. The writer tracks the
+  highest offset acknowledged by enough replicas to consider it "committed" for the purposes of consumer
+  visibility. <b>Membership and leader placement</b> — who is the leader, which nodes are replicas, what happens
+  when a node needs to be replaced — is a separate concern, handled by <code>rabbit_stream_coordinator</code>,
+  which <i>is</i> a Ra (Raft) state machine. So: metadata about the stream is Raft-consistent; the message data
+  itself is not.</p>
+
+  <div class="callout warn">
+    <div class="co-t">THE GUARANTEE THIS TRADES AWAY</div>
+    <p>Quorum queues (<code>rabbit_fifo</code> over <code>ra</code>) commit every write through Raft's log-matching
+    property: a write is only visible once a majority of the group has it in identical log order, and Raft's
+    election rules guarantee the new leader after a failure has every committed entry. Osiris skips that
+    consensus round on the hot path for throughput — so on leader failure, <code>rabbit_stream_coordinator</code>
+    promotes the replica with the most advanced matching log tail, but any chunk the old leader had accepted and
+    started replicating, without enough followers yet acknowledging it, <b>can be lost</b>. Streams trade a
+    small, bounded durability window for the batching and throughput that make the dedicated protocol fast.
+    Choose quorum queues, not streams, when every acknowledged write must survive any single failure with zero
+    exceptions.</p>
+  </div>
+
+  <div class="widget deck" id="deckFailover">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Leader failure and promotion</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(c) Offsets: server-tracked, stored with the stream, not in a side topic</h3>
+  <p>A consumer can attach at <code>first</code>, <code>last</code>, <code>next</code>, a specific numeric
+  offset, or a timestamp (osiris resolves a timestamp to the nearest chunk via the sparse index). Unlike Kafka,
+  which persists committed offsets in a dedicated internal topic (<code>__consumer_offsets</code>) replicated
+  and compacted independently, RabbitMQ streams let a consumer commit its offset <b>under a name</b> (a
+  "reference"), and osiris stores that name→offset mapping colocated with the stream's own log infrastructure —
+  no second replicated topic, no second retention policy to manage. The tradeoff: offset tracking data lives and
+  dies with the stream it belongs to, which is exactly the coupling you want for a broker-embedded feature, and
+  exactly the coupling Kafka's operators avoid on purpose to let offset topics be reasoned about independently of
+  any single topic's retention.</p>
+
+  <h3>(d) Retention: segment-granularity, not message-granularity</h3>
+  <p>Both <code>max-age</code> and <code>max-length-bytes</code> are enforced by deleting whole segment files —
+  never by truncating a live segment mid-file. This falls directly out of (a): a segment is written
+  append-only and read concurrently by any number of consumers holding raw file offsets into it; rewriting it in
+  place to drop old entries would race every open reader. So retention is coarse by design: the oldest segment
+  is dropped only once its <i>newest</i> entry crosses the age or size boundary, meaning actual retained data is
+  always somewhat more than the configured limit — bounded by segment size, not by the limit itself.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Retention vs. segment truncation</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>max-length-bytes</label><input type="range" id="ret-bytes" min="1" max="10" value="5" step="1"><span class="val" id="ret-bytes-val">500 MB</span></div>
+      <div class="slider-row"><label>max-age (hours)</label><input type="range" id="ret-age" min="1" max="72" value="24" step="1"><span class="val" id="ret-age-val">24 h</span></div>
+      <div id="ret-segments" style="display:flex;gap:4px;flex-wrap:wrap;margin:14px 0 6px;min-height:46px"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="ret-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">SUPER STREAMS AND SINGLE ACTIVE CONSUMER</div>
+    <p>A <b>super stream</b> is not a new storage primitive — it is K ordinary streams, each independently leader-
+    elected and replicated, presented to producers and consumers as one logical name. A producer hashes a
+    partitioning key to choose one of the K underlying streams, exactly like a Kafka partitioner; consuming "the
+    super stream" means running K independent stream consumers, one per partition, in your client library. Within
+    any single stream (partitioned or not), <b>single active consumer</b> lets a named group of consumers agree
+    that only one of them is delivered messages at a time — the others sit warm on standby — giving you strict
+    total order across the whole group at the cost of not parallelizing within that one stream. Parallelism at
+    scale therefore comes from the super stream's partition count, not from SAC.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Streams among the logs and queues</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>MODEL</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>RabbitMQ stream</td><td>Append-only log, embedded in an AMQP broker; osiris leader-push replication</td>
+      <td><span class="pill g">replay + fan-out inside your existing broker</span> <span class="pill g">AMQP routing in front</span> <span class="pill g">dedicated fast protocol</span></td>
+      <td><span class="pill b">weaker-than-Raft durability window</span> <span class="pill y">bounded retention only</span></td></tr>
+    <tr><td>Apache Kafka</td><td>Partitioned append-only log; ISR replication (Kafka course ch.5)</td>
+      <td><span class="pill g">huge ecosystem &amp; tooling</span> <span class="pill g">higher scale ceilings</span> <span class="pill g">mature exactly-once semantics</span></td>
+      <td><span class="pill b">separate system to run</span> <span class="pill y">no native routing/exchange model</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>Segmented log with separated compute (brokers) and storage (BookKeeper)</td>
+      <td><span class="pill g">independent broker/storage scaling</span> <span class="pill g">tiered storage built-in</span></td>
+      <td><span class="pill b">two extra systems (ZooKeeper/BK) to operate</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Log-backed streams over NATS core, Raft replication</td>
+      <td><span class="pill g">very lightweight ops</span> <span class="pill g">Raft-consistent replication</span></td>
+      <td><span class="pill y">smaller ecosystem</span> <span class="pill b">lower single-partition throughput ceiling</span></td></tr>
+    <tr><td>Amazon SQS</td><td>Managed distributed queue, at-least-once, no replay</td>
+      <td><span class="pill g">zero ops</span> <span class="pill g">virtually unbounded scale</span></td>
+      <td><span class="pill b">no replay at all</span> <span class="pill b">no ordering guarantee (standard queues)</span></td></tr>
+    <tr><td>ActiveMQ (classic)</td><td>JMS broker, destination = queue or topic, KahaDB store</td>
+      <td><span class="pill g">JMS standard compliance</span></td>
+      <td><span class="pill b">durable topic subscribers still duplicate per-subscriber storage, like naive fan-out</span></td></tr>
+    <tr><td>Redis Streams</td><td>In-memory log (<code>XADD</code>/<code>XREAD</code>) with consumer groups</td>
+      <td><span class="pill g">microsecond latency</span> <span class="pill g">trivial to bolt onto existing Redis</span></td>
+      <td><span class="pill b">memory-bounded retention</span> <span class="pill y">weaker durability than disk-first logs</span></td></tr>
+    <tr><td>Plain AMQP queue (classic/quorum)</td><td>Destroy-on-consume FIFO</td>
+      <td><span class="pill g">simplest possible work-queue semantics</span> <span class="pill g">lowest latency for single-consumer work</span></td>
+      <td><span class="pill b">no replay</span> <span class="pill b">fan-out cost scales with consumer-group count</span></td></tr>
+  </table>
+  <p>Read this table the way §9 tables are meant to be read in this course: nobody is "better," each row priced
+  the replay/fan-out/throughput problem differently, and RabbitMQ's answer is specifically shaped to avoid adding
+  a second system for teams who already trust one broker's operational model.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Numbers you can predict before benchmarking</h2>
+  <ul class="plain">
+    <li><b>Append:</b> O(1) amortized — sequential write of a chunk, batched fsync. Independent of stream size,
+      unlike a queue whose enqueue cost is tied to a mutable in-memory/on-disk structure that also has to track
+      per-consumer delivery state.</li>
+    <li><b>Sequential read (a consumer tailing near the end):</b> effectively O(1) per chunk — the OS page cache
+      almost always has the recent segment resident, and reads are pure sequential I/O.</li>
+    <li><b>Random/offset seek (replay from an old offset or a timestamp):</b> O(log S) to find the right segment
+      and index bucket via the sparse index, then a short linear scan within the bucket — same shape as Kafka's
+      index lookup.</li>
+    <li><b>Per-process memory:</b> an <code>osiris_writer</code>/<code>osiris_replica</code> holds small
+      in-memory state (open file handles, a write buffer, offset trackers) — most of the working set lives in
+      the OS page cache, not the BEAM heap, which is why streams handle many more concurrent consumers per GB of
+      broker memory than a classic queue holding the same messages resident.</li>
+    <li><b>Disk access pattern:</b> pure sequential for both writer and any consumer at (or near) the tail;
+      degrades toward random I/O only for consumers reading far behind the tail across many old segments —
+      exactly the same "slow consumer becomes a disk-bound consumer" curve as Kafka.</li>
+    <li><b>Message rate:</b> published benchmarks from the RabbitMQ core team routinely show single-digit-million
+      messages/sec aggregate through the dedicated stream protocol on modest hardware — a large multiple of
+      what the same hardware sustains over AMQP 0-9-1, purely from chunk-level batching and avoiding per-message
+      protocol framing.</li>
+  </ul>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Throughput: queue vs. stream(AMQP) vs. stream(native protocol)</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>concurrent consumers</label><input type="range" id="perf-consumers" min="1" max="500" value="20" step="1"><span class="val" id="perf-consumers-val">20</span></div>
+      <div class="slider-row"><label>message size (bytes)</label><input type="range" id="perf-msgsize" min="64" max="65536" value="1024" step="64"><span class="val" id="perf-msgsize-val">1024 B</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--bad)">━</span> quorum queue (AMQP)</span>
+        <span><span style="color:var(--pg)">━</span> stream (AMQP)</span>
+        <span><span style="color:var(--ok)">━</span> stream (native protocol, :5552)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch calibrated to the <i>shape</i> of published RabbitMQ team benchmarks:
+    per-message AMQP framing cost dominates at small message sizes and high consumer fan-out; the native
+    protocol's chunk-level delivery amortizes that cost across many messages per network round trip, so its
+    advantage is largest exactly where AMQP hurts most — small messages, many consumers.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">What teams actually hit</h2>
+
+  <h3>Incident 1: super-stream retention multiplies silently</h3>
+  <p>A team migrates a high fan-out telemetry topic to a super stream with 8 partitions, sets
+  <code>max-length-bytes</code> to their previous single-stream budget (say 50&nbsp;GB), and is surprised when
+  disk usage lands near 400&nbsp;GB. The setting applies <i>per partition</i>, because each partition is an
+  independent stream with its own retention — the super-stream abstraction is purely a producer/consumer
+  convenience, not a shared storage budget. The fix is arithmetic, not code: divide the target total by the
+  partition count before setting <code>max-length-bytes</code>, and reserve headroom for the fact that retention
+  is enforced at segment granularity, so actual usage always overshoots the configured limit somewhat.</p>
+
+  <h3>Incident 2: forgetting to open the stream protocol port</h3>
+  <p>Teams that enable the stream plugin (<code>rabbitmq-plugins enable rabbitmq_stream</code>) commonly leave
+  port 5552 out of their load balancer/security-group configuration, since every other RabbitMQ client traffic
+  runs over 5672 (or 5671 for TLS). AMQP clients connect fine — a stream still looks like a queue over AMQP —
+  and the failure only surfaces when someone adopts a stream-protocol client library for the throughput win,
+  and gets connection timeouts that look unrelated to the broker at all.</p>
+
+  <h3>Incident 3: migrating off mirrored queues straight into streams for the wrong workload</h3>
+  <p>With classic mirrored queues deprecated in 3.9 and removed in 4.0, teams migrating in bulk sometimes route
+  every queue that needs replication toward streams, on the assumption that "streams are the new replicated
+  queue." For genuine work-queue semantics — one consumer processes one task, exactly once from that consumer's
+  point of view, with dead-lettering and priorities available (chapter 8) — a quorum queue is almost always the
+  right target, not a stream, which lacks per-message ack/requeue and dead-lettering entirely. The postmortem
+  pattern is consistent: streams adopted for their throughput story on queues that actually needed quorum
+  queues' delivery semantics, discovered only once a poison message needed dead-lettering and there was nowhere
+  for it to go.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend streams at a whiteboard?</h2>
+  <p>Think before you reveal — each answer targets the depth a Staff-level RabbitMQ discussion expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>osiris</code> and <code>rabbit_stream_queue</code></h2>
+  <p>Files marked <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">deps/osiris/src/</span></div>
+<div>├── <span class="fhl">● osiris_log.erl</span> <span class="fnote">— chunk format, segment/index read+write, the log's actual bytes-on-disk logic</span></div>
+<div>├── <span class="fhl">● osiris_writer.erl</span> <span class="fnote">— leader gen_server: accepts writes, drives replication, tracks committed offset</span></div>
+<div>├── <span class="fhl">● osiris_replica.erl</span> <span class="fnote">— follower gen_server: receives chunks over TCP, appends locally, reports progress</span></div>
+<div>├── osiris_replica_reader.erl <span class="fnote">— serves a replica's data to a subscribing reader (offset seeks)</span></div>
+<div>└── osiris_tracking.erl <span class="fnote">— server-side offset tracking by consumer reference name</span></div>
+<div><span class="dir">deps/rabbit/src/</span></div>
+<div>├── <span class="fhl">● rabbit_stream_queue.erl</span> <span class="fnote">— implements the standard amqqueue callbacks over osiris</span></div>
+<div>├── <span class="fhl">● rabbit_stream_coordinator.erl</span> <span class="fnote">— Ra machine: stream membership, leader placement/promotion</span></div>
+<div>└── rabbit_stream_manager.erl <span class="fnote">— admin operations: declare/delete/add-replica</span></div>
+<div><span class="dir">deps/rabbitmq_stream/src/</span></div>
+<div>└── <span class="fhl">● rabbit_stream_reader.erl</span> <span class="fnote">— the dedicated binary protocol connection handler, port 5552</span></div>
+  </div></div>
+
+  <p>Simplified but structurally faithful: writing a chunk and replicating it.</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">erlang</span><span>osiris_writer.erl — accept a batch, append, replicate</span></div>
+    <pre><span class="f">handle_call</span>({<span class="n">write</span>, Entries}, _From, #state{log = Log0, replicas = Reps} = State) -&gt;
+    <span class="c">%% Batch pending entries into ONE chunk: header (offset, count, crc,</span>
+    <span class="c">%% timestamp, epoch) + entries back to back. Chunk, never message,</span>
+    <span class="c">%% is the unit of fsync and of replication.</span>
+    Chunk = <span class="f">osiris_log:make_chunk</span>(Entries, State#state.epoch),
+    Log1  = <span class="f">osiris_log:write_chunk</span>(Log0, Chunk),  <span class="c">%% local append + fsync</span>
+
+    <span class="c">%% Push, don't consense: no per-write leader election, no majority</span>
+    <span class="c">%% ack required before returning to the caller. Just fan the bytes out.</span>
+    [<span class="f">osiris_replica:send_chunk</span>(R, Chunk) || R &lt;- Reps],
+
+    {<span class="n">reply</span>, {<span class="n">ok</span>, Chunk#chunk.next_offset}, State#state{log = Log1}}.</pre>
+  </div>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">erlang</span><span>osiris_replica.erl — receive, append, report progress (no consensus vote)</span></div>
+    <pre><span class="f">handle_info</span>({<span class="n">tcp</span>, _Sock, ChunkBin}, #state{log = Log0} = State) -&gt;
+    Chunk = <span class="f">osiris_log:parse_chunk</span>(ChunkBin),
+    Log1  = <span class="f">osiris_log:write_chunk</span>(Log0, Chunk),  <span class="c">%% same append path as the leader</span>
+
+    <span class="c">%% Tell the writer how far we've durably written — this is a plain</span>
+    <span class="c">%% progress report, not a Raft AppendEntries acknowledgement; there is</span>
+    <span class="c">%% no log-matching check against the writer's history here.</span>
+    <span class="f">osiris_writer:replica_ack</span>(State#state.writer_pid, self(), Chunk#chunk.next_offset),
+    {<span class="n">noreply</span>, State#state{log = Log1}}.</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Chunks, not messages, are the unit of I/O.</b> Batching amortizes fsync and network round-trip cost
+    across many messages — the same insight as Kafka's producer-side batching, applied here on the broker's
+    write and replicate path instead. <b>2. Keep data-path replication out of Raft on purpose.</b> Ra's
+    consensus gives quorum queues correctness guarantees a work queue needs, at a latency cost per write;
+    streams are for high-volume append/replay, so osiris spends that budget on throughput instead, and pushes
+    the harder consistency question (who's the leader) into a separate, lower-frequency Ra machine
+    (<code>rabbit_stream_coordinator</code>) where consensus overhead barely matters. <b>3. Reuse the existing
+    routing layer.</b> <code>rabbit_stream_queue</code> implements the same callback interface as every other
+    queue type specifically so exchanges never need a special case for streams.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a message's journey through a stream</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from publish to a lagging consumer catching up.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Quorum queue vs. stream, side by side</h2>
+  <p>Publish the identical workload into both a quorum queue and a stream, then attach and detach consumers.
+  Watch what consuming does to each: destructive removal on the left, an advancing read-offset on the right —
+  and watch what a brand-new consumer group costs on each side.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">queue vs. stream — live comparison</span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body">
+      <div class="sim-ctl">
+        <div class="ctl-t">WORKLOAD (fed identically to both)</div>
+        <div class="btns">
+          <button class="btn primary" id="sc-pub10">publish ×10</button>
+          <button class="btn primary" id="sc-pub100">publish ×100</button>
+          <button class="btn" id="sc-reset">reset both</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px" id="sim-cols">
+        <div style="border:1px solid var(--border);border-radius:12px;padding:14px">
+          <div style="font-family:var(--mono);font-size:11.5px;color:var(--bad);letter-spacing:.06em;margin-bottom:8px">QUORUM QUEUE — destroy on consume</div>
+          <div class="scounter" style="display:inline-block;margin-right:8px"><div class="cv" id="q-stored">0</div><div class="cl">msgs stored</div></div>
+          <div class="scounter" style="display:inline-block"><div class="cv" id="q-bytes">0 KB</div><div class="cl">disk bytes</div></div>
+          <div class="ctl-t" style="margin-top:12px">CONSUMER GROUPS (each = one full queue copy)</div>
+          <div class="btns"><button class="btn" id="q-addgroup">+ new consumer group</button></div>
+          <div id="q-groups" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:12px;padding:14px">
+          <div style="font-family:var(--mono);font-size:11.5px;color:var(--pg);letter-spacing:.06em;margin-bottom:8px">STREAM — shared append-only log</div>
+          <div class="scounter" style="display:inline-block;margin-right:8px"><div class="cv" id="s-stored">0</div><div class="cl">msgs in log</div></div>
+          <div class="scounter" style="display:inline-block"><div class="cv" id="s-bytes">0 KB</div><div class="cl">disk bytes (1 copy)</div></div>
+          <div id="s-segments" style="display:flex;gap:3px;flex-wrap:wrap;margin:10px 0;min-height:20px"></div>
+          <div class="ctl-t">NEW CONSUMER — attach at</div>
+          <div class="toggle-row">
+            <button class="chip on" data-off="first">first</button>
+            <button class="chip" data-off="last">last</button>
+            <button class="chip" data-off="next">next</button>
+            <button class="chip" data-off="offset">offset #</button>
+          </div>
+          <div class="slider-row" id="s-offsetnum-row" style="display:none"><label>numeric offset</label><input type="range" id="s-offsetnum" min="0" max="0" value="0" step="1"><span class="val" id="s-offsetnum-val">0</span></div>
+          <div class="btns"><button class="btn" id="s-addconsumer">+ new consumer</button></div>
+          <div id="s-consumers" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
+        </div>
+      </div>
+
+      <div class="sim-ctl" style="margin-top:14px">
+        <div class="ctl-t">RETENTION (stream only) — truncates whole segments</div>
+        <div class="btns"><button class="btn warn" id="s-truncate">force-expire oldest segment</button></div>
+      </div>
+
+      <div class="chartbox" style="margin-top:8px">
+        <canvas id="storage-chart" width="740" height="220"></canvas>
+      </div>
+      <div class="chart-legend">
+        <span><span style="color:var(--bad)">━</span> queue-model total bytes (× consumer groups)</span>
+        <span><span style="color:var(--pg)">━</span> stream-model total bytes (flat, 1 copy)</span>
+        <span><span style="color:var(--warn)">┆</span> current consumer-group count</span>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Publish ×100, then add 3 consumer groups to the queue — watch stored bytes multiply. <b>2.</b>
+    Add 3 consumers to the stream instead — watch stored bytes stay flat. <b>3.</b> Consume everything from one
+    queue group, then try adding a brand-new group — it starts empty; no replay. <b>4.</b> Attach a brand-new
+    stream consumer at <code>first</code> after publishing — it reads messages produced before it existed.
+    <b>5.</b> Force-expire the oldest segment and watch consumers reading from it lose access to that range.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 8: three questions, no options</h2>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 07 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now explain why streams exist, how osiris replicates
+    without going through Raft, and when a stream is the wrong tool because you actually need per-message ack,
+    dead-lettering, or priority. Chapter 8 goes into exactly that territory: dead lettering, TTL, and priority
+    queues — three features that look simple and have very sharp edges.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="rmq-08.html" style="text-decoration:none;display:inline-flex;align-items:center">RMQ-08: Dead Lettering, TTL &amp; Priority Queues →</a>
+    </div>
+  </div>
+</section>
+
+</main>

@@ -1,0 +1,1928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMQ-04 · Classic Queues: The Queue Process Internals — RabbitMQ Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#ff9f43; --pg-dim:rgba(255,159,67,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa; --amber:#ffd166;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(255,159,67,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(255,159,67,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(255,159,67,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(255,159,67,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(255,159,67,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(255,159,67,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* process tree in sim */
+  .spm{display:flex;justify-content:center;margin-bottom:4px}
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:pointer;position:relative}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg);cursor:default}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+  .strunk{width:2px;height:14px;background:var(--border-hi);margin:0 auto}
+  .saux{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0 10px}
+  .snode.aux{font-size:9.5px;padding:5px 8px;color:var(--muted);cursor:default}
+  .snode.aux.off{opacity:.25}
+  .snode.aux.busy{border-color:var(--warn);color:var(--warn)}
+  .sbe-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:8px 0 6px;text-align:center}
+  .sbe{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;min-height:64px;align-content:flex-start}
+  .snode.be{animation:framein .25s}
+  .snode.be.idle{color:var(--muted)}
+  .snode.be.active{border-color:var(--ok);color:var(--ok)}
+  .snode.be.long{border-color:var(--warn);color:var(--warn)}
+  .snode.be.startup{border-color:var(--purple);color:var(--purple)}
+  .snode.be.crash{border-color:var(--bad);background:rgba(242,92,84,.15);color:var(--bad);animation:shake .35s}
+  .snode.be.sigq{border-color:var(--warn);opacity:.5}
+  .snode.be.sel{box-shadow:0 0 0 2px var(--pg)}
+  .sim-shm{margin:12px auto 0;max-width:430px}
+  .sim-shm .shm{text-align:center}
+  .waitq{font-family:var(--mono);font-size:10px;color:var(--warn);text-align:center;margin-top:8px;min-height:14px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* queue x-ray specific */
+  .qx-wrap{display:grid;grid-template-columns:1fr 300px;min-height:560px}
+  @media(max-width:900px){.qx-wrap{grid-template-columns:1fr}}
+  .qx-stage{padding:16px;border-right:1px solid var(--border)}
+  @media(max-width:900px){.qx-stage{border-right:none}}
+  .qx-side{display:flex;flex-direction:column}
+  .qx-lane-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:10px 0 6px;display:flex;justify-content:space-between}
+  .qx-lane{display:flex;flex-wrap:wrap;gap:4px;min-height:54px;padding:8px;border:1px solid var(--border);border-radius:10px;background:var(--bg-2);align-content:flex-start}
+  .qx-dot{width:16px;height:16px;border-radius:4px;font-family:var(--mono);font-size:7px;display:flex;align-items:center;justify-content:center;color:#04121f;font-weight:700;flex:0 0 auto;position:relative}
+  .qx-dot.alpha{background:#4ade80}
+  .qx-dot.beta{background:#60a5fa}
+  .qx-dot.gamma{background:#ffd166}
+  .qx-dot.delta{background:#5b6475}
+  .qx-dot.embed::after{content:"";position:absolute;top:-2px;right:-2px;width:5px;height:5px;border-radius:50%;background:var(--pg);border:1px solid #04121f}
+  .qx-more{font-family:var(--mono);font-size:10.5px;color:var(--dim);align-self:center;padding:0 6px}
+  .qx-legend{display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--muted);margin:8px 0}
+  .qx-legend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .qx-watermark{position:relative;height:10px;border-radius:5px;background:var(--bg-2);border:1px solid var(--border);overflow:visible;margin:10px 0}
+  .qx-watermark .wm-fill{height:100%;border-radius:5px;background:linear-gradient(90deg,#4ade80,#ffd166,#f25c54);width:0%;transition:width .3s}
+  .qx-watermark .wm-mark{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--text)}
+  .qx-counters{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:10px 0}
+  .qx-tpanel{margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}
+  .qx-tpanel canvas{width:100%;border:1px solid var(--border);border-radius:10px;background:var(--bg-2)}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-rabbitmq.html">← RabbitMQ Internals</a>
+  <span class="crumb">RABBITMQ INTERNALS · <b>CH 04 / 12</b> · CLASSIC QUEUES</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Index + Store</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 04</div>
+  <h1>Classic Queues:<br><span class="grad">The Queue Process Internals</span></h1>
+  <p class="lead">Chapter 3 ended with routing solved: an exchange decides which queues get a copy of a message.
+  This chapter asks the next question — once a message lands in a queue, what <i>is</i> that queue, as a running
+  thing? The answer is one sentence, and this entire chapter is what falls out of taking that sentence literally:
+  <b>a classic queue is one Erlang process, a <code>gen_server</code> called <code>rabbit_amqqueue_process</code>,
+  that owns every byte of that queue's state.</b> No lock, no shared table, no distributed coordination — just one
+  process with a mailbox, and everything about classic-queue behavior, performance, and failure modes derives from
+  that fact.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Derive why one queue gets free total ordering and zero lock contention, and why that same fact caps its throughput at one core.</div>
+    <div class="obj"><b>You will understand</b>The alpha/beta/gamma/delta state machine inside <code>rabbit_variable_queue</code> and exactly what moves between RAM and disk at each transition.</div>
+    <div class="obj"><b>You will predict</b>When a message body is embedded in the queue index versus written to the shared message store, and why that threshold exists.</div>
+    <div class="obj"><b>You will simulate</b>A queue X-ray: drive publish/consume rates independently and watch messages migrate through every storage state live.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Something has to hold the messages — what, exactly?</h2>
+  <p class="lead">Chapter 3's exchange is deliberately stateless: <code>rabbit_exchange:route/2</code> is a pure
+  function, a routing key in, a list of queue names out. It stores nothing about any individual message. Somewhere,
+  though, an actual buffer has to exist — something that remembers "these 40,000 messages arrived, in this order,
+  and none of them has been acknowledged yet." That something is the queue, and chapter 1 already told you the
+  shape of the answer: RabbitMQ needs to support potentially hundreds of thousands of these buffers on one node,
+  each independently created, destroyed, and stateful, without one buffer's behavior ever corrupting another's.
+  The only primitive chapter 1 gave you that satisfies "independently stateful, isolated, cheap to multiply" is the
+  BEAM process.</p>
+  <p>So a classic queue is a process: <code>rabbit_amqqueue_process</code>, a <code>gen_server2</code> (Rabbit's
+  own priority-aware variant of the standard <code>gen_server</code> behaviour). Committing to that one design
+  choice is not a detail — it is the entire chapter, because a <code>gen_server</code> is, at its core, nothing
+  more than <b>a private heap and a mailbox that messages are handled from one at a time, in arrival order.</b>
+  Three consequences fall out immediately, before you've written a single line of storage logic:</p>
+  <ul class="plain">
+    <li><b>Total ordering within a queue is free.</b> There is exactly one process reading exactly one mailbox in
+      exactly one order. You do not need a sequence number, a version vector, or a consensus round to know "which
+      message came first" — the mailbox already answers that question by construction.</li>
+    <li><b>There is no lock anywhere in this queue's critical path.</b> A lock exists to arbitrate between multiple
+      threads that might touch the same state concurrently. A <code>gen_server</code>'s state is touched by exactly
+      one scheduler-selected execution context at a time — the process itself — so "concurrent access to queue
+      state" is not a case this design has to handle, because it cannot happen.</li>
+    <li><b>Throughput is capped at whatever one BEAM scheduler can push through one process.</b> The flip side of
+      "one mailbox, handled sequentially" is that this queue's messages will never be processed by two CPU cores
+      at once, no matter how many cores the node has. A single hot queue cannot use 64 cores. This is not a bug to
+      fix later — it is the direct, unavoidable cost of the exact design that made ordering and lock-freedom free,
+      and it is why §5 onward keeps returning to <i>sharding across queues</i>, not parallelizing inside one, as
+      the scaling answer.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE REAL DIAGNOSTIC SURFACE: THE MAILBOX ITSELF</div>
+    <p>Because <code>rabbit_amqqueue_process</code> handles its mailbox strictly sequentially, that mailbox is
+    where backpressure actually lives. If publishes arrive faster than the process can apply them to its internal
+    state (§8), unhandled <code>{deliver, ...}</code> messages queue up in the Erlang process mailbox — not
+    conceptually, literally, as an in-memory linked list the BEAM maintains per process. A growing mailbox is
+    memory RabbitMQ isn't otherwise accounting for in the same place your monitoring dashboards look (which
+    typically show <code>messages_ready</code>/<code>messages_unacknowledged</code>, the AMQP-visible queue
+    depth) — an operator who has never heard of "process message queue length" can still be blindsided by it.
+    RabbitMQ's own management stats and <code>rabbitmqctl status</code> surface it explicitly as a per-queue-process
+    metric precisely because it is the earliest, truest signal that this one process is falling behind its
+    incoming rate, before RAM, disk, or CPU alarms even notice anything is wrong.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From "just keep a list in RAM" to a four-state paging engine</h2>
+  <p>The classic queue you operate today is the product of one recurring lesson, learned the hard way multiple
+  times: a queue that only knows how to hold everything in RAM eventually meets a producer that outruns its
+  consumer, and RAM is not infinite. Click through the timeline — several of these events are direct responses to
+  a production incident shaped exactly like that.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the classic queue's storage engine, version by version</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY "JUST BUY MORE RAM" WAS NEVER THE FIX</div>
+    <p>Every one of these revisions is solving the same underlying tension: RAM is fast but finite and expensive
+    per byte; disk is slow (relatively) but effectively unbounded and cheap per byte. A queue that never pages to
+    disk is simple to reason about and fast right up until a slow consumer, a bursty producer, or a genuinely large
+    backlog exceeds available memory — at which point the failure mode isn't "a bit slower," it's the node's
+    <code>vm_memory_high_watermark</code> tripping (default 40% of available RAM) and blocking every publisher on
+    the node, or in the worst historical cases, an out-of-memory kill of the whole Erlang VM. §5 and §8 derive the
+    state machine that exists specifically to make that failure mode gradual and controllable instead of sudden
+    and catastrophic.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: the queue's state is just a list, entirely in RAM</h2>
+  <p>Derive it honestly. You've accepted "one process per queue." The simplest possible thing that process could
+  do with its state is hold an ordinary in-memory FIFO — an Erlang <code>queue:queue()</code> (a purely functional
+  two-list queue, O(1) amortized push/pop) — of every message, full stop. No disk, no index, no separate store.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>naive_queue.erl — the strawman, annotated</span></div>
+    <pre><span class="k">-record</span>(state, {
+    <span class="c">%% Every message this queue currently holds, front = oldest, full stop.</span>
+    <span class="c">%% Content, properties, everything — all of it, always, in this one</span>
+    <span class="c">%% process's heap. Nothing ever touches disk.</span>
+    messages :: queue:queue(#basic_message{}),
+    next_delivery_tag = <span class="n">1</span> :: non_neg_integer()
+}).
+
+<span class="f">handle_cast</span>({<span class="s">publish</span>, Msg}, State = #state{messages = Q}) -&gt;
+    <span class="c">%% O(1) amortized push. Simple. Fast. Nothing checks how big Q has become.</span>
+    {noreply, State#state{messages = queue:in(Msg, Q)}};
+
+<span class="f">handle_call</span>({<span class="s">get</span>}, _From, State = #state{messages = Q}) -&gt;
+    <span class="k">case</span> queue:out(Q) <span class="k">of</span>
+        {{value, Msg}, Q2} -&gt; {reply, {ok, Msg}, State#state{messages = Q2}};
+        {empty, Q2}        -&gt; {reply, empty, State#state{messages = Q2}}
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <p>This is not a strawman to mock — it is what RabbitMQ's very first queue implementation actually resembled,
+  and for a queue that stays shallow (thousands of small messages, a consumer that keeps pace), it is arguably
+  correct: no I/O on the hot path at all, and every operation is O(1). The stepper below plays forward what happens
+  as a slow consumer lets the backlog grow.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">One queue, one slow consumer, growing backlog</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The math: RAM-only queues turn a slow consumer into an OOM, quantified</h2>
+  <p>Formalize what the deck just showed. If a queue holds <b>N</b> messages of average size <b>S</b> bytes,
+  entirely in its process heap, its RAM footprint grows as <b>N × S</b> with no ceiling of its own — the only
+  ceiling is the node's physical memory, shared across every other queue, channel, and connection process on that
+  node.</p>
+  <ul class="plain">
+    <li><b>A single hot queue can starve a whole node.</b> 5 million messages at a modest 2 KB average (a typical
+      JSON event payload) is 10 GB in one queue's heap alone. A node with several such queues, or one queue with a
+      genuinely large backlog, can exhaust available RAM well before disk, CPU, or network becomes the bottleneck.</li>
+    <li><b>Memory pressure is node-wide, but the cause is often one queue.</b> RabbitMQ's <code>vm_memory_high_watermark</code>
+      (default 0.4, i.e. 40% of detected available RAM) trips a node-wide alarm that blocks <i>all</i> publishers
+      on that node, not just the ones feeding the offending queue — a single misbehaving consumer on one queue can
+      degrade completely unrelated producers.</li>
+    <li><b>Durability and RAM residency get conflated.</b> A durable queue's persistent messages must survive a
+      broker restart, which means they need to reach disk regardless — but the naive design above only writes to
+      disk implicitly, at OS page-cache eviction time, which is not a moment RabbitMQ controls or can rely on for a
+      durability guarantee.</li>
+    <li><b>Per-process GC gets expensive on a giant heap.</b> Chapter 1 sold "per-process GC is cheap because it's
+      local" — true, but its cost still scales with <i>that process's own live data</i>. A queue process holding
+      10 GB of messages has a 10 GB heap to trace on its next garbage collection, which is no longer the
+      sub-millisecond pause chapter 1 promised for a typically-sized process.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>This is not a hypothetical edge case — it is the single most common classic-queue production incident:
+    a consumer goes offline for maintenance, or simply can't keep up with a traffic spike, publishers keep
+    publishing (because nothing tells them not to), and a queue that was a few megabytes an hour ago is now
+    a meaningful fraction of the node's RAM. §11 covers this exact pattern as a named, repeatedly-observed
+    failure mode. The fix can't be "hope queues stay small" — it has to be a queue implementation that pages
+    itself to disk automatically, before the node's memory alarm has to intervene on its behalf.</p>
+  </div>
+  <p>So the fix has two independent parts: <b>(a)</b> stop assuming disk writes are optional — durability requires
+  them for persistent messages regardless — and <b>(b)</b> make RAM residency a <i>reclaimable</i> resource, not a
+  permanent commitment, so a queue can shed memory under pressure without losing messages. §5 walks through the
+  storage designs actually considered for both.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Two stores, not one — and a state machine to move between them</h2>
+
+  <h3>Candidate A: always write everything to disk immediately</h3>
+  <p>The simplest fix for §4's RAM problem: never hold a message purely in RAM at all — write it to disk on
+  arrival, every time, for every queue. This is durable by construction and its RAM footprint is bounded and
+  predictable. But it throws away the one advantage the naive design had: for the overwhelmingly common case of a
+  small, fast-draining queue (a task queue whose consumer is keeping up fine), you now pay a disk write and,
+  typically, a disk read for every single message that would otherwise never have needed to touch a spinning or
+  even solid-state device at all. <b>Rejected as a universal default: correct, but pays I/O cost even when there
+  is no memory pressure to justify it</b> — though as §8 covers, this is exactly the behavior RabbitMQ offers
+  deliberately as an opt-in (and, since 3.12, the effective default) via lazy queues, for workloads where it's the
+  right trade.</p>
+
+  <h3>Candidate B: one file per queue, holding both metadata and message bodies together</h3>
+  <p>Keep everything durable, but write it into a single per-queue log: publish records, delivery/ack records, and
+  full message bodies all interleaved in one file per queue. This solves durability without a second system to
+  build, but it creates a subtler problem the moment routing (chapter 3) is remembered: a <b>fanout</b> exchange
+  can route the same published message to ten different queues. If each queue's file stores its own full copy of
+  the body, a 1 MB message fanned out to ten queues costs 10 MB of disk — the exchange's "one message, many
+  queues" semantics get multiplied into real storage cost on the way down. <b>Rejected: correct but wasteful under
+  fan-out, the single most common pattern rich routing (ch. 3) exists to support.</b></p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Deriving index + store from one constraint: fan-out shouldn't multiply disk cost</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>Candidate C: split "where is this message in my ordering" from "where are its bytes" ✓</h3>
+  <p>Separate two genuinely different concerns into two genuinely different subsystems. <b>Per-queue metadata</b> —
+  publish/deliver/ack sequence, which is small and queue-specific — lives in <code>rabbit_queue_index</code>, one
+  index per queue. <b>Message bodies</b> — potentially large, and potentially shared across many queues from one
+  fan-out publish — live in <code>rabbit_msg_store</code>, one store <i>per node</i>, content-addressed and
+  reference-counted so ten queues bound to the same fanout publish share one on-disk copy of the body, not ten.
+  §8 opens both file formats precisely.</p>
+
+  <div class="callout ok">
+    <div class="co-t">THE PATTERN, GENERALIZED</div>
+    <p>This is the same move chapter 3's exchange/binding/queue split made at the routing layer, applied one layer
+    down at storage: separate the thing that's small and per-entity (a queue's ordering) from the thing that's
+    potentially large and shared (a message's bytes), and let each scale on its own terms. It's also why a classic
+    queue's process state can stay comparatively small even when its backlog is enormous — the process holds
+    index/pointer structures, not necessarily every message body, which is precisely what §8's alpha/beta/gamma/delta
+    machine formalizes.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The bill for a two-store, paging design</h2>
+  <p>Splitting index from store and adding a paging state machine solves §4's crisis, but it is not free, and
+  understanding the cost is what lets you tune <code>x-queue-mode</code> and memory watermarks deliberately instead
+  of by folklore:</p>
+  <ul class="plain">
+    <li><b>State transitions themselves cost CPU and I/O.</b> Moving a message from RAM-resident (alpha) toward
+      disk-resident (beta → gamma → delta) under memory pressure means writing an index segment record and,
+      unless the body is small enough to embed (§8), a separate message-store write — real work done on a process
+      that could otherwise be handling the next publish.</li>
+    <li><b>Paging is decided per-queue, reactively, not globally in advance.</b> Each <code>rabbit_amqqueue_process</code>
+      watches its own memory footprint against the node's watermark and pages itself independently — there is no
+      global scheduler deciding in advance which queue should page first, which means many queues under pressure
+      simultaneously can all start paging at once, each contending for the same disk.</li>
+    <li><b>A crashed queue process still has to recover from two places, not one.</b> On restart, a durable
+      classic queue rebuilds its in-memory view by replaying <code>rabbit_queue_index</code> segments and
+      cross-referencing <code>rabbit_msg_store</code> for bodies — more moving parts than the naive single-file
+      design, and more surface area for the specific disk-layout bugs chapter 11 covers in depth.</li>
+    <li><b>One busy queue's paging cannot be parallelized across cores.</b> Exactly §1's ceiling again: even though
+      the storage engine underneath got more sophisticated, it's still driven by one sequential process — paging a
+      backlog faster is a job for reducing that one queue's load or sharding to more queues, never for adding
+      threads to this one.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE HONEST TRADE</div>
+    <p>None of this is an argument against the design — it's the real price of turning §4's sudden OOM into a
+    graceful, observable degradation instead. A queue under memory pressure gets slower and starts showing more
+    of its backlog in gamma/delta states (visible in the simulator, §15) rather than crashing the node outright.
+    The final architecture, then, is: one process per queue (§1), backed by a state machine
+    (<code>rabbit_variable_queue</code>) that decides, message by message, how much of it lives in RAM right now —
+    talking to two on-disk subsystems that split "ordering" from "bytes" for exactly the reason §5 derived.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The classic queue, as components you can click</h2>
+  <p>Everything below lives inside, or immediately behind, one <code>rabbit_amqqueue_process</code>. Click through
+  each component — the important thing to notice is that only two of these are their own separate node-wide
+  subsystems (the index and the message store); everything else is either the process itself or a data structure
+  that process privately owns.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">THE PROCESS (one per queue)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="proc">rabbit_amqqueue_process</div>
+          <div class="acard" data-p="mailbox">mailbox</div>
+        </div>
+        <div class="arch-row-label">IN-PROCESS STATE MACHINE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="vq">rabbit_variable_queue</div>
+        </div>
+        <div class="arch-row-label">PER-QUEUE ON-DISK METADATA</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="index">rabbit_queue_index</div>
+        </div>
+        <div class="arch-row-label">NODE-WIDE SHARED STORAGE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="store">rabbit_msg_store</div>
+        </div>
+        <div class="arch-row-label">SUPERVISION</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="sup">rabbit_amqqueue_sup — one_for_one supervisor over every queue process on the node</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY THE PROCESS ITSELF STAYS DUMB</div>
+    <p><code>rabbit_amqqueue_process</code> deliberately delegates almost everything about <i>how</i> messages are
+    stored to <code>rabbit_variable_queue</code> — the process handles AMQP-level concerns (consumer registration,
+    acks, flow control, policy like <code>x-max-length</code>) and calls into the variable queue module as a
+    library, not a separate process. That's a real design choice: it keeps the storage state machine unit-testable
+    in isolation (it's pure-ish data-in, data-out Erlang, no process boundary to mock) while still running inside
+    the one process per queue that chapter 1's isolation guarantee requires.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">rabbit_variable_queue: four states, and what moves between them</h2>
+  <p>Every message a classic queue is holding is, at any instant, in exactly one of four states. The names are
+  historical (they trace back to the module's original author's notes) but the mechanics are precise and worth
+  learning exactly:</p>
+  <ul class="plain">
+    <li><b>alpha</b> — the message content <i>and</i> its queue-index entry are both resident in RAM. This is
+      where every message starts. Fastest possible state for both publish and deliver: nothing touches disk to
+      serve a consumer from here (persistent messages are still written to the message store for durability in
+      parallel, but nothing needs to be <i>read back</i> from disk to deliver an alpha message).</li>
+    <li><b>beta</b> — the message body has been pushed out to disk (embedded in the index or written to
+      <code>rabbit_msg_store</code>, §8b decides which), but the queue-index entry describing it is still held in
+      RAM. Delivering a beta message costs one disk read for the body; the queue still knows exactly where that
+      message sits in its ordering without consulting disk.</li>
+    <li><b>gamma</b> — like beta, except the index entry itself has now also been flushed to the on-disk
+      <code>rabbit_queue_index</code> segment file, with only a small, compact in-RAM summary remaining. Both the
+      body and the index record are on disk; RAM holds bookkeeping, not the entries themselves.</li>
+    <li><b>delta</b> — fully disk-resident. Neither the body nor any individual index entry is materialized in
+      RAM; the queue holds a single compact record describing a <i>range</i> of sequence IDs that live entirely on
+      disk. This is the cheapest possible RAM footprint per message — effectively a handful of bytes amortized
+      across an entire contiguous run, regardless of how many messages that run contains.</li>
+  </ul>
+
+  <div class="widget deck" id="deckStates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Paging under memory pressure: alpha → beta → gamma → delta</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Transitions only ever move messages from a cheaper-for-latency, more-expensive-for-RAM state toward a
+  cheaper-for-RAM, more-expensive-for-latency one — alpha toward delta — and only under actual memory pressure,
+  starting from the <i>oldest</i> messages (the ones least likely to be consumed imminently). A queue whose
+  consumer keeps pace never needs to page at all; every message it ever holds might live and die entirely as
+  alpha.</p>
+
+  <h3>(a) rabbit_queue_index: segment files of 16,384 entries</h3>
+  <p><code>rabbit_queue_index</code> is per-queue, and it records exactly three kinds of event against a message's
+  position in that queue's sequence: <b>publish</b>, <b>deliver</b>, and <b>ack</b>. It splits its records across
+  <b>segment files, each holding a fixed 16,384 entries</b>. That fixed size is not arbitrary bookkeeping — it
+  means a sequence ID's segment file and its offset within that file are both computable directly by division and
+  remainder (<code>segment = seq_id div 16384</code>, <code>offset = seq_id rem 16384</code>), so looking up or
+  appending a record never requires searching an index-of-indexes. It's O(1) by construction, the same trick a
+  hash table uses, applied to a monotonically increasing sequence instead of a hash.</p>
+
+  <h3>(b) The embedding threshold: queue_index_embed_msgs_below</h3>
+  <p>Not every message needs two files. If a message body is smaller than <code>queue_index_embed_msgs_below</code>
+  (default <b>4096 bytes</b>), <code>rabbit_queue_index</code> stores the body <i>inline</i>, directly inside the
+  segment file record itself, alongside its publish/deliver/ack metadata. Only bodies at or above that threshold
+  get written out to the separate <code>rabbit_msg_store</code>, with the index instead holding a small reference
+  (message ID, file, and offset). The threshold exists because, for small messages, a second file's I/O — a
+  separate open, a separate seek, a separate fsync policy to reason about — costs more in overhead than it saves in
+  space: you'd be paying two write amplifications and two read round-trips to move a handful of hundred-byte
+  payloads that could have ridden along with metadata you were already writing anyway.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Where does the body go? — message size vs the embedding threshold</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>message body size</label><input type="range" id="embed-size" min="0" max="12" value="3" step="1"><span class="val" id="embed-size-val">512 B</span></div>
+      <div id="embed-viz" style="margin-top:10px"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="embed-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) rabbit_msg_store: node-wide, content-addressed, reference-counted</h3>
+  <p>Unlike the index, there is no "one message store per queue." <code>rabbit_msg_store</code> (in practice, two
+  of them per node — one for persistent messages, one for transient) is shared by every queue that needs it. A
+  message is written once, keyed by a message ID, with an in-RAM index (an ETS table) mapping that ID to
+  <code>{file, offset, ref_count}</code>. When a fanout exchange (ch. 3) routes one published message into ten
+  queues, all ten queues' index entries point at the <i>same</i> message-store record, and its reference count
+  becomes 10 — the body is written to disk exactly once, not ten times, and is only actually deleted from the
+  store once every referencing queue has acknowledged (or otherwise discarded) its copy and the ref count reaches
+  zero. This is precisely §5's fan-out cost problem, solved structurally rather than avoided.</p>
+
+  <h3>(d) Lazy queues, and why 3.12 stopped trusting the RAM-first default</h3>
+  <p>Historically, <code>x-queue-mode=lazy</code> (added in 3.6, 2016) was an opt-in policy: instead of letting
+  messages start as alpha and paging only under memory pressure, a lazy queue moves messages to disk essentially
+  immediately, keeping only a small, bounded amount of RAM per message regardless of backlog size. The trade is
+  explicit — a lazy queue trades best-case delivery latency (a disk read even for a message published a moment
+  ago) for a RAM footprint that barely grows no matter how deep its backlog gets. It was purpose-built for
+  workloads that are inherently bursty or batch-shaped: import/export pipelines, queues that intentionally buffer
+  hours of work, anywhere a slow consumer is the expected steady state, not an incident.</p>
+  <p><b>RabbitMQ 3.12</b> changed the default posture entirely: classic queues gained a new on-disk layout,
+  <b>classic queue version 2 (CQv2)</b>, and adopted lazy-like, eager-to-disk behavior <i>by default</i>, no
+  <code>x-queue-mode</code> declaration required. The reasoning is exactly §4's math made into policy: the old
+  RAM-first default kept every message as alpha for as long as memory allowed, which meant a queue behaved
+  perfectly right up until a slow consumer or a burst pushed it over the watermark — at which point what had been
+  a minor, boring operational hiccup (a consumer running behind) could become a node-wide memory alarm or, in the
+  worst historical cases, an out-of-memory kill. Defaulting to eager persistence trades a small amount of
+  best-case latency, always, for removing the cliff entirely.</p>
+
+  <div class="callout warn">
+    <div class="co-t">QUEUE DECLARATION PROPERTIES THAT SHAPE ALL OF THIS</div>
+    <p>Three properties are set at declaration time and never change for that queue's lifetime: <b>durable</b>
+    (queue metadata — and persistent messages published into it — survive a broker restart; a durable queue with
+    an empty message store on restart still exists as a queue), <b>exclusive</b> (usable only by the declaring
+    connection, auto-deleted the instant that connection closes — no supervision restart brings an exclusive queue
+    back), and <b>auto-delete</b> (deleted once its last consumer unsubscribes, regardless of connection state).
+    None of these interact with the alpha/beta/gamma/delta machine directly — durability decides <i>whether</i> a
+    message must reach the message store at all; the four states describe <i>how much of an already-decided-durable
+    (or transient) message currently sits in RAM</i>.</p>
+  </div>
+
+  <p>Two more knobs bound a queue's growth directly, independent of memory pressure: <code>x-max-length</code>
+  (and its byte-oriented sibling <code>x-max-length-bytes</code>) caps how many messages a queue will hold at all,
+  and <code>x-overflow</code> decides what happens once that cap is hit — <b>drop-head</b> (the default: silently
+  discard the oldest message to make room for the new one, favoring recency), <b>reject-publish</b> (refuse the
+  new publish outright, returned to the publisher as a basic.nack if publisher confirms are in use, favoring
+  never silently losing anything already accepted), or <b>reject-publish-dlx</b> (reject the publish exactly like
+  reject-publish, but additionally route the rejected message to the queue's configured dead-letter exchange so it
+  isn't simply lost, just redirected). §15's simulator lets you flip between all three and watch which messages
+  survive.</p>
+
+  <div class="callout deep">
+    <div class="co-t">MEMORY COST PER QUEUE PROCESS</div>
+    <p>Even an empty, idle classic queue costs something: the baseline <code>gen_server2</code> process heap
+    (low kilobytes, per chapter 1's arithmetic), plus <code>rabbit_variable_queue</code>'s own bookkeeping
+    structures — priority-ordered pending-ack tracking, consumer state, policy caches — which scale with the
+    number of messages currently resident as alpha or beta, not with the (potentially enormous) count of messages
+    parked in delta. This is precisely why RabbitMQ's operational guidance is "avoid declaring tens of thousands
+    of mostly-idle queues" — the marginal RAM cost of one more queue is small, but it is not zero, and it multiplies
+    by every queue you declare regardless of whether it ever carries traffic.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same "hold my backlog" problem, nine ways</h2>
+  <p>Every message-holding system makes a call about where messages live, how ordering is tracked, and what
+  happens when a backlog outgrows RAM. Read the spread as evidence that classic queues occupy a specific, deliberate
+  point in that space — not the only point, and not always the right one (chapter 7's quorum queues exist
+  precisely because classic queues make a different, weaker replication trade):</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>STORAGE MODEL</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>RabbitMQ classic queue</td><td>Per-queue index + node-wide ref-counted message store; alpha/beta/gamma/delta paging</td>
+      <td><span class="pill g">free total ordering</span> <span class="pill g">graceful RAM→disk degradation</span> <span class="pill g">small messages avoid a 2nd file</span></td>
+      <td><span class="pill b">one process = one-core throughput ceiling</span> <span class="pill y">no built-in replication</span></td></tr>
+    <tr><td>RabbitMQ quorum queue (ch. 7)</td><td>Raft log via the <code>ra</code> library; replicated state machine</td>
+      <td><span class="pill g">majority-quorum durability</span> <span class="pill g">leader election on partition</span></td>
+      <td><span class="pill b">replication write cost per message</span> <span class="pill y">still one leader process per queue</span></td></tr>
+    <tr><td>Apache Kafka</td><td>Append-only log segments per partition; sequential disk + page cache</td>
+      <td><span class="pill g">very high sequential throughput</span> <span class="pill g">replay from any offset</span></td>
+      <td><span class="pill b">no per-message ack/requeue semantics</span> <span class="pill b">consumer tracks its own position</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>Segmented ledgers on a separate storage tier (Apache BookKeeper)</td>
+      <td><span class="pill g">broker and storage scale independently</span> <span class="pill g">tiered/cold storage offload</span></td>
+      <td><span class="pill y">extra network hop to bookies</span> <span class="pill b">two systems to operate and reason about</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Per-stream file store with its own retention/replay policy</td>
+      <td><span class="pill g">simple operational model</span> <span class="pill g">low overhead per stream</span></td>
+      <td><span class="pill b">less granular per-message state tracking than AMQP acks</span></td></tr>
+    <tr><td>Amazon SQS</td><td>Fully managed, opaque, replicated storage behind an HTTP API</td>
+      <td><span class="pill g">zero storage-engine operational burden</span></td>
+      <td><span class="pill b">no visibility into or control over RAM/disk residency at all</span> <span class="pill y">standard queues: at-least-once, best-effort order</span></td></tr>
+    <tr><td>ActiveMQ / Artemis</td><td>KahaDB or a paged journal store, roughly analogous index+journal split</td>
+      <td><span class="pill g">similar paging philosophy to classic queues</span> <span class="pill g">multi-protocol (AMQP 1.0, OpenWire, MQTT)</span></td>
+      <td><span class="pill y">journal compaction has its own well-known operational tuning surface</span></td></tr>
+    <tr><td>Redis Streams</td><td>In-memory radix-tree-backed log, optionally persisted via RDB/AOF snapshotting</td>
+      <td><span class="pill g">extremely low latency while it fits in RAM</span></td>
+      <td><span class="pill b">RAM is the primary storage tier, not an optimization over disk</span> <span class="pill y">persistence is a snapshot/AOF afterthought, not a native paging engine</span></td></tr>
+    <tr><td>Other AMQP 0-9-1 brokers (Apache Qpid C++/Java)</td><td>Broker-specific journal and store implementations behind the same wire protocol</td>
+      <td><span class="pill g">wire-compatible with the same clients (ch. 1's whole point)</span></td>
+      <td><span class="pill y">internal storage engine — and its paging behavior — is not part of the AMQP spec at all, so it varies broker to broker</span></td></tr>
+  </table>
+  <p>Read this as proof-by-exhaustion of a pattern chapter 1 already named: every system trades RAM residency,
+  ordering strength, and replication guarantees against each other, and the storage engine is always where that
+  trade gets physically implemented. Classic queues bet on "cheap, ordered, single-node, gracefully-degrading"
+  for the workload this course keeps returning to — task queues, RPC-shaped request/reply, moderate-depth
+  buffering — and hand off to quorum queues (ch. 7) the moment real replication matters more than that simplicity.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Numbers you can predict from the design alone</h2>
+  <p>From §7's architecture and §8's state machine, several performance properties follow directly, without
+  needing to benchmark anything first:</p>
+  <ul class="plain">
+    <li><b>Queue index lookup/append is O(1),</b> not O(log n): the fixed 16,384-entry segment size makes a
+      sequence ID's file and offset a direct computation (division and remainder), never a search through an
+      index-of-indexes the way a B-tree-backed structure would need.</li>
+    <li><b>Message-store lookup is O(1) average-case:</b> an in-RAM ETS hash table maps message ID to
+      <code>{file, offset, ref_count}</code>, the same complexity class as any hash-table-backed cache.</li>
+    <li><b>Per-queue-process RAM scales with alpha+beta count, not total backlog:</b> messages parked in delta
+      contribute a near-constant amortized cost per contiguous range, which is precisely why a queue with millions
+      of delta-resident messages doesn't necessarily cost millions of times more RAM than an empty one — bounded
+      growth is the entire point of pushing messages toward delta under pressure.</li>
+    <li><b>One reduction budget, one queue:</b> chapter 1's ~2,000-reduction scheduling slice applies here exactly
+      as it does to any BEAM process — a queue handling a very large batched ack still gets forcibly rotated off
+      its scheduler if it runs long, but the work itself is still fundamentally serialized through that one
+      process; there is no parallel path through <code>rabbit_amqqueue_process</code>, ever.</li>
+    <li><b>Disk access pattern is mostly sequential, by design:</b> both <code>rabbit_queue_index</code> segment
+      writes and <code>rabbit_msg_store</code> writes are append-oriented, which is exactly the access pattern
+      spinning and solid-state disks both handle best. Reads for a beta/gamma/delta message can be less
+      predictable, but the message store keeps a small in-RAM cache of just-written entries specifically to avoid
+      an immediate disk round-trip for the extremely common "publish, then deliver almost immediately" case.</li>
+  </ul>
+  <p>The chart below makes §8's embedding threshold concrete: how many disk writes does one publish cost, as a
+  function of message size, and how does that change if the queue is running in lazy/CQv2-eager mode versus its
+  RAM-first alpha starting point?</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Disk writes per publish vs message size, across the embedding threshold</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>message size</label><input type="range" id="perf-size" min="100" max="10000" value="2000" step="100"><span class="val" id="perf-size-val">2.0 KB</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:#4ade80">━</span> alpha-first (default RAM-first classic queue)</span>
+        <span><span style="color:#ff9f43">━</span> lazy / CQv2-eager (writes disk immediately)</span>
+        <span><span style="color:var(--warn)">┆</span> embed threshold (4096 B) · your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve models <i>write count</i>, the clearest way to see the embedding threshold's effect, not absolute
+    latency (which depends heavily on disk hardware, fsync policy, and batching). Below 4096 bytes, a paged message
+    costs one write (the index segment record, body embedded inline); at or above it, a paged message costs two
+    (an index reference plus a separate message-store write). An alpha-resident message costs zero synchronous
+    reads on the delivery path regardless of size — the step only matters once a message has actually paged out of
+    alpha, which is exactly why lazy/CQv2-eager mode — which pages essentially everything immediately — feels the
+    threshold's effect on nearly every message, while a healthy, RAM-first queue may rarely feel it at all.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three ways this design meets — and sometimes loses to — reality</h2>
+
+  <h3>Story 1: the slow-consumer-to-OOM pattern that motivated lazy queues in the first place</h3>
+  <p>Lazy queues were introduced specifically because operators kept hitting the same shape of incident: a
+  consumer falls behind (a deploy, a downstream dependency slows down, a bug causes silent message piling), and a
+  classic queue that defaults to keeping everything RAM-resident as alpha grows unboundedly until the node's memory
+  watermark — or, in the worst cases, the OS's OOM killer — steps in. The RabbitMQ team's own guidance from that
+  era was blunt about the trade: if you know a queue is going to buffer a large, bursty backlog by design (an
+  import job, a batch pipeline, anything where "the consumer is behind" is the expected steady state rather than an
+  incident), tell the queue to behave that way up front with <code>x-queue-mode=lazy</code> instead of letting it
+  discover the problem reactively under pressure.</p>
+
+  <h3>Story 2: the 3.12 default change, and what it implies about the ecosystem's queue depths</h3>
+  <p>RabbitMQ making classic queues eager-to-disk by default in <b>3.12</b>, via the CQv2 storage format, is a
+  quiet but telling admission: enough production traffic hit §4's failure mode, across enough different operators,
+  that the safer default stopped being "optimize for the common case where nothing goes wrong" and became "don't
+  let the worst case be an OOM." The trade every classic-queue user now accepts by default — a small latency cost
+  on messages that would previously have stayed alpha — is treated as cheaper than the tail risk it removes.
+  That's a genuinely different philosophy from the original 2007-era design, and it's a direct line back to §2's
+  history: RAM-first sounded obviously faster right up until it wasn't.</p>
+
+  <h3>Story 3: fan-out topologies and the message-store reference count in practice</h3>
+  <p>A widely observed operational pattern in RabbitMQ deployments that lean heavily on fanout or topic exchanges
+  with many bound queues: because <code>rabbit_msg_store</code> reference-counts a shared body across every queue
+  that received a copy, a body is only actually deleted from disk once <i>every</i> referencing queue has
+  acknowledged its copy (or otherwise discarded it, e.g. via TTL or <code>x-max-length</code> overflow). A single
+  slow or stuck consumer on just one of ten fanned-out queues can keep a message-store file's reference count above
+  zero indefinitely, preventing that file from being reclaimed even though nine of the ten queues have long since
+  moved on — a subtle, easy-to-miss coupling between one lagging queue and disk usage that looks, at a glance, like
+  every queue's problem. Chapter 11's disk-layout material covers the file compaction mechanics this interacts with
+  in full.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the process-per-queue model at a whiteboard?</h2>
+  <p>Think before revealing — this is Staff-interview depth, and the kind of question a rabbitmq-users deep-dive
+  thread would expect a precise answer to.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: where the state machine actually lives</h2>
+  <p>Where this chapter's concepts physically live in the codebase. Files marked
+  <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">deps/rabbit/src/</span></div>
+<div>├── <span class="dir">queue/</span></div>
+<div>│   ├── <span class="fhl">● rabbit_amqqueue_process.erl</span> <span class="fnote">— gen_server2; one process per classic queue; AMQP-level policy (max-length, consumers, acks)</span></div>
+<div>│   ├── <span class="fhl">● rabbit_variable_queue.erl</span> <span class="fnote">— the alpha/beta/gamma/delta state machine; not a process, a data structure this process owns</span></div>
+<div>│   ├── <span class="fhl">● rabbit_queue_index.erl</span> <span class="fnote">— per-queue segment files; publish/deliver/ack records; embedding logic</span></div>
+<div>│   ├── rabbit_amqqueue.erl <span class="fnote">— the public API module other parts of the broker call into (lookup, declare, delete)</span></div>
+<div>│   └── rabbit_amqqueue_sup.erl <span class="fnote">— one_for_one supervisor over every queue process on the node</span></div>
+<div>├── <span class="dir">msg_store/</span></div>
+<div>│   ├── <span class="fhl">● rabbit_msg_store.erl</span> <span class="fnote">— node-wide, content-addressed, reference-counted message body storage</span></div>
+<div>│   └── rabbit_msg_store_gc.erl <span class="fnote">— background compaction of message-store files once their live-data ratio drops (ch. 11)</span></div>
+<div>├── <span class="dir">policy/</span></div>
+<div>│   └── rabbit_policy.erl <span class="fnote">— resolves x-max-length, x-overflow, x-queue-mode from queue args + operator policies</span></div>
+<div>└── credit_flow.erl <span class="fnote">— internal channel↔queue backpressure signaling, distinct from AMQP consumer prefetch (ch. 5)</span></div>
+  </div></div>
+
+  <p>Simplified but structurally faithful Erlang, in the shapes RabbitMQ actually uses. First, the process handling
+  a publish and delegating storage entirely to the variable queue:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_amqqueue_process.erl — handling a delivered message, simplified</span></div>
+    <pre><span class="f">handle_cast</span>({deliver, Delivery = #delivery{message = Msg}}, State = #q{variable_queue = VQ}) -&gt;
+    <span class="c">%% The process itself knows almost nothing about WHERE this message</span>
+    <span class="c">%% will physically live. It hands the decision entirely to the state</span>
+    <span class="c">%% machine module — this call is a plain function call, not a message</span>
+    <span class="c">%% send, because rabbit_variable_queue is a library, not a process.</span>
+    VQ1 = rabbit_variable_queue:publish(Msg, Delivery#delivery.msg_seq_no, VQ),
+    State1 = maybe_enforce_max_length(State#q{variable_queue = VQ1}),
+    {noreply, State1}.
+
+<span class="f">maybe_enforce_max_length</span>(State = #q{max_length = undefined}) -&gt; State;
+<span class="f">maybe_enforce_max_length</span>(State = #q{max_length = Max, overflow = Overflow, variable_queue = VQ}) -&gt;
+    <span class="k">case</span> rabbit_variable_queue:len(VQ) &gt; Max <span class="k">of</span>
+        <span class="k">true</span>  -&gt; enforce_overflow(Overflow, State);   <span class="c">%% drop_head | reject_publish | reject_publish_dlx</span>
+        <span class="k">false</span> -&gt; State
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <p>Second, the shape of a state transition inside <code>rabbit_variable_queue</code> — this is what "paging"
+  looks like as code, simplified to the decision logic:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_variable_queue.erl — alpha-&gt;beta transition under pressure, simplified</span></div>
+    <pre><span class="f">maybe_page_out</span>(VQ = #vqstate{ram_msg_count = RamCount, target_ram_count = Target})
+    <span class="k">when</span> RamCount &gt; Target -&gt;
+    <span class="c">%% Pull the OLDEST alpha entry — least likely to be wanted next —</span>
+    <span class="c">%% and push its body out of the process heap.</span>
+    {{MsgId, Msg}, VQ1} = pop_oldest_alpha(VQ),
+    Ref = <span class="k">case</span> byte_size(Msg#basic_message.content) &lt; VQ1#vqstate.embed_below <span class="k">of</span>
+        <span class="k">true</span>  -&gt; rabbit_queue_index:embed(MsgId, Msg, VQ1#vqstate.index_state);      <span class="c">%% one write</span>
+        <span class="k">false</span> -&gt; rabbit_msg_store:write(MsgId, Msg, VQ1#vqstate.msg_store_client)   <span class="c">%% index ref + store write</span>
+    <span class="k">end</span>,
+    VQ2 = record_as_beta(MsgId, Ref, VQ1),
+    maybe_page_out(VQ2);  <span class="c">%% keep going while still over target</span>
+<span class="f">maybe_page_out</span>(VQ) -&gt; VQ.</pre>
+  </div>
+
+  <p>Third, why the segment size is a compile-time constant, not a tunable — the whole point is that no lookup
+  structure is needed:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Erlang</span><span>rabbit_queue_index.erl — segment addressing, simplified</span></div>
+    <pre><span class="k">-define</span>(SEGMENT_ENTRY_COUNT, <span class="n">16384</span>).
+
+<span class="f">segment_and_offset</span>(SeqId) -&gt;
+    <span class="c">%% O(1): pure arithmetic, no tree walk, no index-of-indexes.</span>
+    {SeqId <span class="k">div</span> ?SEGMENT_ENTRY_COUNT, SeqId <span class="k">rem</span> ?SEGMENT_ENTRY_COUNT}.
+
+<span class="f">write_entry</span>(SeqId, Entry, State) -&gt;
+    {Segment, Offset} = segment_and_offset(SeqId),
+    File = segment_file_name(Segment),   <span class="c">%% e.g. ".../3.rdq" for segment 3</span>
+    append_at_offset(File, Offset, Entry, State).</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Make the hot decision arithmetic, not structural.</b> A fixed segment size turns "where does this
+    entry live" into division and remainder instead of a B-tree traversal — the same instinct behind any
+    fixed-width bucket scheme, applied to an append-only log instead of a hash table. <b>2. Keep the state machine
+    a data structure, not a process.</b> <code>rabbit_variable_queue</code> is plain Erlang data transformed by
+    plain functions — it never needs its own mailbox or supervision entry because it has no independent lifecycle;
+    it lives and dies with the one <code>rabbit_amqqueue_process</code> that owns it, which keeps testing and
+    reasoning about it far simpler than a second process would. <b>3. Decide storage destination by a threshold,
+    not a policy the operator must set per message.</b> <code>queue_index_embed_msgs_below</code> is evaluated
+    automatically per message at the moment it pages — nobody has to annotate individual publishes as "small" or
+    "large"; the size check does that work once, cheaply, exactly when it's needed.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> — read them, they encode the
+  chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — paging a message under sustained memory pressure</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click these events in the order they'd actually occur for one message as its queue comes under sustained memory pressure, then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The queue X-ray: publish, consume, and watch messages migrate</h2>
+  <p>Drive publish and consume rates independently and watch the rendered queue's messages color-code themselves
+  by storage state as backlog grows. Cross the message-size slider over the embedding threshold and watch newly
+  paged messages switch which store they land in. Cap the queue with <code>x-max-length</code> and try all three
+  overflow behaviors. Then open the throughput panel and add consumers to a single hot queue — watch throughput
+  refuse to climb past one process's ceiling, until you shard.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">rabbit_amqqueue_process — queue X-ray, live</span><span class="w-sub" id="qx-phase">RUNNING</span></div>
+    <div class="w-body">
+      <div class="qx-wrap">
+        <div class="qx-stage">
+          <div class="qx-lane-label"><span>MEMORY WATERMARK</span><span id="qx-wm-v">0%</span></div>
+          <div class="qx-watermark"><div class="wm-fill" id="qx-wm-fill"></div><div class="wm-mark" style="left:70%"></div></div>
+
+          <div class="qx-lane-label"><span>QUEUE — HEAD (oldest) → TAIL (newest), FIFO</span><span id="qx-total">0 messages</span></div>
+          <div class="qx-lane" id="qx-lane"></div>
+
+          <div class="qx-legend" id="qx-legend"></div>
+
+          <div class="qx-counters">
+            <div class="scounter"><div class="cv" id="qx-ram-v">0 KB</div><div class="cl">ram bytes</div></div>
+            <div class="scounter"><div class="cv" id="qx-disk-v">0 KB</div><div class="cl">disk bytes</div></div>
+            <div class="scounter"><div class="cv" id="qx-mbox-v">0</div><div class="cl">mailbox depth</div></div>
+            <div class="scounter"><div class="cv" id="qx-len-v">0</div><div class="cl">messages ready</div></div>
+          </div>
+
+          <div class="qx-tpanel">
+            <div class="qx-lane-label"><span>THROUGHPUT — ONE HOT QUEUE, ADDING CONSUMERS</span><span id="qx-through-v">0 msg/s</span></div>
+            <div class="slider-row">
+              <label>consumers on this queue</label>
+              <input type="range" id="qx-consumers" min="1" max="16" value="1" step="1">
+              <span class="val" id="qx-consumers-val">1</span>
+            </div>
+            <div class="toggle-row">
+              <button class="chip" id="qx-shard-toggle">shard into N queues: OFF</button>
+              <input type="range" id="qx-shard-n" min="2" max="16" value="4" step="1" style="max-width:120px;display:none">
+              <span class="val" id="qx-shard-n-val" style="display:none">4 shards</span>
+            </div>
+            <div class="chartbox"><canvas id="qx-tchart" width="740" height="200"></canvas></div>
+            <div class="chart-legend">
+              <span><span style="color:#ff9f43">━</span> effective throughput</span>
+              <span><span style="color:var(--dim)">┅</span> one-process ceiling</span>
+            </div>
+            <p style="font-size:12px;color:var(--muted);margin-top:8px" id="qx-through-note"></p>
+          </div>
+        </div>
+
+        <div class="qx-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">RATES</div>
+            <div class="slider-row"><label>publish rate</label><input type="range" id="qx-pubrate" min="0" max="200" value="60" step="5"><span class="val" id="qx-pubrate-val">60/s</span></div>
+            <div class="slider-row"><label>consume rate</label><input type="range" id="qx-conrate" min="0" max="200" value="40" step="5"><span class="val" id="qx-conrate-val">40/s</span></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">MESSAGE SIZE</div>
+            <div class="slider-row"><label>avg body size</label><input type="range" id="qx-msgsize" min="0" max="12" value="2" step="1"><span class="val" id="qx-msgsize-val">1 KB</span></div>
+            <div style="font-family:var(--mono);font-size:10.5px;color:var(--dim)" id="qx-embed-note">below 4096 B → embedded in queue_index</div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">x-max-length</div>
+            <div class="slider-row"><label>cap</label><input type="range" id="qx-maxlen" min="0" max="400" value="0" step="10"><span class="val" id="qx-maxlen-val">unlimited</span></div>
+            <div class="toggle-row">
+              <button class="chip on" id="qx-of-drophead">drop-head</button>
+              <button class="chip" id="qx-of-reject">reject-publish</button>
+              <button class="chip" id="qx-of-rejectdlx">reject-publish-dlx</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">QUEUE MODE</div>
+            <div class="toggle-row">
+              <button class="chip on" id="qx-mode-default">default (RAM-first)</button>
+              <button class="chip" id="qx-mode-lazy">lazy / CQv2-eager</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="qx-cnt-pub">0</div><div class="cl">published</div></div>
+            <div class="scounter"><div class="cv" id="qx-cnt-con">0</div><div class="cl">consumed</div></div>
+            <div class="scounter"><div class="cv" id="qx-cnt-drop" style="color:var(--bad)">0</div><div class="cl">dropped/rejected</div></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="btns">
+              <button class="btn" id="qx-pause">⏸ pause</button>
+              <button class="btn" id="qx-reset">↺ reset</button>
+            </div>
+          </div>
+          <div class="slog" id="qx-log" style="height:150px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Set publish rate well above consume rate and watch the queue grow, the watermark bar climb, and
+    the oldest dots turn from green (alpha) through blue (beta), amber (gamma), to grey (delta). <b>2.</b> Drag
+    message size across 4096 B and watch the small pin-dot indicator (embedded in the index) disappear from newly
+    paged messages once they're large enough to need the separate message store. <b>3.</b> Set a low
+    <code>x-max-length</code>, keep publishing faster than consuming, and compare drop-head (oldest silently
+    vanish) against reject-publish (new publishes bounce, dropped/rejected counter climbs instead) and
+    reject-publish-dlx (same rejection, logged as dead-lettered). <b>4.</b> Switch queue mode to lazy/CQv2-eager
+    and watch messages skip alpha almost entirely, going straight toward beta/gamma even with rates balanced.
+    <b>5.</b> In the throughput panel, drag consumers from 1 to 16 and watch the line stay flat at the ceiling —
+    then flip "shard into N queues" and watch it scale instead.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 5: three questions, no options</h2>
+  <p>No multiple choice here. Form a full answer in your head, then reveal. If a reveal surprises you, re-run the
+  relevant simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 04 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now explain why a classic queue is one process with a
+    mailbox and no locks, trace a message through alpha/beta/gamma/delta as memory pressure changes, and predict
+    when a body gets embedded in the queue index versus written to the shared message store. Chapter 5 asks the
+    question this chapter's "consume rate" slider glossed over: how does a consumer actually tell the queue how
+    much work it's willing to take at once, and what stops a fast publisher from overwhelming a slow consumer
+    entirely?</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="rmq-05.html" style="text-decoration:none;display:inline-flex;align-items:center">RMQ-05: Consumers, Prefetch & Credit Flow →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2007", l:"the first queue", d:"<b>RabbitMQ 1.0's original queue implementation</b> is close to §3's naive strawman: an in-memory FIFO per queue process, durability handled by writing persistent messages to disk but with no deliberate RAM-vs-disk state machine. It works well for shallow, fast-draining queues and poorly the moment a backlog grows past available memory." },
+  { yr:"~2010", l:"rabbit_variable_queue arrives", d:"<b>The queue storage engine is rewritten</b> around a new module, <code>rabbit_variable_queue</code>, introducing the alpha/beta/gamma/delta state machine this chapter covers in depth (§8). Messages can now page from RAM toward disk automatically as memory pressure rises, instead of a queue either fitting entirely in RAM or not existing." },
+  { yr:"2016 · 3.6", l:"lazy queues", d:"<b><code>x-queue-mode=lazy</code></b> ships as an explicit, opt-in policy: instead of starting every message as alpha and paging reactively, a lazy queue writes messages to disk essentially immediately, trading best-case latency for a RAM footprint that stays small regardless of backlog depth — purpose-built for intentionally deep, bursty, or batch-shaped queues." },
+  { yr:"2019 · 3.8", l:"quorum queues", d:"<b>Quorum queues</b> ship as a genuinely different queue type built on the Raft-based <code>ra</code> library (ch. 7) — not a revision of the classic queue's storage engine, but an alternative to it entirely, for workloads where replicated durability matters more than the classic queue's simplicity." },
+  { yr:"2021 · 3.9", l:"mirrored classic queues deprecated", d:"Classic queue <i>mirroring</i> (replicating a classic queue's full state to follower nodes) is deprecated in favor of quorum queues — a reminder that this chapter's process-per-queue design was never intended to solve cross-node replication on its own; mirroring bolted that on afterward, imperfectly (ch. 1's GitHub 2014 story)." },
+  { yr:"2023 · 3.12", l:"classic queue version 2 (CQv2), lazy by default", d:"<b>RabbitMQ 3.12</b> introduces a new on-disk layout, <b>CQv2</b>, and makes classic queues behave lazily by default — eager-to-disk, no <code>x-queue-mode</code> declaration required. This is a direct policy response to §4's failure mode: the old RAM-first default let a slow-consumer incident become an out-of-memory incident too often across too many production deployments." },
+  { yr:"2024 · 4.0", l:"mirrored classic queues removed", d:"Classic queue mirroring is removed entirely — replicated durability is now exclusively quorum queues' job (ch. 7), leaving the classic queue's storage engine (this chapter) focused purely on being the best possible single-process, single-node buffer, without also trying to be a replication mechanism." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[1].d;
+
+/* ============================================================
+   2. DECK: naive RAM-only queue under a slow consumer (§3)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  const bars = (n, hot) => {
+    let s = `<div style="display:flex;gap:2px;align-items:flex-end;height:60px;margin-top:8px">`;
+    for (let i=0;i<24;i++){
+      const h = Math.min(58, 4 + i*(n/24));
+      s += `<div style="flex:1;background:${hot && i>18 ? '#f25c54' : '#ff9f43'};opacity:${0.35+i/24*0.65};height:${h}px;border-radius:2px 2px 0 0"></div>`;
+    }
+    return s+"</div>";
+  };
+  stepper("deckNaive", [
+    { stage: wrap(box("QUEUE STATE (all in one process's heap)", "healthy: a few hundred small messages, consumer keeps pace" + bars(6,false))),
+      cap:`<b>Normal operation.</b> Publish and consume rates roughly match. The naive in-memory list stays shallow — this is the case the naive design handles perfectly, and why it looked like the right answer for years.` },
+    { stage: wrap(box("CONSUMER GOES OFFLINE (a deploy, a downstream outage)", "publisher has no idea, keeps publishing at the same rate" + bars(14,false))),
+      cap:`<b>The consumer stops pulling messages, but nothing tells the producer to slow down.</b> AMQP's decoupling (ch. 1) — the producer never needing to know who's listening — means it also never learns whether anyone is currently able to keep up.` },
+    { stage: wrap(box("BACKLOG GROWS, ENTIRELY IN RAM", "every message: full content, still in this one process's heap" + bars(20,true))),
+      cap:`<b>Hours later: millions of messages, all resident.</b> At 2 KB average, 5 million messages is 10 GB — in one process's heap, with nothing evicting anything, because this design has no concept of "page this out."` },
+    { stage: wrap(box("VERDICT", cell("node vm_memory_high_watermark trips (default 40% of RAM)","#f25c54","rgba(242,92,84,.1)") + cell("ALL publishers on the node get blocked — not just this queue's","#f25c54","rgba(242,92,84,.1)") + cell("worst case: OOM kill of the whole Erlang VM","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>A local problem (one slow consumer) becomes a node-wide incident.</b> The fix can't be "hope consumers never fall behind" — it has to be a queue that sheds RAM automatically, gracefully, before the node has to intervene. §5 derives exactly that.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: deriving index+store from the fan-out constraint (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckCandidates", [
+    { stage: wrap(box("SETUP", cell("one 1 MB message, published to a FANOUT exchange","#ff9f43","rgba(255,159,67,.08)") + cell("bound to 10 queues","#ff9f43","rgba(255,159,67,.08)"))),
+      cap:`<b>One publish, ten queues (ch. 3's fanout).</b> The exchange has already decided all ten need a copy. The question this deck answers: does that decision have to cost 10× the disk?` },
+    { stage: wrap(box("IF EACH QUEUE STORES ITS OWN FULL COPY", cell("queue 1: 1 MB body","#f25c54") + cell("queue 2: 1 MB body","#f25c54") + cell("… × 10 queues","#f25c54") + cell("= 10 MB on disk for one published message","#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>The naive per-queue-file design (candidate B).</b> Correct, but the exchange's routing decision gets multiplied into real storage cost on the way down — exactly the kind of hidden multiplier a broker is supposed to eliminate, not reintroduce.` },
+    { stage: wrap(box("SPLIT: SMALL PER-QUEUE INDEX", cell("queue 1 index: seq 501 → msg_id X7f2","#60a5fa") + cell("queue 2 index: seq 88 → msg_id X7f2","#60a5fa") + cell("… all 10 point at the SAME id","#60a5fa")), box("ONE SHARED, REF-COUNTED STORE", cell("msg_id X7f2: 1 MB body, ref_count = 10","#4ade80","rgba(74,222,128,.08)"))),
+      cap:`<b>Candidate C: index and store are different subsystems.</b> Ten small index entries, each just a pointer; one 1 MB body, written once, reference-counted at 10.` },
+    { stage: wrap(box("RESULT", cell("disk cost: 1 MB, not 10 MB","#4ade80") + cell("body deleted only once ALL 10 refs are gone","#4ade80") + cell("this is rabbit_queue_index + rabbit_msg_store, exactly","#ff9f43"))),
+      cap:`<b>The fan-out cost problem is solved structurally, not avoided.</b> This is the real reason RabbitMQ has two storage subsystems instead of one — derived from routing semantics (ch. 3), not chosen for its own sake.` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  proc:{ n:"rabbit_amqqueue_process", f:"deps/rabbit/src/rabbit_amqqueue_process.erl", r:"One gen_server2 process per classic queue. Owns AMQP-level policy — consumer registration, ack tracking, x-max-length/overflow enforcement — and delegates all physical storage decisions to rabbit_variable_queue.", l:"Started when the queue is declared; supervised by rabbit_amqqueue_sup with a one_for_one restart strategy.", d:"A crash here is isolated to this one queue (ch. 1's isolation guarantee) — the supervisor restarts a fresh process, which recovers durable state by replaying the queue index and cross-referencing the message store." },
+  mailbox:{ n:"the process mailbox", f:"BEAM runtime primitive, not RabbitMQ code", r:"Every publish, delivery, ack, and consumer operation arrives here as an asynchronous message and is handled strictly in arrival order — the mechanism that makes total ordering free (§1) and the earliest signal of backpressure.", l:"Exists for the lifetime of the process; grows when this queue can't keep up with its inbound message rate.", d:"An unboundedly growing mailbox is memory RabbitMQ's usual messages_ready/messages_unacknowledged stats don't directly show — it's a distinct diagnostic surface, visible via per-process stats." },
+  vq:{ n:"rabbit_variable_queue", f:"deps/rabbit/src/rabbit_variable_queue.erl", r:"Not a process — a plain Erlang data structure and a set of pure-ish functions the queue process calls into. Implements the alpha/beta/gamma/delta state machine (§8) that decides how much of the queue's backlog currently lives in RAM.", l:"Lives and dies with the one rabbit_amqqueue_process that owns it; has no independent supervision entry.", d:"Because it's a data structure, not a process, there's nothing here to 'crash' independently — any bug surfaces as a crash of the owning queue process, recovered the same way." },
+  index:{ n:"rabbit_queue_index", f:"deps/rabbit/src/rabbit_queue_index.erl", r:"Per-queue, segment-file-backed index of publish/deliver/ack records. Fixed 16,384-entry segments make lookup O(1) arithmetic. Embeds message bodies below queue_index_embed_msgs_below (4096 B default) directly in segment records.", l:"One index per queue, created alongside it; segment files persist on disk for durable queues across broker restarts.", d:"On queue-process restart, the index is replayed from disk to rebuild in-memory ordering state — this is what makes a durable classic queue's messages survive a broker restart at all." },
+  store:{ n:"rabbit_msg_store", f:"deps/rabbit/src/rabbit_msg_store.erl", r:"Node-wide (one for persistent messages, one for transient), content-addressed by message ID, reference-counted so N queues bound to the same fan-out publish share one on-disk copy of a message body.", l:"Lives for the node's lifetime; individual message records are garbage-collected once their reference count reaches zero and background compaction reclaims the file (ch. 11).", d:"Not tied to any one queue's lifecycle — deleting a queue decrements reference counts for its messages but the store itself, and any bodies still referenced by other queues, persist untouched." },
+  sup:{ n:"rabbit_amqqueue_sup", f:"deps/rabbit/src/rabbit_amqqueue_sup.erl", r:"The one_for_one supervisor over every classic queue process on the node — exactly chapter 1's supervision philosophy applied here: one queue's crash restarts only that queue.", l:"Started as part of the node's boot sequence; lives for the node's entire lifetime.", d:"If this supervisor itself were killed, no crashed queue process on the node could be restarted — mirroring chapter 1's root-supervisor failure mode exactly, just scoped to queues specifically." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON FAILURE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("vq");
+
+/* ============================================================
+   5. DECK: alpha -> beta -> gamma -> delta (§8)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckStates", [
+    { stage: wrap(box("ALPHA", cell("content: IN RAM","#4ade80","rgba(74,222,128,.08)") + cell("index entry: IN RAM","#4ade80","rgba(74,222,128,.08)") + cell("delivery cost: zero disk reads","#4ade80"))),
+      cap:`<b>Every message starts here.</b> Fastest possible state. A queue whose consumer keeps pace may never move a message out of alpha at all — paging only happens under actual memory pressure.` },
+    { stage: wrap(box("BETA", cell("content: pushed to disk (embedded or msg_store)","#60a5fa","rgba(96,165,250,.08)") + cell("index entry: still IN RAM","#60a5fa","rgba(96,165,250,.08)") + cell("delivery cost: one disk read for the body","#60a5fa"))),
+      cap:`<b>First transition, oldest messages first.</b> The body leaves RAM; the queue still knows exactly where this message sits in its ordering without touching disk for that.` },
+    { stage: wrap(box("GAMMA", cell("content: on disk","#ffd166","rgba(255,209,102,.1)") + cell("index entry: ALSO flushed to disk now","#ffd166","rgba(255,209,102,.1)") + cell("RAM holds only a compact summary","#ffd166"))),
+      cap:`<b>Sustained pressure pushes further.</b> Now both body and index record are on disk; RAM is bookkeeping, not the entries themselves — a meaningfully smaller footprint per message than beta.` },
+    { stage: wrap(box("DELTA", cell("content: on disk","#5b6475") + cell("index: on disk, as a RANGE, not per-entry","#5b6475") + cell("RAM cost: amortized to a handful of bytes per contiguous run","#5b6475","rgba(91,100,117,.15)"))),
+      cap:`<b>The cheapest possible state.</b> A single compact record can describe thousands of contiguous sequence IDs — this is why a queue with millions of delta-resident messages doesn't cost millions of times an empty queue's RAM.` },
+    { stage: wrap(box("THE RULE", cell("transitions only ever move OLDEST-first, alpha → delta","#ff9f43") + cell("never delta → alpha automatically — consuming reads back from disk instead","#ff9f43") + cell("a queue with a keeping-pace consumer may live entirely in alpha, forever","#ff9f43"))),
+      cap:`<b>Paging is reactive and local to each queue.</b> No global scheduler decides in advance — each rabbit_amqqueue_process watches its own footprint against the node's watermark and pages itself, independently of every other queue.` }
+  ]);
+})();
+
+/* ============================================================
+   6. EMBED THRESHOLD SLIDER (§8b)
+   ============================================================ */
+(function(){
+  const SIZES = [64,128,256,512,1024,1536,2048,3072,4096,5120,6144,8192,12288];
+  const fmt = b => b >= 1024 ? (b/1024).toFixed(b%1024?1:0)+" KB" : b+" B";
+  function render(){
+    const idx = +el("embed-size").value;
+    const size = SIZES[idx];
+    el("embed-size-val").textContent = fmt(size);
+    const embedded = size < 4096;
+    el("embed-viz").innerHTML = `
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch">
+        <div style="flex:1;min-width:220px;border:1px solid ${embedded?'var(--pg)':'var(--border)'};background:${embedded?'var(--pg-dim)':'var(--bg-2)'};border-radius:11px;padding:12px">
+          <div style="font-family:var(--mono);font-size:9.5px;color:${embedded?'var(--pg)':'var(--dim)'};letter-spacing:.08em">rabbit_queue_index segment record</div>
+          <div style="font-family:var(--mono);font-size:11.5px;margin-top:6px;color:#c6cddb">seq · publish/deliver/ack flags${embedded?' · <b style="color:var(--pg)">BODY EMBEDDED HERE</b>':' · ref → msg_store'}</div>
+        </div>
+        <div style="flex:1;min-width:220px;border:1px solid ${!embedded?'var(--pg)':'var(--border)'};background:${!embedded?'var(--pg-dim)':'var(--bg-2)'};border-radius:11px;padding:12px">
+          <div style="font-family:var(--mono);font-size:9.5px;color:${!embedded?'var(--pg)':'var(--dim)'};letter-spacing:.08em">rabbit_msg_store record</div>
+          <div style="font-family:var(--mono);font-size:11.5px;margin-top:6px;color:#c6cddb">${!embedded?'<b style="color:var(--pg)">BODY WRITTEN HERE</b> · msg_id → {file, offset, ref_count}':'(no separate write needed — body rode along with the index record)'}</div>
+        </div>
+      </div>`;
+    el("embed-note").innerHTML = embedded
+      ? `At <b style="color:var(--pg)">${fmt(size)}</b> (below the 4096 B <code>queue_index_embed_msgs_below</code> default), a paged message costs <b>one write</b> — the body travels inline with its index record. No second file, no second seek.`
+      : `At <b style="color:var(--pg)">${fmt(size)}</b> (at or above the 4096 B threshold), a paged message costs <b>two writes</b> — an index reference plus a separate <code>rabbit_msg_store</code> record. Worth it once the body is large enough that a second file's overhead is proportionally small.`;
+  }
+  el("embed-size").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. PERFORMANCE CHART: writes per publish vs size (§10)
+   ============================================================ */
+(function(){
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function writesAlpha(size){ return size < 100 ? 0.05 : (size < 4096 ? 1 : 2) * 0.15; } // alpha rarely pages
+  function writesLazy(size){ return size < 4096 ? 1 : 2; }
+  function render(){
+    const size = +el("perf-size").value;
+    el("perf-size-val").textContent = size >= 1000 ? (size/1000).toFixed(1)+" KB" : size+" B";
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=100;x<=10000;x+=200) xs.push(x);
+    const X = v => PAD + (v/10000)*(W-PAD-14);
+    const Y = v => H-26 - (v/2.2)*(H-46);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [0,2000,4000,6000,8000,10000].forEach(v=>{ ctx.beginPath(); ctx.moveTo(X(v),10); ctx.lineTo(X(v),H-20); ctx.stroke(); ctx.fillText((v/1000)+"KB", X(v)-10, H-6); });
+    [0,1,2].forEach(v=>{ ctx.beginPath(); ctx.moveTo(PAD,Y(v)); ctx.lineTo(W-8,Y(v)); ctx.stroke(); ctx.fillText(v+"w", 6, Y(v)+3); });
+    function curve(fn, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const y = Y(fn(x)); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+      ctx.stroke();
+    }
+    curve(writesAlpha, "#4ade80");
+    curve(writesLazy, "#ff9f43");
+    ctx.strokeStyle = "#ffd166"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(4096),10); ctx.lineTo(X(4096),H-20); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(size),10); ctx.lineTo(X(size),H-20); ctx.strokeStyle="#e8ecf4"; ctx.stroke(); ctx.setLineDash([]);
+    const embedded = size < 4096;
+    el("perf-note").innerHTML = `At <b style="color:var(--pg)">${size>=1000?(size/1000).toFixed(1)+" KB":size+" B"}</b>: a lazy/eager-mode publish costs
+      <b style="color:var(--pg)">${writesLazy(size)} write${writesLazy(size)===1?"":"s"}</b> (${embedded?"embedded in the index":"index ref + message store"}); a RAM-first (alpha) publish costs close to
+      <b style="color:var(--pg)">0 synchronous writes</b> on the delivery path until it actually pages — the gap between the two curves <i>is</i> the cost lazy mode pays up front for a flatter memory profile.`;
+  }
+  el("perf-size").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Why does a classic queue not need a lock anywhere in its message-handling path?", hint:"what does a lock exist to arbitrate between?",
+    a:"A lock exists to arbitrate concurrent access to shared mutable state between multiple threads of execution. A classic queue's entire state lives inside one gen_server2 process's private heap, and that process's mailbox is handled strictly sequentially by exactly one scheduler-selected execution context at a time. There is no second thread or process that can touch this queue's state concurrently, so the situation a lock exists to prevent — two writers racing on the same memory — cannot occur by construction. Ordering and mutual exclusion are both side effects of the process model, not separately engineered features." },
+  { lvl:"SENIOR", q:"A queue's throughput plateaus no matter how many consumers you add. Why, mechanically, and what's the actual fix?", hint:"where does the sequential bottleneck live?",
+    a:"Every message this queue holds is applied to state inside one gen_server2 process, handled one mailbox message at a time on one BEAM scheduler. Adding consumers increases how many parallel deliveries can be in flight, but it cannot make the queue process itself handle its mailbox any faster — that work is fundamentally serialized through one process on one core. The fix is never 'more consumers on this queue'; it's sharding the workload across more queues (each its own process, each its own core-worth of throughput), which is exactly why high-throughput RabbitMQ topologies fan work out across many queues rather than piling consumers onto one." },
+  { lvl:"STAFF", q:"Walk through exactly what happens, mechanism by mechanism, when a message transitions from alpha to beta.", hint:"what moves, and what decides where it goes?",
+    a:"rabbit_variable_queue selects the oldest alpha-resident message (paging always targets the least-recently-published entries first, since they're least likely to be needed imminently). It checks the message body's size against queue_index_embed_msgs_below (default 4096 bytes): if smaller, the body is written inline into a rabbit_queue_index segment record; if at or above the threshold, the body is written to rabbit_msg_store instead, and the index holds only a reference (message ID, file, offset). Either way, the message's queue-index entry itself stays resident in RAM — that's precisely what distinguishes beta from gamma, where the index entry is flushed to disk too." },
+  { lvl:"STAFF", q:"Why does rabbit_msg_store need reference counting, and what specific routing pattern makes that necessary rather than optional?", hint:"trace back to chapter 3's fanout exchange",
+    a:"A fanout (or richly-bound topic) exchange can route one published message into many queues simultaneously. If each queue stored its own full copy of the body, one publish could multiply into N times the disk cost across N bound queues. rabbit_msg_store instead stores the body once, content-addressed by message ID, and every queue that received a copy holds only a small index reference to that same record, incrementing a reference count. The body is only actually deleted once every referencing queue has acknowledged or discarded its copy and the count reaches zero — this is what makes routing fan-out cost-neutral at the storage layer instead of storage-multiplying." },
+  { lvl:"STAFF", q:"RabbitMQ 3.12 made classic queues eager-to-disk by default. What specific production failure mode motivated that, and what's the actual trade being made?", hint:"what was the old RAM-first default optimizing for, and what did it cost in the tail?",
+    a:"The pre-3.12 default kept messages resident as alpha for as long as memory allowed, optimizing for the common case where a consumer keeps pace — genuinely the fastest possible behavior when nothing goes wrong. But the failure mode was severe and recurring: a slow or offline consumer let a queue's RAM footprint grow unboundedly until the node's memory watermark tripped (blocking all publishers on the node) or, in the worst cases, an OOM kill occurred. CQv2's lazy-by-default posture accepts a small, constant latency cost on essentially every message — writing to disk immediately instead of only under pressure — in exchange for removing that cliff: RAM usage stays roughly flat regardless of backlog depth, converting a potential outage into a predictable, bounded latency tax." },
+  { lvl:"PRINCIPAL", q:"Contrast the classic queue's paging (alpha/beta/gamma/delta) with what a quorum queue does instead, and argue for which is the right default for a general-purpose RabbitMQ cluster.", hint:"what problem does each design NOT try to solve?",
+    a:"A classic queue's state machine solves exactly one problem: how much of one node's, one process's backlog should live in RAM right now, given memory pressure — it says nothing about surviving that node's failure entirely, because mirroring (the classic queue's original answer to that) had no real consensus protocol underneath and was removed in 4.0. A quorum queue solves a different problem: replicated durability via Raft, at the cost of a write only being considered committed once a majority of replicas persist it, and no equivalent of gamma/delta's fine-grained RAM/disk tuning — its RAM/disk behavior is governed by the ra library's own log-management strategy, not this chapter's four states. For a general-purpose cluster, the honest answer is 'it depends on whether losing a single node can lose messages you care about': classic queues remain the right default for high-volume, single-node-durable, latency-sensitive traffic (task queues, RPC) where the operational simplicity and one-process throughput ceiling are acceptable; quorum queues are the right default the moment a queue's contents must survive the loss of the node currently hosting them." },
+  { lvl:"PRINCIPAL", q:"Design an internal test that would catch a regression where queue_index segment addressing silently stopped being O(1).", hint:"what would you actually measure, and against what baseline?",
+    a:"Publish a large, evenly-spaced number of persistent messages into a durable queue configured to page (small target RAM count), forcing many sequence IDs across many segment files, then measure per-publish and per-ack latency as a function of total sequence ID magnitude (not just message count — you want IDs deep into high segment numbers, not just many messages in low ones). If segment_and_offset/1 or its equivalent ever regressed from arithmetic to, say, scanning a list of open segment file handles or maintaining an index-of-indexes, you'd see per-operation latency start growing with total sequence range rather than staying flat — the signature of an O(1) guarantee silently becoming O(log n) or worse. A good regression test asserts latency stays within a tight band across at least two very different total sequence-ID magnitudes (e.g. 10,000 vs 10,000,000), not just that the queue still functions correctly." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"What, physically, is a classic RabbitMQ queue?",
+    opts:[ "A row in a shared Mnesia/Khepri table, read and written by whichever channel needs it",
+           "One Erlang gen_server2 process (rabbit_amqqueue_process) that owns all of that queue's state and handles its mailbox sequentially",
+           "A thread pool shared across all queues on a node, sized to the number of CPU cores",
+           "A distributed hash table entry, replicated across every node in the cluster by default" ],
+    a:1,
+    why:"Every classic queue is one gen_server2 process with a private heap and mailbox, handled sequentially — this is the single fact this chapter derives everything from. Option A describes where routing/binding metadata lives (ch. 3), not queue state; option C describes no real RabbitMQ mechanism (queues are not thread-pool-backed); option D describes something closer to quorum queues' replicated model (ch. 7), not classic queues, which have no built-in replication." },
+  { q:"Why does a classic queue's total ordering come 'for free', with no explicit sequencing algorithm required?",
+    opts:[ "Because AMQP timestamps every message and the queue sorts by timestamp on delivery",
+           "Because there is exactly one process handling exactly one mailbox in exactly one order — there is nothing else that could reorder messages",
+           "Because rabbit_queue_index assigns a Lamport clock value to every message",
+           "Because the message store's reference counting enforces a global order across queues" ],
+    a:1,
+    why:"With one process and one mailbox handled strictly sequentially, 'which message arrived first' is already answered by the mailbox's own order — no additional algorithm, clock, or coordination is needed. Timestamps (A) aren't used for queue ordering; Lamport clocks (C) aren't part of this mechanism; and message-store ref-counting (D) is about shared body storage, unrelated to ordering." },
+  { q:"A message's body is 8 KB, well above queue_index_embed_msgs_below. When it pages from alpha to beta, where does its body go?",
+    opts:[ "Inline in the rabbit_queue_index segment record, alongside its publish/deliver/ack flags",
+           "Nowhere — 8 KB messages are always kept resident in RAM regardless of memory pressure",
+           "To rabbit_msg_store, with the queue index holding only a reference (message ID, file, offset)",
+           "It is compressed and split across two queue_index segments" ],
+    a:2,
+    why:"Bodies at or above the 4096-byte default threshold are written to the shared rabbit_msg_store, with rabbit_queue_index retaining only a small reference — the whole point of the threshold is to avoid the overhead of a second file for bodies small enough that it isn't worth it, which 8 KB clearly exceeds. Option A describes the embedding path, which only applies below the threshold; B and D describe behavior the design doesn't have." },
+  { q:"Ten queues are bound to the same fanout exchange and all receive a copy of one large published message. How many times is that message's body physically written to disk?",
+    opts:[ "Ten times — once per queue's own storage", "Once — rabbit_msg_store stores it once, reference-counted at 10",
+           "Zero times — fanout messages are never persisted", "Five times — RabbitMQ deduplicates in pairs for efficiency" ],
+    a:1,
+    why:"This is exactly the fan-out cost problem §5 derives the index/store split to solve: the shared, content-addressed rabbit_msg_store writes the body once and reference-counts it across every queue that received a copy, deleting it only once every reference is gone. Writing it ten times (A) is precisely the naive per-queue-file design that was rejected for exactly this reason." },
+  { q:"Why did RabbitMQ 3.12 make classic queues behave lazily (eager-to-disk) by default via CQv2?",
+    opts:[ "Because disks became faster than RAM after 2020, making RAM residency pointless",
+           "Because the old RAM-first default let a slow-consumer incident grow into a node-wide memory alarm or OOM before backpressure kicked in, and eager persistence bounds RAM growth regardless of backlog depth",
+           "Because AMQP 1.0 requires all messages to be persisted before acknowledgment",
+           "Because lazy mode is required for quorum queues to function" ],
+    a:1,
+    why:"The motivating failure mode is exactly §4's math: RAM-first behavior is fastest when nothing goes wrong but has no ceiling of its own, so a slow or offline consumer could let a queue's memory footprint grow until the node-wide watermark tripped or an OOM occurred. CQv2's eager-by-default posture accepts a small constant latency cost to remove that unbounded-growth risk. Disk speed (A), AMQP 1.0 (C, an unrelated and wire-incompatible protocol per ch. 1), and quorum queues (D, an entirely separate queue type) are all unrelated to this decision." },
+  { q:"A queue has x-max-length set and is configured with x-overflow=reject-publish. What happens when a new message is published while the queue is already at its cap?",
+    opts:[ "The oldest message in the queue is silently dropped to make room, and the new message is accepted",
+           "The new publish is refused (nacked, if publisher confirms are enabled) and the queue's existing contents are left untouched",
+           "The queue automatically pages every message to delta to make room",
+           "The new message replaces a random existing message chosen uniformly" ],
+    a:1,
+    why:"reject-publish means new publishes are the ones turned away once the cap is hit — the queue's existing contents are never touched. Option A describes drop-head, the opposite policy (and the default). Option C confuses max-length enforcement with the unrelated alpha/beta/gamma/delta paging mechanism; option D isn't a real overflow behavior." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review a rabbit_variable_queue patch.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5's and §8's decks, then try the simulator — the state machine clicks fast once you watch it live."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "A message is published and starts life as alpha: content and index entry both resident in RAM",
+    "The consumer falls behind (or a burst arrives); the queue's RAM footprint crosses its target watermark",
+    "rabbit_variable_queue selects the oldest alpha message and pages it: body embedded in the index, or written to rabbit_msg_store if above the size threshold — message becomes beta",
+    "Memory pressure persists; the message's queue_index entry is also flushed to disk, retaining only a compact RAM summary — message becomes gamma",
+    "Pressure continues; the message is folded into a compact on-disk range descriptor with near-zero RAM cost — message becomes delta",
+    "A consumer finally requests delivery; the body (and, if needed, the index entry) is read back from disk to serve it",
+    "The message is acknowledged; its queue_index record is marked acked and its rabbit_msg_store reference count is decremented"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real paging lifecycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 5 covers prefetch and credit-based flow control between a channel and a consumer. Given what you now know about the queue process's mailbox as the real backpressure surface, predict: why might a consumer needing to explicitly declare 'I'll accept at most N unacked messages at once' matter more for THIS queue's health than for the message store's?",
+    a:"Prefetch bounds how many messages a consumer can have outstanding without acknowledging, which directly bounds how much of the queue's alpha/beta state must stay 'checked out' and unrecoverable-by-paging at once — an unbounded number of in-flight, unacked deliveries is memory the queue can't page away even under pressure, because those messages are still logically owned by a consumer that hasn't confirmed receipt. The message store's shared, reference-counted bodies aren't the bottleneck here; the queue process's own bookkeeping of 'who has what, unacknowledged' is, and that's exactly the structure prefetch exists to cap." },
+  { lvl:"THINK", q:"This chapter showed that one queue's throughput plateaus regardless of added consumers, because everything funnels through one process. Predict: what would you expect 'sharding into N queues' to cost you that a single queue never had to worry about — something chapter 3's routing model makes newly relevant?",
+    a:"The moment you shard one logical queue into N physical queues, you need a routing strategy deciding which physical queue each message lands in (consistent hashing on a key, round robin, a plugin like the consistent-hash exchange) — and you lose the single queue's free total ordering across the whole logical stream, because messages now land in whichever of the N queues the routing function sends them to, each with its own independent FIFO order. You've traded one process's ordering guarantee and throughput ceiling for N processes' aggregate throughput and only per-shard ordering — correct if your consumers don't need global order, a real regression if they do." },
+  { lvl:"THINK", q:"Design exercise: sketch, using only this chapter's mechanics, how you'd expect a durable classic queue to recover its exact message order after a node restart, given that alpha/beta/gamma/delta is purely an in-memory-vs-disk distinction, not an ordering distinction.",
+    a:"Because alpha/beta/gamma/delta only describes RAM residency and never changes a message's logical sequence ID, recovery doesn't need to 'reconstruct' order at all — it needs to replay rabbit_queue_index's segment files (each addressable directly by sequence ID via the fixed 16,384-entry arithmetic) in sequence-ID order, reconstructing which entries are still unacked, and for each surviving entry either finding its embedded body inline (if it was small enough) or looking it up in rabbit_msg_store by the reference the index recorded. The four storage states never had to be preserved across the restart — every message simply starts life as alpha again in the freshly recovered process, and pages out again under pressure exactly as before. Order survives because sequence IDs, not RAM state, were always the source of truth." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15) — the queue X-ray
+   ============================================================ */
+(function(){
+  const OF_LABEL = { drophead:"drop-head", reject:"reject-publish", rejectdlx:"reject-publish-dlx" };
+  const S = {
+    paused:false,
+    pubRate:60, conRate:40, msgSize:1024, maxLen:0, overflow:"drophead", mode:"default",
+    consumers:1, shard:false, shardN:4,
+    msgs: [], nextId:1,
+    cntPub:0, cntCon:0, cntDrop:0,
+    ramTarget: 400000, // bytes before pressure starts pushing alpha->beta
+    tAccum:0
+  };
+  const SIZES = [128,256,384,512,768,1024,1536,2048,3072,4096,5120,6144,8192];
+  const logEl = el("qx-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 60) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function fmtBytes(b){ return b >= 1024*1024 ? (b/1024/1024).toFixed(2)+" MB" : b >= 1024 ? (b/1024).toFixed(1)+" KB" : Math.round(b)+" B"; }
+
+  function perMsgRamCost(state, size){
+    if (state==="alpha") return size + 180;
+    if (state==="beta") return 190;
+    if (state==="gamma") return 40;
+    return 6; // delta, amortized
+  }
+  function bodyEmbedded(size){ return size < 4096; }
+  function perMsgDiskCost(state, size){
+    if (state==="alpha") return 0;
+    return size; // beta/gamma/delta all imply the body is on disk somewhere
+  }
+
+  function publish(){
+    S.cntPub++;
+    const size = S.msgSize;
+    if (S.maxLen > 0 && S.msgs.length >= S.maxLen){
+      if (S.overflow === "drophead"){
+        S.msgs.shift();
+        S.msgs.push({ id:S.nextId++, size, state: S.mode==="lazy" ? "beta" : "alpha" });
+        log("WARN", `x-max-length hit: drop-head evicted oldest, accepted new publish`);
+      } else if (S.overflow === "reject"){
+        S.cntDrop++;
+        log("WARN", `x-max-length hit: reject-publish — new message refused`);
+        return;
+      } else {
+        S.cntDrop++;
+        log("WARN", `x-max-length hit: reject-publish-dlx — refused, routed to DLX`);
+        return;
+      }
+    } else {
+      S.msgs.push({ id:S.nextId++, size, state: S.mode==="lazy" ? "beta" : "alpha" });
+    }
+  }
+  function consume(){
+    if (!S.msgs.length) return;
+    S.msgs.shift();
+    S.cntCon++;
+  }
+
+  function currentRamBytes(){ return S.msgs.reduce((s,m)=>s+perMsgRamCost(m.state, m.size), 0); }
+  function currentDiskBytes(){ return S.msgs.reduce((s,m)=>s+perMsgDiskCost(m.state, m.size), 0); }
+
+  function pageStep(){
+    // page oldest-first while over target, walking alpha->beta->gamma->delta
+    const target = S.mode==="lazy" ? S.ramTarget*0.15 : S.ramTarget;
+    let guard = 0;
+    while (currentRamBytes() > target && guard < 40){
+      guard++;
+      // find oldest message not yet delta
+      let mv = null;
+      for (const m of S.msgs){ if (m.state !== "delta"){ mv = m; break; } }
+      if (!mv) break;
+      if (mv.state === "alpha") mv.state = "beta";
+      else if (mv.state === "beta") mv.state = "gamma";
+      else if (mv.state === "gamma") mv.state = "delta";
+      else break;
+    }
+  }
+
+  function tick(dt){
+    if (S.paused) return;
+    S.tAccum += dt;
+    const pubN = S.pubRate * dt, conN = S.conRate * dt * Math.min(S.consumers, 8) / Math.max(1, Math.min(S.consumers,8));
+    // publish/consume using accumulators for fractional rates
+    S._pubAcc = (S._pubAcc||0) + S.pubRate*dt;
+    S._conAcc = (S._conAcc||0) + S.conRate*dt;
+    while (S._pubAcc >= 1){ publish(); S._pubAcc -= 1; }
+    while (S._conAcc >= 1 && S.msgs.length){ consume(); S._conAcc -= 1; }
+    pageStep();
+    if (S.msgs.length > 4000) S.msgs.splice(0, S.msgs.length-4000); // safety cap for render only
+    render();
+  }
+
+  function render(){
+    const total = S.msgs.length;
+    el("qx-total").textContent = total.toLocaleString() + " messages";
+    el("qx-len-v").textContent = total.toLocaleString();
+    const visible = S.msgs.slice(0, 90);
+    const counts = { alpha:0, beta:0, gamma:0, delta:0 };
+    S.msgs.forEach(m=>counts[m.state]++);
+    el("qx-lane").innerHTML = visible.map(m=>{
+      const emb = m.state !== "alpha" && bodyEmbedded(m.size);
+      return `<div class="qx-dot ${m.state} ${emb?'embed':''}" title="msg ${m.id} · ${m.state} · ${fmtBytes(m.size)}">${m.state[0].toUpperCase()}</div>`;
+    }).join("") + (total > 90 ? `<div class="qx-more">+${(total-90).toLocaleString()} more (oldest hidden, still delta-eligible)</div>` : "") ;
+    el("qx-legend").innerHTML = `<span><span class="sw" style="background:#4ade80"></span>alpha (RAM) ${counts.alpha}</span>
+      <span><span class="sw" style="background:#60a5fa"></span>beta ${counts.beta}</span>
+      <span><span class="sw" style="background:#ffd166"></span>gamma ${counts.gamma}</span>
+      <span><span class="sw" style="background:#5b6475"></span>delta (disk) ${counts.delta}</span>
+      <span>● dot badge = body embedded in index</span>`;
+
+    const ram = currentRamBytes(), disk = currentDiskBytes();
+    el("qx-ram-v").textContent = fmtBytes(ram);
+    el("qx-disk-v").textContent = fmtBytes(disk);
+    const target = S.mode==="lazy" ? S.ramTarget*0.15 : S.ramTarget;
+    const wmPct = Math.min(100, Math.round(ram/(target*1.6)*100));
+    el("qx-wm-v").textContent = wmPct+"%";
+    el("qx-wm-fill").style.width = wmPct+"%";
+
+    const mbox = Math.max(0, Math.round((S.pubRate - S.conRate) * 0.4));
+    el("qx-mbox-v").textContent = mbox > 0 ? mbox : 0;
+
+    el("qx-cnt-pub").textContent = S.cntPub.toLocaleString();
+    el("qx-cnt-con").textContent = S.cntCon.toLocaleString();
+    el("qx-cnt-drop").textContent = S.cntDrop.toLocaleString();
+
+    renderThroughput();
+  }
+
+  function renderThroughput(){
+    const CEIL = 5200; // msgs/s one queue process can realistically sustain in this model
+    const n = S.consumers;
+    const perConsumerCap = 900;
+    let effective = Math.min(CEIL, n * perConsumerCap, S.pubRate*40); // consumers alone can't beat CEIL
+    if (S.shard){
+      effective = Math.min(CEIL * S.shardN, n * perConsumerCap * S.shardN * 0.9);
+    }
+    el("qx-through-v").textContent = Math.round(effective).toLocaleString() + " msg/s";
+    const cv = el("qx-tchart"), ctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const NS = [1,2,4,6,8,10,12,14,16];
+    const X = i => PAD + i*((W-PAD-14)/(NS.length-1));
+    const maxY = S.shard ? CEIL*S.shardN*1.15 : CEIL*1.3;
+    const Y = v => H-24 - (v/maxY)*(H-40);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    NS.forEach((nv,i)=>{ ctx.beginPath(); ctx.moveTo(X(i),8); ctx.lineTo(X(i),H-18); ctx.stroke(); ctx.fillText(nv+"c", X(i)-6, H-6); });
+    // ceiling dashed line
+    ctx.strokeStyle = "#5b6475"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(PAD, Y(CEIL)); ctx.lineTo(W-8, Y(CEIL)); ctx.stroke(); ctx.setLineDash([]);
+    // curve
+    ctx.strokeStyle = "#ff9f43"; ctx.lineWidth = 2.4; ctx.beginPath();
+    NS.forEach((nv,i)=>{
+      let v = Math.min(CEIL, nv*perConsumerCap);
+      if (S.shard) v = Math.min(CEIL*S.shardN, nv*perConsumerCap*S.shardN*0.9);
+      const y = Y(v);
+      i?ctx.lineTo(X(i),y):ctx.moveTo(X(i),y);
+    });
+    ctx.stroke();
+    // marker at current consumer count
+    const curIdx = NS.reduce((best,nv,i)=> Math.abs(nv-n) < Math.abs(NS[best]-n) ? i : best, 0);
+    ctx.fillStyle = "#e8ecf4";
+    ctx.beginPath(); ctx.arc(X(curIdx), Y(Math.min(effective,maxY)), 4, 0, 7); ctx.fill();
+
+    el("qx-through-note").innerHTML = S.shard
+      ? `Sharded into <b style="color:var(--pg)">${S.shardN}</b> queues: the ceiling itself scales, because you now have ${S.shardN} independent processes, each with its own core-worth of sequential throughput.`
+      : `One queue, one process: throughput flattens at roughly <b style="color:var(--pg)">${CEIL.toLocaleString()} msg/s</b> in this model regardless of how many consumers you add — the mailbox is still handled by one scheduler-bound process. Flip "shard into N queues" to see the ceiling itself move.`;
+  }
+
+  // controls
+  el("qx-pubrate").oninput = e=>{ S.pubRate = +e.target.value; el("qx-pubrate-val").textContent = S.pubRate+"/s"; };
+  el("qx-conrate").oninput = e=>{ S.conRate = +e.target.value; el("qx-conrate-val").textContent = S.conRate+"/s"; };
+  el("qx-msgsize").oninput = e=>{
+    const size = SIZES[+e.target.value]; S.msgSize = size;
+    el("qx-msgsize-val").textContent = size>=1024 ? (size/1024).toFixed(1)+" KB" : size+" B";
+    el("qx-embed-note").textContent = size < 4096 ? "below 4096 B → embedded in queue_index" : "at/above 4096 B → written to rabbit_msg_store";
+  };
+  el("qx-maxlen").oninput = e=>{
+    const v = +e.target.value; S.maxLen = v;
+    el("qx-maxlen-val").textContent = v===0 ? "unlimited" : v.toLocaleString();
+  };
+  function setOverflow(k){
+    S.overflow = k;
+    ["drophead","reject","rejectdlx"].forEach(key=> el("qx-of-"+key).classList.toggle("on", key===k));
+    log("LOG", "x-overflow set to " + OF_LABEL[k]);
+  }
+  el("qx-of-drophead").onclick = ()=>setOverflow("drophead");
+  el("qx-of-reject").onclick = ()=>setOverflow("reject");
+  el("qx-of-rejectdlx").onclick = ()=>setOverflow("rejectdlx");
+  function setMode(m){
+    S.mode = m;
+    el("qx-mode-default").classList.toggle("on", m==="default");
+    el("qx-mode-lazy").classList.toggle("on", m==="lazy");
+    log("LOG", m==="lazy" ? "queue mode: lazy/CQv2-eager — paging target dropped sharply" : "queue mode: default RAM-first");
+  }
+  el("qx-mode-default").onclick = ()=>setMode("default");
+  el("qx-mode-lazy").onclick = ()=>setMode("lazy");
+  el("qx-consumers").oninput = e=>{ S.consumers = +e.target.value; el("qx-consumers-val").textContent = S.consumers; renderThroughput(); };
+  el("qx-shard-toggle").onclick = ()=>{
+    S.shard = !S.shard;
+    el("qx-shard-toggle").textContent = "shard into N queues: " + (S.shard ? "ON" : "OFF");
+    el("qx-shard-toggle").classList.toggle("on", S.shard);
+    el("qx-shard-n").style.display = S.shard ? "" : "none";
+    el("qx-shard-n-val").style.display = S.shard ? "" : "none";
+    log("LOG", S.shard ? `sharded across ${S.shardN} queues — ceiling now scales with N` : "back to one queue");
+    renderThroughput();
+  };
+  el("qx-shard-n").oninput = e=>{ S.shardN = +e.target.value; el("qx-shard-n-val").textContent = S.shardN+" shards"; renderThroughput(); };
+  el("qx-pause").onclick = ()=>{ S.paused = !S.paused; el("qx-pause").textContent = S.paused ? "▶ resume" : "⏸ pause"; el("qx-phase").textContent = S.paused ? "PAUSED" : "RUNNING"; };
+  el("qx-reset").onclick = ()=>{
+    S.msgs = []; S.cntPub=0; S.cntCon=0; S.cntDrop=0; S.nextId=1; S._pubAcc=0; S._conAcc=0;
+    log("OK", "queue reset — empty");
+    render();
+  };
+
+  log("OK", "queue X-ray ready. Push publish rate above consume rate and watch the state colors migrate.");
+  log("HINT", "Try: max-length 100 + reject-publish, then compare against drop-head with the same rates.");
+  setInterval(()=> tick(0.18), 180);
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["rmq-04"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#ff9f43"><a class="cn-btn" href="rmq-03.html"><span>←</span><span><span class="cn-lbl">PREV · CH 03</span><span class="cn-ttl">Exchanges, Bindings & Routing Algorithms</span></span></a><div class="cn-mid"><a class="cn-home" href="course-rabbitmq.html">☰ RabbitMQ Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="rmq-01.html">CH 01 · Genesis: AMQP & Why Erlang</option><option value="rmq-02.html">CH 02 · Connections, Channels & the Frame Protocol</option><option value="rmq-03.html">CH 03 · Exchanges, Bindings & Routing Algorithms</option><option value="rmq-04.html" selected>CH 04 · Classic Queues: The Queue Process Internals</option><option value="rmq-05.html">CH 05 · Delivery: ACK, NACK, Confirms & Prefetch</option><option value="rmq-06.html">CH 06 · Quorum Queues: Raft Inside the Broker</option><option value="rmq-07.html">CH 07 · Streams: The Log Comes to RabbitMQ</option><option value="rmq-08.html">CH 08 · Dead Lettering, TTL & Priority Queues</option><option value="rmq-09.html">CH 09 · Flow Control & Memory Management</option><option value="rmq-10.html">CH 10 · Clustering, Federation & Shovel</option><option value="rmq-11.html">CH 11 · Persistence, Disk Layout & Recovery</option><option value="rmq-12.html">CH 12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</option></select><span class="cn-prog">04 / 12</span></div><a class="cn-btn" href="rmq-05.html"><span><span class="cn-lbl">NEXT · CH 05</span><span class="cn-ttl">Delivery: ACK, NACK, Confirms & Prefetch</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

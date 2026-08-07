@@ -1,0 +1,1936 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-02 · Memory Internals: Contexts, palloc & Shared Memory — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames / boxes for decks */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc/context tree mini (deck use) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars (reused for block/byte layout visuals) */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- CH02-SPECIFIC: context tree ---------- */
+  .ctxtree{font-family:var(--mono);font-size:12px;line-height:1.6}
+  .ctxnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:8px;padding:4px 10px;margin:3px 0;
+    cursor:pointer;display:inline-flex;align-items:center;gap:8px;transition:all .15s}
+  .ctxnode:hover{border-color:var(--pg)}
+  .ctxnode.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg)}
+  .ctxnode .cxsz{color:var(--dim);font-size:10px}
+  .ctxkids{margin-left:20px;border-left:1px dashed var(--border-hi);padding-left:12px}
+  .ctxnode.dead{opacity:.3;text-decoration:line-through}
+  .fl-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:10px 0}
+  .fl-bucket{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 5px;text-align:center}
+  .fl-bucket .fb-sz{font-family:var(--mono);font-size:10px;color:var(--muted)}
+  .fl-bucket .fb-n{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--pg);margin-top:2px}
+  .fl-bucket.empty .fb-n{color:var(--dim)}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 02 / 21</b> · MEMORY</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Context Trees</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 02</div>
+  <h1>Memory Internals: Contexts,<br><span class="grad">palloc & Shared Memory</span></h1>
+  <p class="lead">Chapter 1 gave every backend its own private address space. This chapter goes inside that space:
+  the tree of <code>MemoryContext</code>s that organizes a backend's private allocations by <i>lifetime</i>, the
+  <code>aset.c</code> allocator that services most of them, and the specialized allocators — <code>generation.c</code>,
+  <code>slab.c</code>, <code>dsa.c</code> — built when one general-purpose scheme wasn't enough.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain why <code>MemoryContextReset()</code> is O(blocks), not O(allocations), and why that eliminates whole classes of leaks.</div>
+    <div class="obj"><b>You will understand</b>The real byte layout of a chunk header and why PostgreSQL 16 shrank it.</div>
+    <div class="obj"><b>You will predict</b><code>work_mem</code> peak usage across concurrent nodes, backends, and parallel workers.</div>
+    <div class="obj"><b>You will simulate</b>An arena allocator live — watch blocks double, freelists fill, and a context reset reclaim everything at once.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A backend allocates constantly, and must never leak</h2>
+  <p class="lead">A single client backend, over one session, will call something that allocates memory
+  <b>millions of times</b>: once per parse-tree node, once per expression-evaluation scratch buffer, once per
+  tuple deformed out of a page, once per hash-table entry, once per sort run. Some of those allocations must
+  outlive the query that made them — a cached catalog entry, a prepared-statement plan. Most must die within
+  microseconds of being created and never be thought about again.</p>
+  <p>A general-purpose allocator (<code>malloc()</code>/<code>free()</code>) is the wrong tool for this specific
+  shape of workload, for a reason that has nothing to do with speed: <b>correctness under abnormal exit</b>. A
+  SQL error — a constraint violation, a division by zero, a statement timeout — is implemented as a C
+  <code>longjmp()</code> back to a top-level handler (<code>PG_TRY</code>/<code>PG_CATCH</code>, built on
+  <code>sigsetjmp</code>), unwinding an arbitrary number of nested function calls in the parser, planner, or
+  executor <i>without running any of their local cleanup code</i>. If cleanup for one C function's temporary
+  buffer is "call <code>free()</code> before returning," and the function never returns normally, that
+  <code>free()</code> never runs. Multiply by every function in the call stack at the moment of the error, for
+  every error, across a server than runs for weeks: this is not a rare edge case, it is <b>the normal way queries
+  end</b> once you count constraint violations, cancellations, and timeouts.</p>
+  <ul class="plain">
+    <li><b>Lifetime diversity.</b> One session, one instant in time, has live allocations that must survive the
+      connection (catalog cache), the transaction (transaction status), the query (sort/hash state), and the
+      single tuple currently being processed (expression scratch) — four different lifetimes, all active at once.</li>
+    <li><b>Bulk death, not individual death.</b> At the end of a query, the executor doesn't want to free ten
+      thousand individual objects one at a time — it wants to say "everything this query touched is gone" in one
+      cheap operation.</li>
+    <li><b>Abnormal exit is routine.</b> Any allocation strategy that depends on every code path reaching its
+      matching <code>free()</code> is a strategy that will leak in production, because <code>elog(ERROR)</code>
+      guarantees some code paths never will.</li>
+    <li><b>Extensibility.</b> PostgreSQL is designed to run untrusted C extensions (chapter 1's founding thesis).
+      An extension author who forgets one <code>free()</code> should not be able to slowly leak a long-running
+      backend to death.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE REFRAME THAT SOLVES IT</div>
+    <p>Stop tracking <i>objects</i>. Track <i>arenas with a lifetime</i>, and let objects belong to whichever arena
+    matches how long they need to live. Freeing becomes "discard the arena," which is correct regardless of how
+    many objects are inside it or whether the code that created them ever got to run a destructor. This is the
+    entire idea behind PostgreSQL's <code>MemoryContext</code> — and, not coincidentally, the same idea behind
+    region-based memory management in ML/Rust-adjacent research and arena allocators in game engines. PostgreSQL
+    has been running this pattern in production C code since before most of that literature existed.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a single arena to a whole allocator family</h2>
+  <p>The context tree you'll study in §7–8 didn't arrive all at once. It grew, feature by feature, as the executor
+  grew — and every addition was a response to a workload that the previous allocator handled badly. Click through.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — building the allocator family</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY "PALLOC" AND NOT "MALLOC"</div>
+    <p>The name traces to the project's Ingres-lineage habit of prefixing memory routines for the "current"
+    allocation scope — <code>palloc()</code> is short for "context-scoped alloc." From day one it was never a
+    synonym for <code>malloc()</code>; it always meant "allocate in whichever arena is currently active," where
+    that arena is named by a single per-backend global, <code>CurrentMemoryContext</code>. Every subsystem you'll
+    meet in later chapters — the parser, planner, executor, WAL machinery — spends a surprising fraction of its
+    code just swapping that one pointer in and out with <code>MemoryContextSwitchTo()</code> before doing work.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: plain malloc/free, discipline enforced by hand</h2>
+  <p>Derive it honestly, same as chapter 1. The obvious way to write a recursive expression evaluator is to
+  <code>malloc()</code> scratch space on entry and <code>free()</code> it before returning:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>naive_eval.c — the strawman, annotated</span></div>
+    <pre><span class="k">Datum</span>
+<span class="f">EvalExpr</span>(<span class="k">Expr</span> *e, <span class="k">TupleTableSlot</span> *slot)
+{
+    <span class="k">char</span> *scratch = <span class="f">malloc</span>(<span class="n">256</span>);       <span class="c">/* per-call temp buffer */</span>
+    <span class="k">Datum</span> lhs = <span class="f">EvalExpr</span>(e-&gt;left,  slot);   <span class="c">/* recurse... */</span>
+    <span class="k">Datum</span> rhs = <span class="f">EvalExpr</span>(e-&gt;right, slot);   <span class="c">/* ...and again */</span>
+
+    <span class="k">if</span> (<span class="f">would_overflow</span>(lhs, rhs))
+        <span class="f">elog</span>(ERROR, <span class="s">"integer out of range"</span>);  <span class="c">/* longjmp()s OUT of this
+                                            * function -- the line below
+                                            * never executes.            */</span>
+
+    <span class="k">Datum</span> result = <span class="f">compute</span>(scratch, lhs, rhs);
+    <span class="f">free</span>(scratch);                       <span class="c">/* skipped on the error path,</span>
+                                            <span class="c"> * and skipped in EVERY caller</span>
+                                            <span class="c"> * still on the stack above us   */</span>
+    <span class="k">return</span> result;
+}</pre>
+  </div>
+
+  <p>This is not a strawman built to be laughed at — it is exactly how you'd write this function in isolation, and
+  it works perfectly in the <i>happy path</i>: every call mallocs, computes, frees, returns. The bug is invisible
+  in code review and invisible in testing that never triggers an error. It only appears once <code>elog(ERROR)</code>
+  fires from arbitrarily deep inside a large call tree — which, in a query planner and executor with dozens of
+  nested node types, is a when, not an if.</p>
+
+  <div class="callout warn">
+    <div class="co-t">WHY YOU CAN'T JUST "TRY/FINALLY" YOUR WAY OUT</div>
+    <p>C has no destructors and no <code>finally</code>. PostgreSQL's <code>PG_TRY</code>/<code>PG_CATCH</code>
+    macros exist, but wrapping every single allocation site in the parser, planner, and executor in a try/catch
+    that manually frees on both the normal and error path would mean touching thousands of call sites, forever,
+    perfectly, with zero tolerance for a missed one anywhere in the codebase — including in third-party
+    extensions the core team doesn't control. That's not a maintenance cost you accept once; it's a maintenance
+    tax that compounds with every new line of C anyone ever writes against this API.</p>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Quantify it: leaks, allocator overhead, and the bulk-free that doesn't exist</h2>
+  <p>Three independent failure modes, each fatal on its own:</p>
+  <ul class="plain">
+    <li><b>Leak accumulation is a function of error rate, not bug rarity.</b> Say one in every 200 queries hits an
+      abort path (a constraint violation, a serialization failure, a statement timeout — all completely normal
+      in production OLTP) and leaks an average of 4&nbsp;KB of scratch state across the frames that were on the
+      stack. At 2,000 queries/sec on a busy backend fleet, that's 10 leaked queries/sec × 4&nbsp;KB ≈ 40&nbsp;KB/sec
+      per busy backend, <b>with no way to reclaim it</b> short of restarting the process. Over a day that's
+      several gigabytes per long-lived connection — and connections in pooled deployments can live for days.</li>
+    <li><b>Per-call allocator overhead dominates at small sizes.</b> A single moderately complex query can perform
+      hundreds of thousands of small allocations (one per expression node evaluation, one per tuple's deformed
+      attributes). Even a fast allocator spends tens of nanoseconds per call on bookkeeping — size-class lookup,
+      free-list search, boundary tags for coalescing. At 300,000 alloc+free pairs and a conservative 40&nbsp;ns per
+      call, that's <b>24&nbsp;ms of pure allocator bookkeeping</b> before the query has done a single byte of
+      real work — and this repeats on every execution of every query.</li>
+    <li><b>There is no bulk-free primitive.</b> To free "everything this query touched" with plain
+      <code>malloc</code>/<code>free</code>, the program would first have to <i>track every pointer it ever
+      allocated</i> — which itself requires more allocations (a list, a hash set) that then also need freeing.
+      Freeing becomes <code>for (p in tracked) free(p)</code>: a loop with cost proportional to the number of
+      <i>individual objects</i>, potentially millions, rather than to the number of <i>blocks</i> backing them.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS, STATED PLAINLY</div>
+    <p>Plain malloc/free gives you O(1) leaks-per-error (guaranteed), O(allocation count) cleanup cost, and zero
+    structural protection against a forgotten <code>free()</code> anywhere in an enormous and constantly-growing
+    codebase. None of these are tuning problems. They are consequences of tracking the wrong unit — the
+    <i>object</i> instead of its <i>lifetime</i>. §5 tries three fixes at that root cause.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">GC, one big arena, or a tree of arenas — the real 1986-onward decision</h2>
+
+  <h3>Candidate A: reference counting or tracing garbage collection</h3>
+  <p>Let a runtime track object liveness automatically — Java, Go, and the JVM-family databases (candidate for
+  Cassandra-style engines, §9) all do this. It genuinely eliminates the leak-on-error problem: nothing needs
+  explicit freeing at all. But it requires either per-object metadata (a refcount word on every allocation — real
+  overhead at the scale of "millions of small objects per query") or a tracing collector with stop-the-world (or
+  at best concurrent-with-overhead) pauses — unacceptable in C without a managed runtime underneath it, and a
+  wholesale rewrite of the execution model that 1980s Unix C simply didn't offer as a library. <b>Rejected: no
+  portable, low-overhead GC existed for C, and per-object bookkeeping cost cuts against a workload that is
+  millions of tiny, short-lived objects per second.</b></p>
+
+  <h3>Candidate B: one global arena, bump-allocated, reset per query</h3>
+  <p>Simpler idea: allocate everything from one big block with a bump pointer; at the end of each query, rewind
+  the pointer to zero. Trivial, extremely fast (allocation is a pointer add), and bulk-free is genuinely O(1).
+  The flaw appears the moment you have <i>two different lifetimes active at once</i> — which is always: the
+  catalog cache entry for a table you looked up must survive past this query's end, but the per-tuple scratch
+  buffer must not. One arena, one reset point, cannot serve both without either leaking the long-lived object out
+  of the reset (defeating the point) or destroying the long-lived object early (a dangling-pointer bug). <b>Rejected:
+  granularity mismatch — real workloads need several independent reset points, not one.</b></p>
+
+  <h3>Candidate C: a tree of arenas, one per natural lifetime ✓</h3>
+  <p>Generalize B: instead of one arena, keep <i>many</i>, nested to mirror the natural nesting of database work —
+  a connection contains transactions, a transaction contains queries, a query contains tuples. Give each level its
+  own arena (a <code>MemoryContext</code>), parented to the level above it, and let code allocate into whichever
+  context matches what it's building. Resetting the innermost, most short-lived context (say, per-tuple) happens
+  constantly and cheaply without touching anything above it in the tree.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Three allocation strategies, same workload</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: LIFETIME MATCHES SCOPE, NOT OBJECT COUNT</div>
+    <p>A tree of contexts turns "did I forget to free this?" into "did I allocate it into the right context?" —
+    a question you answer <i>once</i>, at the call site, by picking which context is current, rather than
+    tracking it for the rest of the object's life. And because resetting or deleting a context frees everything
+    inside it regardless of how execution got there — normal return or <code>longjmp()</code> out of an error —
+    the entire leak-on-abnormal-exit class from §4 disappears structurally. You don't have to remember to clean
+    up on the error path; the error path's <code>PG_CATCH</code> just resets a context or two, and everything
+    allocated since is gone.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The bill: wrong-context bugs, fragmentation, and manual bookkeeping</h2>
+  <p>The context tree is not free. Four costs you will meet in production, each a direct consequence of the design:</p>
+  <ul class="plain">
+    <li><b>Wrong-context allocation is a new, sneaky bug class.</b> If code allocates a struct meant to outlive a
+      query into the per-tuple <code>ExprContext</code> instead of the query's own
+      <span class="term" data-def="ExecutorState: the memory context owning everything a single query execution needs — plan state, tuple slots, sort/hash working memory.">ExecutorState</span>,
+      the struct looks completely fine until the context resets — at which point every pointer into it becomes a
+      dangling reference into memory that may already be handed out to something else. This fails intermittently,
+      often only under load (because that's when contexts reset while something is still mid-use), and is one of
+      the most common classes of bugs in third-party C extensions.</li>
+    <li><b>The tree, and which context is "current," is manual, global, mutable state.</b> <code>CurrentMemoryContext</code>
+      is one pointer; code must explicitly <code>MemoryContextSwitchTo()</code> before allocating and switch back
+      afterward. Forgetting the "switch back" half leaves unrelated code allocating into a context it never meant
+      to touch — a bug that (again) is invisible until that context resets or grows unexpectedly.</li>
+    <li><b>Freed space inside a context isn't necessarily reusable by the next request.</b> As §8 shows, small
+      chunks freed within a context go onto a size-classed freelist and are only reused by a <i>future request of
+      the same size class</i>. A context that allocates many different sizes and frees them out of order can
+      accumulate freelist entries that never get reused before the whole context resets — memory that is "freed"
+      by the program's accounting but not available to satisfy a differently-sized request. This is internal
+      fragmentation, and it's structurally different from (and in addition to) glibc-style heap fragmentation.</li>
+    <li><b>A context that's <i>never</i> reset (a long-lived cache) gets none of the reset advantage.</b>
+      <code>CacheMemoryContext</code> lives for the whole session; if it churns — entries added and removed
+      continuously as different tables are accessed — it behaves like an ordinary long-running allocator, with
+      all of plain malloc's fragmentation concerns, just with extra chunk-header overhead layered on top.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THE HONEST TRADE</div>
+    <p>The context tree converts "did every free() run?" (a correctness question you can get wrong silently) into
+    "did every allocation land in the right context?" (a design question you can get wrong just as silently, but
+    which is auditable at the call site and — crucially — <code>MEMORY_CONTEXT_CHECKING</code> builds and
+    <code>pg_get_backend_memory_contexts()</code> give you tools to debug). It doesn't eliminate the hard problem;
+    it relocates it somewhere more tractable. §7 shows the architecture that resulted.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The context hierarchy, and the allocators that back it</h2>
+  <p>A running backend's private memory is a tree of named contexts rooted at one that lives as long as the
+  process, with progressively shorter-lived contexts nested inside for progressively narrower scopes. Every
+  context is backed by one of a small number of allocator implementations, chosen for how that context's
+  contents are actually allocated and freed. Click any card.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY NODE</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">ROOT — BACKEND LIFETIME</div>
+        <div class="arch-grid"><div class="acard" data-p="topmem">TopMemoryContext</div></div>
+        <div class="arch-row-label">SESSION-SCOPED CHILDREN</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="cachemem">CacheMemoryContext</div>
+          <div class="acard" data-p="msgctx">MessageContext</div>
+        </div>
+        <div class="arch-row-label">TRANSACTION / QUERY SCOPED</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="txnctx">TopTransactionContext</div>
+          <div class="acard" data-p="portalctx">PortalContext</div>
+          <div class="acard" data-p="execstate">ExecutorState (per query)</div>
+        </div>
+        <div class="arch-row-label">PER-TUPLE</div>
+        <div class="arch-grid"><div class="acard" data-p="exprctx">ExprContext</div></div>
+        <div class="arch-row-label">ALLOCATOR IMPLEMENTATIONS (methods vtable)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="aset">aset.c — AllocSet</div>
+          <div class="acard" data-p="generation">generation.c — Generation</div>
+          <div class="acard" data-p="slab">slab.c — Slab</div>
+          <div class="acard shmcard" data-p="dsa">dsa.c — Dynamic Shared Area (cross-process, for parallel query)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE LINE THIS CHAPTER DRAWS</div>
+    <p>Every context is either a descendant of <code>TopMemoryContext</code> (private, one per backend, gone the
+    instant the process exits) or lives inside the <code>dsa.c</code>-managed shared area (visible to every
+    parallel worker in one query, torn down when the query's <span class="term" data-def="A dynamic shared memory segment created for one parallel query and destroyed when it ends — distinct from the fixed shared_buffers segment created once at postmaster boot.">DSM segment</span>
+    is destroyed). Chapter 1 drew the line between "shared forever" and "private per backend"; this chapter
+    subdivides "private per backend" by lifetime, and adds a second, narrower kind of "shared" — shared for the
+    duration of one parallel query, not the cluster's whole life.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Structs, chunk headers, and the algorithms that make palloc cheap</h2>
+  <p>Three pieces: <b>(a)</b> the context object itself and how the tree is walked, <b>(b)</b> the default
+  allocator's block/freelist layout and the 8-byte chunk header, <b>(c)</b> block-doubling growth and its cost.</p>
+
+  <h3>(a) MemoryContextData: a node in the tree, dispatched through a vtable</h3>
+  <p>Every context — regardless of which allocator backs it — starts with the same header, which is how
+  <code>palloc()</code>, <code>pfree()</code>, <code>MemoryContextReset()</code>, and
+  <code>MemoryContextDelete()</code> can all be generic over aset/generation/slab/dsa without an
+  <code>if</code>-ladder anywhere in the hot path:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>src/include/utils/memnodes.h — simplified but faithful</span></div>
+    <pre><span class="k">typedef struct</span> MemoryContextData
+{
+    NodeTag     type;              <span class="c">/* T_AllocSetContext, T_GenerationContext... */</span>
+    <span class="k">bool</span>        isReset;           <span class="c">/* true = nothing allocated since last reset */</span>
+    <span class="k">const</span> MemoryContextMethods *methods;  <span class="c">/* alloc/free/reset/delete vtable   */</span>
+    MemoryContext parent;          <span class="c">/* NULL only for TopMemoryContext    */</span>
+    MemoryContext firstchild;
+    MemoryContext prevchild;
+    MemoryContext nextchild;       <span class="c">/* siblings, doubly linked            */</span>
+    <span class="k">const char</span> *name;      <span class="c">/* static string: "ExecutorState" etc */</span>
+    <span class="k">const char</span> *ident;     <span class="c">/* optional per-instance detail        */</span>
+    MemoryContextCallback *reset_cbs;  <span class="c">/* run just before this context resets */</span>
+} MemoryContextData;
+
+<span class="k">typedef struct</span> MemoryContextMethods
+{
+    <span class="k">void</span> *(*alloc)   (MemoryContext ctx, Size size);
+    <span class="k">void</span>  (*free_p)  (<span class="k">void</span> *pointer);
+    <span class="k">void</span> *(*realloc) (<span class="k">void</span> *pointer, Size size);
+    <span class="k">void</span>  (*reset)   (MemoryContext ctx);
+    <span class="k">void</span>  (*delete_context)(MemoryContext ctx);
+    Size  (*get_chunk_space)(<span class="k">void</span> *pointer);
+} MemoryContextMethods;</pre>
+  </div>
+
+  <p>Walk the tree once and you understand why <code>MemoryContextDelete()</code> on a context also destroys
+  everything under it, and why deleting a context you're currently inside is a use-after-free waiting to happen:</p>
+
+  <div class="widget deck" id="deckTree">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Creating, resetting, and deleting a context subtree</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) AllocSetContext: blocks, an 8-byte chunk header, and 8 freelists</h3>
+  <p><code>aset.c</code> ("AllocSet" — the default, general-purpose implementation) backs the majority of
+  contexts you'll ever create. Each context owns a linked list of <b>blocks</b> — plain <code>malloc()</code>'d
+  regions — and carves <b>chunks</b> out of them for individual <code>palloc()</code> requests:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>src/backend/utils/mmgr/aset.c — simplified but faithful</span></div>
+    <pre><span class="k">typedef struct</span> AllocSetContext
+{
+    MemoryContextData header;
+    AllocBlock  blocks;              <span class="c">/* newest block first */</span>
+    AllocChunk  freelist[ALLOCSET_NUM_FREELISTS];  <span class="c">/* 8 size-classed freelists */</span>
+    Size        initBlockSize;       <span class="c">/* size of the first block            */</span>
+    Size        maxBlockSize;        <span class="c">/* doubling stops here                */</span>
+    Size        nextBlockSize;       <span class="c">/* size the NEXT block will be        */</span>
+    Size        allocChunkLimit;     <span class="c">/* above this: dedicated block, no freelist */</span>
+    AllocBlock  keeper;               <span class="c">/* first block -- survives Reset()    */</span>
+} AllocSetContext;
+
+<span class="k">typedef struct</span> AllocBlockData
+{
+    AllocSet    aset;
+    AllocBlock  next;
+    <span class="k">char</span>       *freeptr;    <span class="c">/* next free byte in this block  */</span>
+    <span class="k">char</span>       *endptr;     <span class="c">/* one past the block's end      */</span>
+} AllocBlockData;</pre>
+  </div>
+
+  <p>Every live chunk — used or on a freelist — starts with a compact header that PostgreSQL&nbsp;16 shrank from
+  roughly 16 bytes to a single bit-packed 64-bit word, because <i>every single allocation the server ever makes
+  pays this tax</i>:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>src/include/utils/memutils_internal.h — MemoryChunk (PG16+)</span></div>
+    <pre><span class="k">typedef struct</span> MemoryChunk
+{
+    uint64  hdrmask;
+    <span class="c">/* bit layout (low bits first):
+     *   bits 0-2   : MemoryContextMethodID -- which allocator owns this
+     *                chunk (aset / generation / slab / ...), so pfree()
+     *                and repalloc() can dispatch without walking the tree
+     *   bit  3     : "external" flag -- this chunk has its own dedicated
+     *                block (it was bigger than allocChunkLimit, or it's
+     *                a dsa.c-backed allocation) and stores a real
+     *                back-pointer just before this header instead of
+     *                an offset
+     *   bits 4-63  : block-relative BYTE OFFSET back to the owning
+     *                AllocBlockData, when the external flag is clear --
+     *                enough bits that a chunk anywhere in an 8 MB block
+     *                can find its block header without storing a full
+     *                8-byte pointer                                    */</span>
+} MemoryChunk;   <span class="c">/* sizeof == 8 bytes on 64-bit builds */</span></pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">BYTE LAYOUT, VISUALLY</div>
+    <p>Below: a chunk holding a 40-byte payload. The header is fixed cost regardless of payload size — which is
+    exactly why shrinking it from 16 to 8 bytes mattered: on a workload dominated by <i>small</i> chunks (a few
+    dozen bytes each, which most executor scratch allocations are), header overhead is a double-digit percentage
+    of total memory, not a rounding error.</p>
+    <div class="memmap" id="chunk-bytemap"></div>
+    <div class="memlegend" id="chunk-legend"></div>
+  </div>
+
+  <p>Requests that don't fit any freelist's size class at all — anything bigger than
+  <code>allocChunkLimit</code> — skip the block/freelist machinery entirely: <code>aset.c</code> just
+  <code>malloc()</code>s a dedicated block sized exactly to the request (rounded for alignment) and marks the
+  chunk "external." <code>pfree()</code> on one of these calls <code>free()</code> on the whole block
+  immediately — the only case where this allocator gives memory back to the OS before a context reset.</p>
+
+  <h3>(c) Block growth: doubling, and the slider below shows the exact sequence</h3>
+  <p>A context's first block is sized <code>initBlockSize</code> (the shipped default is 8&nbsp;KB via
+  <code>ALLOCSET_DEFAULT_SIZES</code>). Every time a block runs out of room, <code>aset.c</code> allocates a new
+  one sized <code>nextBlockSize</code>, then <b>doubles</b> <code>nextBlockSize</code> for next time — up to
+  <code>maxBlockSize</code> (default 8&nbsp;MB), after which growth stops and every subsequent block is that same
+  max size. This is the same doubling-array trade every language runtime's dynamic array makes: fewer, larger
+  <code>malloc()</code> calls as a context grows, at the cost of some unused tail space in the last block.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Block-doubling growth — drag total bytes requested</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>bytes palloc'd so far</label><input type="range" id="bg-slider" min="0" max="60" value="18" step="1"><span class="val" id="bg-val">18 KB</span></div>
+      <div class="memlegend" id="bg-legend"></div>
+      <div class="memmap" id="bg-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="bg-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Every engine solves this; nobody solves it the same way</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>ALLOCATION STRATEGY</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>Hierarchical MemoryContext tree; aset/generation/slab/dsa allocators</td>
+      <td><span class="pill g">bulk O(blocks) reclaim</span> <span class="pill g">leak-proof on error</span> <span class="pill g">size-tunable per node</span></td>
+      <td><span class="pill b">wrong-context bugs</span> <span class="pill b">manual switch discipline</span> <span class="pill b">per-chunk header tax</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td><code>MEM_ROOT</code> arenas for the parser (similar idea, one level); buffer pool and most engine state via the system allocator (often tuned with jemalloc/tcmalloc)</td>
+      <td><span class="pill g">simpler mental model</span> <span class="pill g">battle-tested general allocator</span></td>
+      <td><span class="pill y">no equivalent bulk-reclaim tree for executor state</span> <span class="pill b">leak risk rests on the general allocator + discipline</span></td></tr>
+    <tr><td>Oracle</td><td>PGA (Process/session heap) with its own extent-based heap manager; call-heap vs session-heap distinction mirrors per-query vs per-session lifetime</td>
+      <td><span class="pill g">globally tunable via PGA_AGGREGATE_TARGET</span></td>
+      <td><span class="pill y">coarser lifetime granularity; heavy configuration surface</span></td></tr>
+    <tr><td>SQLite</td><td>Pluggable allocator; a small fixed-size "lookaside" pool of pre-sized slots per connection for the most common small allocations</td>
+      <td><span class="pill g">near-zero overhead for embedded, single-statement use</span></td>
+      <td><span class="pill b">lookaside covers only a few fixed sizes — falls back to malloc otherwise</span></td></tr>
+    <tr><td>RocksDB</td><td>Bump-pointer <code>Arena</code> per MemTable — the same "arena, freed wholesale" idea, scoped to exactly one structure</td>
+      <td><span class="pill g">extremely cheap allocation and reclaim for that one structure</span></td>
+      <td><span class="pill y">not a general strategy — every other subsystem manages its own memory separately</span></td></tr>
+    <tr><td>Cassandra / JVM engines</td><td>Generational tracing garbage collector — candidate A from §5, chosen because the JVM already provides it</td>
+      <td><span class="pill g">zero explicit free() anywhere, no wrong-lifetime bugs by construction</span></td>
+      <td><span class="pill b">GC pause tails</span> <span class="pill b">per-object header overhead</span> <span class="pill b">much less deterministic latency</span></td></tr>
+  </table>
+  <p>Read it the same way chapter 1 asked you to: the isolation/efficiency tradeoff from process-vs-thread has a
+  memory-management analogue — <b>deterministic, hand-managed lifetime vs. automatic, GC-managed lifetime</b> —
+  and no one has made it disappear, only moved where its cost lands. PostgreSQL's C, extension-first heritage
+  made manual arenas the only viable answer at the time, and forty years of executor code now depends on their
+  exact semantics (reset order, callback hooks) deeply enough that adopting a GC would be a rewrite, not a patch.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Big-O, cache behavior, and where NUMA does and doesn't matter</h2>
+  <ul class="plain">
+    <li><b>palloc() — O(1) amortized.</b> Freelist hit: pop one entry, O(1). Freelist miss with room left in the
+      current block: bump <code>freeptr</code>, O(1). Freelist miss with no room: one <code>malloc()</code> for a
+      new (doubled) block — amortized O(1) across all the allocations that block will eventually serve, exactly
+      like a dynamic array's amortized push.</li>
+    <li><b>MemoryContextReset() — O(number of blocks), not O(number of chunks).</b> The reset loop in §8's
+      <code>AllocSetReset()</code> walks the block list and either frees or rewinds each block — it never visits
+      individual chunks, because nothing tracks chunks outside of the (already O(1)-cleared) freelist array. A
+      context holding one million small chunks across four blocks resets in four iterations, not a million.</li>
+    <li><b>Spatial locality.</b> Sequential <code>palloc()</code> calls into the same block land in adjacent
+      memory — excellent for the executor's own access pattern (deform a tuple's columns one after another,
+      right after allocating the tuple's slot) and friendly to hardware prefetch. A general allocator's
+      size-classed free lists, by contrast, hand back whatever chunk happened to be freed last, which is
+      essentially arbitrary with respect to what you're about to touch next.</li>
+    <li><b>TLB and huge pages.</b> Per-backend memory contexts are ordinary process heap (<code>brk</code>/anonymous
+      <code>mmap</code>), not backed by <code>huge_pages</code> (that GUC only affects the one fixed
+      <code>shared_buffers</code> segment from chapter 1). A backend that palloc's tens of megabytes of private
+      scratch during a large sort touches thousands of ordinary 4&nbsp;KB pages, and — unlike the shared segment —
+      pays no extra multi-process page-table cost, because this memory exists in exactly one process.</li>
+    <li><b>NUMA.</b> Private memory is first-touched by whichever core the owning backend is running on at
+      allocation time — which is usually the right node for that same backend's later accesses, since nothing
+      else in the system holds pointers into it. This is the one place chapter 1's cross-socket shared-memory
+      penalty <i>doesn't</i> apply, precisely because this memory was never shared in the first place.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Throughput: plain malloc/free vs palloc+bulk reset</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>allocations per query</label><input type="range" id="perf-n" min="10" max="2000000" value="50000" step="10"><span class="val" id="perf-n-val">50,000</span></div>
+      <div class="slider-row"><label>mean chunk size (bytes)</label><input type="range" id="perf-sz" min="8" max="8192" value="48" step="8"><span class="val" id="perf-sz-val">48 B</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="perf-frag">simulate freelist fragmentation (mixed sizes)</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--bad)">━</span> malloc()/free() pairs</span>
+        <span><span style="color:var(--pg)">━</span> palloc() + one MemoryContextReset()</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch: malloc/free cost scales linearly with allocation count (per-call
+    bookkeeping every time); palloc cost is mostly amortized O(1) allocation plus one flat O(blocks) reset at the
+    end, so its curve is nearly flat until chunk sizes get large enough to force many block-doubling events. Real
+    numbers depend heavily on libc allocator tuning (glibc ptmalloc vs jemalloc vs tcmalloc) — the point is the
+    <i>shape</i>: palloc's advantage grows with allocation <i>count</i>, not size, which is exactly the executor's
+    workload profile.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents this chapter explains</h2>
+
+  <h3>Incident 1: work_mem times parallel workers times concurrent nodes</h3>
+  <p>A reporting query gets a parallel hash join plan with four workers after <code>max_parallel_workers_per_gather</code>
+  was raised for a different, unrelated query. Each of the four parallel workers builds <i>its own</i> hash table,
+  each entitled to up to <code>work_mem</code> — the GUC's own documentation is explicit that "the total amount of
+  memory used can be many times the value of <code>work_mem</code>" once concurrent sort/hash nodes and parallel
+  workers are counted. A plan the DBA sized for one backend at 256&nbsp;MB <code>work_mem</code> actually peaks
+  near 256&nbsp;MB × 4 workers × however many sort/hash nodes coexist in the plan — and the box OOMs on a query
+  that "should" have fit easily. <b>Fix:</b> size <code>work_mem</code> against worst-case concurrent node ×
+  worker count, not against a single node's needs; consider <code>hash_mem_multiplier</code> (which scales hash
+  operations specifically) separately from sort-heavy budgeting.</p>
+
+  <h3>Incident 2: CacheMemoryContext growth from churny temporary-table workloads</h3>
+  <p>An application creates and drops a temporary table per transaction (a common ORM anti-pattern for "scratch"
+  tables). Each <code>CREATE TEMP TABLE</code> registers new relcache and syscache entries — allocated out of
+  <code>CacheMemoryContext</code>, which lives for the entire session and is <b>never reset</b> the way per-query
+  contexts are. Dropping the table removes the catalog rows, but the corresponding cache entries' chunks return
+  to <code>aset.c</code>'s freelists rather than to the OS, and if the next transaction's temp table has even
+  slightly different attribute counts (different chunk sizes), the freed chunks from the previous round often
+  don't get reused — the freelist accumulates entries for sizes nothing asks for again. RSS for that one
+  long-lived pooled connection climbs steadily over the day. <b>Fix:</b> avoid per-transaction temp tables in
+  hot paths (use real tables with an owning-transaction column, or <code>ON COMMIT DROP</code> sparingly);
+  periodically recycle pooled connections (PgBouncer's <code>server_lifetime</code>) so
+  <code>CacheMemoryContext</code> growth is bounded by connection age, not session length.</p>
+
+  <h3>Incident 3: logical decoding's reorder buffer before logical_decoding_work_mem</h3>
+  <p>A long-running transaction on a busy OLTP table accumulates a huge number of row changes while a logical
+  replication slot is active. Every change has to be held, in commit order, until the transaction commits or
+  aborts (the walsender from chapter 1 can't ship changes out of order). This is exactly the workload
+  <code>generation.c</code> and <code>slab.c</code> were built for — many same-shaped objects, FIFO lifetime —
+  but even a well-fitted allocator can't shrink an unbounded number of objects: the walsender process's memory
+  climbs with transaction size, and before the <code>logical_decoding_work_mem</code> GUC existed to force a
+  spill to disk past a configurable budget, one sufficiently large transaction could push a walsender into an
+  OOM kill (which, per chapter 1, takes down the whole cluster if it's a regular backend, though a walsender's
+  death alone is more contained). <b>Fix:</b> set <code>logical_decoding_work_mem</code> deliberately below
+  available headroom, monitor replication slot lag as a proxy for reorder-buffer size, and avoid single
+  transactions that touch millions of rows on tables with active logical replication slots.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this allocator at a whiteboard?</h2>
+  <p>Think before revealing — these are Staff/Principal-caliber questions about mechanism, not trivia.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>mcxt.c</code>, <code>aset.c</code>, and <code>dsa.c</code></h2>
+  <p>Files marked <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/utils/mmgr/</span></div>
+<div>├── <span class="fhl">● mcxt.c</span> <span class="fnote">— MemoryContextCreate/Reset/Delete, the vtable dispatch, CurrentMemoryContext</span></div>
+<div>├── <span class="fhl">● aset.c</span> <span class="fnote">— AllocSetContext: default allocator, freelists, block doubling</span></div>
+<div>├── generation.c <span class="fnote">— bump-pointer + whole-block free-when-empty, for FIFO lifetime workloads</span></div>
+<div>├── slab.c <span class="fnote">— fixed chunk-size freelist allocator, O(1) alloc/free, minimal waste</span></div>
+<div>├── <span class="fhl">● dsa.c</span> <span class="fnote">— Dynamic Shared memory Areas: an aset-like allocator over DSM segments</span></div>
+<div>└── portalmem.c <span class="fnote">— PortalContext lifecycle (per-cursor / per-statement)</span></div>
+<div><span class="dir">src/backend/storage/ipc/</span></div>
+<div>└── dsm.c <span class="fnote">— dynamic shared memory segment create/attach/detach/resize</span></div>
+<div><span class="dir">src/include/utils/</span></div>
+<div>├── memutils.h <span class="fnote">— public palloc/pfree API, ALLOCSET_DEFAULT_SIZES</span></div>
+<div>├── memutils_internal.h <span class="fnote">— MemoryChunk, MemoryContextMethodID</span></div>
+<div>└── palloc.h <span class="fnote">— CurrentMemoryContext extern; palloc/palloc0/repalloc inlines</span></div>
+  </div></div>
+
+  <p>First, the dispatch every allocation goes through — thin on purpose, so the common case (one existing
+  context, one alloc call) stays cheap:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>mcxt.c — MemoryContextAlloc() and the palloc() front door</span></div>
+    <pre><span class="k">void</span> *
+<span class="f">MemoryContextAlloc</span>(MemoryContext context, Size size)
+{
+    <span class="f">Assert</span>(MemoryContextIsValid(context));
+    context-&gt;isReset = <span class="k">false</span>;       <span class="c">/* this context now has live state */</span>
+    <span class="k">return</span> context-&gt;methods-&gt;alloc(context, size);  <span class="c">/* one indirect call, vtable dispatch */</span>
+}
+
+<span class="c">/* palloc.h -- the call site every backend C function uses: */</span>
+<span class="k">static inline</span> <span class="k">void</span> *
+<span class="f">palloc</span>(Size size)
+{
+    <span class="k">return</span> MemoryContextAlloc(CurrentMemoryContext, size);  <span class="c">/* implicit context! */</span>
+}</pre>
+  </div>
+
+  <p>Then the allocator that actually carves memory. This is <code>AllocSetAlloc()</code>'s real shape,
+  simplified for readability but faithful to the freelist-then-block-then-new-block order:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>aset.c — AllocSetAlloc(), simplified but faithful</span></div>
+    <pre><span class="k">void</span> *
+<span class="f">AllocSetAlloc</span>(MemoryContext context, Size size)
+{
+    AllocSet set = (AllocSet) context;
+
+    <span class="c">/* Big request: skip the freelist machinery, get a dedicated block */</span>
+    <span class="k">if</span> (size &gt; set-&gt;allocChunkLimit)
+        <span class="k">return</span> <span class="f">AllocSetAllocLarge</span>(set, size);
+
+    <span class="k">int</span> fidx = <span class="f">AllocSetFreeListIndex</span>(size);   <span class="c">/* round up to a size class */</span>
+
+    <span class="c">/* Freelist hit -- reuse a chunk this context pfree'd earlier */</span>
+    <span class="k">if</span> (set-&gt;freelist[fidx] != <span class="n">NULL</span>)
+    {
+        AllocChunk chunk = set-&gt;freelist[fidx];
+        set-&gt;freelist[fidx] = *(AllocChunk *) chunk;   <span class="c">/* pop: reuses the freed
+                                                          * chunk's own bytes to
+                                                          * store the list link   */</span>
+        <span class="k">return</span> MemoryChunkGetPointer(chunk);
+    }
+
+    <span class="c">/* Freelist miss -- carve fresh space out of the current block */</span>
+    Size chunk_size = <span class="n">1</span> &lt;&lt; (fidx + ALLOC_MINBITS);
+    <span class="k">if</span> (set-&gt;blocks == <span class="n">NULL</span> ||
+        set-&gt;blocks-&gt;freeptr + chunk_size + ALLOC_CHUNKHDRSZ &gt; set-&gt;blocks-&gt;endptr)
+        <span class="f">AllocSetAllocBlock</span>(set, chunk_size);  <span class="c">/* malloc()! doubles nextBlockSize */</span>
+
+    MemoryChunk *chunk = (MemoryChunk *) set-&gt;blocks-&gt;freeptr;
+    set-&gt;blocks-&gt;freeptr += chunk_size + ALLOC_CHUNKHDRSZ;
+    <span class="f">MemoryChunkSetHdr</span>(chunk, context, fidx);
+    <span class="k">return</span> MemoryChunkGetPointer(chunk);
+}</pre>
+  </div>
+
+  <p>And the reset that makes bulk-free cheap — the single most important function in this chapter:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>aset.c — AllocSetReset(), simplified but faithful</span></div>
+    <pre><span class="k">void</span>
+<span class="f">AllocSetReset</span>(MemoryContext context)
+{
+    AllocSet set = (AllocSet) context;
+    <span class="k">if</span> (context-&gt;isReset) <span class="k">return</span>;     <span class="c">/* nothing allocated: free lunch */</span>
+
+    AllocBlock block = set-&gt;blocks;
+    <span class="k">while</span> (block != <span class="n">NULL</span>)
+    {
+        AllocBlock next = block-&gt;next;
+        <span class="k">if</span> (block == set-&gt;keeper)
+        {
+            <span class="c">/* rewind, don't free -- avoids a malloc() the very next
+             * time this context is used, which matters enormously for
+             * contexts reset once per tuple (ExprContext!)             */</span>
+            block-&gt;freeptr = ((<span class="k">char</span> *) block) + ALLOC_BLOCKHDRSZ;
+            block-&gt;next = <span class="n">NULL</span>;
+        }
+        <span class="k">else</span>
+            <span class="f">free</span>(block);         <span class="c">/* ONE call per block, not per chunk */</span>
+        block = next;
+    }
+    set-&gt;blocks = set-&gt;keeper;
+    <span class="f">memset</span>(set-&gt;freelist, <span class="n">0</span>, <span class="k">sizeof</span>(set-&gt;freelist));  <span class="c">/* O(1): fixed 8-slot array */</span>
+    context-&gt;isReset = <span class="k">true</span>;
+}</pre>
+  </div>
+
+  <p>Finally, why parallel workers can't just pass each other raw pointers the way a single backend passes
+  pointers between its own contexts — <code>dsa_pointer</code> is a segment+offset handle, resolved separately
+  in every process that attached the segment:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>dsa.c — dsa_allocate(), simplified</span></div>
+    <pre><span class="k">dsa_pointer</span>
+<span class="f">dsa_allocate</span>(dsa_area *area, Size size)
+{
+    <span class="c">/* size-classed like aset.c, but carved from DSM segments instead
+     * of malloc'd blocks -- and returned as (segment index, offset)
+     * packed into one 64-bit handle, never a raw C pointer, because
+     * every backend attached this DSM segment at its OWN, independently
+     * chosen virtual address                                          */</span>
+    <span class="k">int</span> size_class = <span class="f">dsa_size_class</span>(size);
+    dsa_pointer p = <span class="f">alloc_from_segment_freelist</span>(area, size_class);
+    <span class="k">if</span> (!DsaPointerIsValid(p))
+        p = <span class="f">make_new_segment_and_allocate</span>(area, size_class);  <span class="c">/* dsm_create() */</span>
+    <span class="k">return</span> p;
+}
+
+<span class="c">/* every access needs an explicit translation, in whichever process: */</span>
+<span class="k">void</span> *ptr = <span class="f">dsa_get_address</span>(area, p);  <span class="c">/* segment_base[p.segment] + p.offset */</span></pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Keep a "keeper" block instead of freeing everything on reset.</b> A context that resets once per
+    tuple (millions of times per query) would otherwise pay a <code>malloc()</code> + <code>free()</code> pair
+    every single time — the keeper trick amortizes that to zero for the common case. <b>2. Make chunk headers
+    small enough that nobody thinks about them, then keep shrinking them anyway.</b> The PG16 header rework
+    happened specifically because a "small, fixed" cost multiplied across billions of daily allocations stops
+    being small. <b>3. Never let a shared-memory pointer look like a private one.</b> <code>dsa_pointer</code>
+    is deliberately not pointer-shaped in C's type system, specifically so it can't be dereferenced by accident
+    in a process that hasn't translated it — a static, structural guard against the exact class of bug that
+    would otherwise be trivial to introduce.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — read them.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — the life of one palloc() call</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from the call site to the returned pointer.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The arena, live</h2>
+  <p>A small context tree, rooted at <code>TopMemoryContext</code>. Select a context, then <code>palloc()</code>
+  chunks of varying sizes and watch blocks grow and double, the freelist fill as you <code>pfree()</code>, and
+  fragmentation form. Then hit <b>reset context</b> and watch the whole thing collapse to one keeper block in a
+  single step — the O(blocks) bulk reclaim from §8 and §10, felt instead of just read. <b>Delete subtree</b>
+  removes a context and everything under it, the way <code>MemoryContextDelete()</code> really recurses.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">arena & context-tree simulator</span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="arch-row-label">CONTEXT TREE — CLICK TO SELECT</div>
+          <div class="ctxtree" id="sim-tree"></div>
+          <div class="arch-row-label" style="margin-top:14px">ARENA — SELECTED CONTEXT'S BLOCKS</div>
+          <div class="chartbox"><canvas id="sim-arena" width="700" height="220"></canvas></div>
+          <div class="arch-row-label">FREELISTS — SELECTED CONTEXT</div>
+          <div class="fl-grid" id="sim-fl"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">PALLOC INTO SELECTED CONTEXT</div>
+            <div class="btns">
+              <button class="btn" id="sa-tiny">tiny (48B)</button>
+              <button class="btn" id="sa-small">small (200B)</button>
+              <button class="btn" id="sa-med">medium (900B)</button>
+              <button class="btn" id="sa-large">large (3KB)</button>
+              <button class="btn warn" id="sa-huge">huge (6KB, dedicated)</button>
+              <button class="btn" id="sa-burst">burst ×20 random</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">RECLAIM</div>
+            <div class="btns">
+              <button class="btn" id="sa-pfree">pfree() random chunk</button>
+              <button class="btn good" id="sa-reset">reset context</button>
+              <button class="btn danger" id="sa-delete">delete subtree</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">TREE</div>
+            <div class="btns">
+              <button class="btn" id="sa-child">+ child context</button>
+            </div>
+          </div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">SELECTED CONTEXT</div>
+            <div style="color:var(--dim)">click a node in the tree…</div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-palloc">0</div><div class="cl">pallocs</div></div>
+            <div class="scounter"><div class="cv" id="cnt-blocks">0</div><div class="cl">blocks (malloc)</div></div>
+            <div class="scounter"><div class="cv" id="cnt-resets" style="color:var(--ok)">0</div><div class="cl">resets</div></div>
+          </div>
+          <div style="padding:11px 15px">
+            <div class="meter"><div class="m-l"><span>LIVE BYTES (selected ctx)</span><span id="m-live-v">0 B</span></div><div class="m-bar"><div class="m-fill" id="m-live"></div></div></div>
+            <div class="meter"><div class="m-l"><span>FRAGMENTATION (freed, unreused)</span><span id="m-frag-v">0 B</span></div><div class="m-bar"><div class="m-fill" id="m-frag"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Burst ×20 on <code>ExprContext</code>, watch blocks double, then hit <b>reset context</b> and
+    watch pallocs and blocks fall to keeper-only in one step — no per-chunk work. <b>2.</b> Palloc a mix of sizes,
+    <code>pfree()</code> some, then palloc the <i>same</i> size again — watch it come from the freelist instead
+    of growing a block. <b>3.</b> Palloc a "huge" chunk, then <code>pfree()</code> a huge one specifically —
+    notice it's the one case that shrinks memory immediately, before any reset. <b>4.</b> Add a child context,
+    allocate into it, then <b>delete subtree</b> from the parent and watch the child disappear along with its
+    memory.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 3: three questions, no options</h2>
+  <p>No multiple choice. Answer fully in your head, then reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 02 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now trace a <code>palloc()</code> call through the
+    vtable to the exact byte it returns, explain why <code>MemoryContextReset()</code> is cheap, and predict
+    <code>work_mem</code> blowups before they page you. Chapter 3 leaves process-private memory behind and goes
+    to the structure everything eventually gets written into: the on-disk page — line pointers, tuple headers,
+    and the allocator-like discipline a heap page uses to pack and reclaim its own 8&nbsp;KB of space.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="pg-03.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-03: The Page →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1986", l:"POSTGRES", d:"<b>The allocator is born with the project.</b> POSTGRES needed a way to keep the query executor's scratch space separate from the catalog's long-lived state, on 1986 Unix where a custom arena was cheaper than repeated libc malloc() calls. The naming convention — palloc, pfree, a 'current' allocation scope — traces to the Ingres-lineage engineering culture chapter 1 introduced." },
+  { yr:"1994-96", l:"aset.c takes shape", d:"<b>The AllocSet allocator reaches roughly its modern form</b> in the Postgres95 → PostgreSQL 6 transition: a context struct owning a block list and a fixed array of size-classed freelists, exposed through palloc()/pfree()/MemoryContextSwitchTo(). This exact API is still what every line of backend C calls today." },
+  { yr:"1990s-2000s", l:"the tree grows", d:"<b>As the executor grew subqueries, aggregates, and sorting,</b> a single global 'current context' idea split into a real hierarchy: TopMemoryContext for the backend's whole life, per-transaction and per-portal contexts, per-query ExecutorState, and a per-tuple ExprContext reset on nearly every row. The tree's shape mirrors the natural nesting of a session's work, exactly as §5 derives." },
+  { yr:"~2000s", l:"MemoryContextMethods vtable", d:"<b>Contexts stop being aset.c-only.</b> A small function-pointer table (alloc/free/realloc/reset/delete) lets every call site keep calling the same palloc()/pfree() regardless of which concrete allocator backs a given context — the precondition for adding new allocator types without touching the thousands of existing call sites." },
+  { yr:"PG 10-11 era", l:"generation.c & slab.c", d:"<b>Two new allocator implementations land</b>, motivated specifically by logical decoding's reorder buffer: huge numbers of same-lifetime, often same-sized change records that aset.c's general freelist scheme handled with more header overhead and freelist churn than the workload needed. generation.c gives bump-pointer allocation with whole-block reclaim once a block empties in FIFO order; slab.c gives O(1) alloc/free for objects that are all exactly one size." },
+  { yr:"9.4 → 10", l:"dsm.c and dsa.c", d:"<b>Parallel query needs backends that didn't exist at fork() time</b> to share dynamically-sized memory — chapter 1's fixed, boot-time shared_buffers segment can't grow mid-query. dsm.c adds resizable Dynamic Shared Memory segments created per parallel query; dsa.c layers an aset-like size-classed allocator on top, returning relocatable dsa_pointer handles instead of raw C pointers, because every worker maps the segment at its own virtual address." },
+  { yr:"PostgreSQL 16 (2023)", l:"MemoryChunk header shrink", d:"<b>David Rowley's chunk-header rework</b> packs what used to be a full back-pointer plus a size field into one bit-packed 64-bit word — roughly halving per-chunk overhead. It reads like a small change; it isn't, because every one of the billions of allocations a busy server makes per day pays this exact tax." },
+  { yr:"PostgreSQL 17 (2024)", l:"radix-tree TidStore", d:"<b>VACUUM's dead-tuple bookkeeping moves from a flat sorted array to a radix tree</b> built from fixed-size nodes allocated through this chapter's slab/dsa-style machinery (with shared-memory variants for parallel vacuum) — cutting memory for large vacuums by multiples. A direct downstream beneficiary of specialized allocators existing at all." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[1].d;
+
+/* ============================================================
+   2. DECK: three allocation strategies (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:180px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...a)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${a.join("")}</div>`;
+  stepper("deckCandidates", [
+    { stage: wrap(
+        box("A: GC / REFCOUNT", cell("obj + refcount word","#f25c54") + cell("obj + refcount word","#f25c54") + cell("...millions more, each with metadata","#f25c54")),
+        box("B: ONE GLOBAL ARENA", cell("bump pointer →","#ff9f43") + cell("catalog entry (must survive!)","#ff9f43",'rgba(255,159,67,.12)') + cell("per-tuple scratch (must NOT survive)","#ff9f43")),
+        box("C: TREE OF ARENAS ✓", cell("TopMemoryContext","#60a5fa") + cell("↳ CacheMemoryContext","#4ade80") + cell("↳ ExecutorState → ExprContext","#4ade80"))
+      ),
+      cap:`Three ways to solve "free without tracking every object." <b>A</b> pays per-object metadata for every one of millions of tiny allocations. <b>B</b> is fast but has only one reset point. <b>C</b> gives every natural lifetime its own reset point.` },
+    { stage: wrap(
+        box("A: A QUERY ABORTS MID-EVALUATION", cell("refcounts still correct -- nothing leaks","#4ade80") + cell("but: GC pause or atomic RC traffic on EVERY tiny alloc","#f25c54",'rgba(242,92,84,.1)')),
+        box("B: SAME ABORT", cell("bump pointer rewinds to 0","#4ade80") + cell("...which also destroys the catalog entry the CACHE still needs","#f25c54",'rgba(242,92,84,.12)'))
+      ),
+      cap:`<b>Candidate A survives the abort correctly</b> but you're now paying GC/refcount overhead on a workload of millions of tiny, short-lived objects per second -- exactly where that overhead hurts most. <b>Candidate B survives the abort too</b> -- by destroying everything, including the long-lived catalog entry that has nothing to do with this query. Neither is acceptable; the granularity is wrong in both.` },
+    { stage: wrap(
+        box("C: SAME ABORT, TREE OF ARENAS", cell("TopMemoryContext -- untouched","#60a5fa") + cell("CacheMemoryContext -- untouched","#60a5fa") + cell("ExecutorState for THIS query -- reset","#ff9f43",'rgba(255,159,67,.12)') + cell("ExprContext -- reset","#ff9f43",'rgba(255,159,67,.12)'))
+      ),
+      cap:`<b>Candidate C resets only the contexts that actually belong to the aborted query.</b> The catalog cache never notices. No per-object metadata was ever paid for the millions of tiny allocations along the way -- they were carved cheaply from blocks and simply abandoned when their owning context reset.` },
+    { stage: wrap(
+        box("VERDICT", cell("Correctness on abnormal exit: SOLVED (reset is unconditional)","#4ade80") + cell("Per-object overhead: NONE (blocks, not refcounts)","#4ade80") + cell("Cost: you must pick the right context per allocation","#ff9f43"))
+      ),
+      cap:`The tree of arenas wins on the axis that matters most for this workload -- millions of short-lived objects, occasional abnormal exit, occasional long-lived survivor -- at the cost of a new discipline: <i>which context is current right now?</i> §6 prices that discipline; §7 shows the tree PostgreSQL actually built.` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  topmem:{ n:"TopMemoryContext", f:"utils/mmgr/mcxt.c (created in MemoryContextInit)", r:"The root of every context in a backend. Lives exactly as long as the process. Holds a handful of small, permanent bookkeeping allocations (rarely anything else) -- almost everything useful hangs off one of its children instead.", l:"Created once, at backend startup, before almost anything else runs.", d:"Never reset or deleted during normal operation; it dies only when the process exits, at which point the OS reclaims everything beneath it in one step -- the ultimate 'reset'." },
+  cachemem:{ n:"CacheMemoryContext", f:"utils/cache/catcache.c, relcache.c", r:"Holds the relation cache (relcache) and system catalog cache (syscache) entries this backend has built -- table definitions, index metadata, operator/function lookups. Backed by aset.c.", l:"Session-scoped: lives for the whole connection, entries added lazily on first use of each catalog object.", d:"Never wholesale-reset (that would forget everything about every table you've touched); individual entries are invalidated and rebuilt via the shared invalidation mechanism instead (chapter 8's lock/invalidation machinery)." },
+  msgctx:{ n:"MessageContext", f:"tcop/postgres.c", r:"Scratch space for parsing and processing exactly one client protocol message (a 'Q' simple-query message, a bind/execute pair). Backed by aset.c.", l:"Reset at the top of PostgresMain()'s loop, once per incoming message -- extremely frequent, extremely short-lived.", d:"Reset (not deleted) between messages; the keeper block from §8 makes this near-zero-cost even though it happens on every single command a client sends." },
+  txnctx:{ n:"TopTransactionContext", f:"utils/mmgr/mcxt.c, access/transam/xact.c", r:"State that must survive an entire transaction even across multiple statements -- transaction-level snapshots, subtransaction bookkeeping.", l:"Created at transaction start, destroyed at commit or abort.", d:"Deleted wholesale at transaction end -- this is the mechanism that makes 'abort discards everything the transaction did in memory' true regardless of how deep the abort's longjmp() unwound." },
+  portalctx:{ n:"PortalContext", f:"utils/mmgr/portalmem.c", r:"Backs one open portal -- roughly, one open cursor or one execution of one prepared statement. Holds the executor's top-level state for that specific execution.", l:"Created when a portal is opened (bound), dropped when it's closed.", d:"Multiple portals can be open at once (multiple open cursors in one session) -- each with its own independent PortalContext, which is exactly why closing one cursor doesn't disturb another." },
+  execstate:{ n:"ExecutorState (per query)", f:"executor/execUtils.c (CreateExecutorState)", r:"Owns a running query's plan-node state, tuple table slots, and sort/hash working memory -- this is where work_mem-bounded structures actually palloc from.", l:"Created when a query starts executing, destroyed when it finishes (or is deleted early on error/cancel).", d:"Deletion here is what actually releases a sort's or hash join's work_mem-sized memory back to the process -- chapter 16-17 territory, but the mechanism is this chapter's." },
+  exprctx:{ n:"ExprContext (per tuple)", f:"executor/execUtils.c (CreateExprContext), nodes/execnodes.h", r:"Scratch space for evaluating expressions (WHERE clauses, computed columns) against ONE tuple. The single most frequently reset context in the entire system.", l:"Reset roughly once per output tuple -- millions of times in a large query.", d:"This is the context §6 warned about: palloc a struct here that you mean to keep past the current tuple, and you have a use-after-reset bug that only shows up once this context's keeper block gets reused for something else." },
+  aset:{ n:"aset.c — AllocSet", f:"utils/mmgr/aset.c", r:"The default, general-purpose implementation. Blocks + 8 size-classed freelists + a keeper block. Backs the large majority of contexts in the system, including everything above except where noted.", l:"Used whenever a context is created without specifying a different allocator.", d:"§8 covers this in full: block doubling, the MemoryChunk header, and why AllocSetReset() is O(blocks)." },
+  generation:{ n:"generation.c — Generation", f:"utils/mmgr/generation.c", r:"Bump-pointer allocation within a block; a block is only freed once EVERY chunk in it has been pfree'd, in roughly FIFO order. No general freelist array -- optimized for workloads where allocation and freeing both happen in submission order.", l:"Used by logical decoding's reorder buffer and other same-lifetime, high-volume workloads.", d:"Its win over aset.c is real only when the FIFO assumption holds; violate it (free out of order) and blocks can't be reclaimed until everything in them happens to be freed anyway." },
+  slab:{ n:"slab.c — Slab", f:"utils/mmgr/slab.c", r:"Every chunk is exactly the SAME fixed size, decided when the context is created. Each block is divided into equal-size slots with a simple free-slot bitmap/list -- O(1) alloc and free, minimal per-chunk overhead, zero internal fragmentation for that one size.", l:"Used for large numbers of identically-sized structures (reorder buffer change records, radix-tree nodes for chapter 12's VACUUM).", d:"Cannot serve a request of a different size at all -- it's a specialist, not a general allocator; a context needing mixed sizes has to use aset.c or generation.c instead." },
+  dsa:{ n:"dsa.c — Dynamic Shared Area", f:"utils/mmgr/dsa.c, storage/ipc/dsm.c", r:"A size-classed allocator like aset.c, but carved out of resizable Dynamic Shared Memory segments instead of process-private malloc'd blocks -- so multiple parallel-query workers can allocate INTO the same shared structure.", l:"Created when a parallel query plan needs shared working state (parallel hash join's shared hash table, parallel bitmap heap scan); destroyed when the query ends.", d:"Returns dsa_pointer handles, not raw C pointers -- every backend must call dsa_get_address() to translate, because each process mapped the same segment at its own virtual address (chapter 1's fork()-inherited-address-space trick doesn't apply to memory created after workers already exist)." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">NOTE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("topmem");
+
+/* ============================================================
+   4. DECK: context tree create/reset/delete (§8a)
+   ============================================================ */
+(function(){
+  function tree(nodes, opts){
+    opts = opts || {};
+    let h = `<div class="ptree">`;
+    nodes.forEach(n=>{
+      h += `<div class="pnode ${n.cls||""}" style="${n.indent?('margin-left:'+n.indent+'px'):''}">${n.label}${n.sub?`<span class="sub">${n.sub}</span>`:""}</div>`;
+      if (n.arrow) h += `<div style="width:2px;height:14px;background:var(--border-hi);margin:0 auto"></div>`;
+    });
+    h += `</div>`;
+    return h;
+  }
+  stepper("deckTree", [
+    { stage: tree([
+        { label:"TopMemoryContext", cls:"pm" },
+      ]),
+      cap:`<b>Backend startup.</b> One root context exists. Every subsequent context is created with <code>AllocSetContextCreate(parent, name, sizes)</code>, which links the new node into its parent's <code>firstchild</code>/<code>nextchild</code> list -- a plain doubly-linked list of siblings, no fancier structure needed.` },
+    { stage: tree([
+        { label:"TopMemoryContext", cls:"pm" },
+      ]) + `<div class="prow"><div class="pnode new">CacheMemoryContext</div><div class="pnode new">MessageContext</div><div class="pnode new">TopTransactionContext</div></div>`,
+      cap:`<b>Session and transaction begin.</b> Three children appear under the root. Each is independently reset on its own schedule -- MessageContext every protocol message, TopTransactionContext only at commit/abort, CacheMemoryContext effectively never (entries are invalidated individually instead).` },
+    { stage: tree([{ label:"TopMemoryContext", cls:"pm" }]) +
+        `<div class="prow"><div class="pnode">CacheMemoryContext</div><div class="pnode">MessageContext</div><div class="pnode new">TopTransactionContext</div></div>` +
+        `<div style="width:2px;height:14px;background:var(--border-hi);margin:6px auto"></div>` +
+        `<div class="prow"><div class="pnode new">ExecutorState (query #1)</div></div>`,
+      cap:`<b>A query starts.</b> <code>CreateExecutorState()</code> makes ExecutorState a child of the transaction context (or the portal context for the running statement) -- so if the query errors out, deleting its ExecutorState subtree cannot accidentally touch TopTransactionContext's own state.` },
+    { stage: tree([{ label:"TopMemoryContext", cls:"pm" }]) +
+        `<div class="prow"><div class="pnode">CacheMemoryContext</div><div class="pnode">MessageContext</div><div class="pnode">TopTransactionContext</div></div>` +
+        `<div style="width:2px;height:14px;background:var(--border-hi);margin:6px auto"></div>` +
+        `<div class="prow"><div class="pnode">ExecutorState (query #1)</div></div>` +
+        `<div style="width:2px;height:14px;background:var(--border-hi);margin:6px auto"></div>` +
+        `<div class="prow"><div class="pnode new">ExprContext (tuple)</div></div>`,
+      cap:`<b>Row-by-row execution.</b> ExprContext hangs off ExecutorState. <code>ResetExprContext()</code> runs after (almost) every output tuple -- by far the highest-frequency reset in the whole system -- and touches nothing above it in the tree.` },
+    { stage: tree([{ label:"TopMemoryContext", cls:"pm" }]) +
+        `<div class="prow"><div class="pnode">CacheMemoryContext</div><div class="pnode">MessageContext</div><div class="pnode">TopTransactionContext</div></div>` +
+        `<div style="width:2px;height:14px;background:var(--border-hi);margin:6px auto"></div>` +
+        `<div class="prow"><div class="pnode crash">ExecutorState (query #1)</div></div>` +
+        `<div style="width:2px;height:14px;background:var(--border-hi);margin:6px auto"></div>` +
+        `<div class="prow"><div class="pnode gone">ExprContext (tuple)</div></div>`,
+      cap:`<b>The query hits elog(ERROR).</b> A <code>longjmp()</code> unwinds to the transaction abort handler, which calls <code>MemoryContextDelete()</code> on the query's ExecutorState. Deletion recurses: children (ExprContext) are deleted FIRST, then the node itself -- every block in the whole subtree is freed, and the node is unlinked from its parent's child list. No code anywhere had to individually free anything the query allocated.` },
+    { stage: tree([{ label:"TopMemoryContext", cls:"pm" }]) +
+        `<div class="prow"><div class="pnode">CacheMemoryContext</div><div class="pnode">MessageContext</div><div class="pnode">TopTransactionContext</div></div>`,
+      cap:`<b>Clean again.</b> The tree is exactly as it was before the query started, minus the two nodes that existed only for it. Compare to §3's naive malloc/free strawman: this required precisely ONE call, <code>MemoryContextDelete(executorState)</code>, regardless of how many thousand allocations happened underneath it or how deep the error's longjmp() traveled.` }
+  ]);
+})();
+
+/* ============================================================
+   5. CHUNK BYTE-LAYOUT VISUAL (§8b)
+   ============================================================ */
+(function(){
+  const segs = [ ["MemoryChunk header (8 B)", 8, "#f25c54"], ["payload (40 B)", 40, "#60a5fa"] ];
+  const total = segs.reduce((s,x)=>s+x[1],0);
+  el("chunk-bytemap").innerHTML = segs.map(([n,v,c])=>
+    `<div class="seg" style="background:${c};width:${(v/total*100).toFixed(1)}%">${v}B</div>`).join("");
+  el("chunk-legend").innerHTML = segs.map(([n,v,c])=>`<span><span class="sw" style="background:${c}"></span>${n}</span>`).join("")
+    + `<span style="color:var(--dim)">header/payload ratio here: ${(8/48*100).toFixed(0)}% -- the smaller the payload, the more this ratio matters.</span>`;
+})();
+
+/* ============================================================
+   6. BLOCK-DOUBLING SLIDER (§8c)
+   ============================================================ */
+(function(){
+  const INIT = 8, MAXB = 256; // KB, illustrative (real defaults: 8 KB init, 8 MB max)
+  function blocksFor(totalKB){
+    let blocks = [], remaining = totalKB, next = INIT;
+    while (remaining > 0){
+      const use = Math.min(remaining, next);
+      blocks.push(next);
+      remaining -= use;
+      next = Math.min(next*2, MAXB);
+    }
+    return blocks;
+  }
+  function render(){
+    const totalKB = +el("bg-slider").value * 2; // slider units -> KB, up to 120KB
+    el("bg-val").textContent = totalKB + " KB";
+    const blocks = blocksFor(totalKB);
+    const colors = ["#60a5fa","#8ab8ff","#a78bfa","#4ade80","#ff9f43","#f25c54","#e879f9","#38bdf8"];
+    const totalAlloc = blocks.reduce((s,v)=>s+v,0);
+    const wsum = blocks.reduce((s,v)=>s+Math.pow(v,0.5),0);
+    el("bg-map").innerHTML = blocks.map((v,i)=>
+      `<div class="seg" style="background:${colors[i%colors.length]};width:${(Math.pow(v,0.5)/wsum*100).toFixed(2)}%" title="block ${i+1}: ${v} KB">${v}KB</div>`).join("");
+    el("bg-legend").innerHTML = blocks.map((v,i)=>`<span><span class="sw" style="background:${colors[i%colors.length]}"></span>block ${i+1}</span>`).join("");
+    const waste = totalAlloc - totalKB;
+    el("bg-note").innerHTML = `${blocks.length} block(s), ${blocks.length} malloc() calls total, ${totalAlloc} KB actually allocated to hold ${totalKB} KB requested -- <b style="color:var(--pg)">${waste.toFixed(1)} KB</b> unused tail space in the last block (normal: it becomes free room for the NEXT palloc, not waste in the leak sense). Note growth stops doubling once a block would exceed the illustrative max of ${MAXB} KB here (production default: doubling continues up to 8 MB).`;
+  }
+  el("bg-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let frag = false;
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function model(n, sz, frag){
+    const mallocPerCall = 35 + (frag ? 25 : 0);       // ns, bookkeeping + fragmentation search
+    const freePerCall = 20 + (frag ? 15 : 0);
+    const mallocTotalMs = n * (mallocPerCall + freePerCall) / 1e6;
+    const pallocPerCall = 6;                           // ns, freelist pop or bump-pointer
+    const blocks = Math.max(1, Math.ceil(Math.log2(Math.max(1, n*sz/8192))) + 1);
+    const resetMs = blocks * 0.002;                    // O(blocks), ~2us per block
+    const pallocTotalMs = (n * pallocPerCall / 1e6) + resetMs;
+    return { mallocTotalMs, pallocTotalMs, blocks };
+  }
+  function render(){
+    const N = +el("perf-n").value, SZ = +el("perf-sz").value;
+    el("perf-n-val").textContent = N.toLocaleString();
+    el("perf-sz-val").textContent = SZ + " B";
+    el("perf-frag").classList.toggle("on", frag);
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=10; x<=2000000; x*= 1.15) xs.push(Math.round(x));
+    let maxV = 0;
+    const pts = xs.map(n=>{ const m = model(n, SZ, frag); maxV = Math.max(maxV, m.mallocTotalMs, m.pallocTotalMs); return m; });
+    const X = n => PAD + (Math.log10(n)/Math.log10(2000000)) * (W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [10,100,1000,10000,100000,1000000].forEach(n=>{ ctx.beginPath(); ctx.moveTo(X(n),10); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText(n>=1000?(n/1000)+"k":n, X(n)-10, H-6); });
+    function curve(get, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((n,i)=>{ const y = H-24 - (get(pts[i])/maxV)*(H-44); i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y); });
+      ctx.stroke();
+    }
+    curve(m=>m.mallocTotalMs, "#f25c54");
+    curve(m=>m.pallocTotalMs, "#60a5fa");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(N),10); ctx.lineTo(X(N),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(N, SZ, frag);
+    el("perf-note").innerHTML = `At <b>${N.toLocaleString()}</b> allocations of ~<b>${SZ} B</b> each: malloc/free ≈ <b style="color:var(--bad)">${here.mallocTotalMs.toFixed(2)} ms</b> of pure allocator overhead; palloc + one reset ≈ <b style="color:var(--pg)">${here.pallocTotalMs.toFixed(3)} ms</b> across an estimated ${here.blocks} block(s). Ratio: <b>${(here.mallocTotalMs/Math.max(here.pallocTotalMs,.0001)).toFixed(0)}×</b>. ${frag?"Fragmentation mode adds a freelist/heap search penalty to every malloc/free pair -- palloc's cost is unaffected because reset doesn't search anything.":"Toggle fragmentation to see malloc/free degrade further while palloc's flat reset cost doesn't move."}`;
+  }
+  el("perf-n").oninput = render;
+  el("perf-sz").oninput = render;
+  el("perf-frag").onclick = ()=>{ frag=!frag; render(); };
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Why is MemoryContextReset() described as O(number of blocks) and not O(number of allocations)? Walk through what the code actually does.", hint:"what does the reset loop iterate over?",
+    a:"AllocSetReset() walks the context's block linked list -- typically a handful of blocks even for a context holding millions of chunks -- and for each block either frees it (one free() call) or, for the keeper block, just rewinds its freeptr. It also memsets the small fixed-size freelist array to zero. At no point does it walk chunk-by-chunk, because nothing outside the freelist array tracks individual chunks -- once the block that held them is gone, they're gone. Contrast with malloc/free discipline, where reclaiming N objects requires N free() calls because each is independently tracked by the allocator." },
+  { lvl:"SENIOR", q:"An extension palloc's a struct in the per-tuple ExprContext, stores a pointer to it in a session-level cache, and later crashes intermittently reading that pointer. Diagnose the bug class.", hint:"what happens to ExprContext between tuples?",
+    a:"This is a wrong-context allocation: ExprContext resets on (almost) every output tuple, so any pointer into it becomes invalid the moment the context resets -- the memory isn't necessarily unmapped, it's just handed back to the freelist/freeptr and will be overwritten by the next tuple's scratch allocations. The pointer looks fine until something else happens to reuse that exact byte range, which is why the crash is intermittent and load-dependent rather than immediate. Fix: allocate the long-lived struct in a context whose lifetime actually matches the cache's -- e.g. CacheMemoryContext or a dedicated child of TopMemoryContext -- using MemoryContextSwitchTo() before the palloc()." },
+  { lvl:"STAFF", q:"work_mem's documentation warns actual usage can be 'several times' the configured value. Derive the worst case formula and explain each multiplier.", hint:"nodes × workers × concurrent backends",
+    a:"Peak memory ≈ (work_mem) × (concurrent sort/hash nodes in one plan, since work_mem is a per-node budget, not per-query) × (parallel workers per gather, since each worker builds its own node-local structure rather than sharing one) × (number of backends running such plans concurrently). Each multiplier is a real, independent axis: a plan with two hash joins and one sort has three concurrent nodes; four parallel workers each pay the node cost again; and none of this is capped by a single global memory budget -- it's the sum of many independent per-node, per-process allocations, which is exactly why it can blow past naive expectations." },
+  { lvl:"STAFF", q:"Why can't a parallel worker just receive a raw C pointer into a structure another worker palloc'd, the way one function can pass a pointer to another within the same backend?", hint:"what's different about when the memory was mapped?",
+    a:"Within one backend, every context is a plain process-private heap address; passing a pointer between functions in the same process is always valid. Across parallel workers, the shared structure lives in a Dynamic Shared Memory segment created AFTER the workers were already forked (they weren't created via one shared fork() the way chapter 1's backends inherit shared_buffers) -- and critically, each worker is free to map that same segment at a different virtual address in its own address space. A raw pointer valid in worker A's address space can point to garbage, or to unrelated memory, in worker B's. dsa.c's answer is dsa_pointer: a (segment, offset) handle that every worker resolves independently via dsa_get_address(), which looks up its OWN base address for that segment before adding the offset." },
+  { lvl:"STAFF", q:"Compare aset.c's freelist-bucket approach to a general-purpose allocator like glibc's malloc. What did PostgreSQL buy by writing its own?", hint:"think about what's known ahead of time",
+    a:"glibc's malloc has to be correct and reasonably fast for arbitrary, unpredictable alloc/free patterns from any C program, so it carries boundary tags for coalescing adjacent free space, multiple size-class strategies (fastbins, tcache, unsorted bins), and thread-safety machinery. aset.c gets to assume a much narrower workload: allocations are freed either individually (small, by size class) or in bulk (the whole context resets), it never needs to coalesce adjacent chunks into larger ones (there's no realloc-to-bigger-in-place expectation baked into the API the way there sort of is for malloc), and there's no thread-safety cost because a context belongs to exactly one backend. That narrower contract is what makes an 8-byte header and an 8-bucket freelist array sufficient -- a general allocator can't make those same assumptions about an arbitrary caller." },
+  { lvl:"PRINCIPAL", q:"You're adding a new subsystem that allocates millions of identically-sized 64-byte structs, all created and destroyed in FIFO order relative to each other. Which existing allocator do you pick, and why not the others?", hint:"fixed size + FIFO lifetime is two separate properties",
+    a:"slab.c is the better fit if you can guarantee EVERY allocation really is the same 64 bytes: O(1) alloc/free, minimal overhead, no freelist size-class indirection because there's only one size. generation.c is the better fit if sizes vary somewhat but the FIFO/bump-pointer assumption about ORDER of freeing holds -- it reclaims whole blocks once they empty in submission order, but doesn't require uniform size. aset.c is the fallback if neither assumption holds (mixed sizes, arbitrary free order) -- it's strictly more general but pays freelist-management and larger-header overhead you don't need if your workload really is this uniform. Given the stated workload (uniform size AND FIFO), slab.c wins on both axes; picking aset.c here would mean handing the allocator information (size class routing) you already know statically." },
+  { lvl:"PRINCIPAL", q:"Steelman replacing per-backend MemoryContexts with a single general-purpose allocator (jemalloc/tcmalloc) tuned aggressively, then steelman keeping the context tree. Which wins for a modern cloud-native fork of Postgres?", hint:"what does the context tree buy that a good general allocator can't replicate structurally?",
+    a:"For the general allocator: modern jemalloc/tcmalloc are extremely fast, thread-cache-aware, and require zero manual lifetime bookkeeping in application code -- you'd delete an enormous amount of MemoryContextSwitchTo() bookkeeping from the codebase and get competitive or better raw alloc/free latency. For the context tree: the reset/delete semantics are a STRUCTURAL guarantee against the leak-on-abnormal-exit class from §4 that no general allocator provides on its own -- a general allocator gives you fast free(), but you still have to call it correctly on every path, including every longjmp() target, which is precisely the discipline this chapter's design was built to avoid needing. A modern fork chasing raw throughput on a workload with few aborts might reasonably lean toward tuning aset.c's constants or swapping its backing malloc, but wholesale removing the context tree would mean re-deriving, by hand, cleanup correctness on every one of PostgreSQL's thousands of error paths -- a correctness regression risk that dwarfs the performance upside for a database, where a slow correct answer beats a fast wrong (or leaked) one." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why is MemoryContextReset() described as O(number of blocks) rather than O(number of chunks)?",
+    opts:[ "Because chunks are stored in a separate hash table that's cleared in O(1)",
+           "Because the reset loop frees or rewinds each block once, and nothing outside the small fixed freelist array tracks chunks individually",
+           "Because chunks are reference-counted and freed automatically when their count reaches zero",
+           "Because PostgreSQL pre-allocates exactly one block per possible chunk size" ],
+    a:1,
+    why:"AllocSetReset() walks the block linked list and does one free() (or one freeptr rewind for the keeper) per block -- a handful of iterations even for millions of chunks. The freelist array is a fixed 8 entries, cleared with one memset(). No per-chunk bookkeeping exists outside of that, so there's nothing chunk-shaped to iterate over. Option A invents a structure that doesn't exist; option C describes garbage collection, which this chapter explicitly rejected in §5; option D would defeat block doubling entirely." },
+  { q:"A chunk request is larger than allocChunkLimit. What actually happens?",
+    opts:[ "The request fails with an out-of-memory error immediately",
+           "It's rounded down to allocChunkLimit and silently truncated",
+           "It gets a dedicated block sized to the request, bypassing the freelist array entirely; pfree() on it frees that block immediately",
+           "It's queued until enough small chunks are freed to make room" ],
+    a:2,
+    why:"aset.c's AllocSetAllocLarge() path malloc()s a block sized exactly for that one chunk (rounded for alignment) and marks it 'external' in the MemoryChunk header. This is also the ONE case where pfree() gives memory back to the OS before any context-wide reset -- small chunks just go onto a freelist for potential reuse. Truncation (B) would silently corrupt data; queuing (D) doesn't exist in this allocator; outright failure (A) only happens if the underlying malloc() itself fails." },
+  { q:"Why did PostgreSQL 16 shrink the MemoryChunk header from roughly 16 bytes to 8?",
+    opts:[ "To support allocations larger than 4 GB",
+           "Because every allocation the server makes pays this fixed cost, and on workloads dominated by small chunks the header is a large fraction of total memory",
+           "To remove the need for the allocChunkLimit boundary",
+           "Because 8-byte headers are required for NUMA-aware allocation" ],
+    a:1,
+    why:"The chapter's core insight: a 'small, fixed' per-chunk cost stops being small once you multiply it by every allocation a busy server makes, and the executor's workload is dominated by small (tens-of-bytes) chunks, where header overhead is a double-digit percentage of memory, not a rounding error. It has nothing to do with allocation size limits (A), doesn't remove allocChunkLimit (C, which is still the small/dedicated-block boundary), and isn't a NUMA mechanism (D)." },
+  { q:"Why does aset.c keep a designated 'keeper' block that survives MemoryContextReset() instead of freeing everything?",
+    opts:[ "To guarantee alignment for SIMD instructions",
+           "Because some contexts (like ExprContext) reset extremely often, and reusing one block avoids a malloc()/free() pair on every reset",
+           "Because the first block holds the context's own MemoryContextData struct and can never move",
+           "To support MemoryContextStats() reporting" ],
+    a:1,
+    why:"ExprContext resets roughly once per output tuple -- potentially millions of times per query. Without a keeper block, every single reset would free its only block and then malloc() a fresh one the next time anything was allocated -- pure overhead with no benefit. Rewinding the keeper's freeptr instead is essentially free. The MemoryContextData struct (C) actually lives in the context's own memory, separate from the blocks it manages, and neither SIMD alignment nor stats reporting motivate this design." },
+  { q:"Why does dsa_allocate() return a dsa_pointer instead of a normal C pointer?",
+    opts:[ "dsa_pointer is smaller (32 bits) to save shared memory space",
+           "Because different backends may map the same DSM segment at different virtual addresses, so a raw pointer valid in one process can be meaningless in another",
+           "Because dsa.c uses a different CPU architecture's addressing internally",
+           "To make the allocation thread-safe" ],
+    a:1,
+    why:"Chapter 1 established that fork()-inherited shared memory works because every child maps it at the SAME address as the parent. Dynamic Shared Memory segments created after parallel workers already exist don't get that guarantee -- each backend independently chooses where to map the segment. A dsa_pointer is a (segment, offset) handle that every process resolves via dsa_get_address() using its own base address, avoiding the entire class of bug where a pointer valid in one process silently isn't in another. Size savings and architecture concerns aren't the actual motivation, and processes (not threads) are what's being coordinated here." },
+  { q:"A query planner picks a parallel hash join with 4 workers. Why can total memory usage exceed work_mem × 4, not just equal it?",
+    opts:[ "It can't -- work_mem strictly caps total usage across all workers",
+           "Because work_mem applies per sort/hash NODE per process, and a plan can contain more than one such node, so the multiplier is (work_mem) × (concurrent nodes) × (workers)",
+           "Because parallel workers ignore work_mem entirely and use unlimited memory",
+           "Because work_mem is measured in pages, not bytes, causing a unit conversion error" ],
+    a:1,
+    why:"work_mem is a per-operation, per-process budget, not a global cap -- PostgreSQL's own documentation warns usage can be several times the configured value once you multiply by concurrent sort/hash nodes in one plan AND by parallel workers, each of which builds its own node-local structure rather than sharing one. Option A describes a global cap that doesn't exist; option C overstates it (work_mem still bounds each individual node); option D is not how the GUC is defined." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; the allocator would be proud.":correct>=4?"solid model; skim the ones you missed.":"re-run §8's decks and the simulator's reset experiment — it clicks fast once you watch it happen."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Backend C code calls palloc(size) — CurrentMemoryContext is implicit",
+    "MemoryContextAlloc() dispatches through context->methods->alloc()",
+    "AllocSetAlloc(): size compared against allocChunkLimit",
+    "Size rounded up to the nearest of 8 freelist size classes",
+    "freelist[class] checked for a previously pfree'd chunk of that size",
+    "If empty: current block checked for enough remaining space",
+    "If not enough space: malloc() a new block, doubling nextBlockSize",
+    "Chunk carved from the block, MemoryChunk header written, freeptr advanced",
+    "Pointer just past the header returned to the caller"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real dispatch path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 3 will show that an 8 KB heap page has line pointers growing down from the start and tuple data growing up from the end. Predict why a page can't just embed a miniature version of aset.c's block-list-plus-freelist scheme.",
+    a:"aset.c's scheme assumes it can call malloc() for more blocks whenever it needs room -- a page is a FIXED 8 KB region with no analogue of 'allocate another block' available; there is nowhere else for the data to go. It also needs a stable, small, on-disk-serializable addressing scheme (line pointer offsets) that survives being written to disk and read back by a different process entirely, unlike a MemoryChunk's in-process bit-packed offset which only ever needs to make sense to the backend that created it. Expect chapter 3's answer to look like a much more constrained, compaction-aware layout rather than a general allocator." },
+  { lvl:"THINK", q:"This chapter's contexts return freed chunks to a freelist for REUSE, not to the OS. Predict what a heap page must do differently when a tuple is deleted or updated, given that a page can't just grow a new block.",
+    a:"A page has to reclaim the dead tuple's exact bytes for reuse by a future tuple on that same page -- there's no equivalent of 'allocate a bigger block' to paper over fragmentation, so a heap page needs its own explicit compaction step (this chapter's ExprContext-style code never bothers to compact; it just abandons space until reset). Expect chapter 3 to introduce a page-local operation, more like a mini defragmentation pass, that VACUUM and normal tuple insertion both rely on." },
+  { lvl:"THINK", q:"ExprContext resets on nearly every tuple, and this chapter showed that's cheap because of the keeper block. Predict what data structure the executor needs from chapter 3's page format so it doesn't have to re-parse a page's tuple layout from scratch on every single row.",
+    a:"Expect a compact, fixed-size per-tuple descriptor stored inline on the page (a line pointer / item pointer) that gives the offset and length of each tuple directly, so the executor can jump straight to tuple N's bytes without scanning the page byte-by-byte first -- the on-disk analogue of this chapter's O(1) chunk lookups, but serialized in a form that a different process (or the same process after a restart) can read cold, without any in-memory context tree to lean on." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const FL_CLASSES = [32,64,128,256,512,1024,2048,4096]; // bytes, 8 buckets
+  const CHUNK_LIMIT = 4096;       // illustrative ALLOC_CHUNK_LIMIT for the demo
+  const INIT_BLOCK = 1024;        // 1 KB
+  const MAX_BLOCK = 16384;        // 16 KB, illustrative cap for the visual
+  const HDR = 8;
+
+  function sizeClassIdx(bytes){
+    for (let i=0;i<FL_CLASSES.length;i++) if (bytes <= FL_CLASSES[i]) return i;
+    return -1; // dedicated
+  }
+
+  let nextCtxId = 1;
+  function makeCtx(name, parent){
+    return {
+      id: nextCtxId++, name, parent, children: [],
+      blocks: [], freelist: {}, keeperSize: INIT_BLOCK, nextBlockSize: INIT_BLOCK,
+      resets: 0
+    };
+  }
+  const root = makeCtx("TopMemoryContext", null);
+  const cache = makeCtx("CacheMemoryContext", root); root.children.push(cache);
+  const msg = makeCtx("MessageContext", root); root.children.push(msg);
+  const exec = makeCtx("ExecutorState", root); root.children.push(exec);
+  const expr = makeCtx("ExprContext", exec); exec.children.push(expr);
+  let ALLCTX = [root, cache, msg, exec, expr];
+  let SEL = expr;
+
+  let counters = { palloc:0, blocks:0, resets:0 };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function newBlock(ctx, minSize){
+    const size = Math.min(Math.max(ctx.nextBlockSize, minSize), MAX_BLOCK);
+    ctx.blocks.push({ size, used: 0, chunks: [] }); // chunks: {size, free}
+    ctx.nextBlockSize = Math.min(ctx.nextBlockSize*2, MAX_BLOCK);
+    counters.blocks++;
+    log("LOG", `[${ctx.name}] malloc(${size} B) -- new block (block #${ctx.blocks.length})`);
+    return ctx.blocks[ctx.blocks.length-1];
+  }
+
+  function pallocInto(ctx, reqSize, label){
+    counters.palloc++;
+    if (reqSize > CHUNK_LIMIT){
+      const blk = { size: reqSize+HDR, used: reqSize+HDR, chunks: [{size:reqSize, free:false, dedicated:true}] };
+      ctx.blocks.push(blk);
+      counters.blocks++;
+      log("WARN", `[${ctx.name}] palloc(${reqSize} B) > limit(${CHUNK_LIMIT}) -- dedicated block, no freelist involved`);
+      return;
+    }
+    const cls = sizeClassIdx(reqSize);
+    const fl = ctx.freelist[cls] || [];
+    if (fl.length){
+      const chunk = fl.pop();
+      chunk.free = false;
+      ctx.freelist[cls] = fl;
+      log("OK", `[${ctx.name}] palloc(${reqSize}→${FL_CLASSES[cls]} B) -- reused from freelist[${cls}]`);
+      return;
+    }
+    let blk = ctx.blocks[ctx.blocks.length-1];
+    const chunkSize = FL_CLASSES[cls] + HDR;
+    if (!blk || blk.used + chunkSize > blk.size) blk = newBlock(ctx, chunkSize);
+    blk.chunks.push({ size: FL_CLASSES[cls], free:false, cls });
+    blk.used += chunkSize;
+    log("LOG", `[${ctx.name}] palloc(${reqSize}→${FL_CLASSES[cls]} B) -- carved from block #${ctx.blocks.indexOf(blk)+1}`);
+  }
+
+  function pfreeRandom(ctx){
+    const live = [];
+    ctx.blocks.forEach(b=> b.chunks.forEach(c=>{ if (!c.free) live.push(c); }));
+    if (!live.length){ log("WARN", `[${ctx.name}] nothing live to pfree()`); return; }
+    const c = live[Math.floor(Math.random()*live.length)];
+    if (c.dedicated){
+      ctx.blocks = ctx.blocks.filter(b=> !(b.chunks.length===1 && b.chunks[0]===c));
+      log("OK", `[${ctx.name}] pfree() on a dedicated (>${CHUNK_LIMIT}B) chunk -- whole block free()'d immediately, before any reset`);
+      return;
+    }
+    c.free = true;
+    ctx.freelist[c.cls] = ctx.freelist[c.cls] || [];
+    ctx.freelist[c.cls].push(c);
+    log("LOG", `[${ctx.name}] pfree(${c.size} B) -- pushed onto freelist[${c.cls}], NOT returned to OS`);
+  }
+
+  function resetCtx(ctx){
+    const liveChunks = ctx.blocks.reduce((s,b)=>s+b.chunks.length,0);
+    const liveBlocks = ctx.blocks.length;
+    ctx.blocks = liveBlocks ? [{ size: ctx.keeperSize, used:0, chunks:[] }] : [];
+    ctx.freelist = {};
+    ctx.nextBlockSize = INIT_BLOCK;
+    ctx.resets++; counters.resets++;
+    log("OK", `[${ctx.name}] MemoryContextReset(): ${liveBlocks} block(s) / ${liveChunks} chunk(s) → 1 keeper block, 0 chunks. ONE loop over blocks, not ${liveChunks} individual frees.`);
+  }
+
+  function deleteSubtree(ctx){
+    if (!ctx.parent){ log("WARN","cannot delete TopMemoryContext"); return; }
+    function collect(c){ return [c, ...c.children.flatMap(collect)]; }
+    const doomed = collect(ctx);
+    doomed.slice().reverse().forEach(c=> log("FATAL", `[${c.name}] MemoryContextDelete(): all blocks freed, unlinked from parent`));
+    ctx.parent.children = ctx.parent.children.filter(c=>c!==ctx);
+    ALLCTX = ALLCTX.filter(c=> !doomed.includes(c));
+    if (doomed.includes(SEL)) SEL = ctx.parent;
+    render();
+  }
+
+  function addChild(ctx){
+    const c = makeCtx("ExprContext#"+nextCtxId, ctx);
+    ctx.children.push(c);
+    ALLCTX.push(c);
+    log("LOG", `[${ctx.name}] AllocSetContextCreate(): new child "${c.name}"`);
+    SEL = c;
+    render();
+  }
+
+  function renderTree(){
+    function node(c, depth){
+      const sel = c===SEL ? " sel" : "";
+      let h = `<div class="ctxnode${sel}" data-id="${c.id}">${c.name}<span class="cxsz">${c.blocks.length}blk</span></div>`;
+      if (c.children.length) h += `<div class="ctxkids">${c.children.map(k=>node(k,depth+1)).join("")}</div>`;
+      return h;
+    }
+    el("sim-tree").innerHTML = node(root, 0);
+    el("sim-tree").querySelectorAll(".ctxnode").forEach(n=>{
+      n.onclick = ()=>{ SEL = ALLCTX.find(c=>c.id===+n.dataset.id); render(); };
+    });
+  }
+
+  function renderArena(){
+    const cv = el("sim-arena"), ctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0,0,W,H);
+    ctx.font = "10px monospace";
+    if (!SEL.blocks.length){
+      ctx.fillStyle = "#5b6475"; ctx.fillText("no blocks yet -- palloc something into this context", 12, 20);
+      return;
+    }
+    const rowH = Math.min(38, (H-16)/SEL.blocks.length);
+    SEL.blocks.forEach((b,bi)=>{
+      const y = 8 + bi*rowH;
+      ctx.strokeStyle = "#2a3446"; ctx.strokeRect(10, y, W-20, rowH-8);
+      ctx.fillStyle = "#8b94a7"; ctx.fillText(`block ${bi+1} — ${b.size} B`, 14, y-2 < 8 ? y+10 : y-2);
+      let x = 12;
+      const usableW = W-24;
+      const scale = usableW / b.size;
+      b.chunks.forEach(c=>{
+        const w = Math.max(2, c.size*scale);
+        ctx.fillStyle = c.dedicated ? "#a78bfa" : (c.free ? "#4ade80" : "#60a5fa");
+        ctx.globalAlpha = c.free ? 0.35 : 0.9;
+        ctx.fillRect(x, y+4, w, rowH-16);
+        ctx.globalAlpha = 1;
+        x += w + 1;
+      });
+      const usedW = (b.used||0)*scale;
+      if (x < 12+usableW){
+        ctx.fillStyle = "#131824"; ctx.fillRect(x, y+4, 12+usableW-x, rowH-16);
+      }
+    });
+  }
+
+  function renderFreelist(){
+    el("sim-fl").innerHTML = FL_CLASSES.map((sz,i)=>{
+      const n = (SEL.freelist[i]||[]).length;
+      return `<div class="fl-bucket ${n?"":"empty"}"><div class="fb-sz">${sz}B</div><div class="fb-n">${n}</div></div>`;
+    }).join("");
+  }
+
+  function render(){
+    renderTree(); renderArena(); renderFreelist();
+    const liveBytes = SEL.blocks.reduce((s,b)=> s + b.chunks.filter(c=>!c.free).reduce((s2,c)=>s2+c.size,0), 0);
+    const fragBytes = SEL.blocks.reduce((s,b)=> s + b.chunks.filter(c=>c.free).reduce((s2,c)=>s2+c.size,0), 0);
+    el("m-live-v").textContent = liveBytes + " B";
+    el("m-live").style.width = Math.min(100, liveBytes/80) + "%";
+    el("m-frag-v").textContent = fragBytes + " B";
+    const ff = el("m-frag"); ff.style.width = Math.min(100, fragBytes/40) + "%"; ff.className = "m-fill " + (fragBytes>800?"hot":fragBytes>300?"warm":"");
+    el("cnt-palloc").textContent = counters.palloc;
+    el("cnt-blocks").textContent = counters.blocks;
+    el("cnt-resets").textContent = counters.resets;
+    el("sim-insp").innerHTML = `<div class="i-t">SELECTED CONTEXT</div>
+      <div><span class="i-pid">${SEL.name}</span> · ${SEL.blocks.length} block(s) · ${SEL.resets} reset(s) so far<br>
+      <span style="color:var(--dim)">parent: ${SEL.parent?SEL.parent.name:"— (root)"} · children: ${SEL.children.length}</span></div>`;
+  }
+
+  el("sa-tiny").onclick = ()=>{ pallocInto(SEL, 48); render(); };
+  el("sa-small").onclick = ()=>{ pallocInto(SEL, 200); render(); };
+  el("sa-med").onclick = ()=>{ pallocInto(SEL, 900); render(); };
+  el("sa-large").onclick = ()=>{ pallocInto(SEL, 3000); render(); };
+  el("sa-huge").onclick = ()=>{ pallocInto(SEL, 6000); render(); };
+  el("sa-burst").onclick = ()=>{
+    for (let i=0;i<20;i++){
+      const sizes = [24,60,120,300,700,1500];
+      pallocInto(SEL, sizes[Math.floor(Math.random()*sizes.length)]);
+    }
+    render();
+  };
+  el("sa-pfree").onclick = ()=>{ pfreeRandom(SEL); render(); };
+  el("sa-reset").onclick = ()=>{ resetCtx(SEL); render(); };
+  el("sa-delete").onclick = ()=>{ deleteSubtree(SEL); };
+  el("sa-child").onclick = ()=>{ addChild(SEL); };
+
+  log("OK", "arena simulator ready — TopMemoryContext and four children created");
+  log("HINT", "Try: burst ×20 on ExprContext, then reset context — watch pallocs stay counted but blocks collapse to 1.");
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-02"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-01.html"><span>←</span><span><span class="cn-lbl">PREV · CH 01</span><span class="cn-ttl">Genesis: History & the Process Model</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html" selected>CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">02 / 21</span></div><a class="cn-btn" href="pg-03.html"><span><span class="cn-lbl">NEXT · CH 03</span><span class="cn-ttl">The Page: On-Disk Layout, Byte by Byte</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

@@ -1,0 +1,1923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-15 · Query Pipeline I: Parser, Analyzer & Rewriter — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (reused shape for tree diagrams) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .acard.greyed{opacity:.4;cursor:not-allowed}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- perf chart ---------- */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- CH15-SPECIFIC: pipeline tree simulator ---------- */
+  .pt-wrap{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:860px){.pt-wrap{grid-template-columns:1fr}}
+  .pt-main{padding:16px;border-right:1px solid var(--border);min-height:380px}
+  @media(max-width:860px){.pt-main{border-right:none;border-bottom:1px solid var(--border)}}
+  .pt-side{padding:16px;display:flex;flex-direction:column;gap:14px}
+  .pt-presets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .pt-sqlline{font-family:var(--mono);font-size:12.5px;color:#9fd0ff;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:9px;padding:9px 12px;margin-bottom:14px;overflow-x:auto;white-space:pre}
+  .pt-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+  .pt-tab{border:1px solid var(--border-hi);background:var(--panel-2);color:var(--muted);border-radius:8px;
+    padding:6px 12px;font-family:var(--mono);font-size:11.5px;cursor:pointer;transition:all .15s}
+  .pt-tab.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+  .pt-tab .ar{color:var(--dim);margin-left:8px}
+  .pt-tree{font-family:var(--mono);font-size:12px;line-height:1.55;min-height:220px}
+  .pt-node{margin:2px 0}
+  .pt-row{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:7px;
+    padding:3px 9px;cursor:pointer;background:var(--bg-2);transition:all .15s}
+  .pt-row:hover{border-color:var(--border-hi)}
+  .pt-row.sel{border-color:var(--pg);background:var(--pg-dim)}
+  .pt-row.flash{animation:ptflash 1.1s ease}
+  @keyframes ptflash{0%{box-shadow:0 0 0 0 rgba(96,165,250,.55)}100%{box-shadow:0 0 0 7px rgba(96,165,250,0)}}
+  .pt-tag{color:var(--pg);font-weight:700}
+  .pt-sum{color:var(--dim);font-size:10.5px}
+  .pt-kids{margin:4px 0 4px 15px;padding-left:11px;border-left:1px dashed var(--border-hi)}
+  .pt-fadein{animation:framein .28s ease both}
+  .pt-detail .pd-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .pt-detail .pd-desc{color:var(--muted);font-size:12px;margin-bottom:10px;line-height:1.55}
+  .pt-fields{font-family:var(--mono);font-size:11.3px}
+  .pt-fields div{display:flex;gap:6px;padding:3.5px 0;border-bottom:1px solid var(--border)}
+  .pt-fields .pfk{color:var(--dim);flex:0 0 100px}
+  .pt-fields .pfv{color:#cdd6e4}
+  .pt-view-edit textarea{width:100%;background:var(--bg-2);border:1px solid var(--border-hi);border-radius:9px;
+    color:var(--text);font-family:var(--mono);font-size:11.5px;padding:9px 11px;resize:vertical;min-height:56px}
+  .pt-note{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6}
+  .pt-stagecap{padding:12px 16px;border-top:1px solid var(--border);font-size:13px;color:#c6cddb;line-height:1.65;min-height:56px}
+  .pt-lbl{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:6px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 15 / 21</b> · QUERY PIPELINE I</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 15</div>
+  <h1>Query Pipeline I: Parser,<br><span class="grad">Analyzer &amp; Rewriter</span></h1>
+  <p class="lead">A SQL string is not a plan, and it is not even a data structure the executor could touch. Before a
+  single row moves, PostgreSQL turns text into a tree three separate times: a <b>raw parse tree</b> that knows
+  nothing about your schema, a <b>Query tree</b> that has resolved every name against the catalog, and a
+  <b>rewritten tree</b> where views, rules, and row-level security have already been substituted in. This chapter
+  follows that transformation node by node, through the real structs — <code>Node</code>, <code>RangeTblEntry</code>,
+  <code>Var</code>, <code>A_Expr</code> — that the planner in chapter 16 receives as its only input.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Read a raw parse tree and a Query tree for the same SELECT and explain exactly what changed between them.</div>
+    <div class="obj"><b>You will understand</b>Why <code>orders</code> is a string until parse analysis and an OID afterward — and why that boundary defines what a syntax error even is.</div>
+    <div class="obj"><b>You will predict</b>What a view's rewrite does to a query's range table, and why <code>EXPLAIN</code> never names the view in its plan.</div>
+    <div class="obj"><b>You will simulate</b>All three stages live, click any node for its real struct fields, and edit a view definition to watch the rewriter re-inline it.</div>
+  </div>
+</div>
+
+<!-- placeholder sections, filled in next -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A string carries no positions, no types, and no names the executor can use</h2>
+  <p class="lead">A client library hands <code>libpq</code> a byte string —
+  <code>"SELECT id, total FROM orders WHERE customer_id = $1"</code> — over the wire as a Parse or simple Query
+  protocol message. The executor that eventually runs this query (chapter 17) operates on none of that: it walks a
+  tree of typed expression nodes, calling <code>ExecEvalExpr()</code> against compiled <code>ExprState</code>s, and
+  fetches tuples through a <code>TupleTableSlot</code> whose descriptor already knows every column's type OID, byte
+  width, and alignment. Between "a string arrived on a socket" and "the executor has typed nodes to walk" sits the
+  entire subject of this chapter, and skipping any part of it is not an option — the executor cannot interpret text,
+  and the planner in chapter 16 cannot cost a scan of a table it hasn't resolved to a relation.</p>
+  <p>Unpack exactly what the string is missing, because each gap is closed by a distinct, purpose-built transformation:</p>
+  <ul class="plain">
+    <li><b>No identity.</b> <code>orders</code> is four ASCII bytes. It could be an ordinary table, a view, a
+      foreign table, a partition parent, or nothing at all — and it could be shadowed by a same-named relation
+      earlier on <code>search_path</code>. Nothing in the string decides which.</li>
+    <li><b>No types.</b> <code>customer_id = $1</code> says nothing about whether <code>customer_id</code> is
+      <code>int4</code>, <code>bigint</code>, or a domain over <code>numeric</code> — and therefore nothing about
+      which <code>=</code> operator applies, or what <code>$1</code> must be implicitly cast to.</li>
+    <li><b>No column addressing.</b> The executor addresses columns by integer offset into a physical tuple, never
+      by name. Every occurrence of <code>total</code> in the string must become a numbered slot before anything can run.</li>
+    <li><b>No semantics beyond syntax.</b> If <code>orders</code> turns out to be a view, "select from orders"
+      doesn't mean "read a relation" — it means "run whatever query the view was defined as," and that fact lives
+      in a system catalog (<code>pg_rewrite</code>), not in the client's bytes.</li>
+  </ul>
+  <p>Three purpose-built stages close those four gaps, in a fixed order that this chapter derives and then follows
+  structurally. <b>Lexing and parsing</b> — a flex scanner feeding a bison grammar that needs zero database access —
+  resolves syntax into a raw parse tree. <b>Parse analysis</b> resolves that raw tree's names and types against the
+  catalog into a <code>Query</code> tree. The <b>rewriter</b> then substitutes view definitions, rule actions, and
+  row-security policies into that <code>Query</code> before it is ever handed to the planner. Get the order wrong —
+  say, look up <code>orders</code> in <code>pg_class</code> while still deciding whether the token stream is even
+  grammatically valid SQL — and you've coupled two problems that are far cheaper solved separately, which is
+  exactly the mistake §3 makes on purpose so §4 can quantify it.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR CHAPTER 16 AND BEYOND</div>
+    <p>The planner never sees your SQL text. Its only input is the <code>Query</code> struct this chapter's pipeline
+    produces — a tree of <code>RangeTblEntry</code>, <code>Var</code>, <code>TargetEntry</code>, and expression
+    nodes, fully resolved and already rewritten. Every planner behavior you study next chapter — join reordering,
+    index selection, the custom-vs-generic plan decision for prepared statements — operates on this tree, never on
+    characters. When something that looks like "the planner did something wrong with my view" turns up in
+    production, the actual cause frequently sits one stage upstream, in what the rewriter substituted before the
+    planner ever ran.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Two grammars, one generator, and a permission split — four decades in gram.y</h2>
+  <p>PostgreSQL's front end carries the scar tissue of every SQL feature added since 1994. Click through the
+  timeline — each event explains a specific decision you'll meet later in this chapter, from why the grammar file
+  is nearly 20,000 lines to why a struct you'll read in §8 didn't exist before 2023.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from POSTQUEL to the node generator</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY THE GRAMMAR HAD TO BE REWRITTEN, NOT PATCHED</div>
+    <p>Original POSTGRES (1986) spoke <b>POSTQUEL</b>, a query language with its own hand-built parser reflecting
+    Stonebraker and Rowe's own design, not the SQL standard. When Andrew Yu and Jolly Chen replaced it with SQL for
+    Postgres95 (1994-95), they didn't patch the old grammar — they wrote a new one, because POSTQUEL's grammar and
+    SQL's grammar disagree at a structural level (subquery placement, join syntax, aggregate scoping). That new SQL
+    grammar is the direct ancestor of today's <code>gram.y</code>; every standard feature added since — outer
+    joins, CTEs (8.4, 2009), window functions (8.4), <code>LATERAL</code> (9.3), JSON path expressions and
+    <code>MERGE</code> (15, 2022), <code>JSON_TABLE</code> (17) — was accreted onto that 1994 skeleton, which is
+    why the file has grown roughly linearly with the SQL standard itself rather than being redesigned.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: split the string and look things up as you go</h2>
+  <p>Derive the architecture honestly, the way a reasonable engineer would on day one: SQL <i>looks</i> like it has
+  obvious structure — keywords, commas, an <code>=</code> sign — so why not scan for keywords, split on commas, and
+  resolve each table/column name against the catalog the moment you see it, all in one pass?</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>naive_sql_frontend.c — the strawman, annotated</span></div>
+    <pre><span class="k">bool</span>
+<span class="f">naive_parse_and_resolve</span>(<span class="k">const char</span> *sql, Relation *out_rel, <span class="k">char</span> ***out_cols)
+{
+    <span class="c">/* Step 1: find "FROM", split the substring after it on whitespace.
+     * Already wrong for: "FROM (SELECT * FROM foo) x", "FROM \"my from table\"",
+     * a column literally named from_date, or a string literal containing
+     * the word FROM inside a WHERE clause.                                */</span>
+    <span class="k">char</span> *from_kw = <span class="f">strcasestr</span>(sql, <span class="s">"FROM"</span>);
+    <span class="k">char</span> table_name[<span class="n">64</span>];
+    <span class="f">sscanf</span>(from_kw + <span class="n">4</span>, <span class="s">"%63s"</span>, table_name);
+
+    <span class="c">/* Step 2: resolve RIGHT NOW, fused into the scan — this is the crux
+     * of the naive design: syntax checking and catalog lookup are the
+     * SAME pass, so you cannot tell a syntax error from an unknown-table
+     * error until you've already taken a snapshot and touched pg_class. */</span>
+    Relation rel = <span class="f">heap_openrv_extended</span>(<span class="f">makeRangeVar</span>(<span class="n">NULL</span>, table_name, <span class="n">-1</span>), AccessShareLock, <span class="k">true</span>);
+    <span class="k">if</span> (rel == <span class="n">NULL</span>)
+        <span class="k">return</span> <span class="k">false</span>;    <span class="c">/* but WAS it a syntax error or a missing table? we can't say */</span>
+
+    <span class="c">/* Step 3: find the column list by splitting between SELECT and FROM
+     * on commas. Breaks on: function calls with commas ("substr(a,1,3)"),
+     * a column named "select_count", a subquery target list, CASE
+     * expressions containing commas inside IN-lists...                   */</span>
+    <span class="k">char</span> *cols_start = sql + <span class="n">6</span>;              <span class="c">/* skip "SELECT" — hope it's uppercase */</span>
+    <span class="k">char</span> *cols_end = from_kw;
+    *out_cols = <span class="f">split_on_commas</span>(cols_start, cols_end - cols_start);
+    *out_rel = rel;
+    <span class="k">return</span> <span class="k">true</span>;
+}</pre>
+  </div>
+
+  <p>This is not a joke architecture — plenty of early tools and ORMs effectively did this for a restricted subset
+  of SQL, and for a fixed, tiny grammar (say, only <code>SELECT col, col FROM table WHERE col = literal</code>) it
+  even works. The naive design gets one thing conceptually right that's worth keeping: name resolution genuinely
+  does need to happen eventually, against real catalog state. Its fatal flaw is fusing <i>that</i> concern with
+  <i>syntax recognition</i> into a single, string-shaped pass.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Ambiguous grammar meets live catalog access — a coupling with no good failure mode</h2>
+  <p>Two independent failures compound here, and it's worth pricing each one on its own terms, because they justify
+  two completely different pieces of downstream machinery.</p>
+  <h3>Failure 1: SQL's grammar is not regular, and barely context-free-friendly</h3>
+  <p>SQL is deliberately ambiguous at the token level in ways that defeat naive splitting and even naive
+  recursive-descent parsing without careful lookahead design. A left paren after an identifier can start a function
+  call, a subquery, or a parenthesized expression list — <code>WHERE (a, b) IN (SELECT ...)</code> vs.
+  <code>WHERE a IN (func(b))</code> vs. <code>SELECT (SELECT max(x) FROM t)</code> all begin identically at the
+  scanner level. Operator precedence and associativity for arithmetic, comparison, and the fifteen-plus precedence
+  levels <code>gram.y</code> declares with <code>%left</code>/<code>%right</code>/<code>%nonassoc</code> directives
+  cannot be resolved by a comma-splitting pass at all — it has no concept of precedence, only of literal delimiter
+  characters, which is exactly why it breaks the moment a comma appears inside a function call argument list or a
+  <code>CASE ... WHEN x IN (1,2,3)</code> expression. A hand-written recursive-descent parser <i>can</i> handle this,
+  but only by manually encoding the same precedence-climbing logic bison generates automatically from the grammar
+  file — and every SQL keyword that is also a valid identifier (there are dozens: PostgreSQL classifies keywords
+  as <code>unreserved_keyword</code>, <code>col_name_keyword</code>, <code>type_func_name_keyword</code>, and
+  <code>reserved_keyword</code> specifically because different contexts allow different overlaps) multiplies the
+  lookahead a hand-written parser needs. Bison's LALR(1) tables encode all of this once, at grammar-compile time,
+  into a fixed-size state machine that a naive string-splitter has no equivalent of.</p>
+  <h3>Failure 2: fusing catalog lookup into syntax checking makes every syntax error a database transaction</h3>
+  <p>The subtler failure is architectural, not algorithmic. If resolving <code>orders</code> against
+  <code>pg_class</code> happens <i>while</i> you're still deciding whether the token stream is grammatically valid,
+  then you cannot check syntax without a live connection, a snapshot, and (per MVCC, chapter 5) a view of catalog
+  state that could be concurrently changing underneath you. This has three concrete costs: <b>(a)</b> tools that
+  want to validate or reformat SQL without a running server — this is precisely why an extracted copy of
+  PostgreSQL's own raw parser, <code>libpg_query</code>, exists as a standalone C library used by pgFormatter,
+  PostgREST, and query-fingerprinting tools like pganalyze's — become structurally impossible if parsing and
+  resolution are fused; <b>(b)</b> every syntax error becomes indistinguishable from a permission error, a missing
+  table, or a stale cache read, because they all surface at the same point in the same pass; <b>(c)</b> a DDL race —
+  another session drops or renames <code>orders</code> mid-parse — can change the meaning of a token stream while
+  you're still inside the "is this valid SQL" question, which should never have needed an answer from any table at
+  all.</p>
+  <div class="callout bad">
+    <div class="co-t">THE CATEGORY ERROR, STATED PRECISELY</div>
+    <p>A <b>syntax error</b> ("unexpected token") is decidable by a pure function of the token stream and the
+    grammar — no I/O, no locks, no catalog, no network. A <b>semantic error</b> ("relation does not exist", "column
+    is ambiguous", "operator does not exist for these types") is only decidable against catalog state that can
+    change between statements. Conflating them doesn't just produce worse error messages — it means you cannot
+    build a syntax checker that runs offline, cannot cache a validated parse independent of schema state, and
+    cannot even define what "the query is well-formed" means without opening a transaction. §5 separates them on
+    purpose.</p>
+  </div>
+</section>
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Candidate A vs. Candidate B — separating "is this valid SQL" from "what does it mean here"</h2>
+  <h3>Candidate A: one pass, catalog-aware grammar actions</h3>
+  <p>Keep a real grammar (fixing failure 1 from §4) but let its reduce actions call into the catalog directly — an
+  <i>attribute grammar</i> where, say, the production that recognizes a table reference immediately calls
+  <code>heap_openrv()</code> and attaches the resolved <code>Oid</code> to the parse node on the spot. This is
+  strictly better than the naive strawman, but it inherits failure 2 whole: the grammar can no longer run without a
+  database connection, a raw tree can no longer be produced for tooling that only wants syntax, and a single
+  ambiguous grammar reduction that gets backtracked (LALR parsers can and do explore, then commit, productions)
+  could trigger a catalog lookup for a table reference that turns out not to be the final parse.</p>
+  <h3>Candidate B: a context-free grammar producing an inert tree, analyzed in a separate pass ✓</h3>
+  <p>Make the grammar produce nothing but syntax — a tree of <code>Node</code>s holding strings and literals, with
+  <b>zero</b> function calls that touch a catalog, a lock manager, or a snapshot. Then run a second, entirely
+  separate pass — parse analysis — over that finished, syntactically-valid tree, resolving every name and type
+  against catalog state. Walk through why this wins, concretely:</p>
+
+  <div class="widget deck" id="deckBetter">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Why separating parse from analysis wins</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: ERROR CATEGORIES BECOME REAL TYPES</div>
+    <p><code>raw_parser()</code> in <code>src/backend/parser/parser.c</code> can run against nothing but a token
+    stream and can fail with exactly one kind of error: a grammar violation, reported by bison's generated error
+    recovery as <code>syntax error at or near "..."</code>. Every other error you have ever seen from PostgreSQL —
+    <code>relation "orders" does not exist</code>, <code>column reference "id" is ambiguous</code>, <code>operator
+    does not exist: integer = text</code> — is raised later, by <code>parse_analyze()</code> or the rewriter, and
+    can only be raised there, because only there does catalog state exist to be wrong against. This is not a
+    cosmetic distinction: <code>libpg_query</code> and PostgreSQL's own <code>pg_stat_statements</code> query
+    normalization both operate on the raw tree alone, entirely without a live catalog, precisely because Candidate
+    B made that possible.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Separation isn't free: generic tree infrastructure and a staleness problem</h2>
+  <p>Candidate B is the right architecture, and PostgreSQL has run it since before the community fork existed — but
+  "just add a second pass" hides two real, ongoing costs that show up as entire subsystems elsewhere in the
+  codebase.</p>
+  <ul class="plain">
+    <li><b>Every node type needs a full support quartet.</b> A raw tree that outlives its first use — logged for
+      debugging via <code>nodeToString()</code>, walked by an extension's <code>post_parse_analyze_hook</code>,
+      cached for a prepared statement's next execution — needs generic <code>copyObject()</code>, <code>equal()</code>,
+      and serialize/deserialize (<code>outfuncs.c</code>/<code>readfuncs.c</code>, invoked as <code>outNode()</code>)
+      support for <i>every single node type</i in the grammar's output, not just the ones you happen to test. Before
+      PostgreSQL 16 this quartet was four hand-written, hand-synchronized C files — add a field to a struct in
+      <code>parsenodes.h</code> and forget to update <code>copyfuncs.c</code>, and you get a copy that silently
+      drops your new field, a bug class the project lived with for two decades.</li>
+    <li><b>Prepared statements need the raw tree copied, not reused, on every re-analysis.</b> A cached raw parse
+      tree for a prepared statement can be re-entered by <code>parse_analyze()</code> multiple times — different
+      search paths, different row-security contexts, a replan after invalidation — and analysis is not read-only
+      with respect to the tree it's given (it produces a new, separate <code>Query</code> tree by transforming
+      pieces of the input). PostgreSQL's answer is to <code>copyObject()</code> the cached raw tree before each
+      re-analysis rather than mutate the shared original — which is only <i>possible</i> at all because
+      <code>copyObject()</code> exists generically over every node type, which only exists because of the quartet above.</li>
+    <li><b>A resolved tree can go stale the instant it's built.</b> The moment parse analysis bakes a relation's
+      OID and a column's <code>varattno</code> into a <code>Query</code> tree, that tree is a snapshot of catalog
+      state at one instant. A concurrent <code>ALTER TABLE</code> can invalidate it a millisecond later. Making
+      early name resolution safe to cache at all (chapter 14 covers the catalog cache side of this) requires the
+      relcache/plancache invalidation machinery — <code>CacheInvalidateRelcache()</code> messages flowing through
+      shared-memory sinval queues to callbacks like <code>PlanCacheRelCallback()</code> — whose entire job is
+      detecting "a tree that was correct when built is not correct anymore" and forcing a fresh re-analyze-and-replan
+      before the stale tree is used again.</li>
+  </ul>
+  <p>None of these costs is a reason to prefer Candidate A — they are the price of doing name resolution
+  <i>correctly and separately</i>, and every one of them is a deliberate, bounded piece of machinery rather than an
+  open-ended correctness risk. §7 assembles the final shape.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">Four stages, one direction: text in, a planner-ready tree out</h2>
+  <p>Click any stage to see exactly what type of tree it consumes, what type it produces, and which source file
+  owns it. Note the fifth box, greyed out — the planner is where this chapter's output goes next, and it is
+  deliberately out of scope here; this chapter's job stops at "the tree the planner receives."</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Pipeline explorer</span><span class="w-sub">CLICK ANY STAGE</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">FRONT END — THIS CHAPTER</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="lex">Lex</div>
+          <div class="acard" data-p="parse">Parse</div>
+          <div class="acard" data-p="analyze">Analyze</div>
+          <div class="acard" data-p="rewrite">Rewrite</div>
+        </div>
+        <div class="arch-row-label">NEXT — CHAPTER 16</div>
+        <div class="arch-grid"><div class="acard greyed" data-p="plan">Planner (ch. 16)</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE INVARIANT THAT MAKES THE WHOLE PIPELINE AUDITABLE</div>
+    <p>Every arrow above is one-directional and type-changing: <code>List of Token</code> → <code>raw parse tree
+    (SelectStmt et al.)</code> → <code>Query</code> → <code>Query</code> (rewritten, same C type, different
+    contents) → <code>Plan</code>. Nothing later in the pipeline hands information backward. A planner bug can
+    never retroactively change what the parser accepted, and a rewrite rule can never see raw syntax — it operates
+    only on the already-resolved <code>Query</code> it's given. That strict layering is what makes it possible to
+    reason about each stage, and test each stage, independently — exactly the property Candidate A in §5 would have
+    destroyed.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The real structs: Node, RangeTblEntry, Var, and how a name becomes an integer</h2>
+  <p>Now the mechanism at the level you'd need to patch it. Three pieces: <b>(a)</b> the <code>Node</code> tagging
+  system every one of these trees is built from, <b>(b)</b> the shape of <code>RangeTblEntry</code> and
+  <code>Var</code> — the two structs that turn names into numbers, and <b>(c)</b> the candidate-ranking algorithm
+  that resolves an overloaded operator or function.</p>
+
+  <h3>(a) Every node is self-describing, on purpose</h3>
+  <p>Every parse-tree, Query-tree, and plan-tree struct in PostgreSQL begins with the same field, always first:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>src/include/nodes/nodes.h — the tag every struct carries</span></div>
+    <pre><span class="k">typedef enum</span> <span class="t">NodeTag</span>
+{
+    T_Invalid = <span class="n">0</span>,
+    T_SelectStmt, T_RangeVar, T_ResTarget, T_A_Expr, T_A_Const, T_ColumnRef,   <span class="c">/* raw tree */</span>
+    T_Query, T_RangeTblEntry, T_TargetEntry, T_Var, T_Const, T_OpExpr,        <span class="c">/* Query tree  */</span>
+    <span class="c">/* … several hundred more, one per struct in parsenodes.h / primnodes.h / plannodes.h */</span>
+} NodeTag;
+
+<span class="k">typedef struct</span> <span class="t">Node</span>
+{
+    NodeTag     type;      <span class="c">/* MUST be the very first field — every node-shaped
+                            * struct starts with this, so a bare (Node *) can be
+                            * safely inspected before anyone knows its real type. */</span>
+} Node;
+
+<span class="c">/* nodeTag(): read the tag out of ANY node-shaped pointer, generically */</span>
+<span class="k">#define</span> nodeTag(nodeptr)   (((<span class="k">const</span> Node*)(nodeptr))->type)
+
+<span class="c">/* IsA(): the safe-downcast check every walker in the codebase uses      */</span>
+<span class="k">#define</span> IsA(nodeptr,_type_)   (nodeTag(nodeptr) == T_##_type_)
+
+<span class="c">/* castNode(): assert the tag, THEN cast — a checked cast, not a raw one */</span>
+<span class="k">#define</span> castNode(_type_,nodeptr) \
+    (AssertVariable(IsA(nodeptr, _type_)), (_type_ *) (nodeptr))</pre>
+  </div>
+
+  <p>Because <code>NodeTag</code> is the first field of every one of these structs, a function that receives a bare
+  <code>void*</code> — a list element, a cached plan fragment, an argument to an extension hook — can safely
+  determine its concrete type by reading four bytes at offset zero, with no separate type-tag table, no RTTI, and
+  no risk of reading past the allocation to find out. <code>copyObject()</code>, <code>equal()</code>, and
+  <code>outNode()</code> all begin the same way: switch on <code>nodeTag(obj)</code>, then dispatch to a
+  per-type function. As of <b>PostgreSQL 16</b>, those per-type functions — along with the node tag enum itself
+  and the tag-to-name tables used by <code>outNode()</code> — are no longer hand-written. <code>src/backend/nodes/gen_node_support.pl</code>
+  parses annotated struct definitions directly out of the headers (<code>src/include/nodes/parsenodes.h</code>,
+  <code>primnodes.h</code>, and friends — annotations like <code>pg_node_attr(no_copy)</code> or
+  <code>pg_node_attr(equal_ignore)</code> on individual fields) and generates <code>copyfuncs.c</code>,
+  <code>equalfuncs.c</code>, <code>outfuncs.c</code>, and <code>readfuncs.c</code> at build time. Add a field to a
+  struct today and the generator either handles it correctly by default or forces you to annotate it — the entire
+  "forgot to update one of four files" bug class from §6 is gone by construction.</p>
+
+  <h3>(b) RangeTblEntry and Var: the numbered namespace</h3>
+  <p>Parse analysis's central data structure is the <b>range table</b> — a <code>List</code> of
+  <code>RangeTblEntry</code> hung off <code>Query.rtable</code> — and every downstream reference to "a table" is an
+  integer index into that list, never a name again.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>src/include/nodes/parsenodes.h — RangeTblEntry (fields that matter here, simplified)</span></div>
+    <pre><span class="k">typedef struct</span> <span class="t">RangeTblEntry</span>
+{
+    NodeTag     type;
+    RTEKind     rtekind;        <span class="c">/* RTE_RELATION, RTE_SUBQUERY, RTE_JOIN,
+                                 * RTE_CTE, RTE_FUNCTION, RTE_VALUES, …        */</span>
+    Oid         relid;          <span class="c">/* only if RTE_RELATION: the resolved table/view OID */</span>
+    <span class="k">char</span>        relkind;     <span class="c">/* 'r' ordinary table, 'v' view, 'p' partitioned, … */</span>
+    Query      *subquery;       <span class="c">/* only if RTE_SUBQUERY: a nested Query — this is
+                                 * exactly what a view's body becomes after rewrite  */</span>
+    Alias      *eref;           <span class="c">/* the exposed name + column names other nodes see,
+                                 * even if the query used no explicit alias         */</span>
+    <span class="k">bool</span>        inh;         <span class="c">/* include child partitions/inheritance children?    */</span>
+    <span class="k">bool</span>        lateral;
+} RangeTblEntry;
+
+<span class="k">typedef struct</span> <span class="t">Var</span>
+{
+    Expr        xpr;
+    <span class="k">int</span>         varno;       <span class="c">/* 1-based index into the ENCLOSING Query's rtable   */</span>
+    AttrNumber  varattno;    <span class="c">/* 1-based column number; 0 means "the whole row"     */</span>
+    Oid         vartype;     <span class="c">/* resolved type OID — this is what makes it typed    */</span>
+    int32       vartypmod;
+    Index       varlevelsup; <span class="c">/* 0 = this query; &gt;0 = an outer query (correlated
+                                 * subquery reaching up through nesting levels)      */</span>
+} Var;</pre>
+  </div>
+
+  <p>Walk the resolution mechanically: parsing <code>SELECT total FROM orders WHERE customer_id = 42</code> yields
+  a raw <code>ColumnRef</code> node holding the bare string <code>"total"</code>. Parse analysis's
+  <code>transformColumnRef()</code> (<code>src/backend/parser/parse_expr.c</code>) must decide which range-table
+  entry — if more than one is in scope, from joins or nested queries — actually owns a column by that name, using
+  <code>scanRTEForColumn()</code> (<code>src/backend/parser/parse_relation.c</code>) against each candidate RTE's
+  <code>eref</code> column list; found in exactly one place, it becomes <code>Var{varno=1, varattno=3,
+  vartype=1700 /* numeric */}</code> — <code>1</code> because <code>orders</code> is range-table entry #1,
+  <code>3</code> because <code>total</code> is its third column in catalog order. Found in zero places: <code>column
+  "total" does not exist</code>. Found in more than one unqualified: <code>column reference "total" is
+  ambiguous</code>. Both errors are only computable once the range table is built — which is why they cannot be
+  syntax errors.</p>
+
+  <div class="widget deck" id="deckResolve">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Resolving one column reference to a Var, step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(c) Operator and function resolution: ranking candidates, not just matching names</h3>
+  <p><code>parse_func.c</code>'s <code>func_get_detail()</code> (and the parallel path for operators via
+  <code>oper()</code>/<code>compatible_oper</code>) resolves a call like <code>total + tax</code> or
+  <code>round(price, 2)</code> against every same-named, same-arity candidate in <code>pg_proc</code>/<code>pg_operator</code>
+  using a fixed elimination order: an <b>exact type match</b> wins immediately; failing that, candidates are ranked
+  by <b>type category and "preferred type"</b> per category (each type category, e.g. numeric, string, has one
+  designated preferred type that implicit coercion favors); failing that, by <b>cheapest implicit cast</b>
+  (binary-coercible — same physical representation, no function call needed — beats a cast requiring an actual
+  conversion function). If more than one candidate survives every elimination round, PostgreSQL raises <code>function
+  is not unique</code> rather than guessing — an ambiguity error that, like the ones above, is only computable
+  once you have a resolved list of overloads to rank, never during parsing.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Candidate elimination — drag the overload count</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>overloaded candidates for this name/arity</label><input type="range" id="cand-slider" min="1" max="12" value="3" step="1"><span class="val" id="cand-val">3</span></div>
+      <div id="cand-viz"></div>
+      <p class="pt-note" id="cand-note"></p>
+    </div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Range table growth — drag the join count</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>tables joined in the FROM list</label><input type="range" id="rte-slider" min="1" max="10" value="2" step="1"><span class="val" id="rte-val">2</span></div>
+      <div id="rte-viz"></div>
+      <p class="pt-note" id="rte-note"></p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="co-t">THE PG16 SPLIT: RTEPermissionInfo</div>
+    <p>Through PostgreSQL 15, a <code>RangeTblEntry</code> carried both "what this entry in the FROM list means"
+    (kind, relid, join info) <i>and</i> "what privileges does running this query require against it"
+    (<code>requiredPerms</code>, <code>checkAsUser</code>, per-column <code>selectedCols</code>/<code>modifiedCols</code>
+    bitmaps) in the same struct. PostgreSQL 16 split the permission-relevant fields out into a separate
+    <code>RTEPermissionInfo</code> struct, referenced from the RTE by a <code>perminfoindex</code> into
+    <code>Query.rteperminfos</code>. The motivation is exactly the staleness problem from §6: permission
+    requirements and range-table shape can now be reasoned about, invalidated, and cached independently — a plan
+    that only needs re-checking because a <code>GRANT</code> changed doesn't need its entire range table rebuilt,
+    and inheritance/partitioning expansion (which multiplies RTEs but not permission checks) no longer has to
+    duplicate permission bookkeeping per child.</p>
+  </div>
+</section>
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same front-end problem, five ways</h2>
+  <p>Every SQL (and non-SQL) engine has to decide how much of "understand this query" happens before execution, and
+  how tightly text-parsing couples to catalog/schema state. The spread of answers is a proof by exhaustion that
+  there is no dominant strategy, only different placements of the same costs:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>FRONT-END SHAPE</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>bison LALR(1) grammar → separate catalog-aware analyze → separate rule-based rewrite</td>
+      <td><span class="pill g">syntax/semantic errors are distinct</span> <span class="pill g">raw tree usable offline</span> <span class="pill g">views/RLS handled uniformly via rewrite</span></td>
+      <td><span class="pill b">~20k-line grammar file</span> <span class="pill b">generic Node infra required</span> <span class="pill b">plan-cache invalidation subsystem needed</span></td></tr>
+    <tr><td>MySQL</td><td>its own bison-based SQL grammar (<code>sql/sql_yacc.yy</code>); table/column resolution happens during a later "prepare" phase, storage-engine-pluggable</td>
+      <td><span class="pill g">similar syntax/semantic split</span> <span class="pill g">storage-engine abstraction decoupled from parsing</span></td>
+      <td><span class="pill y">historically looser type-coercion rules produced more silent-cast surprises than PostgreSQL's ranked-candidate resolution</span></td></tr>
+    <tr><td>Oracle</td><td>proprietary parser feeding the shared pool / <b>library cache</b>, which caches parsed-and-resolved representations keyed by exact SQL text (including whitespace) for reuse across sessions</td>
+      <td><span class="pill g">cross-session reuse of parse+resolve work — huge win for repeated identical statements</span></td>
+      <td><span class="pill b">textually-keyed cache is brittle: literal values inline in SQL text defeat the cache ("bind variable" discipline exists specifically to avoid this)</span></td></tr>
+    <tr><td>SQLite</td><td>a single hand-written recursive-descent parser (no bison/yacc), no separate rewrite-rule system, no RLS-equivalent at the parse-tree level</td>
+      <td><span class="pill g">tiny, embeddable, no external tool dependency to build</span> <span class="pill g">simpler grammar for a smaller SQL dialect</span></td>
+      <td><span class="pill b">views are expanded ad hoc inline rather than through a general substitution mechanism</span> <span class="pill b">weaker type system (manifest typing) reduces how much resolution work happens at all</span></td></tr>
+    <tr><td>MongoDB (query documents)</td><td>queries are constructed as BSON documents via a driver API — there is no textual grammar to lex or parse at all</td>
+      <td><span class="pill g">no parsing ambiguity, no grammar to maintain, trivially machine-constructible</span></td>
+      <td><span class="pill b">no independent syntax-validity notion separate from "the driver built a well-formed document"</span> <span class="pill b">ad hoc query languages (aggregation pipeline stages) proliferate to cover what a grammar would unify</span></td></tr>
+  </table>
+  <p>Read the row for MongoDB as the real control group: building queries as a native data-structure API from the
+  start <i>eliminates</i> this entire chapter's problem rather than solving it differently — there is no text to
+  lex, so there is no raw-tree/Query-tree distinction to draw. The cost is that every capability a grammar gives
+  you for free (a uniform ambiguity-free precedence model, a single place to enforce type rules, a rewrite layer
+  that applies transparently to any query shape) has to be reinvented ad hoc per query-builder feature. PostgreSQL's
+  bet — pay the grammar-maintenance and staleness-invalidation costs once, get a uniform semantic layer for every
+  query shape forever — is the same bet every mature textual-SQL engine has made independently.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Where the microseconds actually go</h2>
+  <p><code>raw_parser()</code>'s cost is genuinely well-behaved: LALR(1) table-driven parsing is <b>O(n)</b> in
+  token count with a small constant factor — one table lookup and at most one shift or reduce per token, no
+  backtracking, ever (that's the entire point of building the tables at grammar-compile time instead of exploring
+  at runtime). For the overwhelmingly common case — short OLTP statements, a handful of tables — lexing and parsing
+  are not where your time goes.</p>
+  <p>Parse analysis is where the real, variable cost lives, and it's driven by <b>catalog cache</b> traffic, not by
+  tree-walking arithmetic. Every <code>RangeVar</code> resolved via <code>parserOpenTable()</code>, every column
+  looked up via <code>scanRTEForColumn()</code>, every operator ranked via <code>func_get_detail()</code> is a
+  <code>SearchSysCache()</code> hit against the relcache/syscache (chapter 14) — O(1) amortized once warm, but a
+  genuine disk read (or at minimum a syscache miss triggering a fresh catalog scan) on a cold backend's first touch
+  of a relation. This is precisely why <b>prepared statements</b> exist as a distinct wire-protocol path: the
+  extended query protocol's <code>Parse</code> message runs lex → parse → analyze → rewrite exactly once and
+  stores the resulting tree server-side; subsequent <code>Bind</code> + <code>Execute</code> messages supply only
+  parameter values and skip straight to planning/execution (chapter 16 covers how — and when — PostgreSQL decides
+  between replanning a fresh <i>custom</i> plan per parameter set versus reusing one cached <i>generic</i> plan,
+  governed in part by <code>plan_cache_mode</code>). Every execution under the simple query protocol's single
+  <code>Query</code> message, by contrast, repeats this entire chapter's work from scratch.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Latency breakdown across the front end — drag complexity</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>joined tables in FROM</label><input type="range" id="lat-joins" min="1" max="12" value="1" step="1"><span class="val" id="lat-joins-val">1</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="lat-cold">cold catalog caches</button>
+        <button class="chip" id="lat-prepared">prepared (skip lex/parse/analyze/rewrite on repeat)</button>
+      </div>
+      <div class="chartbox"><canvas id="lat-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:#60a5fa">■</span> lex+parse</span>
+        <span><span style="color:#a78bfa">■</span> analyze</span>
+        <span><span style="color:#4ade80">■</span> rewrite</span>
+        <span><span style="color:#ff9f43">■</span> plan (ch.16, shown for scale)</span>
+        <span><span style="color:#f25c54">■</span> execute (shown for scale)</span>
+      </div>
+      <p class="pt-note" id="lat-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The chart is an analytic sketch, not a benchmark trace: lex+parse is modeled as flat and small (true to
+    LALR's O(n) behavior at typical statement lengths); analyze and rewrite scale with join/RTE count because each
+    additional range-table entry means more <code>scanRTEForColumn()</code> candidates and more permission-info
+    bookkeeping; plan and execute are shown only for scale — they are chapters 16 and 17's subject, and in practice
+    dominate total latency for anything beyond a handful of joins. The qualitative shape — analyze/rewrite cost
+    rising with schema complexity while lex/parse stays nearly flat — is the point; treat the exact numbers as
+    illustrative.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents that live in this chapter's code paths</h2>
+
+  <h3>Incident 1: the eleven-deep view stack</h3>
+  <p>A reporting team builds dashboards by layering views on views — <code>monthly_summary</code> selects from
+  <code>daily_summary</code>, which selects from <code>enriched_orders</code>, which selects from
+  <code>orders_with_tax</code>, eleven layers deep, each adding a join or a computed column, each written by a
+  different person who only ever looked at the layer directly below. A single <code>SELECT * FROM
+  monthly_summary</code> now requires <code>rewriteQuery()</code> to recursively substitute eleven nested
+  subquery RTEs, each carrying its own resolved range table, and star-expansion (which happens at <i>parse
+  analysis</i>, not rewrite — see §8) must expand <code>*</code> at every one of the eleven levels independently
+  before the rewriter can even begin substituting. <code>EXPLAIN</code> output balloons to hundreds of plan nodes
+  referencing none of the original view names, and both rewrite time and subsequent planning time (chapter 16's
+  join-order search grows combinatorially with effective join count) spike hard enough to show up as query latency
+  with no single "slow" table anywhere in sight. <b>Fix:</b> materialize the middle layers (a materialized view or
+  an actual summary table refreshed on a schedule) so the rewriter has one physical relation to substitute instead
+  of a ten-deep subquery chain, and audit view stacks for depth the same way you'd audit call-stack depth in
+  application code.</p>
+
+  <h3>Incident 2: the post-migration latency spike</h3>
+  <p>A connection-pooled application uses prepared statements extensively — each backend's session holds cached,
+  already-analyzed-and-rewritten trees for its hot statements. A routine deploy runs <code>ALTER TABLE orders ADD
+  COLUMN region text</code>. The DDL itself is fast, but every backend's cached plans referencing <code>orders</code>
+  receive an invalidation message via the sinval queue (§6) the moment they next check it, forcing
+  <code>parse_analyze()</code> and the rewriter to run again from the cached raw tree on the very next execution of
+  every affected prepared statement, across every pooled connection, simultaneously. The result is a synchronized
+  latency spike immediately after the migration — not because the query got slower, but because thousands of
+  connections all paid this chapter's full cost again at the same moment. <b>Fix:</b> this is expected and
+  self-healing (the spike is one execution per connection, not sustained), but teams that don't know the mechanism
+  often misdiagnose it as planner regression or index bloat; knowing that invalidation is per-cached-plan and
+  triggers a full re-analysis, not just a re-plan, turns a page-worthy mystery into an expected blip you can call
+  out in the deploy runbook.</p>
+
+  <h3>Incident 3: the overload that broke a working query</h3>
+  <p>A team adds a new overloaded function, <code>discount(numeric, integer)</code>, alongside an existing
+  <code>discount(numeric, numeric)</code> to support a new integer-percentage code path. A previously working call
+  site, <code>discount(total, 10)</code> — where <code>10</code> is an untyped integer literal — that used to
+  resolve unambiguously to the <code>numeric</code> overload via implicit coercion now has <i>two</i> equally
+  ranked candidates: the literal binary-coerces to neither type more cheaply than the other once both overloads
+  exist, and <code>func_get_detail()</code>'s elimination process (§8c) survives with two candidates instead of
+  one. The query that shipped fine yesterday now fails with <code>function discount(numeric, integer) is not
+  unique</code> — not because anything about the call site changed, but because the <i>candidate set</i> it's
+  ranked against did. <b>Fix:</b> the immediate patch is an explicit cast (<code>discount(total, 10::numeric)</code>)
+  at the call site; the durable fix is treating new overloads of existing function names as a compatibility-affecting
+  change requiring a search across the codebase for ambiguous call sites, exactly the way you'd treat a change to a
+  function's existing signature.</p>
+</section>
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this pipeline at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is the depth a Staff/Principal interview (or a pgsql-hackers reply)
+  expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: gram.y, analyze.c, and rewriteHandler.c</h2>
+  <p>Where everything from this chapter lives. Files marked <span style="color:var(--warn)">●</span> are core
+  reading for this chapter.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/parser/</span></div>
+<div>├── <span class="fhl">● scan.l</span> <span class="fnote">— flex lexical scanner: bytes → tokens</span></div>
+<div>├── <span class="fhl">● gram.y</span> <span class="fnote">— bison LALR(1) grammar, ~20k lines: tokens → raw parse tree</span></div>
+<div>├── parser.c <span class="fnote">— raw_parser(): drives scan.l + gram.y, zero catalog access</span></div>
+<div>├── <span class="fhl">● analyze.c</span> <span class="fnote">— parse_analyze(): raw parse tree → Query tree</span></div>
+<div>├── <span class="fhl">● parse_relation.c</span> <span class="fnote">— parserOpenTable(), addRangeTableEntry(), scanRTEForColumn()</span></div>
+<div>├── <span class="fhl">● parse_expr.c</span> <span class="fnote">— transformExpr()/transformColumnRef(): expressions → typed nodes</span></div>
+<div>├── <span class="fhl">● parse_func.c</span> <span class="fnote">— func_get_detail(): overload/operator candidate ranking</span></div>
+<div>├── parse_target.c <span class="fnote">— star-expansion: SELECT * → explicit TargetEntry list</span></div>
+<div>├── parse_clause.c <span class="fnote">— FROM/JOIN/WHERE clause transformation, JoinExpr handling</span></div>
+<div>└── parse_cte.c <span class="fnote">— WITH clause: CommonTableExpr, RTE_CTE wiring</span></div>
+<div><span class="dir">src/backend/rewrite/</span></div>
+<div>├── <span class="fhl">● rewriteHandler.c</span> <span class="fnote">— QueryRewrite()/RewriteQuery(): view + rule + RLS substitution</span></div>
+<div>├── rewriteDefine.c <span class="fnote">— CREATE RULE / view-as-rule storage into pg_rewrite</span></div>
+<div>└── rowsecurity.c <span class="fnote">— get_row_security_policies(): RLS quals gathered for the rewriter</span></div>
+<div><span class="dir">src/backend/nodes/</span></div>
+<div>└── <span class="fhl">● gen_node_support.pl</span> <span class="fnote">— PG16+: generates copy/equal/out/read funcs from annotated headers</span></div>
+<div><span class="dir">src/include/nodes/</span></div>
+<div>├── <span class="fhl">● nodes.h</span> <span class="fnote">— NodeTag enum, IsA/castNode macros</span></div>
+<div>├── <span class="fhl">● parsenodes.h</span> <span class="fnote">— Query, RangeTblEntry, RTEPermissionInfo, SelectStmt, A_Expr, …</span></div>
+<div>└── <span class="fhl">● primnodes.h</span> <span class="fnote">— Var, Const, OpExpr, TargetEntry, …</span></div>
+  </div></div>
+
+  <p>Four functions, simplified from PostgreSQL 16/17 sources but faithful in structure and naming. First, the
+  entry point that ties lex/parse/analyze/rewrite together for one statement:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>postgres.c → analyze.c — the call sequence for one statement</span></div>
+    <pre><span class="k">List</span> *
+<span class="f">pg_analyze_and_rewrite_fixedparams</span>(RawStmt *raw_tree, <span class="k">const char</span> *query_string,
+                                   Oid *paramTypes, <span class="k">int</span> numParams, ...)
+{
+    Query      *query;
+    <span class="k">List</span>       *querytree_list;
+
+    <span class="c">/* raw_tree came from raw_parser() — pure syntax, no OIDs anywhere yet.
+     * copyObject() here because a cached raw tree (prepared statement)
+     * may be re-entered by analysis more than once — see §6.            */</span>
+    ParseState *pstate = <span class="f">make_parsestate</span>(<span class="n">NULL</span>);
+    pstate->p_sourcetext = query_string;
+    <span class="f">setup_parse_fixed_parameters</span>(pstate, paramTypes, numParams);
+
+    <span class="c">/* THE pivotal call of this chapter: resolves every RangeVar to an
+     * OID, builds the range table, resolves every column to a Var.      */</span>
+    query = <span class="f">transformTopLevelStmt</span>(pstate, raw_tree);
+
+    <span class="k">if</span> (post_parse_analyze_hook)          <span class="c">/* extension point: pg_stat_statements et al. */</span>
+        (*post_parse_analyze_hook) (pstate, query, <span class="n">NULL</span>);
+
+    <span class="f">free_parsestate</span>(pstate);
+
+    <span class="c">/* Rewrite runs even when nothing rewrites anything — views, rules,
+     * and RLS policies are all "no matching rule" for a plain table.     */</span>
+    querytree_list = <span class="f">QueryRewrite</span>(query);
+
+    <span class="k">return</span> querytree_list;   <span class="c">/* what the planner (ch. 16) receives */</span>
+}</pre>
+  </div>
+
+  <p>Building the range table — the loop that turns a <code>FROM</code> clause of <code>RangeVar</code>s into
+  numbered <code>RangeTblEntry</code> structs a <code>Var</code> can point at:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>parse_relation.c — building one range-table entry</span></div>
+    <pre><span class="t">RangeTblEntry</span> *
+<span class="f">addRangeTableEntry</span>(ParseState *pstate, RangeVar *relation,
+                    Alias *alias, <span class="k">bool</span> inh, <span class="k">bool</span> inFromCl)
+{
+    RangeTblEntry *rte = <span class="f">makeNode</span>(RangeTblEntry);   <span class="c">/* type = T_RangeTblEntry, set first */</span>
+
+    <span class="c">/* THIS is where "orders" (a string) becomes an Oid. Everything
+     * before this line has been syntax; everything after is semantics. */</span>
+    Relation rel = <span class="f">parserOpenTable</span>(pstate, relation, AccessShareLock);
+
+    rte->rtekind = RTE_RELATION;
+    rte->relid = <span class="f">RelationGetRelid</span>(rel);
+    rte->relkind = rel->rd_rel->relkind;             <span class="c">/* 'r', 'v', 'p', … */</span>
+    rte->eref = <span class="f">makeAlias</span>(alias ? alias->aliasname : relation->relname,
+                          <span class="f">buildRelationColnames</span>(rel));
+    rte->inh = inh;
+
+    <span class="f">table_close</span>(rel, NoLock);      <span class="c">/* keep the LOCK, drop the descriptor */</span>
+
+    <span class="c">/* Append to pstate's range table — its position in this list IS
+     * the rtindex every Var referencing this entry will carry.          */</span>
+    pstate->p_rtable = <span class="f">lappend</span>(pstate->p_rtable, rte);
+    <span class="k">return</span> rte;
+}</pre>
+  </div>
+
+  <p>Finally, the rewriter's view-substitution loop — the mechanism behind "querying a view is really querying its
+  base tables":</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>rewriteHandler.c — substituting a view's stored rule into the range table</span></div>
+    <pre><span class="k">static</span> <span class="k">void</span>
+<span class="f">ApplyRetrieveRule</span>(Query *parsetree, RewriteRule *rule, <span class="k">int</span> rt_index,
+                  Relation relation)
+{
+    Query *rule_action = <span class="f">copyObject</span>(<span class="f">linitial</span>(rule->actions));  <span class="c">/* the view's
+                                    * ON SELECT DO INSTEAD action, stored in pg_rewrite */</span>
+    RangeTblEntry *rte = <span class="f">rt_fetch</span>(rt_index, parsetree->rtable);
+
+    <span class="c">/* The RTE that used to say "this is relation orders_view" now says
+     * "this is a subquery" — carrying the view's own analyzed Query,
+     * itself already containing ITS OWN resolved range table.           */</span>
+    rte->rtekind = RTE_SUBQUERY;
+    rte->subquery = rule_action;
+    rte->relid = InvalidOid;    <span class="c">/* no longer "a relation" in the plan's eyes  */</span>
+
+    <span class="c">/* Vars in the OUTER query that referenced rt_index by number are
+     * UNCHANGED — they still say varno = rt_index. What changed is what
+     * rt_index MEANS. This is why EXPLAIN never names the view: by the
+     * time the planner sees this tree, there is no view left to name.   */</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. NodeTag first, always.</b> Putting the tag at a fixed offset means every generic tree-walking function
+    — <code>copyObject()</code>, <code>equal()</code>, an extension's expression-tree mutator — can be written once
+    against <code>Node *</code> and dispatch safely, instead of every caller needing to already know what it's
+    holding. <b>2. Rewrite operates on RTE contents, not on Var identities.</b> Substituting a subquery in place of
+    a relation, while leaving every <code>Var.varno</code> in the surrounding query untouched, is what makes rule
+    substitution composable — nest it eleven views deep (§11) and the mechanism doesn't change, only the tree grows.
+    <b>3. Permission and shape are separate structs (§8c).</b> Splitting <code>RTEPermissionInfo</code> out means a
+    view's expansion can change <code>rtekind</code> without touching who's allowed to run the query — two
+    different questions, two different invalidation lifetimes.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — text to plan-ready tree</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click these five stages in the order a statement actually passes through them. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The pipeline, live: raw tree → Query tree → rewritten tree</h2>
+  <p>Pick a preset statement, then step through its three trees. Every node is clickable — it reveals its real
+  (simplified) struct fields in the side panel. Switch to the <b>Query tree</b> tab and watch the range table build
+  entry by entry; click any <code>Var</code> and its owning <code>RangeTblEntry</code> flashes. Switch to
+  <b>Rewritten</b> to see what the rule system actually substitutes — edit <code>orders_view</code>'s definition
+  below and re-apply to watch the rewritten tree change with it.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Three-stage pipeline visualizer</span><span class="w-sub" id="pt-phase">RAW PARSE TREE</span></div>
+    <div class="pt-wrap">
+      <div class="pt-main">
+        <div class="pt-presets" id="pt-presets"></div>
+        <div class="pt-sqlline" id="pt-sqlline"></div>
+        <div class="pt-tabs" id="pt-tabs"></div>
+        <div class="pt-tree" id="pt-tree"></div>
+      </div>
+      <div class="pt-side">
+        <div>
+          <div class="pt-lbl">NODE INSPECTOR</div>
+          <div class="pt-detail" id="pt-detail"><div style="color:var(--dim);font-size:12.5px">click any node in the tree…</div></div>
+        </div>
+        <div class="pt-view-edit" id="pt-viewedit" style="display:none">
+          <div class="pt-lbl">EDIT orders_view DEFINITION</div>
+          <textarea id="pt-viewsrc"></textarea>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button class="btn primary" id="pt-viewapply">Apply &amp; re-rewrite</button>
+            <button class="btn" id="pt-viewreset">Reset</button>
+          </div>
+          <p class="pt-note">This mini-editor pattern-matches <code>SELECT cols FROM table [WHERE cond]</code> — it
+          is illustrative, not a real SQL parser, but it drives the same rewrite-substitution logic below it.</p>
+        </div>
+        <div>
+          <button class="btn good" id="pt-run" style="width:100%">▶ Run full pipeline (animated)</button>
+        </div>
+      </div>
+    </div>
+    <div class="pt-stagecap" id="pt-stagecap"></div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> On the "view" preset, click the <code>RangeTblEntry</code> for <code>orders_view</code> in the
+    Query tree — note <code>relkind='v'</code> and <code>rtekind=RTE_RELATION</code>: still just a relation
+    reference at this stage. <b>2.</b> Switch to Rewritten — the same slot is now <code>RTE_SUBQUERY</code>. <b>3.</b>
+    Edit the view definition to add a <code>WHERE</code> clause, re-apply, and watch the nested Query change.
+    <b>4.</b> On the "CTE + JOIN" preset, click a <code>Var</code> with <code>varno=2</code> in the Query tree and
+    watch which range-table entry flashes. <b>5.</b> Compare the "simple" preset's rewritten tree to its Query tree —
+    they're identical, because the rewriter genuinely does nothing when no rule applies.</p>
+  </div>
+</section>
+
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 16: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head, <i>then</i> reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 15 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now walk a SELECT from raw tokens to a rewritten
+    <code>Query</code> tree, name the struct and file responsible for each transformation, and explain why a view
+    never appears in its own <code>EXPLAIN</code> output. Chapter 16 takes this exact tree into the planner: cost
+    estimation, join ordering, and the custom-vs-generic plan decision for prepared statements.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="pg-16.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-16: The Planner →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+function el(id){ return document.getElementById(id); }
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-15"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* stepper deck engine (copied from pg-01) */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1979", l:"Ingres QUEL", d:"<b>Ingres's QUEL parser</b> establishes Berkeley's habit of hand-building a query-language grammar in-house rather than adopting a standard. QUEL is not SQL — it's a distinct calculus-based language, and its parser's design lineage runs directly into the next entry." },
+  { yr:"1986", l:"POSTGRES parser", d:"<b>The POSTGRES design memo.</b> Stonebraker &amp; Rowe's 'post-Ingres' system ships with its own hand-tuned parser for POSTQUEL, POSTGRES's own query language — not SQL. The lexer/grammar split (a scanner feeding a grammar) is already the shape you'll meet in §8, just for a different language entirely." },
+  { yr:"1994", l:"Postgres95: SQL grammar", d:"<b>Andrew Yu and Jolly Chen replace POSTQUEL with SQL</b> for 'Postgres95'. This isn't a patch — it's a new grammar, because SQL's join syntax, subquery placement, and aggregate scoping don't map cleanly onto POSTQUEL's structure. Every gram.y you've ever read descends from this rewrite." },
+  { yr:"1996", l:"PostgreSQL 6.0", d:"<b>The community takes over</b> as the Berkeley project ends. The SQL grammar inherited from Postgres95 becomes the permanent foundation — from here on, every new SQL-standard feature is accreted onto gram.y rather than triggering a redesign." },
+  { yr:"2009", l:"WITH queries (8.4)", d:"<b>Common table expressions land.</b> parse_cte.c and the RTE_CTE range-table-entry kind (§8) are introduced specifically to let a WITH-list entry become its own independently analyzed nested Query, referenced by name from the outer range table — the mechanism this chapter's simulator lets you click through." },
+  { yr:"2012", l:"JSON functions (9.2)", d:"<b>JSON support begins growing gram.y's surface area</b> in earnest — new operators, new functions, new implicit-cast rules for parse_func.c's candidate ranking (§8c) to reason about. JSON path expressions and JSON_TABLE (17, 2024) continue the same pattern a decade later." },
+  { yr:"2022", l:"MERGE (15)", d:"<b>MERGE ships</b> after being one of the longest-requested SQL-standard features — its grammar interacts with INSERT/UPDATE/DELETE rule-rewriting (§7's rewrite stage) in ways that took multiple release cycles to get right, a reminder that new syntax often means new rewriter cases, not just new grammar rules." },
+  { yr:"2023", l:"gen_node_support.pl (16)", d:"<b>The node-support generator.</b> PostgreSQL 16 replaces the hand-written, hand-synchronized copyfuncs.c/equalfuncs.c/outfuncs.c/readfuncs.c with code generated from annotated struct definitions in the headers themselves (§8a). A twenty-year bug class — forgetting to update one of the four files when a struct field is added — is closed by construction." },
+  { yr:"2023", l:"RTEPermissionInfo split (16)", d:"<b>Permission info leaves RangeTblEntry.</b> What a range-table entry means (its kind, its relation, its join structure) and what privileges running the query against it requires become two separate, separately-cacheable structs (§8c) — motivated directly by the plan-cache invalidation problem §6 introduces." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+
+/* ============================================================
+   DECK: candidate A vs B (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:220px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...a) => `<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">${a.join("")}</div>`;
+  const candA = (hurt) => box("CANDIDATE A — ONE FUSED PASS", cell("grammar reduction for a table ref", hurt?"#f25c54":"#8b94a7", hurt?"rgba(242,92,84,.1)":"transparent") + cell("→ calls heap_openrv() INLINE", hurt?"#f25c54":"#ff9f43", hurt?"rgba(242,92,84,.1)":"rgba(255,159,67,.08)") + cell("needs: live connection, snapshot, lock", "#f25c54", "rgba(242,92,84,.07)"));
+  const candB = (hi) => box("CANDIDATE B — TWO SEPARATE PASSES ✓", cell("raw_parser(): grammar only", "#60a5fa", "rgba(96,165,250,.06)") + cell("→ produces a raw tree, no catalog touched", "#4ade80", hi?"rgba(74,222,128,.1)":"transparent") + cell("parse_analyze(): catalog-aware, separate function", "#a78bfa", hi?"rgba(167,139,250,.1)":"transparent"));
+  stepper("deckBetter", [
+    { stage: wrap(candA(false), candB(false)),
+      cap:`Two ways to place catalog access. Left: fuse it into the grammar's own reduce actions. Right: keep the grammar catalog-blind and resolve names in a second, dedicated pass. Same end result for a query that succeeds — very different failure and reuse properties.` },
+    { stage: wrap(candA(true)),
+      cap:`<b>Candidate A's cost, made concrete.</b> Because the grammar itself calls into the catalog mid-parse, you cannot check "is this valid SQL" without a live connection, a snapshot, and locks — and a bison parser explores tentative reductions before committing to one, so a catalog lookup can fire for a table reference that isn't even part of the final parse.` },
+    { stage: wrap(candB(true)),
+      cap:`<b>Candidate B pays off immediately.</b> raw_parser() can run standalone — this is precisely what the extracted <code>libpg_query</code> library does, used by SQL formatters and query-fingerprinting tools with no database anywhere nearby. A syntax error and a "relation does not exist" error can no longer be the same code path, because they're not even the same function.` },
+    { stage: box("THE RULE, STATED ONCE", cell("Grammar answers: is this valid SQL, structurally?","#60a5fa") + cell("Analysis answers: what does this valid SQL MEAN, against this schema, right now?","#a78bfa") + cell("Rewrite answers: given what it means, does a rule/view/policy change it?","#4ade80")),
+      cap:`<b>Three questions, three passes, three failure domains.</b> Every syntax error is decidable with zero I/O. Every semantic error requires a catalog snapshot. Every rewrite substitution requires an already-resolved tree to substitute into. §7 assembles this into the pipeline you'll simulate in §15.` }
+  ]);
+})();
+
+/* ============================================================
+   ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  lex:{ n:"Lex", f:"src/backend/parser/scan.l", r:"A flex-generated lexical scanner: turns raw bytes into a stream of tokens — keywords, identifiers, literals, operators. Handles dollar-quoting, comments, and PostgreSQL's four keyword classes (unreserved / col_name / type_func_name / reserved) that determine which contexts a given keyword can also be used as a plain identifier.", l:"Runs first, driven by raw_parser() in parser.c.", d:"INPUT: byte string. OUTPUT: token stream fed directly into the bison grammar below — never materialized as its own persistent tree." },
+  parse:{ n:"Parse", f:"src/backend/parser/gram.y", r:"A bison LALR(1) grammar, roughly 20,000 lines, whose reduce actions build Node-tagged structs as they go: SelectStmt, RangeVar, ResTarget, A_Expr, ColumnRef, and hundreds more. Absolutely no catalog access — table and column names remain bare strings.", l:"Table-driven, O(n) in token count, no backtracking.", d:"INPUT: token stream. OUTPUT: a raw parse tree — syntactically valid, semantically uninterpreted." },
+  analyze:{ n:"Analyze", f:"src/backend/parser/analyze.c (+ parse_relation.c, parse_expr.c, parse_func.c)", r:"parse_analyze() walks the raw tree and resolves every name: RangeVars become RangeTblEntry rows with real Oids, ColumnRefs become Vars with (varno, varattno, vartype), function/operator calls are resolved by candidate ranking, and SELECT * is expanded into an explicit column list.", l:"The pivotal transformation — everything downstream depends on its output shape.", d:"INPUT: raw parse tree. OUTPUT: a Query tree — the range table, the target list, the jointree, all fully typed and OID-resolved." },
+  rewrite:{ n:"Rewrite", f:"src/backend/rewrite/rewriteHandler.c", r:"QueryRewrite()/RewriteQuery() check pg_rewrite for applicable rules on every RTE — most commonly a view's stored ON SELECT DO INSTEAD action — and substitute matches in as subquery RTEs. Row-level security policies are ANDed/ORed into the query here too, not in the executor.", l:"Runs on every statement; a no-op for ordinary tables with no rules or RLS.", d:"INPUT: analyzed Query tree. OUTPUT: a Query tree of the same C type, with views/rules/RLS already substituted in — this is what the planner receives." },
+  plan:{ n:"Planner (chapter 16)", f:"src/backend/optimizer/", r:"Out of this chapter's scope by design. Takes the rewritten Query tree, estimates costs against catalog statistics (pg_statistic, reltuples), searches join orders and access paths, and decides — for prepared statements — whether to build a custom plan per execution or reuse one generic plan.", l:"Next chapter.", d:"INPUT: rewritten Query tree (this chapter's final output). OUTPUT: a costed Plan tree." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">INPUT → OUTPUT</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("lex");
+
+/* ============================================================
+   DECK: resolving a column reference to a Var (§8b)
+   ============================================================ */
+(function(){
+  const STEPS = [
+    "transformColumnRef() (parse_expr.c) receives ColumnRef{fields:(\"total\")} — still just a string",
+    "Walk pstate->p_namespace: the RTEs currently in lexical scope (here: just orders, rtindex 1)",
+    "scanRTEForColumn(pstate, rte, \"total\", …) (parse_relation.c) checks rte->eref's column-name list for a match",
+    "Exactly one match, at column position 3 → build Var{varno:1, varattno:3}",
+    "vartype is filled from pg_attribute.atttypid via the relcache — a lookup, not a re-parse",
+    "Zero matches in ANY scoped RTE → \"column \\\"total\\\" does not exist\". More than one UNQUALIFIED match → \"column reference \\\"total\\\" is ambiguous\""
+  ];
+  function list(activeIdx){
+    return '<div style="display:flex;flex-direction:column;gap:6px;max-width:560px;margin:0 auto">' +
+      STEPS.map((t,i)=> `<div class="frame ${i===activeIdx?"hot":(i<activeIdx?"dead":"")}" style="text-align:left"><span class="ff">${t}</span></div>`).join("") +
+      '</div>';
+  }
+  const CAPS = [
+    "The raw ColumnRef arrives from the SelectStmt's target list. Nothing here yet says which relation, if any, actually has a column called total.",
+    "Every RTE currently visible — the current query's FROM list, plus any outer query levels for a correlated subquery — is a candidate. This list IS the range table you'll see built in §15's simulator.",
+    "scanRTEForColumn() is the actual search function: it compares the bare name against each candidate RTE's exposed column names (eref), not against the physical catalog directly — the RTE already cached that at build time.",
+    "One and only one match resolves cleanly. varno picks the RTE, varattno picks the column — the pair that replaces the string forever, in every plan and every EXPLAIN.",
+    "Type resolution isn't a separate search — it rides along with the column match, because an attribute's type is already known the moment its RTE was built.",
+    "Both failure cases are only computable here, with a built range table in hand — which is exactly why neither one is a syntax error (§4)."
+  ];
+  stepper("deckResolve", STEPS.map((s,i)=>({ stage:list(i), cap:`<b>${["Receive","Scope","Search","Resolve","Type","Fail modes"][i]}.</b> ${CAPS[i]}` })));
+})();
+
+/* ============================================================
+   SLIDER: candidate function/operator elimination (§8c)
+   ============================================================ */
+(function(){
+  function render(){
+    const n = +el("cand-slider").value;
+    el("cand-val").textContent = n;
+    const exact   = n<=1 ? n : Math.max(1, Math.round(n*0.4));
+    const pref    = exact<=1 ? exact : Math.max(1, Math.round(exact*0.55));
+    const cheapest= pref<=1 ? pref : Math.max(1, Math.round(pref*0.5));
+    const stages = [["all same-name/arity candidates", n], ["survive exact-type-match round", exact], ["survive preferred-type-per-category round", pref], ["survive cheapest-implicit-cast round", cheapest]];
+    const max = n;
+    el("cand-viz").innerHTML = stages.map(([label,v])=>
+      `<div style="margin:6px 0"><div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:3px">${label}: <b style="color:var(--pg)">${v}</b></div>
+       <div style="height:10px;border-radius:5px;background:var(--bg-2);border:1px solid var(--border)"><div style="height:100%;border-radius:5px;width:${Math.max(2,(v/max*100))}%;background:${v>1?"#ff9f43":"#4ade80"}"></div></div></div>`).join("");
+    el("cand-note").innerHTML = cheapest > 1
+      ? `With <b>${cheapest}</b> candidates surviving every elimination round, func_get_detail() cannot pick a winner: <code>ERROR: function is not unique</code>. This is exactly §11's incident — adding an overload doesn't just add a candidate, it can push a PREVIOUSLY unique winner into this ambiguous zone for call sites that used to resolve cleanly.`
+      : `Exactly one candidate survives every round — func_get_detail() commits to it. This is the common case: most overload sets resolve to a single winner well before the cheapest-cast round even matters.`;
+  }
+  el("cand-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   SLIDER: range table growth (§8c)
+   ============================================================ */
+(function(){
+  function render(){
+    const k = +el("rte-slider").value;
+    el("rte-val").textContent = k;
+    let boxes = "";
+    for (let i=1;i<=k;i++) boxes += `<div class="pnode" style="display:inline-block;margin:4px">RTE ${i}<span class="sub">rtindex ${i}</span></div>`;
+    el("rte-viz").innerHTML = `<div style="text-align:center">${boxes}</div>`;
+    el("rte-note").innerHTML = `With <b>${k}</b> range-table entr${k===1?"y":"ies"} in scope, an UNQUALIFIED column reference makes <code>scanRTEForColumn()</code> check up to <b>${k}</b> candidate RTEs before it can return a clean resolution, a <code>does not exist</code> error, or — once k ≥ 2 — an <code>is ambiguous</code> error whenever the same column name happens to exist in more than one joined relation. A QUALIFIED reference (<code>o.total</code> instead of <code>total</code>) skips this scan entirely: the RTE is picked directly by alias, in O(1), regardless of how large the range table gets.`;
+  }
+  el("rte-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Why does PostgreSQL raise a completely different class of error for 'unexpected token near WHERE' versus 'relation \"orders\" does not exist' — and why can't the second one ever be detected during parsing?", hint:"which function has catalog access?",
+    a:"A syntax error is raised inside raw_parser()/gram.y — a pure function of the token stream and the grammar, decidable with zero I/O. 'relation does not exist' can only be raised by parse_analyze() (specifically parserOpenTable() in parse_relation.c), because deciding whether orders exists requires a catalog lookup against pg_class under a snapshot — state the grammar never touches and was deliberately designed never to touch. The two error classes are architecturally guaranteed to be distinct because they're raised by different functions operating on different kinds of state." },
+  { lvl:"SENIOR", q:"Walk me through what varno and varattno mean on a Var node, and what varno=0 or a very large varno would indicate.", hint:"think about special range-table conventions",
+    a:"varno is a 1-based index into the enclosing Query's rtable — it picks WHICH range-table entry a column comes from. varattno is a 1-based column number within that RTE's rowtype, with 0 meaning 'the whole row' (as in SELECT orders FROM orders, a whole-row reference). varno isn't always a plain small positive integer into the current query's own rtable: PostgreSQL reserves special sentinel values (e.g. for the OUTER_VAR/INNER_VAR conventions used inside already-planned join nodes in chapter 16, not at this stage), and varlevelsup addresses correlated references reaching into an outer query's range table instead of the current one. At THIS chapter's stage, expect ordinary small positive varnos into Query.rtable and varlevelsup=0 for uncorrelated queries." },
+  { lvl:"STAFF", q:"A view's EXPLAIN never mentions the view by name. Explain the exact mechanism that makes that true, not just the observation.", hint:"what does rewriteHandler.c actually mutate?",
+    a:"QueryRewrite()/ApplyRetrieveRule() (rewriteHandler.c) finds the view's ON SELECT DO INSTEAD rule stored in pg_rewrite and substitutes it directly into the querying statement's range table: the RangeTblEntry that used to say rtekind=RTE_RELATION, relid=<view oid> is mutated in place to rtekind=RTE_SUBQUERY, subquery=<the view's own analyzed Query>. Every Var in the outer query that referenced that RTE by rtindex is untouched — only what the rtindex MEANS changed. By the time the planner (and therefore EXPLAIN) sees the tree, there is no RTE_RELATION pointing at the view left anywhere in it — there's a subquery over the view's base tables instead, which is what gets planned and named." },
+  { lvl:"STAFF", q:"Why did PostgreSQL 16 introduce gen_node_support.pl instead of just fixing the existing hand-written copyfuncs.c/equalfuncs.c/outfuncs.c/readfuncs.c bugs as they were found?", hint:"think about the failure mode's shape, not any one instance of it",
+    a:"The bug wasn't any single incorrect function — it was a STRUCTURAL hazard: four separate files had to be manually kept in sync with every struct definition in the parsenodes.h/primnodes.h headers, and nothing enforced that sync. Every new node field was a new opportunity to update three of four files and silently ship a copy/equal/serialize bug that only manifests later (a dropped field during copyObject() corrupting a cached prepared statement, say). Generating the four files directly from annotated struct definitions in the headers removes the SYNC step entirely — there's only one source of truth (the header) and the generator either handles a new field correctly by default or requires an explicit pg_node_attr annotation, converting a class of silent bugs into a build-time decision." },
+  { lvl:"STAFF", q:"Two range-table entries reference the same physical table (a self-join: orders o1 JOIN orders o2 ON ...). How does the system keep varno resolution correct, given that relid is identical for both?", hint:"what's actually unique per RTE?",
+    a:"relid is NOT what makes an RTE distinct — its POSITION in Query.rtable is. o1 and o2 get separate RangeTblEntry structs at separate rtindex positions (say 1 and 2), each with its own eref alias ('o1', 'o2') even though both carry the identical relid. Every Var referencing a column of o1 carries varno=1; every Var referencing o2 carries varno=2. Two RTEs with equal relid is completely unremarkable and requires no special-casing anywhere in this chapter's machinery — varno addresses a SLOT in the range table, never the underlying relation directly." },
+  { lvl:"PRINCIPAL", q:"Steelman fusing parse analysis into the grammar (Candidate A from §5) for a hypothetical new query language you're designing from scratch today, versus keeping them separate the PostgreSQL way. When would Candidate A actually be the right call?", hint:"what does PostgreSQL's install base assume that a greenfield project doesn't have to?",
+    a:"Candidate A wins when there is no requirement for offline tooling (formatters, linters, fingerprinting), no plan-cache/prepared-statement reuse story to support, and the language's grammar is simple enough that catalog-aware productions don't blow up its ambiguity (e.g. a narrow, purpose-built DSL with a handful of statement shapes, always executed against one known, static schema). PostgreSQL's separation earns its cost specifically because SQL's grammar is large and general, because prepared statements amortize analysis across many executions, and because a huge tooling ecosystem (libpg_query, ORMs, linters) depends on parsing without a live connection. A greenfield DSL with none of those pressures could reasonably accept Candidate A's simplicity and skip building an entire generic Node/copyObject/invalidation infrastructure just to keep two passes separate." },
+  { lvl:"PRINCIPAL", q:"A team wants to add a query-rewriting security layer (row masking based on caller role) purely at the SQL text level, using string substitution before sending queries to PostgreSQL. Using this chapter's model, explain precisely why this is both redundant and strictly weaker than what already exists, and what they should use instead.", hint:"where does RLS actually get enforced, and against what tree shape?",
+    a:"Row-level security policies are applied during THIS chapter's rewrite stage (rowsecurity.c's get_row_security_policies(), invoked from rewriteHandler.c), directly against the already-resolved Query tree — meaning policies are expressed as real, typed expressions over real Vars and are enforced no matter how the query reaches the table (a view, a join, a subquery, a different client entirely). A text-substitution layer operates before any of this chapter's stages even run, against un-parsed strings — it cannot see through a view, a CTE, a UNION branch, or a differently-aliased join the way a policy expressed as an actual expression tree can, and it re-solves (badly) a problem the rewriter already solves structurally, at the correct layer, exactly once, for every possible way of phrasing the query. The team should use CREATE POLICY, full stop." }
+]);
+
+/* ============================================================
+   PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let cold=false, prepared=false;
+  const cv = el("lat-chart"), ctx = cv.getContext("2d");
+  function model(joins){
+    if (prepared) return { lex:0, analyze:0, rewrite:0, plan:0.3+joins*joins*0.04, execute:0.5+joins*0.35 };
+    const lex = 0.05;
+    const analyze = (0.15 + joins*0.12) * (cold?5:1);
+    const rewrite = 0.03 + joins*0.01;
+    const plan = 0.3 + joins*joins*0.04;
+    const execute = 0.5 + joins*0.35;
+    return { lex, analyze, rewrite, plan, execute };
+  }
+  function render(){
+    const j = +el("lat-joins").value;
+    el("lat-joins-val").textContent = j;
+    el("lat-cold").classList.toggle("on", cold);
+    el("lat-prepared").classList.toggle("on", prepared);
+    const m = model(j);
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0,0,W,H);
+    const stages = [["lex+parse", m.lex, "#60a5fa"], ["analyze", m.analyze, "#a78bfa"], ["rewrite", m.rewrite, "#4ade80"], ["plan", m.plan, "#ff9f43"], ["execute", m.execute, "#f25c54"]];
+    const total = stages.reduce((s,x)=>s+x[1], 0) || 1;
+    const barX = 30, barY = H/2 - 30, barW = W - 60, barH = 64;
+    ctx.strokeStyle = "#1c2330"; ctx.lineWidth = 1; ctx.strokeRect(barX, barY, barW, barH);
+    let x = barX;
+    stages.forEach(([name, v, c])=>{
+      const w = (v/total) * barW;
+      ctx.fillStyle = c; ctx.fillRect(x, barY, Math.max(w,0), barH);
+      if (w > 34){ ctx.fillStyle = "#04121f"; ctx.font = "10px monospace"; ctx.textAlign = "center"; ctx.fillText(name, x+w/2, barY+barH/2+4); }
+      x += w;
+    });
+    ctx.fillStyle = "#8b94a7"; ctx.font = "11px monospace"; ctx.textAlign = "left";
+    ctx.fillText(`relative time share at ${j} joined table(s)` + (prepared?" — PREPARED, Nth execution":"") + (cold?" — COLD CATALOG CACHES":""), barX, barY - 16);
+    el("lat-note").innerHTML = prepared
+      ? "Prepared statement, Nth execution via Bind/Execute: lex, parse, analyze, and rewrite all cost <b>zero</b> — that work happened once, at Parse time. Only planning (custom vs. generic, chapter 16) and execution remain."
+      : `Simple-query-protocol execution: every stage runs from scratch. At ${j} joined table(s), analyze's share grows with join/RTE count (more scanRTEForColumn() candidates, more permission-info bookkeeping) while lex+parse stays nearly flat — LALR parsing costs the same per token regardless of how many tables you joined.` + (cold ? " Cold catalog caches multiply analyze's cost further: first touch of each relation's metadata is a real cache miss, not a hash lookup." : "");
+  }
+  el("lat-joins").oninput = render;
+  el("lat-cold").onclick = ()=>{ cold=!cold; render(); };
+  el("lat-prepared").onclick = ()=>{ prepared=!prepared; render(); };
+  render();
+})();
+
+/* ============================================================
+   QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why can raw_parser() run with no live database connection at all, while parse_analyze() cannot?",
+    opts:[ "raw_parser() only checks the token stream against a context-free grammar; parse_analyze() must resolve names and types against catalog state",
+           "raw_parser() is single-threaded and parse_analyze() runs in a background worker",
+           "raw_parser() only supports SELECT statements, so it needs no catalog",
+           "parse_analyze() re-lexes the query text using a slower scanner" ],
+    a:0,
+    why:"The grammar's reduce actions build Node-tagged structs from strings and literals only — no function in gram.y touches pg_class, a snapshot, or a lock. parse_analyze() is defined specifically to be the place where names become Oids, which is unavoidably a catalog operation. Options B, C, and D describe nothing that actually happens in either function." },
+  { q:"A RangeTblEntry has rtekind = RTE_SUBQUERY where you expected RTE_RELATION. What most likely produced that?",
+    opts:[ "A plain table reference resolved during parse analysis",
+           "The rewriter substituting a view's stored rule (or the query literally had a subquery in its FROM clause)",
+           "The lexer recognizing a nested SELECT keyword",
+           "max_connections was exceeded, forcing a fallback plan shape" ],
+    a:1,
+    why:"Parse analysis produces RTE_RELATION for an ordinary table or view reference — it doesn't know or care yet whether a table is a view. RTE_SUBQUERY appears either because the query itself has a subquery in FROM, or because the rewriter's ApplyRetrieveRule() (§13) swapped a view's RTE_RELATION for RTE_SUBQUERY, substituting the view's stored Query. The lexer never produces range-table structures at all (D is unrelated to this chapter's topic)." },
+  { q:"SELECT * FROM t — at which stage does * become an explicit column list?",
+    opts:[ "Lexing, when the scanner recognizes the * character",
+           "Parsing, inside gram.y's grammar action for the target list",
+           "Parse analysis, using the relation's actual resolved column list",
+           "The rewriter, once it determines whether t is a view" ],
+    a:2,
+    why:"The raw parse tree keeps * as a ColumnRef wrapping an A_Star marker — pure syntax, no column list yet, because the grammar doesn't know what columns t even has. Parse analysis expands it into one TargetEntry per column, using the RangeTblEntry's already-resolved column list (parse_target.c). This happens whether or not t turns out to be a view — expansion doesn't wait for the rewriter." },
+  { q:"A Var has varno = 2 in a Query whose rtable has three entries. What does 2 mean?",
+    opts:[ "The Var is the second column of some relation",
+           "The Var references the RangeTblEntry at position 2 in Query.rtable",
+           "The Var belongs to the second condition in the WHERE clause",
+           "The Var was the second node created while parsing" ],
+    a:1,
+    why:"varno picks a RANGE-TABLE ENTRY by position, not a column — that's varattno's job. Position 2 in Query.rtable might be a base table, a subquery, a join, or a CTE reference; varno alone tells you which slot, and varattno (combined with the resolved vartype) tells you which column within it." },
+  { q:"Why did PostgreSQL 16 split RTEPermissionInfo out of RangeTblEntry?",
+    opts:[ "To make view rewriting faster in the common case",
+           "To separate 'what this range-table entry means' from 'what privileges running the query requires', so each can be cached and invalidated independently",
+           "Because RangeTblEntry exceeded a fixed struct size limit",
+           "To remove permission checking from PostgreSQL entirely, deferring it to the executor" ],
+    a:1,
+    why:"The split is about invalidation granularity, not raw speed or struct size. A GRANT/REVOKE only needs to invalidate permission info; inheritance/partition expansion only needs to multiply RTE shape, not permission bookkeeping. Keeping them fused meant every change to either concern forced reasoning about both. Permission checking still very much happens (option D is simply false)." },
+  { q:"parse_func.c's func_get_detail() finds two candidates for discount(numeric, integer) equally ranked after every elimination round. What happens?",
+    opts:[ "It silently picks whichever was declared first in pg_proc",
+           "It raises \"function ... is not unique\" rather than guessing",
+           "It implicitly casts both arguments to the widest available type and proceeds",
+           "It defers the choice to the planner, which picks the cheaper one at plan time" ],
+    a:1,
+    why:"PostgreSQL's candidate-ranking algorithm (exact match → preferred type → cheapest implicit cast) is designed to fail loudly on a genuine tie rather than guess — an ambiguous overload resolution is an ERROR at parse-analysis time, not a runtime heuristic and not something deferred to the planner, which never sees unresolved function calls at all." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you can read analyze.c cold.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks and §15's simulator — clicking the actual nodes makes this click fast."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz (§14) */
+(function(){
+  const CORRECT = [
+    "Lex: scan.l turns raw bytes into a token stream",
+    "Parse: gram.y's LALR(1) grammar reduces tokens into a raw parse tree — zero catalog access",
+    "Analyze: parse_analyze() resolves every RangeVar to an Oid and every column to a Var, building the Query tree",
+    "Rewrite: rewriteHandler.c substitutes views/rules and applies row-security policies into the Query",
+    "Plan: the optimizer (chapter 16) costs access paths and produces a Plan tree"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real pipeline order</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   FLAGSHIP SIMULATOR (§15) — three-stage pipeline visualizer
+   ============================================================ */
+(function(){
+  const DEFAULT_VIEW_DEF = "SELECT id, customer_id, total FROM orders WHERE status = 'paid'";
+  const DESC = {
+    SelectStmt:"Raw parse tree node produced by gram.y for a SELECT. Carries only syntax — no OIDs, no types, no resolved names.",
+    RangeVar:"A table reference as WRITTEN: schema/name text and an optional alias. Not yet resolved to any Oid.",
+    ResTarget:"One entry in a SELECT list — wraps the expression and an optional output name (AS alias).",
+    ColumnRef:"An unresolved column reference: a list of name parts (or an A_Star marker for *) exactly as typed.",
+    "A_Expr":"A raw binary operator expression — the operator name is still a string; operands are still unresolved.",
+    "A_Const":"A literal constant as written in the SQL text, with no type assigned yet.",
+    targetList:"List of ResTarget (raw tree) or TargetEntry (Query tree) — the SELECT list, in output order.",
+    fromClause:"List of range items as written — RangeVar, JoinExpr, or subquery — not yet resolved to anything.",
+    whereClause:"The WHERE condition's raw expression tree.",
+    quals:"A join or filter condition expression.",
+    rtable:"The range table: Query.rtable, a List of RangeTblEntry. Every Var elsewhere in this Query names one of these by integer index (varno).",
+    Query:"The analyzed statement. Every name has become an Oid or attribute number — nothing here needs a catalog lookup to interpret.",
+    RangeTblEntry:"One entry in the range table — answers 'what does this FROM-list item actually mean' (relation, subquery, join, CTE, …).",
+    Var:"A resolved column reference: varno picks a RangeTblEntry by position, varattno picks a column (0 = whole row).",
+    Const:"A literal with a resolved type OID and an already-converted internal value.",
+    OpExpr:"A resolved operator call: a specific pg_operator OID plus already-typed argument nodes.",
+    TargetEntry:"One resolved output column: resno is its output position, expr is the value, resname is its column name.",
+    CommonTableExpr:"A WITH-list entry: the CTE's name plus its own nested, independently analyzed Query.",
+    WithClause:"The raw WITH clause: a list of CommonTableExpr nodes and whether RECURSIVE was specified.",
+    JoinExpr:"A join in the FROM list: join type, both sides, and the ON/USING condition.",
+    "FromExpr":"Query.jointree — the analyzed FROM/WHERE structure: top-level range items plus the combined qualification expression.",
+    cteList:"Query.cteList — the analyzed WITH-list; each entry's own Query is already fully resolved."
+  };
+  function lookupDesc(node){
+    if (node.desc) return node.desc;
+    const key = node.tag.split(" ")[0].replace(/[():]/g,"");
+    return DESC[key] || "";
+  }
+
+  /* ---- node builders ---- */
+  function RVn(relname, alias){ return { tag:"RangeVar", fields:{ schemaname:"NULL", relname:'"'+relname+'"', alias:(alias?'"'+alias+'"':"NULL"), inh:"true", relpersistence:"'p'" }, kids:[] }; }
+  function CRn(text){ return { tag:"ColumnRef", fields:{ fields:'("'+text+'")' }, kids:[] }; }
+  function STARn(){ return { tag:"ColumnRef", fields:{ fields:"(A_Star)" }, kids:[] }; }
+  function ACn(v){ return { tag:"A_Const", fields:{ val:v+" (Integer)" }, kids:[] }; }
+  function ACs(v){ return { tag:"A_Const", fields:{ val:"'"+v+"' (String)" }, kids:[] }; }
+  function RTn(kid){ return { tag:"ResTarget", fields:{ name:"NULL" }, kids:[kid] }; }
+  function AEn(op,l,r){ return { tag:"A_Expr", fields:{ kind:"AEXPR_OP", name:'("'+op+'")' }, kids:[l,r] }; }
+  function grp(label, kids){ return { tag:label, fields:{}, kids:kids }; }
+  function RTEn(idx, fields, kids, sum){ return { tag:"RangeTblEntry", fields:fields, kids:kids||[], rtindex:idx, sum: sum || ("rtindex "+idx) }; }
+  function VARn(varno, varattno, vartype){ return { tag:"Var", varno:varno, fields:{ varno:varno, varattno:varattno, vartype:vartype, varlevelsup:"0" }, kids:[] }; }
+  function CONSTn(type,val){ return { tag:"Const", fields:{ consttype:type, constvalue:val }, kids:[] }; }
+  function TEn(resno, resname, kid){ return { tag:"TargetEntry", fields:{ resno:resno, resname:'"'+resname+'"', ressortgroupref:"0" }, kids:[kid] }; }
+  function OPn(name, opno, kids){ return { tag:"OpExpr", fields:{ opno:opno, opname:'"'+name+'"' }, kids:kids }; }
+
+  /* ---- mini text parser for the view-definition editor (illustrative, not a real SQL parser) ---- */
+  function miniParseView(text){
+    const m = text.match(/select\s+(.*?)\s+from\s+([a-zA-Z_][\w]*)\s*(?:where\s+(.*?))?;?\s*$/i);
+    if (!m) return null;
+    const cols = m[1].split(",").map(s=>s.trim()).filter(Boolean);
+    return { cols: cols.length?cols:["id"], table: m[2].trim(), where: m[3] ? m[3].trim() : null };
+  }
+  function miniParseWhere(w){
+    const m = w.match(/^(.*?)\s*(=|>=|<=|<>|!=|>|<)\s*(.*)$/);
+    if (!m) return { left:w, op:"=", right:"?", rightIsConst:true };
+    let left = m[1].trim(), op = m[2].trim(), right = m[3].trim();
+    const rightIsConst = /^'.*'$/.test(right) || /^-?\d+(\.\d+)?$/.test(right);
+    if (rightIsConst) right = right.replace(/^'|'$/g, "");
+    return { left, op, right, rightIsConst };
+  }
+  function colIndexGuess(cols, name){
+    const i = cols.findIndex(c=>c.toLowerCase()===String(name).toLowerCase());
+    return i>=0 ? i+1 : null;
+  }
+
+  /* ---- preset tree builders ---- */
+  function simpleRaw(){
+    return { tag:"SelectStmt", fields:{ op:"SETOP_NONE", limitCount:"NULL" }, sum:"root — raw parse tree", kids:[
+      grp("targetList", [ RTn(CRn("id")), RTn(CRn("total")) ]),
+      grp("fromClause", [ RVn("orders") ]),
+      grp("whereClause", [ AEn("=", CRn("customer_id"), ACn(42)) ])
+    ]};
+  }
+  function simpleQuery(rewritten){
+    const rtg = grp("rtable", [ RTEn(1, { rtekind:"RTE_RELATION", relid:"16402 (orders)", relkind:"'r'", eref:'"orders"(id,customer_id,total,status)', inh:"true" }) ]);
+    rtg.stagger = true;
+    const tlg = grp("targetList", [ TEn(1,"id",VARn(1,1,"23 (int4)")), TEn(2,"total",VARn(1,3,"1700 (numeric)")) ]);
+    const jt = { tag:"FromExpr (jointree)", fields:{ fromlist:"[RTE 1]" }, kids:[ OPn("=","96 (int4eq)", [VARn(1,2,"23 (int4)"), CONSTn("23 (int4)","42")]) ] };
+    return { tag:"Query", fields:{ commandType:"CMD_SELECT", querySource:"QSRC_ORIGINAL" }, sum: rewritten?"rewritten — identical, no rule applies to orders":"analyzed Query tree", kids:[rtg, tlg, jt] };
+  }
+  function viewRaw(){
+    return { tag:"SelectStmt", fields:{ op:"SETOP_NONE" }, sum:"root — raw parse tree", kids:[
+      grp("targetList", [ RTn(STARn()) ]),
+      grp("fromClause", [ RVn("orders_view") ]),
+      grp("whereClause", [ AEn(">", CRn("total"), ACn(100)) ])
+    ]};
+  }
+  function viewQuery(){
+    const rtg = grp("rtable", [ RTEn(1, { rtekind:"RTE_RELATION", relid:"24601 (orders_view)", relkind:"'v' (VIEW)", eref:'"orders_view"(id,customer_id,total)' }) ]);
+    rtg.stagger = true;
+    const tlg = grp("targetList (* expanded)", [ TEn(1,"id",VARn(1,1,"23 (int4)")), TEn(2,"customer_id",VARn(1,2,"23 (int4)")), TEn(3,"total",VARn(1,3,"1700 (numeric)")) ]);
+    const jt = { tag:"FromExpr (jointree)", fields:{}, kids:[ OPn(">","1754 (numeric_gt)", [VARn(1,3,"1700 (numeric)"), CONSTn("1700 (numeric)","100")]) ] };
+    return { tag:"Query", fields:{ commandType:"CMD_SELECT" }, sum:"analyzed — orders_view is still plain RTE_RELATION here", kids:[rtg, tlg, jt] };
+  }
+  function viewRewritten(viewDefText){
+    const parsed = miniParseView(viewDefText) || { cols:["id","customer_id","total"], table:"orders", where:"status = 'paid'" };
+    const cols = parsed.cols;
+    const baseRtg = grp("rtable", [ RTEn(1, { rtekind:"RTE_RELATION", relid:"16402 ("+parsed.table+")", relkind:"'r'", eref:'"'+parsed.table+'"('+cols.join(",")+',...)' }) ]);
+    baseRtg.stagger = true;
+    const nestedTl = grp("targetList", cols.map((c,i)=> TEn(i+1, c, VARn(1,i+1,"?"))));
+    let nestedJt;
+    if (parsed.where){
+      const w = miniParseWhere(parsed.where);
+      const li = colIndexGuess(cols, w.left) || 1;
+      const rightNode = w.rightIsConst ? CONSTn("?", "'"+w.right+"'") : VARn(1, colIndexGuess(cols, w.right) || 1, "?");
+      nestedJt = { tag:"FromExpr (jointree)", fields:{}, kids:[ OPn(w.op, "?", [VARn(1, li, "?"), rightNode]) ] };
+    } else {
+      nestedJt = { tag:"FromExpr (jointree)", fields:{ fromlist:"[RTE 1]", quals:"NULL" }, kids:[] };
+    }
+    const nestedQuery = { tag:"Query", fields:{ commandType:"CMD_SELECT", querySource:"QSRC_VIEW" }, sum:"view body — pg_rewrite's ON SELECT DO INSTEAD action", kids:[baseRtg, nestedTl, nestedJt] };
+
+    const outerRte = RTEn(1, { rtekind:"RTE_SUBQUERY (was RTE_RELATION)", relid:"— (no longer a bare relation)", eref:'"orders_view"(id,customer_id,total)' }, [nestedQuery], "view substituted as subquery");
+    const rtgOuter = grp("rtable", [outerRte]); rtgOuter.stagger = true;
+    const tlOuter = grp("targetList", [ TEn(1,"id",VARn(1,1,"23 (int4)")), TEn(2,"customer_id",VARn(1,2,"23 (int4)")), TEn(3,"total",VARn(1,3,"1700 (numeric)")) ]);
+    const jtOuter = { tag:"FromExpr (jointree)", fields:{}, kids:[ OPn(">","1754 (numeric_gt)", [VARn(1,3,"1700 (numeric)"), CONSTn("1700 (numeric)","100")]) ] };
+    return { tag:"Query", fields:{ commandType:"CMD_SELECT" }, sum:"rewritten — rtindex 1 now MEANS a subquery, not a relation", kids:[rtgOuter, tlOuter, jtOuter] };
+  }
+  function cteRaw(){
+    const nestedRaw = { tag:"SelectStmt", fields:{ op:"SETOP_NONE" }, sum:"CTE body (raw)", kids:[
+      grp("targetList",[RTn(CRn("id"))]), grp("fromClause",[RVn("customers")]), grp("whereClause",[AEn("=",CRn("region"),ACs("EU"))])
+    ]};
+    const cte = { tag:"CommonTableExpr", fields:{ ctename:'"eu"', aliascolnames:"NULL" }, kids:[nestedRaw] };
+    const withC = { tag:"WithClause", fields:{ recursive:"false" }, kids:[cte] };
+    const joinE = { tag:"JoinExpr", fields:{ jointype:"JOIN_INNER" }, kids:[ RVn("orders","o"), RVn("eu"), grp("quals",[AEn("=",CRn("o.customer_id"),CRn("eu.id"))]) ] };
+    return { tag:"SelectStmt", fields:{ op:"SETOP_NONE" }, sum:"root — raw parse tree", kids:[ withC, grp("targetList",[RTn(CRn("o.id")),RTn(CRn("o.total"))]), grp("fromClause",[joinE]) ] };
+  }
+  function cteQuery(rewritten){
+    const nestedRtg = grp("rtable", [ RTEn(1, { rtekind:"RTE_RELATION", relid:"16409 (customers)", relkind:"'r'", eref:'"customers"(id,name,region,...)' }) ]);
+    nestedRtg.stagger = true;
+    const nestedTl = grp("targetList", [ TEn(1,"id",VARn(1,1,"23 (int4)")) ]);
+    const nestedJt = { tag:"FromExpr (jointree)", fields:{}, kids:[ OPn("=","98 (texteq)", [VARn(1,3,"25 (text)"), CONSTn("25 (text)","'EU'")]) ] };
+    const nestedQuery = { tag:"Query", fields:{ commandType:"CMD_SELECT" }, sum:"CTE body — analyzed independently", kids:[nestedRtg, nestedTl, nestedJt] };
+    const cteNode = { tag:"CommonTableExpr", fields:{ ctename:'"eu"', cterefcount:"1" }, kids:[nestedQuery] };
+    const cteListGroup = grp("cteList", [cteNode]);
+
+    const rtgOuter = grp("rtable", [
+      RTEn(1, { rtekind:"RTE_RELATION", relid:"16402 (orders)", relkind:"'r'", eref:'"o"(id,customer_id,total,status)' }),
+      RTEn(2, { rtekind:"RTE_CTE", ctename:'"eu"', ctelevelsup:"0", eref:'"eu"(id)' })
+    ]);
+    rtgOuter.stagger = true;
+    const tlOuter = grp("targetList", [ TEn(1,"id",VARn(1,1,"23 (int4)")), TEn(2,"total",VARn(1,3,"1700 (numeric)")) ]);
+    const joinNode = { tag:"JoinExpr", fields:{ jointype:"JOIN_INNER" }, kids:[ OPn("=","96 (int4eq)", [VARn(1,2,"23 (int4)"), VARn(2,1,"23 (int4)")]) ] };
+    const jtOuter = { tag:"FromExpr (jointree)", fields:{}, kids:[joinNode] };
+    return { tag:"Query", fields:{ commandType:"CMD_SELECT" }, sum: rewritten?"rewritten — unchanged; the rewriter does not inline CTEs":"analyzed Query tree", kids:[cteListGroup, rtgOuter, tlOuter, jtOuter] };
+  }
+
+  const PRESET_META = {
+    simple:{ label:"Simple SELECT", sql:"SELECT id, total FROM orders WHERE customer_id = 42;", hasView:false },
+    view:{ label:"Query against a view", sql:"SELECT * FROM orders_view WHERE total > 100;", hasView:true },
+    cte:{ label:"WITH CTE + JOIN", sql:"WITH eu AS (SELECT id FROM customers WHERE region = 'EU')\nSELECT o.id, o.total FROM orders o JOIN eu ON o.customer_id = eu.id;", hasView:false }
+  };
+  const STAGE_NAMES = ["RAW PARSE TREE","QUERY TREE (ANALYZED)","REWRITTEN TREE"];
+
+  const CAPS_RAW = {
+    simple:"gram.y has reduced the token stream into a SelectStmt. \"orders\" is still four ASCII bytes — RangeVar.relname — not an Oid. There is no way yet to know whether this table exists.",
+    view:"Same shape, but look at the target list: a single ColumnRef wrapping an A_Star marker. Star-expansion has NOT happened yet — that's parse analysis's job (§8), never the grammar's.",
+    cte:"The WITH clause becomes a WithClause node holding one CommonTableExpr, itself wrapping a fully independent nested SelectStmt — the CTE body is parsed exactly like any other SELECT, recursively, before the outer statement's FROM/JOIN is even reached."
+  };
+  const CAPS_QUERY = {
+    simple:"parse_analyze() resolved \"orders\" to relid 16402 via parserOpenTable(), built one RangeTblEntry, and rewrote every column reference into a Var carrying (varno, varattno, vartype). Watch the range table populate above, one RTE at a time — that's the moment names become numbers.",
+    view:"orders_view resolved to a RangeTblEntry with relkind='v' — still RTE_RELATION at this stage; parse analysis doesn't know or care that it's a view. But SELECT * WAS expanded here, into three explicit TargetEntry nodes — permanently baked into the tree before the rewriter or planner ever runs.",
+    cte:"Two RTEs now: #1 for orders (aliased o), #2 of kind RTE_CTE pointing back at the WITH-list entry by name. The CTE's own body was analyzed into its own nested Query, hung off Query.cteList — entirely independently of the outer query's range table."
+  };
+  const CAPS_REWRITTEN = {
+    simple:"rewriteQuery() checked pg_rewrite for rules on relid 16402 and found none — this tree is structurally identical to the Query tree. The rewriter runs on every statement; for an ordinary table, most of the time it's a no-op.",
+    view:"This is the mechanism made visible: RangeTblEntry #1 changed from RTE_RELATION to RTE_SUBQUERY, and its subquery field now holds the view's stored ON SELECT DO INSTEAD action — itself a fully analyzed Query against the base table. Every Var in the OUTER query that said varno=1 STILL says varno=1 — only what rtindex 1 MEANS changed. This is exactly why EXPLAIN on a query against a view never mentions the view's name.",
+    cte:"Unchanged from the Query tree — no rule applies to orders or customers, and the rewriter does not inline CTEs; that's a planner-level pullup optimization, and only for CTEs eligible for inlining in the first place (chapter 16)."
+  };
+  function capFor(pk, stage){ return stage===0?CAPS_RAW[pk]:stage===1?CAPS_QUERY[pk]:CAPS_REWRITTEN[pk]; }
+
+  const SIM = { presetKey:"simple", stage:0, viewDefText: DEFAULT_VIEW_DEF, trees:null };
+  let currentFlat = new Map();
+
+  function buildTrees(pk){
+    if (pk==="simple") return { raw:simpleRaw(), query:simpleQuery(false), rewritten:simpleQuery(true) };
+    if (pk==="view")   return { raw:viewRaw(),   query:viewQuery(),        rewritten:viewRewritten(SIM.viewDefText) };
+    return { raw:cteRaw(), query:cteQuery(false), rewritten:cteQuery(true) };
+  }
+  function rebuildTrees(){ SIM.trees = buildTrees(SIM.presetKey); }
+
+  function fieldRows(fields){
+    return Object.entries(fields||{}).map(([k,v])=>`<div><span class="pfk">${k}</span><span class="pfv">${v}</span></div>`).join("");
+  }
+  function showDetail(node){
+    const rows = fieldRows(node.fields);
+    el("pt-detail").innerHTML = `<div class="pd-name">${node.tag}</div><div class="pd-desc">${lookupDesc(node)}</div>` +
+      `<div class="pt-fields">${rows || '<div style="color:var(--dim)">groups children only — no struct fields of its own.</div>'}</div>`;
+  }
+  function renderNode(parent, node){
+    const id = "nd"+currentFlat.size;
+    currentFlat.set(id, node);
+    const wrap = document.createElement("div"); wrap.className = "pt-node pt-fadein";
+    const row = document.createElement("div"); row.className = "pt-row"; row.dataset.id = id;
+    if (node.rtindex != null) row.dataset.rtindex = node.rtindex;
+    row.innerHTML = `<span class="pt-tag">${node.tag}</span>${node.sum?`<span class="pt-sum">${node.sum}</span>`:""}`;
+    wrap.appendChild(row);
+    parent.appendChild(wrap);
+    if (node.kids && node.kids.length){
+      const kw = document.createElement("div"); kw.className = "pt-kids";
+      wrap.appendChild(kw);
+      if (node.stagger) node.kids.forEach((k,i)=> setTimeout(()=>renderNode(kw,k), i*240));
+      else node.kids.forEach(k=>renderNode(kw,k));
+    }
+  }
+  function renderTreeRoot(container, root){
+    container.innerHTML = "";
+    currentFlat = new Map();
+    renderNode(container, root);
+  }
+  el("pt-tree").addEventListener("click", e=>{
+    const row = e.target.closest(".pt-row");
+    if (!row) return;
+    document.querySelectorAll("#pt-tree .pt-row.sel").forEach(r=>r.classList.remove("sel"));
+    row.classList.add("sel");
+    const node = currentFlat.get(row.dataset.id);
+    if (!node) return;
+    showDetail(node);
+    if (node.varno){
+      document.querySelectorAll(`#pt-tree .pt-row[data-rtindex="${node.varno}"]`).forEach(r=>{
+        r.classList.remove("flash"); void r.offsetWidth; r.classList.add("flash");
+        r.scrollIntoView({ block:"nearest", behavior:"smooth" });
+      });
+    }
+  });
+
+  function renderStage(){
+    const treeEl = el("pt-tree");
+    treeEl.style.transition = "opacity .22s ease";
+    treeEl.style.opacity = 0;
+    setTimeout(()=>{
+      const key = SIM.stage===0?"raw":SIM.stage===1?"query":"rewritten";
+      renderTreeRoot(treeEl, SIM.trees[key]);
+      treeEl.style.opacity = 1;
+      el("pt-phase").textContent = STAGE_NAMES[SIM.stage];
+      el("pt-stagecap").innerHTML = `<b>${STAGE_NAMES[SIM.stage]}.</b> ` + capFor(SIM.presetKey, SIM.stage);
+      document.querySelectorAll(".pt-tab").forEach((t,i)=>t.classList.toggle("on", i===SIM.stage));
+      el("pt-detail").innerHTML = `<div style="color:var(--dim);font-size:12.5px">click any node in the tree…</div>`;
+    }, 170);
+  }
+  function renderTabs(){
+    const wrap = el("pt-tabs"); wrap.innerHTML = "";
+    STAGE_NAMES.forEach((name,i)=>{
+      const b = document.createElement("button"); b.className = "pt-tab"+(i===SIM.stage?" on":"");
+      b.textContent = (i+1)+". "+name;
+      b.onclick = ()=>{ SIM.stage=i; renderTabs(); renderStage(); };
+      wrap.appendChild(b);
+      if (i<STAGE_NAMES.length-1){ const ar=document.createElement("span"); ar.className="ar"; ar.textContent="→"; wrap.appendChild(ar); }
+    });
+  }
+  function renderPresetChips(){
+    const wrap = el("pt-presets"); wrap.innerHTML = "";
+    Object.entries(PRESET_META).forEach(([key,meta])=>{
+      const b = document.createElement("button"); b.className = "chip"+(key===SIM.presetKey?" on":"");
+      b.textContent = meta.label;
+      b.onclick = ()=>{ SIM.presetKey = key; SIM.stage = 0; rebuildTrees(); renderAll(); };
+      wrap.appendChild(b);
+    });
+  }
+  function renderSqlLine(){ el("pt-sqlline").textContent = PRESET_META[SIM.presetKey].sql; }
+  function renderViewEditor(){
+    const show = !!PRESET_META[SIM.presetKey].hasView;
+    el("pt-viewedit").style.display = show ? "block" : "none";
+    if (show) el("pt-viewsrc").value = SIM.viewDefText;
+  }
+  function renderAll(){
+    renderPresetChips(); renderSqlLine(); renderTabs(); renderViewEditor(); renderStage();
+  }
+
+  el("pt-viewapply").onclick = ()=>{
+    SIM.viewDefText = el("pt-viewsrc").value.trim() || DEFAULT_VIEW_DEF;
+    rebuildTrees(); SIM.stage = 2; renderTabs(); renderStage();
+  };
+  el("pt-viewreset").onclick = ()=>{
+    SIM.viewDefText = DEFAULT_VIEW_DEF; el("pt-viewsrc").value = DEFAULT_VIEW_DEF;
+    rebuildTrees(); renderStage();
+  };
+  el("pt-run").onclick = ()=>{
+    SIM.stage = 0; renderTabs(); renderStage();
+    setTimeout(()=>{ SIM.stage=1; renderTabs(); renderStage(); }, 1250);
+    setTimeout(()=>{ SIM.stage=2; renderTabs(); renderStage(); }, 2750);
+  };
+
+  rebuildTrees();
+  renderAll();
+})();
+
+qaCards("qa-check", [
+  { lvl:"THINK", q:"You now have a fully-resolved, rewritten Query tree: every RangeTblEntry has a real relid, every Var has a real vartype, every view has been substituted into a subquery RTE. What information does a cost-based planner still need that isn't anywhere in this tree — and which files would it have to go read to get it?",
+    a:"The Query tree tells the planner WHAT the query means, not how expensive any way of computing it would be. Missing: table and index sizes and row-count estimates (pg_class.reltuples/relpages), column value distributions and most-common-values (pg_statistic, populated by ANALYZE), available indexes and their definitions (pg_index), and physical costs of each access method (seq scan vs index scan vs bitmap scan) parameterized by GUCs like seq_page_cost/random_page_cost/cpu_tuple_cost. None of that lives in parsenodes.h or primnodes.h — it lives in the catalog's statistics tables and in src/backend/optimizer's cost model, which chapter 16 introduces." },
+  { lvl:"THINK", q:"A prepared statement's Parse message runs this entire chapter's pipeline once; Bind/Execute run it zero more times. Given that the resulting Query tree is now fixed, but the actual parameter VALUES change on every Bind, what decision does the planner have to keep making on every execution regardless — and why can't parse analysis have settled it once and for all?",
+    a:"Whether to plan against the ACTUAL parameter values each time (a custom plan, replanned per execution, potentially choosing a different index or join order depending on how selective this particular value is) or reuse ONE plan built assuming generic/average parameter values (a generic plan, planned once). Parse analysis can't settle this because it happens before any parameter value is bound at all — it only knows the parameter's TYPE (from the Parse message's paramTypes), never its value. The custom-vs-generic decision needs cost estimates computed against real values, which only exist at plan time, execution by execution — exactly chapter 16's territory." },
+  { lvl:"THINK", q:"The rewriter can substitute an arbitrarily deep stack of views as nested subquery RTEs (§11's eleven-deep incident) before handing the tree to the planner. Predict: what would you want the planner to be ABLE to do with a deeply nested subquery RTE that a naive planner — one that literally executes each nested Query as a black-box materialization — would not do, and why does that matter for the view-stack incident?",
+    a:"You'd want the planner to be able to FLATTEN nested subqueries into the outer query's join tree wherever it's safe (no LIMIT/volatile functions/set-returning functions blocking it), turning eleven separately-planned black boxes into one flat set of range-table entries the join-order search can reorder freely — rather than being stuck executing each view layer strictly bottom-up regardless of which predicates could have been pushed down further. This subquery-pullup optimization is real and is exactly why 'flatten your view stack' and 'let the planner flatten it for you' aren't always equivalent — pullup has eligibility rules, and chapter 16 covers precisely which nested-Query shapes qualify." }
+]);
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-14.html"><span>←</span><span><span class="cn-lbl">PREV · CH 14</span><span class="cn-ttl">Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html" selected>CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">15 / 21</span></div><a class="cn-btn" href="pg-16.html"><span><span class="cn-lbl">NEXT · CH 16</span><span class="cn-ttl">Query Pipeline II: The Cost-Based Planner</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

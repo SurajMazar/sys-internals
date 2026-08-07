@@ -1,0 +1,1966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-05 · MVCC I: Tuple Versions, Snapshots & Visibility — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- MVCC-specific additions (pg-05) ---------- */
+  .vchain{display:flex;gap:9px;flex-wrap:wrap;align-items:stretch;justify-content:center;margin:12px 0}
+  .vnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 11px;
+    font-family:var(--mono);font-size:10.3px;min-width:150px;position:relative;transition:all .2s;cursor:pointer}
+  .vnode .vt{font-size:9px;color:var(--dim);letter-spacing:.06em;margin-bottom:4px}
+  .vnode .vf{display:block;color:#c6cddb;line-height:1.62}
+  .vnode .vf b{color:var(--text)}
+  .vnode.live{border-color:var(--ok)}
+  .vnode.live .vt{color:var(--ok)}
+  .vnode.dead{opacity:.55}
+  .vnode.sel{box-shadow:0 0 0 2px var(--pg)}
+  .vnode:hover{border-color:var(--pg)}
+  .varrow{display:flex;align-items:center;color:var(--dim);font-size:15px}
+  .hintchip{display:inline-block;font-family:var(--mono);font-size:9px;border-radius:5px;padding:1px 5px;margin:3px 3px 0 0;
+    border:1px solid var(--border-hi);color:var(--dim);cursor:pointer}
+  .hintchip.on{border-color:var(--purple);color:var(--purple);background:rgba(167,139,250,.1)}
+
+  .clogwrap{display:flex;flex-wrap:wrap;gap:6px;padding:4px 0}
+  .xidchip{font-family:var(--mono);font-size:10.3px;border-radius:7px;padding:4px 9px;border:1px solid var(--border-hi);
+    background:var(--bg-2);color:var(--muted);white-space:nowrap}
+  .xidchip.committed{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.08)}
+  .xidchip.aborted{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.08);text-decoration:line-through}
+  .xidchip.inprogress{border-color:var(--warn);color:var(--warn);background:rgba(255,159,67,.08)}
+
+  .txnbox{border:1px solid var(--border);border-radius:11px;padding:10px 12px;margin-bottom:8px;background:var(--bg-2)}
+  .txnbox .tb-h{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:11.5px;margin-bottom:6px}
+  .txnbox .tb-h b{color:var(--pg)}
+  .txnbox.done{opacity:.65}
+  .txnbox .tb-snap{font-size:10px;color:var(--dim);margin-bottom:7px;line-height:1.65}
+  .txnbox .btns{display:flex;flex-wrap:wrap;gap:5px}
+  .txnbox .btns .btn{padding:4px 8px;font-size:10.3px}
+
+  .trace-step{border-left:3px solid var(--border-hi);padding:7px 12px;margin-bottom:2px;font-size:11.8px;line-height:1.6;
+    color:var(--muted);background:var(--bg-2);border-radius:0 8px 8px 0}
+  .trace-step.taken{border-left-color:var(--pg);color:var(--text);background:var(--pg-dim)}
+  .trace-step .tn{font-family:var(--mono);color:var(--dim);margin-right:7px;font-size:10px}
+  .trace-verdict{padding:11px 14px;font-family:var(--mono);font-size:13px;text-align:center;border-top:1px solid var(--border)}
+  .trace-verdict.visible{color:var(--ok);background:rgba(74,222,128,.06)}
+  .trace-verdict.invisible{color:var(--bad);background:rgba(242,92,84,.06)}
+  .viewer-picker{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 05 / 21</b> · MVCC</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Snapshot Isolation</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 05</div>
+  <h1>MVCC I: Tuple Versions,<br><span class="grad">Snapshots & Visibility</span></h1>
+  <p class="lead">Every row you have ever read from PostgreSQL without waiting for a writer, and every writer you
+  have ever run without waiting for a reader, was arbitrated by one C function reading a handful of bytes on a
+  tuple header. This chapter opens that tuple header, the snapshot structure a backend carries in its own memory,
+  and the shared transaction log they are both compared against — and derives, from the single constraint "readers
+  never block writers, writers never block readers," exactly why <code>UPDATE</code> never overwrites a byte of a
+  live row in place.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Read a raw tuple's xmin/xmax/ctid and predict, for any given transaction's snapshot, whether that transaction can see it.</div>
+    <div class="obj"><b>You will understand</b>Why a plain <code>SELECT</code> can dirty a page, and what a hint bit actually caches.</div>
+    <div class="obj"><b>You will predict</b>When a long-running or idle-in-transaction session turns routine deletes into permanent bloat.</div>
+    <div class="obj"><b>You will simulate</b>Three concurrent transactions racing to update one row, and trace the exact branch of <code>HeapTupleSatisfiesMVCC</code> that decides what each one sees.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A reader and a writer want the same row at the same instant</h2>
+  <p class="lead">PostgreSQL's documentation makes a blunt promise: "readers never block writers, and writers never
+  block readers." Treat that sentence as an engineering constraint, not a marketing line, and the rest of the
+  transaction subsystem — tuple headers, snapshots, the commit log, vacuum — falls out as a forced consequence.</p>
+  <p>Take the smallest possible race. Transaction A runs <code>SELECT balance FROM accounts WHERE id = 1</code> at
+  the exact instant transaction B runs <code>UPDATE accounts SET balance = balance - 100 WHERE id = 1</code>, and B
+  has not yet committed. Two irreconcilable demands land on the same eight bytes of storage: B needs to mutate
+  <code>balance</code>; A needs to read a consistent value <b>without waiting</b> for B to finish, and <b>without
+  seeing an in-flight, possibly-to-be-rolled-back write</b>. A traditional two-phase-locking (2PL) engine resolves
+  this by making A wait — <code>SELECT</code> takes a shared lock, <code>UPDATE</code> needs an exclusive lock, and
+  the lock manager (<code>src/backend/storage/lmgr</code>, chapter 8) serializes the two. That is correct. It is
+  also not the guarantee above — A blocked.</p>
+  <p>Unpack the requirement and five demands pull in different directions at once:</p>
+  <ul class="plain">
+    <li><b>Correctness under concurrency</b> — a reader must never observe a half-written value, no matter how many writers are simultaneously active on the same row.</li>
+    <li><b>Zero blocking between reads and writes</b> — not "short locks," not "usually fast" — architecturally, a plain read must never wait on a plain write to the same data, and vice versa.</li>
+    <li><b>Unbounded transaction duration</b> — a transaction that has been open for forty minutes running a batch job must not force every other transaction in the cluster into a degraded state just because it hasn't committed yet.</li>
+    <li><b>Cheap abort</b> — most transactions commit, but the ones that abort must not be disproportionately expensive; a design that makes rollback slow just to make commit fast is trading the wrong cost.</li>
+    <li><b>Repeatability within a transaction</b> — depending on isolation level, a transaction reading the same row twice should see a stable, self-consistent world, not a live feed of everyone else's concurrent commits.</li>
+  </ul>
+  <p>No single physical copy of a row can satisfy all five: if there is exactly one copy of the tuple's bytes, then
+  either the writer must wait for readers to finish looking at it, or readers must risk seeing a write mid-flight.
+  The only way out is the one every serious answer to this problem eventually takes: <b>stop trying to give every
+  reader and writer the same bytes.</b> Let more than one physical version of a row exist at once, and give each
+  transaction a rule for deciding which version is "the" row, from where it is standing in time. That rule is a
+  <span class="term" data-def="A private, per-transaction record of which other transactions' changes should count as already-happened, as of one instant in time.">snapshot</span>,
+  and the whole machinery for creating tuple versions, tagging them with the transactions that created and removed
+  them, and testing a version against a snapshot is what this chapter calls <b>MVCC</b> —
+  <span class="term" data-def="Multi-Version Concurrency Control: readers and writers operate on different physical versions of the same logical row, coordinated by comparing each version's creating/removing transaction IDs against a reader's snapshot.">multi-version concurrency control</span>.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT CHAPTER</div>
+    <p>Everything in this chapter has a cost that chapter 6 collects: multiple versions of a row physically exist
+    until something removes them, and "something" is never the transaction that created the newer version — it is
+    a separate process, <code>VACUUM</code>, running later, under its own rules about which versions are safe to
+    discard. Learn the rule for <i>who may still need an old version</i> now (the oldest live snapshot's <code>xmin</code>);
+    chapter 6 is entirely about what happens when that horizon stops moving.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From "keep every version forever" to a 2021 rewrite of the hot path</h2>
+  <p>The tuple-versioning scheme you will read in §8 is not a modern invention bolted onto an old locking engine —
+  it is a direct, if trimmed-down, descendant of Michael Stonebraker's 1986 <b>no-overwrite storage manager</b>,
+  one of POSTGRES's three original research theses (the other two: extensible types, and rules). Click through the
+  events below; each one left a fingerprint that is still readable in <code>heapam_visibility.c</code> today.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from time-travel storage to snapshot scalability</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHAT "NO-OVERWRITE" ORIGINALLY MEANT</div>
+    <p>Stonebraker's 1987 POSTGRES papers proposed that the database <b>never physically delete or overwrite a
+    tuple</b>: every <code>UPDATE</code> and <code>DELETE</code> just appended a new record with a transaction
+    timestamp, and old records migrated to cheap archival storage (the papers specifically imagined write-once
+    optical disks) rather than being reclaimed. Users could query <code>AS OF</code> a past time and see the
+    database exactly as it existed then — genuine time travel, not just concurrency control. That ambition proved
+    too expensive to keep as a first-class feature (unbounded storage growth, and a query planner that must reason
+    about time as a first-class dimension), and it was cut. What survived, because it turned out to solve a problem
+    nobody had originally been trying to solve, was the mechanism: <b>never overwrite a tuple's data in place; add
+    a new version and let old ones be reclaimed later.</b> That mechanism is exactly what makes readers-never-block-writers
+    possible, and it is why PostgreSQL's heap access method still looks like a (much) more modest time-travel engine.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: plain two-phase locking</h2>
+  <p>Derive the architecture honestly, the way §1 set it up. The textbook answer to "many readers and writers, one
+  shared row" is <span class="term" data-def="Every transaction acquires locks before touching data and releases them only at commit/abort — never re-acquires after releasing. Guarantees serializability, at the cost of blocking.">two-phase locking</span>:
+  a shared lock for reads, an exclusive lock for writes, held until commit.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>naive_2pl.c — the strawman, annotated</span></div>
+    <pre><span class="k">void</span> <span class="f">read_row</span>(RowId id) {
+    <span class="f">lock_acquire</span>(id, LOCK_SHARED);      <span class="c">/* blocks if anyone holds LOCK_EXCLUSIVE */</span>
+    value = <span class="f">storage_read</span>(id);
+    <span class="f">lock_release</span>(id, LOCK_SHARED);      <span class="c">/* released as soon as the read is done */</span>
+    <span class="k">return</span> value;
+}
+
+<span class="k">void</span> <span class="f">write_row</span>(RowId id, Value v, Txn *t) {
+    <span class="f">lock_acquire</span>(id, LOCK_EXCLUSIVE);   <span class="c">/* blocks on ANY other reader or writer */</span>
+    <span class="f">storage_write</span>(id, v);              <span class="c">/* in place — one physical copy of the row, ever */</span>
+    <span class="f">t</span>-&gt;held_locks.append(id);        <span class="c">/* released only at COMMIT or ABORT (2PL's "2nd phase") */</span>
+}</pre>
+  </div>
+
+  <p>This is not a strawman built to be knocked down cheaply — it is exactly what you should reach for first, and
+  it already gets the hard part right: with one physical copy of every row and locks enforcing exclusive access,
+  correctness under concurrency (§1's first demand) is essentially free. There is no version to pick, no snapshot
+  to compare against, nothing to reclaim later. Several serious engines — SQL Server's default isolation level,
+  most textbook implementations — start exactly here, and it is not a bad place to be at low contention.</p>
+  <p>The failure only shows up once you load a realistic workload: a hot row, read constantly, written occasionally,
+  with one of those writes taking longer than a heartbeat.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Blocking is not a corner case — it is the common case at any real concurrency level</h2>
+  <p>Run the arithmetic on the naive engine under a completely ordinary mixed workload: 300 short OLTP writers per
+  second against one hot row, average lock hold time 4&nbsp;ms, plus one analytical reporting query that needs a
+  consistent read across the same rows and holds a shared lock for 2 seconds while it scans.</p>
+  <ul class="plain">
+    <li><b>Writer-vs-writer contention alone</b> is already tight: 300/s × 4&nbsp;ms = 1.2 — the row is under lock
+      <i>more than 100% of the time</i> nominally, meaning writers are already queuing behind each other before the
+      reporting query even starts. (Real systems survive this via finer lock granularity than "the row," but the
+      point holds at whatever granularity actually contends.)</li>
+    <li><b>The reporting query is catastrophic, not just slow.</b> The instant it acquires its shared lock, every
+      writer needing an exclusive lock on that row queues behind it — for the full 2 seconds. At 300 writers/second,
+      that is <b>~600 blocked transactions</b> stacked up by the time the reporting query releases, each one now
+      also holding whatever <i>its</i> client connection resources cost, and each one's latency includes someone
+      else's analytics job.</li>
+    <li><b>The direction of the block is fixed by the lock, not by urgency.</b> The 4&nbsp;ms writer that arrived
+      last still must wait for the 2-second reader that arrived first — 2PL has no notion that a point read is
+      cheap to reorder around a long scan; it only knows shared vs. exclusive.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE GENERAL SHAPE</div>
+    <p>This is not specific to reporting queries — it is structural. Any 2PL system pays a queuing cost proportional
+    to <b>(lock hold time) × (contending transaction rate)</b> on every hot row, and because hold time is bounded
+    below by "however long the transaction takes," a system that must support both sub-millisecond point writes and
+    multi-second analytical reads on overlapping data has no hold-time value that is good for both. PostgreSQL's own
+    predecessor problem, Ingres, lived with exactly this tension throughout the 1970s. The only way to remove the
+    queuing term entirely is to remove the shared lock from the read path altogether — which means readers must stop
+    needing the <i>same</i> bytes writers are touching.</p>
+  </div>
+  <p>So the requirement sharpens: not "faster locks," but <b>no read-side lock on data at all</b>. §5 examines the
+  two serious ways the industry has done that.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Two ways to keep more than one version of a row alive</h2>
+  <p>Once you accept that a reader and a writer must be allowed to look at <i>different physical bytes</i> for the
+  same logical row, there are exactly two serious places to put the "other" version:</p>
+  <h3>Candidate A: overwrite in place, stash the old value in a rollback/undo segment (Oracle, InnoDB)</h3>
+  <p>Update the row's bytes directly, but before doing so, copy the pre-image into a separate structure — Oracle
+  calls it a rollback segment, InnoDB an undo log. A reader that needs a version older than the current one follows
+  a pointer from the row into that structure and <i>reconstructs</i> the old value by applying undo records in
+  reverse. The live table stays small and current; history lives elsewhere, addressed on demand.</p>
+  <h3>Candidate B: never overwrite; append a whole new version in the main store (POSTGRES's heritage, →&nbsp;Postgres)</h3>
+  <p>Leave the old tuple's data exactly as written. Write a brand-new tuple with the updated values <i>next to it</i>
+  in the same heap, and tag both versions with the transaction IDs that created and superseded them. A reader
+  filters the version chain itself — no reconstruction, no undo replay — it just asks each version in turn "were
+  you already committed, and not-yet-superseded, as of my snapshot?"</p>
+
+  <div class="widget deck" id="deckUndo">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Undo-log MVCC vs. append-only MVCC</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">WHY POSTGRES TOOK CANDIDATE B</div>
+    <p>The choice is inherited, not incidental: candidate A requires a query executor that can <i>reconstruct</i> a
+    row from a current version plus a chain of deltas — a whole extra code path, and one that gets more expensive
+    the older the version you need (Oracle's infamous <code>ORA-01555 "snapshot too old"</code> is exactly rollback-segment
+    space running out before a long reader finishes reconstructing). Candidate B needs no reconstruction logic at
+    all: every version is a complete, independently readable tuple; the "old" and "new" values are just two rows in
+    the same heap. That simplicity is what a small 1986 research team could build and maintain. The price, taken up
+    in §6, is that those complete old versions physically occupy space until something removes them — there is no
+    small undo buffer to bound the cost, only a heap that grows until <code>VACUUM</code> catches up.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">The bill: bloat, vacuum, and a 32-bit clock that wraps</h2>
+  <p>Append-only versioning buys zero-lock reads by spending disk, and the spending is not hypothetical — it is a
+  cost you can watch accumulate in production:</p>
+  <ul class="plain">
+    <li><b>Every dead version is real, physical storage</b> until <code>VACUUM</code> reclaims it. An
+      <code>UPDATE</code> that changes one column of a wide row still writes the <i>entire</i> row again (unless
+      the <span class="term" data-def="Heap-Only Tuple: an update that touches no indexed column and fits in the same page can skip writing new index entries, chaining the new version off the old one within the page.">HOT</span>
+      optimization applies), and every indexed column that changed needs a brand-new index entry pointing at the
+      new physical location — the old entry cannot simply be repointed, because the old tuple might still be
+      visible to some in-flight reader.</li>
+    <li><b>Cleanup is not automatic on commit — it is deferred to a separate process.</b> <code>VACUUM</code> (chapter 6)
+      walks the heap later and removes versions that no snapshot could possibly still need. Until it runs, dead
+      tuples sit in the table and in every index that referenced them, inflating scan costs for everyone.</li>
+    <li><b>A single long-running transaction holds back cleanup for the whole database</b> — not just the rows it
+      touches. Because "safe to remove" is defined relative to the oldest <code>xmin</code> any live snapshot might
+      still be using, one session that opened a transaction an hour ago and is now idle pins that horizon in place;
+      every dead tuple newer than its snapshot, anywhere in the cluster, is unreclaimable until it commits or aborts.
+      This is the single most common real-world MVCC bloat incident, and §11 walks through one.</li>
+    <li><b>Transaction IDs are a 32-bit counter that must eventually wrap.</b> Every tuple's <code>xmin</code>/<code>xmax</code>
+      is a 32-bit XID; after roughly 4 billion transactions the counter wraps around, and a tuple written with an
+      XID that is now "in the future" relative to the wrapped counter would look uncommitted — or worse, look like
+      it was written by a transaction that hasn't happened yet. PostgreSQL's answer, <b>freezing</b>, rewrites old
+      tuples' <code>xmin</code> to a special always-visible sentinel before this can happen — and if autovacuum's
+      freezing falls behind badly enough, the server will eventually refuse new transactions outright rather than
+      risk it. Chapter 6 is that mechanism in full; this chapter only needs you to know the horizon exists.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THE HONEST TRADE</div>
+    <p>Every cost in this list is the mirror image of a benefit from §5: no reconstruction logic, no undo-segment
+    sizing, no "snapshot too old" errors, and — the payoff — a reader that genuinely never blocks a writer at any
+    row, at any transaction length. The industry's other MVCC lineage (Oracle, InnoDB) traded the opposite way: a
+    bounded, reusable undo area instead of unbounded heap growth, at the cost of a hard ceiling on how old a
+    snapshot can get before it errors out. Neither trade is free; §9 makes the comparison explicit.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The five structures that make a visibility decision</h2>
+  <p>Every visibility check in PostgreSQL is a comparison between a tuple's header and a snapshot, backstopped by a
+  shared record of every transaction's fate. Click any component below to see its exact fields, where it lives, and
+  what would go wrong if it didn't exist.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">ON EVERY TUPLE (in the heap page itself)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="tupheader">HeapTupleHeaderData</div>
+          <div class="acard" data-p="ctidchain">t_ctid version chain</div>
+          <div class="acard" data-p="hintbits">hint bits (t_infomask)</div>
+        </div>
+        <div class="arch-row-label">SHARED, CLUSTER-WIDE STATE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="procarray">ProcArray</div>
+          <div class="acard" data-p="clog">pg_xact (clog)</div>
+        </div>
+        <div class="arch-row-label">PER-BACKEND / PER-QUERY STATE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="snapshot">SnapshotData</div>
+          <div class="acard" data-p="cid">command ID (cmin/cmax)</div>
+        </div>
+        <div class="arch-row-label">THE DECISION</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="satisfies">HeapTupleSatisfiesMVCC() — combines all of the above into one true/false answer per tuple version</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE LINE THIS CHAPTER DRAWS</div>
+    <p>Notice the same private/shared split chapter 1 taught you to look for: the tuple header and its hint bits
+    live on a page in the shared buffer pool (any backend can read them, and — critically — any backend can also
+    <i>write</i> the hint bits, which is why a <code>SELECT</code> can dirty a page). The snapshot and command ID
+    are private to the backend running the query. <code>ProcArray</code> and <code>pg_xact</code> are the shared
+    ground truth both sides consult. Nothing here is optional plumbing — remove any one box and the visibility
+    check has no way to reach a verdict.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The actual bytes and the actual algorithm</h2>
+  <p>Now the mechanism at the level you would need to patch it: the two structs every visibility check reads, and
+  the branch-by-branch logic of <code>HeapTupleSatisfiesMVCC()</code> in
+  <code>src/backend/access/heap/heapam_visibility.c</code>.</p>
+
+  <h3>(a) The two structs</h3>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>src/include/access/htup_details.h — HeapTupleHeaderData, simplified</span></div>
+    <pre><span class="k">typedef struct</span> HeapTupleFields
+{
+    TransactionId t_xmin;        <span class="c">/* inserting transaction's XID */</span>
+    TransactionId t_xmax;        <span class="c">/* deleting/locking transaction's XID, or 0 */</span>
+
+    <span class="k">union</span>
+    {
+        CommandId     t_cid;     <span class="c">/* inserting AND/OR deleting command id (cmin/cmax) within that xact */</span>
+        TransactionId t_xvac;    <span class="c">/* old-style VACUUM FULL move XID — legacy */</span>
+    } t_field3;
+} HeapTupleFields;
+
+<span class="k">typedef struct</span> HeapTupleHeaderData
+{
+    <span class="k">union</span> {
+        HeapTupleFields   t_heap;
+        DatumTupleFields  t_datum;
+    } t_choice;
+
+    ItemPointerData t_ctid;      <span class="c">/* TID of newer version of this row, or self if none */</span>
+
+    <span class="c">/* must binary-match MinimalTupleData from here down */</span>
+    uint16 t_infomask2;          <span class="c">/* natts + flag bits */</span>
+    uint16 t_infomask;           <span class="c">/* HEAP_XMIN_COMMITTED, HEAP_XMIN_INVALID,
+                                  * HEAP_XMAX_COMMITTED, HEAP_XMAX_INVALID, HEAP_XMAX_IS_MULTI, ... */</span>
+    uint8  t_hoff;               <span class="c">/* offset to user data */</span>
+    bits8  t_bits[<span class="n">FLEXIBLE_ARRAY_MEMBER</span>]; <span class="c">/* NULL bitmap, if any column is null */</span>
+} HeapTupleHeaderData;</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>src/include/utils/snapshot.h — SnapshotData, simplified</span></div>
+    <pre><span class="k">typedef struct</span> SnapshotData
+{
+    SnapshotType snapshot_type;
+
+    TransactionId xmin;      <span class="c">/* XIDs &lt; xmin are all resolved (committed or aborted) — definitely old */</span>
+    TransactionId xmax;      <span class="c">/* XIDs &gt;= xmax had not yet been assigned — definitely too new */</span>
+
+    TransactionId *xip;      <span class="c">/* XIDs that were in progress at the moment this snapshot was taken */</span>
+    uint32 xcnt;
+
+    TransactionId *subxip;   <span class="c">/* in-progress SUBtransaction XIDs (PG 8.0+, cached from pg_subtrans) */</span>
+    int32  subxcnt;
+    bool   suboverflowed;    <span class="c">/* too many subxids to cache — falls back to pg_subtrans lookups */</span>
+
+    CommandId curcid;        <span class="c">/* my own transaction's current command id, for own-write visibility */</span>
+    <span class="c">/* ... takenDuringRecovery, regd_count, active_count, lsn, whenTaken — omitted for clarity */</span>
+} SnapshotData;</pre>
+  </div>
+  <p>Two numbers and one array carry almost the entire algorithm: <code>xmin</code> and <code>xmax</code> bound the
+  "definitely resolved" and "definitely not yet started" ranges, and <code>xip[]</code> is the exception list —
+  everyone who was <i>caught in the middle</i>, neither definitely old nor definitely new, when the snapshot was
+  taken. A transaction ID counts as "still in progress, as far as this snapshot is concerned" if it is
+  <code>&gt;= xmax</code>, <b>or</b> it appears in <code>xip[]</code> — note that this is true <i>even if that
+  transaction has since committed</i>. That single rule is what makes a snapshot a fixed point in time rather than
+  a live view, and it is the crux of §4's promise: once taken, a snapshot never has to ask "what happened after I
+  started?" again.</p>
+
+  <h3>(b) HeapTupleSatisfiesMVCC, branch by branch</h3>
+  <p>Step through the actual decision tree. Every step below corresponds to a real branch in
+  <code>heapam_visibility.c</code>, simplified only by omitting the MultiXact (concurrent row-lock) combinators.</p>
+
+  <div class="widget deck" id="deckSatisfies">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">HeapTupleSatisfiesMVCC() — the walk</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(c) Try it yourself: the visibility calculator</h3>
+  <p>Drag the sliders to build any tuple/snapshot combination and watch the verdict update live — this is the exact
+  rule set the flagship simulator in §15 runs on three real concurrent transactions.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Snapshot visibility calculator</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>tuple xmin (xid)</label><input type="range" id="vc-xmin" min="90" max="110" value="95" step="1"><span class="val" id="vc-xmin-val">95</span></div>
+      <div class="toggle-row" id="vc-xmin-status"></div>
+      <div class="toggle-row"><button class="chip" id="vc-xmin-xip">xmin was IN-PROGRESS when snapshot taken (in xip[])</button></div>
+      <div class="slider-row" style="margin-top:16px"><label>row currently deleted?</label>
+        <button class="chip" id="vc-has-xmax">tuple has an xmax</button></div>
+      <div class="slider-row"><label>tuple xmax (xid)</label><input type="range" id="vc-xmax" min="90" max="110" value="102" step="1"><span class="val" id="vc-xmax-val">102</span></div>
+      <div class="toggle-row" id="vc-xmax-status"></div>
+      <div class="toggle-row"><button class="chip" id="vc-xmax-xip">xmax was IN-PROGRESS when snapshot taken (in xip[])</button></div>
+      <div class="slider-row" style="margin-top:16px"><label>snapshot xmin</label><input type="range" id="vc-snap-xmin" min="90" max="110" value="93" step="1"><span class="val" id="vc-snap-xmin-val">93</span></div>
+      <div class="slider-row"><label>snapshot xmax</label><input type="range" id="vc-snap-xmax" min="90" max="115" value="100" step="1"><span class="val" id="vc-snap-xmax-val">100</span></div>
+      <div id="vc-trace"></div>
+      <div id="vc-verdict"></div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="co-t">WHY OWN-TRANSACTION VISIBILITY NEEDS A THIRD NUMBER</div>
+    <p><code>xmin</code>/<code>xmax</code> alone cannot answer "can I see my own earlier write?" — from my own
+    snapshot's point of view, my own XID is not in <code>xip[]</code> in the way another transaction's would be,
+    and my transaction obviously hasn't committed yet from the outside. PostgreSQL solves this with
+    <code>cmin</code>/<code>cmax</code> — the <b>command ID</b> of the statement, within my own transaction, that
+    inserted or deleted the row — compared against <code>snapshot-&gt;curcid</code>, the command ID of the
+    statement running <i>right now</i>. A row I inserted with an earlier command in this same transaction is
+    visible to a later command; a row inserted by the <i>current</i> command is not (this is exactly the rule that
+    stops <code>UPDATE t SET x = x + 1</code> from repeatedly re-updating rows it just wrote inside the same
+    statement — each row is evaluated against the snapshot as it stood at the <i>start</i> of that command, not
+    as it is updated row-by-row during the scan).</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same problem, five engines, five different bills</h2>
+  <p>Every serious engine that promises non-blocking reads faced this exact fork. The spread of answers is a proof
+  by exhaustion that there is no dominant strategy — only different places to put the cost:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>VERSIONING SCHEME</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>PostgreSQL</td><td>Append-only new heap tuples; xmin/xmax + clog + snapshot</td>
+      <td><span class="pill g">no reconstruction logic</span> <span class="pill g">unbounded snapshot age</span></td>
+      <td><span class="pill b">every UPDATE writes a full new row</span> <span class="pill b">needs VACUUM forever</span> <span class="pill b">32-bit XID wraparound risk</span></td></tr>
+    <tr><td>MySQL / InnoDB</td><td>In-place update + undo log (rollback segment) per row</td>
+      <td><span class="pill g">smaller primary table</span> <span class="pill g">indexes usually untouched by pure UPDATE</span></td>
+      <td><span class="pill b">old-version reads reconstruct via undo chain</span> <span class="pill y">long reads bloat the undo tablespace (purge lag)</span></td></tr>
+    <tr><td>Oracle</td><td>In-place update + rollback segments (System Change Number, SCN, based)</td>
+      <td><span class="pill g">mature, tunable undo retention</span></td>
+      <td><span class="pill b">ORA-01555 "snapshot too old" when undo is reused before a long reader finishes</span></td></tr>
+    <tr><td>SQL Server</td><td>Locking read-committed by default; optional row-versioning (snapshot isolation) via tempdb version store</td>
+      <td><span class="pill g">MVCC is opt-in, not mandatory</span></td>
+      <td><span class="pill y">default isolation still takes read locks</span> <span class="pill b">version store lives in tempdb — a shared bottleneck</span></td></tr>
+    <tr><td>SQLite</td><td>Single writer at a time; WAL-mode readers see a consistent prefix of the WAL</td>
+      <td><span class="pill g">trivial to reason about</span> <span class="pill g">zero versioning machinery</span></td>
+      <td><span class="pill b">no true per-row MVCC — one writer, period</span></td></tr>
+    <tr><td>Cassandra / RocksDB (LSM)</td><td>Immutable SSTables; every write is a new timestamped record; tombstones mark deletes</td>
+      <td><span class="pill g">writes are always sequential appends</span> <span class="pill g">compaction reclaims space asynchronously, like VACUUM</span></td>
+      <td><span class="pill b">reads must merge across multiple SSTables</span> <span class="pill y">last-write-wins by timestamp, not transaction semantics</span></td></tr>
+  </table>
+  <p>Read the "what they paid" column as a checklist of what this chapter has already justified: PostgreSQL's bet
+  is that reconstruction logic is a worse place to spend engineering effort than a background reclaimer, and that
+  an engine used for both sub-millisecond OLTP and hours-long analytical transactions cannot afford a hard ceiling
+  on snapshot age. The LSM-tree lineage (Cassandra, RocksDB) independently reinvented "append, don't overwrite, and
+  clean up later" for a completely different reason — write-throughput on spinning and then flash media — which is
+  a useful sign that this is a fundamental tradeoff shape, not a PostgreSQL idiosyncrasy.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">The cost of a visibility check, before and after the first read</h2>
+  <p>A single call to <code>HeapTupleSatisfiesMVCC()</code> is O(1) against the tuple and the snapshot's
+  <code>xmin</code>/<code>xmax</code> bounds, but membership in <code>xip[]</code> is a linear scan of a
+  backend-local array (bounded by <code>max_connections</code>, typically tiny — tens of entries, not thousands),
+  and — the expensive branch — resolving an XID's actual fate when neither hint bit is set means a call into
+  <code>TransactionIdDidCommit()</code>, which is a <code>pg_xact</code> (clog) lookup through the
+  <span class="term" data-def="Simple LRU: a small, fixed-size, page-oriented cache with least-recently-used eviction, used for a handful of append-only, sequentially-accessed shared structures (clog, commit-timestamp, multixact, subtrans).">SLRU</span>
+  cache. That lookup is: compute the clog page number (<code>xid&nbsp;/&nbsp;32768</code>, since 2 bits/XID pack
+  32,768 statuses into one 8&nbsp;KB page), check whether that page is SLRU-resident, and if not, fault it in from
+  disk — an extra shared-buffer-adjacent I/O plus a slot eviction under a dedicated LWLock, entirely separate from
+  the ordinary buffer pool. Once resolved, <b>the answer is cached on the tuple itself</b> as a hint bit, and every
+  subsequent visibility check against that same tuple version is a single memory read — no clog access at all.</p>
+  <p>Drag the hint-bit hit rate below and watch what a full sequential scan costs before vs. after the first pass
+  has paid the clog toll:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Visibility-check cost vs. hint-bit state</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>rows scanned</label><input type="range" id="pf-rows" min="1000" max="2000000" value="200000" step="1000"><span class="val" id="pf-rows-val">200,000</span></div>
+      <div class="slider-row"><label>hint-bit hit rate</label><input type="range" id="pf-hit" min="0" max="100" value="10" step="1"><span class="val" id="pf-hit-val">10%</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="pf-cold">clog page cold (SLRU miss on lookup)</button>
+      </div>
+      <div class="chartbox"><canvas id="pf-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> total scan cost (relative)</span>
+        <span><span style="color:var(--bad)">━</span> cost attributable to clog lookups</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="pf-note"></p>
+    </div>
+  </div>
+
+  <ul class="plain">
+    <li><b>First full scan after bulk load or restore:</b> every tuple's hint bits are unset — <code>O(n)</code> clog
+      lookups, each potentially an SLRU page fault, <i>and</i> each one dirties the page it touches (see §11's third
+      incident for exactly this on a hot standby).</li>
+    <li><b>Steady state on a vacuumed, quiescent table:</b> effectively <code>O(1)</code> per tuple — a memory read
+      of <code>t_infomask</code>, no clog access, no extra writes.</li>
+    <li><b>xip[] scan cost:</b> <code>O(k)</code> where k = concurrently in-progress transactions at snapshot-taking
+      time — this is the term the PostgreSQL 14 rewrite (§2) attacked, because <code>k</code> used to also include
+      every <i>idle</i> connection's slot scan inside <code>GetSnapshotData()</code> itself, not just the xip
+      lookup, turning connection count into a tax on every snapshot in the cluster.</li>
+  </ul>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents this chapter explains completely</h2>
+
+  <h3>Incident 1: the idle-in-transaction bloat spiral</h3>
+  <p>An application's ORM opens a transaction, runs one query, and — due to connection-pool misconfiguration or a
+  forgotten <code>commit()</code> in an exception path — leaves it open, idle, for hours. Nothing it touched looks
+  locked; <code>pg_locks</code> is quiet. But its snapshot's <code>xmin</code> was fixed the moment it ran that one
+  query, and every dead tuple created anywhere in the database <i>after</i> that instant is, by definition, newer
+  than a snapshot that might still need to see it — so <code>VACUUM</code> cannot remove any of them, on any table,
+  until that session commits, aborts, or is killed. Table and index bloat climbs continuously; autovacuum runs
+  constantly and reclaims nothing. <b>Fix:</b> <code>idle_in_transaction_session_timeout</code> to cap the damage,
+  application-level fixes to the connection-handling bug, and — for diagnosis — <code>age(backend_xmin)</code> in
+  <code>pg_stat_activity</code> pointed straight at the offending session.</p>
+
+  <h3>Incident 2: the transaction ID wraparound near-miss</h3>
+  <p>Autovacuum is starved — disabled by a well-meaning "reduce I/O" change, or unable to keep up because a huge
+  table's freeze pass keeps getting cancelled by lock contention. <code>age(datfrozenxid)</code> creeps toward the
+  2-billion-transaction danger zone; PostgreSQL starts logging increasingly urgent warnings, then, if ignored,
+  forces the database into a state that refuses new transactions rather than risk XID wraparound corrupting
+  visibility (an old committed tuple's XID would otherwise become indistinguishable from a future, not-yet-started
+  one). Recovery is a single-user-mode, all-hands emergency <code>VACUUM FREEZE</code> on the oldest tables, under
+  time pressure, on a production database that is currently refusing writes. <b>Fix, well before the emergency:</b>
+  monitor <code>age(datfrozenxid)</code> per database, alert well under
+  <code>autovacuum_freeze_max_age</code>, and never disable autovacuum on a table without an explicit, monitored
+  manual freeze schedule replacing it.</p>
+
+  <h3>Incident 3: hint-bit write amplification on a freshly restored read replica</h3>
+  <p>A team restores a base backup (or builds a replica by <code>pg_dump</code>/restore rather than streaming
+  replication) and immediately points a heavy read-only reporting workload at it. The restored pages carry no hint
+  bits — nothing set them during restore — so the very first read of every row triggers a clog lookup <i>and</i>
+  sets a hint bit, dirtying a page that no user-visible write ever touched. On a workload assumed to be "read-only,"
+  the checkpointer and background writer suddenly have a large, unexpected burst of dirty pages to flush, disk I/O
+  spikes, and nobody in the incident channel believes a <code>SELECT</code>-only replica could possibly be causing
+  write load. <b>Fix:</b> know this is expected and one-time; optionally run a proactive
+  <code>VACUUM (FREEZE)</code> pass immediately after restore so the hint-bit and freezing cost is paid on your
+  schedule, in a maintenance window, rather than discovered live under production read traffic.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is the level of detail a Staff interview (or a pgsql-hackers reply) expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: visibility, snapshots, and the commit log</h2>
+  <p>Files marked <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/</span></div>
+<div>├── <span class="dir">access/heap/</span></div>
+<div>│   ├── <span class="fhl">● heapam_visibility.c</span> <span class="fnote">— HeapTupleSatisfiesMVCC/Dirty/Update/Self/... — the family of visibility routines</span></div>
+<div>│   └── <span class="fhl">● heapam.c</span> <span class="fnote">— heap_insert()/heap_update()/heap_delete(): where xmin/xmax/t_ctid actually get written</span></div>
+<div>├── <span class="dir">storage/ipc/</span><span class="fhl">● procarray.c</span> <span class="fnote">— GetSnapshotData(), ProcArrayAdd/Remove, GetOldestXmin()</span></div>
+<div>├── <span class="dir">access/transam/</span></div>
+<div>│   ├── <span class="fhl">● clog.c</span> <span class="fnote">— TransactionIdGetStatus()/TransactionIdSetStatus(): the pg_xact SLRU</span></div>
+<div>│   ├── slru.c <span class="fnote">— generic SLRU cache machinery shared by clog, commit_ts, multixact, subtrans</span></div>
+<div>│   ├── xact.c <span class="fnote">— transaction start/commit/abort; assigns XIDs; drives clog updates</span></div>
+<div>│   └── varsup.c <span class="fnote">— GetNewTransactionId(): the 32-bit XID counter and wraparound checks</span></div>
+<div>└── <span class="dir">commands/</span>vacuum.c <span class="fnote">— reclaims dead versions once GetOldestXmin() clears them (chapter 6)</span></div>
+<div><span class="dir">src/include/</span></div>
+<div>├── <span class="dir">utils/</span><span class="fhl">● snapshot.h</span> <span class="fnote">— SnapshotData</span></div>
+<div>└── <span class="dir">access/</span><span class="fhl">● htup_details.h</span> <span class="fnote">— HeapTupleHeaderData, infomask bit definitions</span></div>
+  </div></div>
+
+  <p>Three functions, simplified from PostgreSQL 16/17 sources but faithful in structure and naming. First, the
+  visibility check itself — this is the same logic §8's deck walked, in real shape:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>heapam_visibility.c — HeapTupleSatisfiesMVCC(), condensed</span></div>
+    <pre><span class="k">static bool</span>
+<span class="f">HeapTupleSatisfiesMVCC</span>(HeapTuple htup, Snapshot snapshot, Buffer buffer)
+{
+    HeapTupleHeader tuple = htup-&gt;t_data;
+
+    <span class="k">if</span> (!<span class="f">HeapTupleHeaderXminCommitted</span>(tuple))
+    {
+        <span class="k">if</span> (<span class="f">HeapTupleHeaderXminInvalid</span>(tuple))
+            <span class="k">return false</span>;                          <span class="c">/* known aborted/crashed inserter */</span>
+
+        <span class="k">if</span> (<span class="f">TransactionIdIsCurrentTransactionId</span>(<span class="f">HeapTupleHeaderGetXmin</span>(tuple)))
+        {
+            <span class="k">if</span> (<span class="f">HeapTupleHeaderGetCmin</span>(tuple) &gt;= snapshot-&gt;curcid)
+                <span class="k">return false</span>;                      <span class="c">/* inserted by a LATER command of mine */</span>
+            <span class="k">if</span> (tuple-&gt;t_infomask &amp; HEAP_XMAX_INVALID)
+                <span class="k">return true</span>;                       <span class="c">/* my own insert, never touched again */</span>
+            <span class="c">/* ... own-xmax handling, see xmax block below ... */</span>
+        }
+        <span class="k">else if</span> (<span class="f">XidInMVCCSnapshot</span>(<span class="f">HeapTupleHeaderGetXmin</span>(tuple), snapshot))
+            <span class="k">return false</span>;                          <span class="c">/* still running (or not yet started) AS OF my snapshot */</span>
+        <span class="k">else if</span> (<span class="f">TransactionIdDidCommit</span>(<span class="f">HeapTupleHeaderGetXmin</span>(tuple)))
+            <span class="f">SetHintBits</span>(tuple, buffer, HEAP_XMIN_COMMITTED, ...);  <span class="c">/* pays the clog lookup ONCE */</span>
+        <span class="k">else</span>
+        {
+            <span class="f">SetHintBits</span>(tuple, buffer, HEAP_XMIN_INVALID, InvalidTransactionId);
+            <span class="k">return false</span>;                          <span class="c">/* aborted or crashed */</span>
+        }
+    }
+    <span class="c">/* by this point, xmin is known-good and committed-before-my-snapshot */</span>
+
+    <span class="k">if</span> (tuple-&gt;t_infomask &amp; HEAP_XMAX_INVALID)
+        <span class="k">return true</span>;                              <span class="c">/* never deleted/updated away */</span>
+
+    <span class="k">if</span> (!(tuple-&gt;t_infomask &amp; HEAP_XMAX_COMMITTED))
+    {
+        <span class="k">if</span> (<span class="f">TransactionIdIsCurrentTransactionId</span>(<span class="f">HeapTupleHeaderGetXmax</span>(tuple)))
+            <span class="k">return</span> <span class="f">HeapTupleHeaderGetCmax</span>(tuple) &gt;= snapshot-&gt;curcid;  <span class="c">/* my own delete: cmax rule mirrors cmin */</span>
+        <span class="k">if</span> (<span class="f">XidInMVCCSnapshot</span>(<span class="f">HeapTupleHeaderGetXmax</span>(tuple), snapshot))
+            <span class="k">return true</span>;                          <span class="c">/* deleter not yet visible to me: deletion hasn't "happened" for me */</span>
+        <span class="k">if</span> (!<span class="f">TransactionIdDidCommit</span>(<span class="f">HeapTupleHeaderGetXmax</span>(tuple)))
+        {
+            <span class="f">SetHintBits</span>(tuple, buffer, HEAP_XMAX_INVALID, InvalidTransactionId);
+            <span class="k">return true</span>;                          <span class="c">/* deleter aborted: deletion undone */</span>
+        }
+        <span class="f">SetHintBits</span>(tuple, buffer, HEAP_XMAX_COMMITTED, <span class="f">HeapTupleHeaderGetXmax</span>(tuple));
+    }
+    <span class="k">else if</span> (<span class="f">XidInMVCCSnapshot</span>(<span class="f">HeapTupleHeaderGetXmax</span>(tuple), snapshot))
+        <span class="k">return true</span>;                              <span class="c">/* deleter committed AFTER my snapshot */</span>
+
+    <span class="k">return false</span>;                                  <span class="c">/* deleter committed before my snapshot: dead to me */</span>
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>procarray.c — GetSnapshotData(), condensed</span></div>
+    <pre>Snapshot
+<span class="f">GetSnapshotData</span>(Snapshot snapshot)
+{
+    <span class="f">LWLockAcquire</span>(ProcArrayLock, LW_SHARED);
+
+    TransactionId nextXid  = <span class="f">ReadNextTransactionId</span>();  <span class="c">/* becomes snapshot-&gt;xmax */</span>
+    TransactionId globalxmin = nextXid;
+    <span class="k">int</span> count = <span class="n">0</span>;
+
+    <span class="k">for</span> (<span class="k">int</span> i = <span class="n">0</span>; i &lt; ProcGlobal-&gt;allProcCount; i++)
+    {
+        PGPROC *proc = &amp;ProcGlobal-&gt;allProcs[i];
+        TransactionId xid = UINT32_ACCESS_ONCE(proc-&gt;xid);
+
+        <span class="k">if</span> (!<span class="f">TransactionIdIsValid</span>(xid) || proc == MyProc)
+            <span class="k">continue</span>;                        <span class="c">/* empty slot, or don't let myself block myself */</span>
+
+        snapshot-&gt;xip[count++] = xid;
+        <span class="k">if</span> (<span class="f">TransactionIdPrecedes</span>(xid, globalxmin))
+            globalxmin = xid;                    <span class="c">/* oldest XID still running anywhere */</span>
+    }
+
+    snapshot-&gt;xmin = globalxmin;
+    snapshot-&gt;xmax = nextXid;
+    snapshot-&gt;xcnt = count;
+    RecentXmin = globalxmin;                     <span class="c">/* published — this IS vacuum's cleanup horizon */</span>
+
+    <span class="f">LWLockRelease</span>(ProcArrayLock);
+    <span class="k">return</span> snapshot;
+}
+<span class="c">/* Since PG14 (Freund's snapshot-scalability rewrite): the common case skips this O(N) walk
+ * entirely — a maintained, incrementally-updated snapshot is cached in shared memory and
+ * copied out, only falling back to the full ProcArray scan when the cache is stale. */</span></pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>clog.c — TransactionIdGetStatus(), condensed</span></div>
+    <pre>XidStatus
+<span class="f">TransactionIdGetStatus</span>(TransactionId xid, XLogRecPtr *lsn)
+{
+    <span class="k">int64</span> pageno = <span class="f">TransactionIdToPage</span>(xid);   <span class="c">/* xid / 32768 — 2 bits/xid, 8KB pages */</span>
+    <span class="k">int</span>   byteno = <span class="f">TransactionIdToByte</span>(xid);
+    <span class="k">int</span>   bshift = <span class="f">TransactionIdToBIndex</span>(xid) * <span class="n">2</span>;
+
+    <span class="k">int</span> slotno = <span class="f">SimpleLruReadPage</span>(XactCtl, pageno, <span class="k">true</span>, xid); <span class="c">/* may fault in from disk, evict LRU slot */</span>
+    <span class="k">char</span> *byteptr = XactCtl-&gt;shared-&gt;page_buffer[slotno] + byteno;
+
+    <span class="k">int</span> status = (*byteptr &gt;&gt; bshift) &amp; <span class="n">0x03</span>;      <span class="c">/* IN_PROGRESS | COMMITTED | ABORTED | SUB_COMMITTED */</span>
+
+    <span class="f">SimpleLruReleasePage</span>(XactCtl, slotno);
+    <span class="k">return</span> status;
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Two bits, not a hash map.</b> A transaction's terminal fate is exactly one of four values, forever;
+    packing that into a flat, page-indexed SLRU array makes lookup a pure address computation, and — just as
+    important — makes the structure <i>truncatable</i>: once every tuple referencing an old XID has been frozen,
+    the clog pages describing it are provably dead and can be deleted outright. A hash map or B-tree would be
+    enormously larger for the same information and would never shrink. <b>2. Hint bits exist purely to amortize.</b>
+    The clog answer for a given XID never changes once resolved, so caching it on the one structure that's already
+    being read (the tuple header, sitting in a shared buffer you already pinned) turns a repeated shared lookup into
+    a one-time cost — paid for in extra page-dirtying, which is the honest tradeoff, not a bug. <b>3. Correct first,
+    fast later.</b> <code>GetSnapshotData()</code>'s O(N) ProcArray scan under one lock was the obviously-correct
+    1999 design and stayed untouched for two decades because it didn't hurt until cloud-era connection counts made
+    it the dominant cost — a textbook case of not paying an optimization's complexity budget before the workload
+    demands it.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — the life of one UPDATE</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from the executor
+      handing the target row to the executor to the eventual reclaim of the old version. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The visibility playground</h2>
+  <p>One row, three independently controllable transactions. <b>BEGIN</b> a transaction to give it a fresh XID and
+  a snapshot frozen at that instant; <b>UPDATE</b> the row to append a new physical version; <b>COMMIT</b> or
+  <b>ABORT</b> to resolve it in <code>pg_xact</code>. Click any tuple version to inspect it, click any hint-bit chip
+  to toggle its cache state, pick a viewer below the chain, and the inspector traces the exact
+  <code>HeapTupleSatisfiesMVCC</code> branch path that produces its verdict. Try updating the row from two
+  transactions before either commits — watch the second one block.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">MVCC visibility playground</span><span class="w-sub" id="sim-phase">3 VERSIONS LIVE</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="ctl-t" style="margin-bottom:8px">TUPLE VERSION CHAIN (row id = 1)</div>
+          <div class="vchain" id="sim-vchain"></div>
+          <div class="waitq" id="sim-waitq"></div>
+
+          <div class="ctl-t" style="margin:16px 0 6px">PG_XACT (CLOG) — 2 BITS PER XID</div>
+          <div class="clogwrap" id="sim-clog"></div>
+
+          <div class="ctl-t" style="margin:16px 0 6px">VISIBILITY TRACE — VIEWER'S SNAPSHOT vs. SELECTED VERSION</div>
+          <div class="viewer-picker" id="sim-viewer-picker"></div>
+          <div class="widget" style="margin:8px 0 0">
+            <div id="sim-trace"></div>
+            <div id="sim-verdict"></div>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">TRANSACTION T1</div>
+            <div id="sim-t1"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">TRANSACTION T2</div>
+            <div id="sim-t2"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">TRANSACTION T3</div>
+            <div id="sim-t3"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">MAINTENANCE</div>
+            <div class="btns">
+              <button class="btn good" id="sc-vacuum">run VACUUM (reclaim dead)</button>
+              <button class="btn danger" id="sc-reset">reset scenario</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-updates">0</div><div class="cl">updates</div></div>
+            <div class="scounter"><div class="cv" id="cnt-checks">0</div><div class="cl">visibility checks</div></div>
+            <div class="scounter"><div class="cv" id="cnt-clog">0</div><div class="cl">clog lookups</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> BEGIN T2, UPDATE it, then pick T1 (whose snapshot predates T2's update) as viewer against T2's new
+    version — watch it come back INVISIBLE via the "still in progress" branch. <b>2.</b> Have T2 UPDATE, then BEGIN
+    T3 and try to UPDATE the same row before T2 resolves — watch T3 queue, then COMMIT T2 and watch T3's update
+    proceed automatically against T2's now-committed version. <b>3.</b> Do the same but ABORT T2 instead — watch
+    the original version come back to life and T3's update land on it. <b>4.</b> Toggle a hint bit off, re-run a
+    visibility check against that version, and watch the clog-lookup counter increment and the hint bit
+    auto-re-set. <b>5.</b> COMMIT everything, run VACUUM, and watch which dead versions get reclaimed — then open a
+    new transaction, leave it un-resolved, update the row again, and run VACUUM once more to see it refuse to
+    reclaim anything newer than that open snapshot.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 6: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head (or out loud — it's better), <i>then</i>
+  reveal. If any reveal surprises you, re-run the relevant simulator experiment.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 05 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now read a raw tuple's xmin/xmax/ctid and predict
+    exactly who can see it, explain why a <code>SELECT</code> can dirty a page, and trace
+    <code>HeapTupleSatisfiesMVCC</code>'s branches by hand. Chapter 6 follows the trail this chapter left open: what
+    happens to all those old tuple versions, how <code>VACUUM</code> decides a version is truly unreachable, and
+    what a 32-bit transaction counter does when it's about to wrap around.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="pg-06.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-06: MVCC II: Vacuum, Freezing & Wraparound →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1973", l:"Ingres", d:"<b>Ingres begins at Berkeley.</b> Stonebraker's first relational system builds its concurrency control on locking: readers and writers contend for the same physical rows through a lock manager. The lab absorbs the lesson that lock-based reads and long analytical scans fight each other, directly on the same hardware POSTGRES would later run on." },
+  { yr:"1986", l:"POSTGRES no-overwrite storage manager", d:"<b>Stonebraker's POSTGRES design memo</b> proposes a storage manager that never overwrites a tuple: every change appends a new record carrying the transaction's timestamp, and old records could in principle be queried <code>AS OF</code> any past instant — genuine time travel, aimed at scientific and historical record-keeping workloads as much as concurrency control." },
+  { yr:"1990s", l:"time travel cut, versioning kept", d:"<b>The unbounded-history ambition is retired.</b> Keeping every version of every row forever, queryable by timestamp, proved too expensive for a general-purpose engine — storage grows without bound and the planner would need time as a first-class dimension. What survives is the mechanism underneath: append a new version instead of overwriting, and let a separate process reclaim old ones later. That process becomes <code>VACUUM</code>." },
+  { yr:"1994–96", l:"Postgres95 → PostgreSQL", d:"<b>Andrew Yu and Jolly Chen</b> replace POSTQUEL with SQL; the community renames the project PostgreSQL. The underlying heap access method — xmin/xmax tuple versioning, no in-place overwrite of data — carries over unchanged from Berkeley's design, even though POSTQUEL's explicit time-travel syntax is gone." },
+  { yr:"1999", l:"PostgreSQL 6.5 — real snapshot MVCC", d:"<b>Vadim Mikheev lands transaction-level snapshot visibility</b>, the direct ancestor of today's <code>SnapshotData</code>/xip[] scheme and true <code>SERIALIZABLE</code>/<code>REPEATABLE READ</code> behavior. Hint bits — a per-tuple cache of the clog answer — enter the codebase in this same era, because without them every scan of a table would re-pay a clog lookup per row, per query, forever." },
+  { yr:"2005", l:"PostgreSQL 8.0 — subtransactions", d:"<b>SAVEPOINT lands</b>, and snapshots grow a second dimension: a subtransaction can abort while its parent commits, so visibility now needs <code>subxip[]</code> and <code>pg_subtrans</code> to map a subtransaction XID back to its top-level transaction before consulting clog. <code>SnapshotData</code>'s field list gets noticeably more complicated from this release forward." },
+  { yr:"2021", l:"PostgreSQL 14 — snapshot scalability", d:"<b>Andres Freund's rewrite of <code>GetSnapshotData()</code>/<code>ProcArray</code></b> attacks the one part of this chapter that had scaled badly for two decades: a full O(N) walk of every backend's slot, under one lock, on every single snapshot taken anywhere in the cluster. The rewrite caches a maintained snapshot in shared memory so the common case is close to O(1) — the single biggest connection-count-scalability change to this subsystem since 1999." },
+  { yr:"2024→", l:"pluggable storage, undo experiments", d:"<b>Table access methods (PG12+) make heap-MVCC one implementation, not the only one.</b> Experimental engines (the zheap prototype among them) explored an undo-log-based approach — closer to Oracle/InnoDB's lineage — specifically to shrink per-row overhead and reduce vacuum pressure, running directly into the reconstruction-cost and retention tradeoffs §5 and §9 describe. None have shipped as the default; the append-only heap remains the production path." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[1].d;
+
+/* ============================================================
+   2. DECK: undo-log vs append-only (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:220px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:6px 9px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (a,b)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${a}${b}</div>`;
+  stepper("deckUndo", [
+    { stage: wrap(
+        box("ORACLE / INNODB — undo-log MVCC", cell("row @ block 42: balance = 900 (current, in place)") + cell("rollback segment: [balance was 1000, by xid 55]", "#a78bfa")),
+        box("POSTGRES — append-only MVCC", cell("v1: balance=1000, xmin=55, xmax=0", "#4ade80"))
+      ),
+      cap:`<b>Before the update.</b> Left: one live row, plus an empty undo area waiting to receive old values. Right: one live tuple version, xmax unset (never touched).` },
+    { stage: wrap(
+        box("ORACLE / INNODB after UPDATE (xid 58)", cell("row @ block 42: balance = 900 (overwritten in place)") + cell("rollback segment: [balance was 1000, by xid 58]","#a78bfa")),
+        box("POSTGRES after UPDATE (xid 58)", cell("v1: balance=1000, xmin=55, xmax=58","#f25c54") + cell("v2: balance=900, xmin=58, xmax=0","#4ade80"))
+      ),
+      cap:`<b>The update happens.</b> Left: the row's bytes are overwritten directly; the pre-image (1000) is copied into the rollback segment, addressed by xid 58. Right: v1's data is untouched — only its xmax field is set to 58 — and a brand-new tuple v2 is appended with the new value. Nothing in the main heap was overwritten.` },
+    { stage: wrap(
+        box("A reader whose snapshot predates xid 58", cell("read block 42 → sees 900 (wrong!)","#f25c54") + cell("must detect this, walk rollback segment, undo xid 58's delta → reconstruct 1000","#a78bfa")),
+        box("Same reader, Postgres", cell("scan v1: xmin=55 committed-before-me, xmax=58 → is 58 in my xip[]? yes → v1 still visible to me","#4ade80") + cell("scan v2: xmin=58 → in my xip[] → invisible to me","#5b6475"))
+      ),
+      cap:`<b>An old reader needs the old value.</b> Left: the current bytes are already wrong for this reader; it must notice, then walk backward through undo, applying reverse deltas, to rebuild 1000 — real CPU work scales with how much undo has piled up since the reader's snapshot was taken. Right: no reconstruction at all — the reader just evaluates each physical version against its snapshot and picks the one that already carries the right value verbatim.` },
+    { stage: wrap(
+        box("COST CENTER: undo/rollback segment", cell("bounded space, reused aggressively","#ff9f43") + cell("long reader + high write rate → undo reused before reader finishes → ORA-01555 / InnoDB long-read failures","#f25c54")),
+        box("COST CENTER: the heap itself", cell("unbounded growth until VACUUM runs","#ff9f43") + cell("every UPDATE writes a full new row + possible new index entries","#f25c54"))
+      ),
+      cap:`<b>Verdict.</b> Undo-log MVCC keeps the primary table small and current but makes old-version reads progressively more expensive and puts a hard ceiling on snapshot age. Append-only MVCC makes every read of every version equally cheap (no reconstruction, ever) but pays in heap and index bloat until a background process catches up. Postgres bet that unbounded snapshot age (arbitrary-length transactions, never an error from staleness) was worth more than a smaller table — §9 lays the two lineages side by side.` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  tupheader:{ n:"HeapTupleHeaderData", f:"src/include/access/htup_details.h", r:"Every physical tuple version carries its own header: t_xmin (inserting XID), t_xmax (deleting/updating XID, or 0), t_ctid (pointer to the next version, or itself), t_infomask/t_infomask2 (hint bits + flags), and the command-id union used for own-transaction visibility.", l:"24 bytes fixed + a NULL bitmap. Lives inline in the heap page, in the shared buffer pool — any backend holding a pin can read it.", d:"If it didn't exist: there would be nowhere to record which transaction created or removed a given version, and every reader would need external metadata just to know which bytes are 'this' row." },
+  ctidchain:{ n:"t_ctid version chain", f:"access/heap/heapam.c (heap_update)", r:"On UPDATE, the OLD tuple's t_ctid is rewritten from self-pointing to point at the NEW tuple's TID. A live (never-updated) tuple's t_ctid always points at itself — that self-reference is exactly how a chain-follower knows it has reached the current end.", l:"One ItemPointerData (block number + offset) per tuple header — 6 bytes.", d:"If a chain-follower (e.g. row locking, EvalPlanQual) trusts a forward pointer to a version whose xmin later turns out aborted, it must treat that as a dead end and stop — not follow it as 'the' current version." },
+  hintbits:{ n:"hint bits (t_infomask)", f:"access/htup_details.h — HEAP_XMIN_COMMITTED, HEAP_XMIN_INVALID, HEAP_XMAX_COMMITTED, HEAP_XMAX_INVALID", r:"A per-tuple cache of the answer to 'did xmin/xmax commit or abort?' so that once any backend resolves it via clog, every future visibility check on this tuple is a single memory read instead of a shared-log lookup.", l:"Bits inside the existing t_infomask field — no extra storage.", d:"Setting a hint bit for the first time writes to the page in the shared buffer pool — marking it dirty — even though no user-visible column changed. This is why a plain SELECT can generate write I/O (§10, §11)." },
+  procarray:{ n:"ProcArray", f:"src/backend/storage/ipc/procarray.c", r:"A shared-memory array with one slot per active backend, holding (among other things) each backend's current XID. GetSnapshotData() walks it (or, since PG14, consults an incrementally-maintained cache) to build xmin/xmax/xip[] for a new snapshot.", l:"Sized at boot by max_connections + max_prepared_transactions; lives in the same shared segment chapter 1 introduced.", d:"Without it, there would be no shared, authoritative answer to 'which transactions are in progress right now' — every snapshot would have to guess." },
+  clog:{ n:"pg_xact (clog)", f:"access/transam/clog.c, slru.c", r:"A 2-bit-per-transaction SLRU-cached bitmap recording each XID's terminal status: in progress, committed, aborted, or sub-committed. TransactionIdGetStatus()/TransactionIdSetStatus() are the read/write entry points.", l:"8KB pages, 32,768 XIDs per page, small fixed number of pages cached in memory with LRU eviction; the rest lives on disk under pg_xact/.", d:"A cold lookup (page not cached) costs an SLRU page fault under a dedicated LWLock — the exact cost hint bits exist to avoid paying twice." },
+  snapshot:{ n:"SnapshotData", f:"src/include/utils/snapshot.h", r:"The private, per-backend record of 'what counts as already-committed, from my point of view, right now': xmin/xmax bound the resolved/unresolved ranges, xip[]/subxip[] list the exceptions caught mid-flight.", l:"Allocated in backend-local memory; taken once per transaction (REPEATABLE READ/SERIALIZABLE) or once per statement (READ COMMITTED).", d:"Without a frozen snapshot, a transaction's view of the database would silently change mid-query as other transactions commit around it — no repeatable read would be possible." },
+  cid:{ n:"command ID (cmin/cmax)", f:"htup_details.h — t_field3.t_cid, compared against snapshot->curcid", r:"Disambiguates visibility WITHIN one transaction's own writes: a row this transaction inserted with an earlier statement is visible to a later one; a row the CURRENT statement is inserting/deleting is not visible to itself.", l:"One CommandId per tuple, packed into the header's union (mutually exclusive with the legacy t_xvac field).", d:"Without it, a multi-statement transaction couldn't tell its own earlier writes from its own current, in-flight write — the 'UPDATE cascading over rows it just wrote' bug §8 calls out." },
+  satisfies:{ n:"HeapTupleSatisfiesMVCC()", f:"access/heap/heapam_visibility.c", r:"The function that actually combines all of the above: given one tuple version and one snapshot, walk xmin's state, then xmax's state, and return a single true/false. Every ordinary SELECT's visibility filtering runs through this (or a close sibling) once per candidate tuple.", l:"Called from the heap scan's tuple-visibility check, on the hot path of nearly every query.", d:"This IS the decision; §8 walks its branches directly and §15 lets you drive it against three live transactions." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">FORMAT / LOCATION</div>${a.l}<div class="ad-sec">WITHOUT IT</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("tupheader");
+
+/* ============================================================
+   4. SHARED VISIBILITY ENGINE — used by §8's calculator AND §15's simulator
+   ============================================================ */
+function xidStatus(xid, clog){
+  if (clog[xid] === undefined) return "inprogress";
+  return clog[xid];
+}
+/* "was xid still unresolved, from the point of view of this snapshot, AS OF when the snapshot was taken?" */
+function inSnapshot(xid, snap){
+  if (xid >= snap.xmax) return true;
+  if (snap.xip.indexOf(xid) !== -1) return true;
+  return false;
+}
+/* tuple: {xmin, xmax(0=none)}  snap: {xmin,xmax,xip,clog}  viewerXid: this viewer's own xid, or -1 if none */
+function visibilityTrace(tuple, snap, viewerXid){
+  const steps = [];
+  if (tuple.xmin === viewerXid){
+    steps.push(`xmin (xid ${tuple.xmin}) is the viewer's OWN transaction &rarr; this version was inserted by me earlier &rarr; visible to my later commands (cmin/cmax rule, simplified here as always-visible)`);
+  } else {
+    const st = xidStatus(tuple.xmin, snap.clog);
+    if (st === "aborted"){
+      steps.push(`xmin (xid ${tuple.xmin}) is ABORTED in pg_xact &rarr; this version was never really inserted &rarr; <b style="color:var(--bad)">INVISIBLE</b>`);
+      return { steps, visible:false };
+    }
+    if (st === "inprogress"){
+      steps.push(`xmin (xid ${tuple.xmin}) is still IN PROGRESS right now &rarr; inserting transaction hasn't committed &rarr; <b style="color:var(--bad)">INVISIBLE</b>`);
+      return { steps, visible:false };
+    }
+    if (inSnapshot(tuple.xmin, snap)){
+      steps.push(`xmin (xid ${tuple.xmin}) has since committed, but was still in progress (or not yet started) when THIS snapshot was taken (xid &ge; snapshot.xmax, or present in xip[]) &rarr; treated as not-yet-committed for this viewer &rarr; <b style="color:var(--bad)">INVISIBLE</b>`);
+      return { steps, visible:false };
+    }
+    steps.push(`xmin (xid ${tuple.xmin}) committed before this snapshot was taken &rarr; hint bit HEAP_XMIN_COMMITTED applies &rarr; xmin visible, proceed to xmax`);
+  }
+  if (!tuple.xmax){
+    steps.push(`xmax = 0 &rarr; row was never deleted or updated away &rarr; <b style="color:var(--ok)">VISIBLE</b>`);
+    return { steps, visible:true };
+  }
+  if (tuple.xmax === viewerXid){
+    steps.push(`xmax (xid ${tuple.xmax}) is the viewer's OWN transaction &rarr; I deleted/updated this version myself &rarr; <b style="color:var(--bad)">INVISIBLE</b> to my later commands`);
+    return { steps, visible:false };
+  }
+  const stx = xidStatus(tuple.xmax, snap.clog);
+  if (stx === "aborted"){
+    steps.push(`xmax (xid ${tuple.xmax}) is ABORTED in pg_xact &rarr; the deleting transaction rolled back, deletion undone &rarr; <b style="color:var(--ok)">VISIBLE</b>`);
+    return { steps, visible:true };
+  }
+  if (stx === "inprogress"){
+    steps.push(`xmax (xid ${tuple.xmax}) is still IN PROGRESS right now &rarr; deletion not yet effective &rarr; <b style="color:var(--ok)">VISIBLE</b>`);
+    return { steps, visible:true };
+  }
+  if (inSnapshot(tuple.xmax, snap)){
+    steps.push(`xmax (xid ${tuple.xmax}) has since committed, but was still in progress (or not yet started) when THIS snapshot was taken &rarr; deletion invisible to this viewer &rarr; <b style="color:var(--ok)">VISIBLE</b>`);
+    return { steps, visible:true };
+  }
+  steps.push(`xmax (xid ${tuple.xmax}) committed before this snapshot was taken &rarr; row was deleted before my snapshot &rarr; <b style="color:var(--bad)">INVISIBLE</b>`);
+  return { steps, visible:false };
+}
+function renderTrace(container, verdictContainer, result){
+  container.innerHTML = result.steps.map((s,i)=>`<div class="trace-step taken"><span class="tn">STEP ${i+1}</span>${s}</div>`).join("");
+  verdictContainer.innerHTML = `<div class="trace-verdict ${result.visible?"visible":"invisible"}">${result.visible?"VISIBLE to this viewer":"INVISIBLE to this viewer"}</div>`;
+}
+
+/* ============================================================
+   5. DECK: HeapTupleSatisfiesMVCC walk (§8b)
+   ============================================================ */
+(function(){
+  const row = (t,c="#8b94a7",bg="transparent")=>`<div style="border:1px solid var(--border);border-radius:8px;padding:8px 11px;margin:5px 0;font-family:var(--mono);font-size:11.5px;color:${c};background:${bg}">${t}</div>`;
+  stepper("deckSatisfies", [
+    { stage: row("HeapTupleSatisfiesMVCC(tuple, snapshot)", "#e8ecf4") + row("tuple.xmin = 104   tuple.xmax = 0", "#9fd0ff") + row("viewer snapshot: xmin=100 xmax=106 xip=[104]", "#9fd0ff"),
+      cap:`<b>Entry.</b> One tuple version, one snapshot. First question the real function asks is NOT "is xmin committed" — it's "is xmin bit-cached already," and if not, "is xmin even a foreign XID, or is it mine?" We'll assume it's foreign for this walk (own-transaction handling is the cmin/cmax callout below the deck).` },
+    { stage: row("HEAP_XMIN_INVALID set?", "#e8ecf4") + row("if YES &rarr; return false immediately", "#f25c54") + row("(this tuple's inserter is KNOWN aborted — cached, no lookup)", "#5b6475"),
+      cap:`<b>Cheapest exit first.</b> If a previous visibility check already discovered and cached that xmin aborted, this is a single bit test and we're done — no clog access, no further logic. This branch is why aborted inserts are the cheapest possible case once seen once.` },
+    { stage: row("xid 104 in xip[104]? YES", "#ff9f43") + row("&rarr; XidInMVCCSnapshot() returns true", "#ff9f43") + row("&rarr; return false", "#f25c54"),
+      cap:`<b>Still-running check comes BEFORE asking clog for the current truth.</b> Because 104 was captured in this snapshot's xip[] array, it counts as "not yet resolved as of my snapshot" — even if it has since committed in the real world. This is what makes a snapshot a fixed point in time instead of a live feed.` },
+    { stage: row("Different tuple: xmin = 97, not in xip[], xip=[104]", "#9fd0ff") + row("TransactionIdDidCommit(97)? &rarr; clog lookup", "#a78bfa") + row("YES &rarr; SetHintBits(HEAP_XMIN_COMMITTED) &rarr; page now dirty", "#4ade80"),
+      cap:`<b>The expensive branch.</b> 97 is old enough (not in xip[], less than snapshot.xmax) that we actually need clog's answer. TransactionIdDidCommit() pays an SLRU lookup, and — this is the detail people forget — a SUCCESSFUL lookup writes the hint bit back onto the tuple, dirtying the page. A read just became a write.` },
+    { stage: row("xmin resolved & visible &rarr; now check xmax", "#e8ecf4") + row("tuple.xmax = 0 (HEAP_XMAX_INVALID)", "#4ade80") + row("&rarr; return true", "#4ade80"),
+      cap:`<b>xmax = 0 is the easy exit on the delete side:</b> this version was never superseded. Combined with a resolved, visible xmin, the tuple is simply live for this viewer.` },
+    { stage: row("Different tuple: xmax = 108, committed, snapshot.xmax=106", "#f25c54") + row("108 &ge; snapshot.xmax=106 &rarr; XidInMVCCSnapshot(108)=true", "#4ade80") + row("&rarr; return true (deletion happened AFTER my snapshot)", "#4ade80"),
+      cap:`<b>A deletion that's "in the future" relative to this snapshot doesn't count.</b> Transaction 108 started after this snapshot was taken (108 &ge; xmax=106), so as far as this viewer is concerned, the delete hasn't happened yet — the row is still visible. This is the branch that makes a long-running reader immune to concurrent deletes that arrive after it started.` },
+    { stage: row("Last case: xmax = 90, committed, 90 < snapshot.xmin=100", "#f25c54") + row("not in xip[], not &ge; xmax &rarr; XidInMVCCSnapshot(90)=false", "#f25c54") + row("&rarr; return false — deleted before my snapshot began", "#f25c54"),
+      cap:`<b>Verdict.</b> xmax=90 resolved to committed, and 90 precedes this snapshot's xmin entirely — the deletion is unambiguously in this viewer's past. The row is dead to this viewer, full stop, regardless of what any OTHER transaction can currently see. Multiply this six-branch walk by every candidate row in a sequential scan and you have exactly what §10 puts a cost model on.` }
+  ]);
+})();
+
+/* ============================================================
+   6. SLIDER WIDGET: snapshot visibility calculator (§8c)
+   ============================================================ */
+(function(){
+  const VC = { xminStatus:"committed", xminXip:false, hasXmax:true, xmaxStatus:"committed", xmaxXip:false };
+  function statusRow(id, initial){
+    const wrap = el(id);
+    wrap.innerHTML = ["committed","aborted","inprogress"].map(s=>`<button class="chip ${s===initial?"on":""}" data-s="${s}">${s}</button>`).join("");
+    return wrap;
+  }
+  statusRow("vc-xmin-status", "committed");
+  statusRow("vc-xmax-status", "committed");
+  function wireStatusRow(id, onPick){
+    el(id).querySelectorAll(".chip").forEach(c=>{
+      c.onclick = ()=>{ el(id).querySelectorAll(".chip").forEach(x=>x.classList.remove("on")); c.classList.add("on"); onPick(c.dataset.s); render(); };
+    });
+  }
+  wireStatusRow("vc-xmin-status", s=>VC.xminStatus=s);
+  wireStatusRow("vc-xmax-status", s=>VC.xmaxStatus=s);
+  el("vc-xmin-xip").onclick = ()=>{ VC.xminXip=!VC.xminXip; el("vc-xmin-xip").classList.toggle("on", VC.xminXip); render(); };
+  el("vc-xmax-xip").onclick = ()=>{ VC.xmaxXip=!VC.xmaxXip; el("vc-xmax-xip").classList.toggle("on", VC.xmaxXip); render(); };
+  el("vc-has-xmax").onclick = ()=>{ VC.hasXmax=!VC.hasXmax; el("vc-has-xmax").classList.toggle("on", VC.hasXmax); render(); };
+  el("vc-has-xmax").classList.add("on");
+
+  function render(){
+    const tXmin = +el("vc-xmin").value, tXmax = +el("vc-xmax").value;
+    const sXmin = +el("vc-snap-xmin").value, sXmax = +el("vc-snap-xmax").value;
+    el("vc-xmin-val").textContent = tXmin;
+    el("vc-xmax-val").textContent = tXmax;
+    el("vc-snap-xmin-val").textContent = sXmin;
+    el("vc-snap-xmax-val").textContent = sXmax;
+    const clog = {};
+    clog[tXmin] = VC.xminStatus;
+    if (VC.hasXmax) clog[tXmax] = VC.xmaxStatus;
+    const xip = [];
+    if (VC.xminXip) xip.push(tXmin);
+    if (VC.hasXmax && VC.xmaxXip) xip.push(tXmax);
+    const snap = { xmin:sXmin, xmax:sXmax, xip, clog };
+    const tuple = { xmin:tXmin, xmax: VC.hasXmax ? tXmax : 0 };
+    const result = visibilityTrace(tuple, snap, -1);
+    renderTrace(el("vc-trace"), el("vc-verdict"), result);
+  }
+  ["vc-xmin","vc-xmax","vc-snap-xmin","vc-snap-xmax"].forEach(id=> el(id).oninput = render);
+  render();
+})();
+
+/* ============================================================
+   7. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let cold = false;
+  const cv = el("pf-chart"), ctx = cv.getContext("2d");
+  function model(rows, hitRate, cold){
+    const baseCheck = 1;                              // relative cost: memory read of t_infomask
+    const clogCost = cold ? 38 : 9;                    // relative cost: SLRU page fault vs warm SLRU hit
+    const missed = rows * (1 - hitRate);
+    const totalClog = missed * clogCost;
+    const total = rows * baseCheck + totalClog;
+    return { total, totalClog, perRow: total/Math.max(rows,1) };
+  }
+  function render(){
+    const rows = +el("pf-rows").value, hit = +el("pf-hit").value;
+    el("pf-rows-val").textContent = rows.toLocaleString();
+    el("pf-hit-val").textContent = hit + "%";
+    el("pf-cold").classList.toggle("on", cold);
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const rates = []; for (let r=0; r<=100; r+=4) rates.push(r);
+    let maxT = 0, maxC = 0;
+    const pts = rates.map(r=>{ const m = model(rows, r/100, cold); maxT=Math.max(maxT,m.total); maxC=Math.max(maxC,m.totalClog); return m; });
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [0,25,50,75,100].forEach(r=>{ const x = PAD + (r/100)*(W-PAD-12); ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,H-20); ctx.stroke(); ctx.fillText(r+"%", x-10, H-6); });
+    function curve(get, max, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      rates.forEach((r,i)=>{ const x = PAD + (r/100)*(W-PAD-12); const y = H-24 - (get(pts[i])/max)*(H-44); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+    }
+    curve(m=>m.total, maxT, "#60a5fa");
+    curve(m=>m.totalClog, maxT, "#f25c54");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath();
+    const hx = PAD + (hit/100)*(W-PAD-12); ctx.moveTo(hx,10); ctx.lineTo(hx,H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(rows, hit/100, cold);
+    const allCold = model(rows, 0, cold), allWarm = model(rows, 1, cold);
+    el("pf-note").innerHTML = `At <b>${hit}%</b> hint-bit hit rate over <b>${rows.toLocaleString()}</b> rows${cold?" with a cold clog SLRU":""}: relative scan cost ≈ <b style="color:var(--pg)">${Math.round(here.total).toLocaleString()}</b> units, of which <b style="color:var(--bad)">${Math.round(here.totalClog).toLocaleString()}</b> (${Math.round(100*here.totalClog/here.total)}%) is pure clog-lookup overhead. A freshly loaded table (0% hit rate) costs <b>${Math.round(allCold.total/allWarm.total)}×</b> a fully-vacuumed one (100% hit rate) on this model — and that entire multiple disappears after the FIRST scan sets every hint bit, at the price of dirtying every page once.`;
+  }
+  el("pf-rows").oninput = render;
+  el("pf-hit").oninput = render;
+  el("pf-cold").onclick = ()=>{ cold=!cold; render(); };
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Two backends both run SELECT * FROM accounts WHERE id = 1 at the exact instant a third is mid-UPDATE on that row. Neither SELECT blocks. Explain, at the level of tuple bytes, how both get a correct answer.", hint:"how many physical copies of the row exist right now?",
+    a:"At that instant there are two physical tuple versions in the heap page: the original, with its xmax now set to the updater's XID (not yet committed), and a brand-new version the updater just appended, with xmin set to its own XID and xmax still 0. Each SELECT runs HeapTupleSatisfiesMVCC() against both versions and its own snapshot: the old version's xmax belongs to a transaction that's either in-progress or in the reader's xip[], so XidInMVCCSnapshot() says 'not yet resolved from your point of view' and the OLD version stays visible; the new version's xmin is in the same in-progress/xip[] state, so it's invisible. Both readers land on the old version, correctly, without ever contending for a lock — the updater's uncommitted work simply doesn't exist yet from their point of view." },
+  { lvl:"SENIOR", q:"What exactly is in a transaction's snapshot, and when is it taken under READ COMMITTED vs REPEATABLE READ?", hint:"one struct, two different call frequencies",
+    a:"A SnapshotData: xmin (oldest XID still running when taken), xmax (first XID not yet assigned), xip[] (XIDs caught in progress), and subxip[]/suboverflowed for subtransactions, plus curcid for own-transaction visibility. Under READ COMMITTED, GetTransactionSnapshot() is called at the start of EVERY statement, so each statement sees a fresh view including anything committed since the last one. Under REPEATABLE READ/SERIALIZABLE, it's taken once, at the first statement of the transaction, and reused for the transaction's entire lifetime — curcid still advances per command for the transaction's own writes, but xmin/xmax/xip never change." },
+  { lvl:"STAFF", q:"A tuple's t_infomask has neither HEAP_XMIN_COMMITTED nor HEAP_XMIN_INVALID set. What does a visibility check have to do that it otherwise wouldn't, and what does it do afterward?", hint:"clog + a write nobody asked for",
+    a:"It cannot trust a cached answer, so it calls TransactionIdDidCommit(), which computes the clog page number for that XID, asks the SLRU cache for that page (possibly faulting it in from disk under a dedicated LWLock if it isn't resident), and reads 2 bits out of it. Whatever the answer, SetHintBits() then writes HEAP_XMIN_COMMITTED or HEAP_XMIN_INVALID back into the tuple header in the shared buffer — which marks that page dirty, even though the query was a read-only SELECT. Every subsequent check of this exact tuple version skips the clog call entirely." },
+  { lvl:"STAFF", q:"Why did PostgreSQL choose append-only new tuple versions over Oracle/InnoDB-style undo or rollback segments? What did that choice give up?", hint:"reconstruction logic vs. heap growth",
+    a:"Append-only versioning needs no reconstruction: every version is a complete, independently visibility-checkable tuple, so the read path is just 'filter the chain,' never 'replay deltas.' That simplicity was buildable by a small research team and it removes any ceiling on snapshot age — no equivalent of ORA-01555. The cost is that every UPDATE writes a full new row (plus new index entries for changed indexed columns unless HOT applies), and none of that space is reclaimed until a separate process, VACUUM, catches up — meaning heap and index bloat is a first-class operational concern Postgres carries permanently, in exchange for undo-segment sizing and 'snapshot too old' never being Postgres's problem." },
+  { lvl:"STAFF", q:"Precisely why does an UPDATE never see rows it already modified earlier in the SAME command, but DOES see rows modified by an earlier command in the same transaction?", hint:"cid, not xid",
+    a:"Visibility of a transaction's own writes is gated by comparing the tuple's cmin/cmax (the command ID of the statement that inserted/deleted it) against the snapshot's curcid (the command ID of the statement running right now). A row inserted by an EARLIER command (lower cmin) in the same transaction has cmin < curcid, so it's visible. A row the CURRENT command is in the middle of writing has cmin == curcid, which fails the 'cmin < curcid' test, so the executor's own scan never sees rows it is itself producing during this statement — which is exactly what stops UPDATE t SET x = x+1 from re-processing rows it just updated in the same pass." },
+  { lvl:"PRINCIPAL", q:"A colleague proposes: 'skip VACUUM entirely — delete old row bytes immediately and stash the previous value in a small undo buffer, freed once no reader needs it.' What hidden cost are they not seeing, grounded in ProcArray and snapshots?", hint:"how long can a single snapshot pin things?",
+    a:"'Freed once no reader needs it' is doing all the load-bearing work, and it's unbounded: a single transaction with an open, unused snapshot (idle-in-transaction, or just a long analytical read) can hold the oldest-needed-xmin horizon still for arbitrarily long, which means that 'small' undo buffer must be able to grow arbitrarily large to avoid losing data a still-open reader might reference — which is precisely Oracle's rollback-segment sizing problem and ORA-01555 in a new outfit. This is not a hypothetical: PostgreSQL's own zheap/undo-log research prototypes ran into exactly this tension and never replaced the default heap." },
+  { lvl:"PRINCIPAL", q:"Given the PG14 GetSnapshotData() rewrite, what workload profile benefited most, and why did nobody bother fixing this for roughly 20 years?", hint:"connection count vs. per-connection work",
+    a:"The O(N) ProcArray walk under ProcArrayLock costs proportional to the number of backend slots scanned on EVERY snapshot taken anywhere in the cluster — a tax that's invisible at tens of connections but dominant at thousands, especially with many short transactions or a large idle-connection count (exactly the profile cloud multi-tenant fleets and connection-storm-prone applications produce). For two decades, most deployments simply never had enough concurrent backends to feel it; the fix arrived once cloud-scale connection counts made a previously negligible O(N) term the largest cost in the transaction path — a case study in 'don't pay complexity for a bottleneck you don't have yet,' revisited once the workload changed underneath the code." }
+]);
+
+qaCards("qa-check", [
+  { lvl:"THINK", q:"§6 said a dead tuple version is only reclaimable once no live snapshot's xmin could still need it. Predict: what single number must VACUUM compute across every backend (and, less obviously, every replication slot) before it can safely remove ANYTHING — and what happens to that number the instant one session opens a transaction and goes idle?",
+    a:"VACUUM needs GetOldestXmin(): the minimum of every currently-held snapshot's xmin, plus the xmin held by physical/logical replication slots (which must let a standby or subscriber catch up before their view of old data is discarded). The instant any single session opens a transaction and goes idle, that session's xmin — fixed at whatever it was when its snapshot was taken — becomes a floor nothing can vacuum past, anywhere in the database, for as long as that session stays open. Chapter 6 builds the whole mechanism this number feeds." },
+  { lvl:"THINK", q:"A transaction ID is a 32-bit counter that wraps roughly every 4 billion transactions. Predict: why is a naive comparison like 'xid A happened before xid B if A < B' insufficient forever, and what must eventually happen to an old tuple's xmin to keep it correct across a wraparound?",
+    a:"Plain integer comparison breaks the moment the counter wraps: an XID from 'long ago' can numerically be LARGER than a freshly issued one after wraparound, making a truly-past transaction look like it hasn't happened yet (or vice versa) if compared naively. PostgreSQL instead compares XIDs modulo 2^31 (circular comparison, valid only within a roughly 2-billion-transaction window centered on the current XID) — which means every tuple's xmin must eventually be rewritten to a special FrozenTransactionId sentinel, permanently outside that comparison window, before it could possibly become ambiguous. That rewrite is VACUUM's freezing pass, and chapter 6 is entirely about the mechanics and the deadline." },
+  { lvl:"THINK", q:"Hint bits cache one tuple's clog answer so a repeat visibility check skips the shared lookup. Predict: what analogous cache would let an index-only scan skip visiting the heap AT ALL for a given page, and what would that structure need to track?",
+    a:"It needs page-level, not tuple-level, information: a bit per heap page recording 'every tuple on this page is visible to every possible snapshot' — true only once all versions on the page are old enough that no in-progress transaction could disagree. That is the visibility map, and it's exactly what lets an index-only scan answer a query straight from the index without ever touching the heap, provided the target page's visibility-map bit is set. Chapter 6 covers how VACUUM maintains it and what invalidates it." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Transaction B runs UPDATE on a row. What happens to the row's OLD tuple version?",
+    opts:[ "It is deleted immediately and its space reclaimed at the next checkpoint",
+           "It is left in place with its data unchanged, but its xmax is set to B's XID and its t_ctid is rewritten to point at the new version",
+           "It is moved into a separate undo/rollback segment referenced by a pointer",
+           "Its xmin is overwritten with B's XID to mark it superseded" ],
+    a:1,
+    why:"The whole point of append-only MVCC is that tuple DATA is never rewritten in place — only the header fields xmax and t_ctid change on the old version, and a complete new tuple carries the updated data. Option C describes Oracle/InnoDB's undo-log lineage, not Postgres's. Option D confuses xmin (who INSERTED this version) with xmax (who superseded it) — xmin never changes after insert. Option A is wrong on two counts: reclamation isn't immediate, and it's VACUUM's job, not the checkpointer's." },
+  { q:"A snapshot has xmin=500, xmax=520, xip=[505,511]. A tuple has xmin=505, currently COMMITTED in pg_xact. Is the tuple's insertion visible to this snapshot?",
+    opts:[ "Yes, because 505 < 520", "No — 505 was still in progress (present in xip[]) when the snapshot was taken, so it's treated as unresolved for this snapshot regardless of its current status", "Yes, because pg_xact says COMMITTED and that overrides xip membership", "Cannot be determined without checking t_infomask hint bits" ],
+    a:1,
+    why:"XidInMVCCSnapshot() checks xip[] membership (and the xmax boundary) BEFORE ever asking clog for the live answer — that ordering is what makes a snapshot a fixed point in time. Once 505 is found in xip[], it is invisible to this snapshot no matter what it does afterward. Option C has the priority backwards: xip[] membership, not clog's current answer, decides visibility for XIDs caught mid-flight. Option D is a red herring — hint bits are a cache of clog's answer; they don't change what the snapshot rule says." },
+  { q:"Why can a plain, read-only SELECT statement mark a shared buffer dirty?",
+    opts:[ "SELECT always updates per-page statistics counters", "Resolving a tuple's clog status for the first time sets a hint bit in the tuple header, which is a write to that page in the shared buffer", "SELECT acquires a row lock that is physically stored in the page", "It can't — only INSERT/UPDATE/DELETE dirty buffers" ],
+    a:1,
+    why:"SetHintBits() writes HEAP_XMIN_COMMITTED/HEAP_XMIN_INVALID (or the XMAX equivalents) directly into the tuple header the moment a visibility check resolves an uncached XID via clog — and that write happens inside a shared buffer, marking the page dirty for the next checkpoint/bgwriter cycle, even though no user-visible column changed. There are no per-page counters like option A describes, and plain SELECTs take no row locks (option C) — that's exactly what MVCC exists to avoid." },
+  { q:"What is pg_xact (formerly pg_clog), and why is 2 bits per transaction enough?",
+    opts:[ "A B-tree index over commit timestamps; 2 bits store the tree's fan-out factor", "An SLRU-managed bitmap with exactly 2 bits per XID, because a transaction's terminal status is one of only four values: in progress, committed, aborted, or sub-committed", "A WAL segment marker recording whether that segment has been archived", "A hash table mapping XID to a full commit LSN, compressed to 2 bits via hashing" ],
+    a:1,
+    why:"Every transaction ends in exactly one of four states, so 2 bits is information-theoretically exact — no hashing, no compression, just a direct address computation (xid/32768 for the page, remaining bits for the byte and shift). That's also why it can be organized as a small, page-oriented SLRU cache rather than a general-purpose index structure: fixed-size records at a computable offset need none of a B-tree's overhead." },
+  { q:"Two backends concurrently try to UPDATE the same row; T1 gets there first (uncommitted). What does T2 do?",
+    opts:[ "Immediately raises a serialization error", "Silently updates its own copy of the row and lets last-writer-win apply at commit time", "Blocks, waiting on T1's XID via the lock table, then re-evaluates the row once T1 resolves", "Reads T1's uncommitted value with dirty-read semantics and proceeds immediately" ],
+    a:2,
+    why:"UPDATE/DELETE use a dirty-snapshot check to detect a concurrently-modified row and call XactLockTableWait() to block on the OTHER transaction's XID specifically — not a generic row lock, and not an immediate error (that's closer to some SERIALIZABLE-level conflict behavior, not the default path). Once T1 resolves, T2's UPDATE re-evaluates: if T1 committed, T2 proceeds against T1's new version; if T1 aborted, T2 proceeds against the resurrected old version. There is no dirty read (option D) and no silent last-writer-wins copy (option B) anywhere in this path." },
+  { q:"A session runs BEGIN; SELECT 1; and then sits idle for six hours while OLTP traffic continuously deletes and re-inserts rows on an unrelated hot table. What is the direct consequence?",
+    opts:[ "None — SELECT 1 doesn't touch any table, so it can't hold anything back", "The idle session's snapshot xmin pins the oldest-needed-xmin horizon, so VACUUM cannot reclaim any dead tuple version created after that snapshot was taken, anywhere in the database", "The session is automatically terminated after idle_in_transaction_session_timeout with no other side effects", "Only the specific table the SELECT touched is affected" ],
+    a:1,
+    why:"A snapshot, once taken, is a database-wide fact, not a per-table one — GetOldestXmin() considers this session's xmin regardless of which table it queried, because the SAME visibility rule (xid >= snapshot.xmax or in xip[] => invisible) would apply if this session later queried ANY table. That's exactly why 'idle in transaction' bloats the whole database, not just the touched table (ruling out A and D), and idle_in_transaction_session_timeout (C) is a mitigation, not something that happens automatically without being configured." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; HeapTupleSatisfiesMVCC would be proud.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's deck and the §15 simulator — the branch logic clicks fast once you drive it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Executor hands heap_update() the target tuple to modify",
+    "heap_update() sets the OLD tuple's xmax to the updating transaction's XID",
+    "A new tuple version is appended with xmin = the same XID, xmax = 0",
+    "The OLD tuple's t_ctid is rewritten to point at the new tuple's TID",
+    "Any changed indexed column gets a new index entry pointing at the new TID",
+    "COMMIT flips the XID's pg_xact entry from IN_PROGRESS to COMMITTED",
+    "A later reader's HeapTupleSatisfiesMVCC() call sets HEAP_XMIN_COMMITTED on the new tuple",
+    "VACUUM eventually reclaims the old tuple version once no snapshot's xmin can still see it"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real update lifecycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   10. SIMULATOR (§15) — the visibility playground
+   ============================================================ */
+(function(){
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  const LABELS = ["T1","T2","T3"];
+  let nextXid, clog, xidOwner, versions, liveIdx, txns, blockedQueue, viewer, selectedVersion;
+  let cnt = { updates:0, checks:0, clogLookups:0 };
+
+  function freshState(){
+    nextXid = 100;
+    clog = { 1: "committed" };
+    xidOwner = {};
+    versions = [ { vid:0, xmin:1, xmax:0, creator:"(genesis)", ctidTarget:0, supersedes:null, hintXmin:true, hintXmax:false } ];
+    liveIdx = 0;
+    txns = { T1:null, T2:null, T3:null };
+    blockedQueue = [];
+    viewer = "T1";
+    selectedVersion = 0;
+    cnt = { updates:0, checks:0, clogLookups:0 };
+  }
+  freshState();
+
+  function doBegin(label){
+    if (txns[label] && txns[label].active){ log("WARN", `${label} already has an open transaction (xid ${txns[label].xid})`); return; }
+    const xid = nextXid++;
+    clog[xid] = "inprogress";
+    xidOwner[xid] = label;
+    txns[label] = { xid, active:true, resolved:null, blockedOnXid:null };
+    const activeXids = LABELS.filter(l=>txns[l] && txns[l].active).map(l=>txns[l].xid);
+    txns[label].snapshot = { xmin: Math.min.apply(null, activeXids), xmax: nextXid, xip: activeXids.slice() };
+    log("LOG", `${label}: BEGIN → assigned xid ${xid}; snapshot taken: xmin=${txns[label].snapshot.xmin} xmax=${txns[label].snapshot.xmax} xip=[${activeXids.join(",")}]`);
+    render();
+  }
+
+  function doUpdate(label){
+    const txn = txns[label];
+    if (!txn || !txn.active){ log("WARN", `${label} has no open transaction — BEGIN first`); return; }
+    if (txn.blockedOnXid){ log("WARN", `${label} is already waiting on xid ${txn.blockedOnXid}`); return; }
+    const head = versions[liveIdx];
+    if (head.xmax){
+      const st = xidStatus(head.xmax, clog);
+      if (st === "inprogress"){
+        txn.blockedOnXid = head.xmax;
+        blockedQueue.push(label);
+        log("WARN", `${label} (xid ${txn.xid}): UPDATE row → row is locked by xid ${head.xmax} (uncommitted) → WAITING (XactLockTableWait)`);
+        render();
+        return;
+      }
+    }
+    head.xmax = txn.xid;
+    head.hintXmax = false;
+    const newIdx = versions.length;
+    head.ctidTarget = newIdx;
+    versions.push({ vid:newIdx, xmin:txn.xid, xmax:0, creator:label, ctidTarget:newIdx, supersedes:liveIdx, hintXmin:false, hintXmax:false });
+    liveIdx = newIdx;
+    cnt.updates++;
+    log("LOG", `${label} (xid ${txn.xid}): heap_update() → old version's xmax := ${txn.xid}, ctid rewritten → v${newIdx} appended (xmin=${txn.xid}, xmax=0)`);
+    render();
+  }
+
+  function resolveBlocked(justResolvedXid){
+    const stillBlocked = [];
+    blockedQueue.forEach(label=>{
+      const txn = txns[label];
+      if (txn && txn.blockedOnXid === justResolvedXid){
+        txn.blockedOnXid = null;
+        log("LOG", `${label}: lock on xid ${justResolvedXid} released — retrying UPDATE against the current row version`);
+        stillBlocked.push(null);
+        doUpdate(label);
+      } else {
+        stillBlocked.push(label);
+      }
+    });
+    blockedQueue = stillBlocked.filter(x=>x);
+  }
+
+  function doCommit(label){
+    const txn = txns[label];
+    if (!txn || !txn.active){ log("WARN", `${label} has no open transaction`); return; }
+    clog[txn.xid] = "committed";
+    txn.active = false; txn.resolved = "committed";
+    log("OK", `${label} (xid ${txn.xid}): COMMIT → pg_xact[${txn.xid}] = COMMITTED`);
+    resolveBlocked(txn.xid);
+    render();
+  }
+
+  function doAbort(label){
+    const txn = txns[label];
+    if (!txn || !txn.active){ log("WARN", `${label} has no open transaction`); return; }
+    clog[txn.xid] = "aborted";
+    txn.active = false; txn.resolved = "aborted";
+    if (versions[liveIdx].xmin === txn.xid && versions[liveIdx].supersedes !== null){
+      log("WARN", `${label} (xid ${txn.xid}): ABORT → v${liveIdx} is dead on arrival; v${versions[liveIdx].supersedes} is live again`);
+      liveIdx = versions[liveIdx].supersedes;
+    } else {
+      log("WARN", `${label} (xid ${txn.xid}): ABORT → pg_xact[${txn.xid}] = ABORTED`);
+    }
+    resolveBlocked(txn.xid);
+    render();
+  }
+
+  function doVacuum(){
+    const activeXmins = LABELS.filter(l=>txns[l] && txns[l].active).map(l=>txns[l].snapshot.xmin);
+    const oldestXmin = activeXmins.length ? Math.min.apply(null, activeXmins) : nextXid;
+    let reclaimed = 0, held = 0;
+    versions.forEach((v,i)=>{
+      if (i === liveIdx) return;
+      if (!v.xmax) return;
+      if (v.reclaimed) return;
+      if (xidStatus(v.xmax, clog) === "committed" && v.xmax < oldestXmin){
+        v.reclaimed = true;
+        reclaimed++;
+      } else if (xidStatus(v.xmin, clog) !== "inprogress") {
+        held++;
+      }
+    });
+    log("OK", `VACUUM: OldestXmin = ${oldestXmin} (min of every open snapshot's xmin, or next XID if none) → reclaimed ${reclaimed} dead version(s), ${held} held back`);
+    if (!activeXmins.length && reclaimed === 0 && held === 0) log("HINT", "nothing dead to reclaim right now — try UPDATE + COMMIT a couple of times first");
+    render();
+  }
+
+  function doReset(){
+    freshState();
+    doBegin("T1"); doUpdate("T1"); doCommit("T1");
+    doBegin("T2"); doUpdate("T2");
+    log("HINT", "Scenario reset: T1 already committed one update; T2 has an UPDATE in flight, uncommitted. Try BEGIN + UPDATE on T3 to see it block.");
+    render();
+  }
+
+  function txnBox(label){
+    const txn = txns[label];
+    if (!txn){
+      return `<div class="txnbox"><div class="tb-h"><b>${label}</b><span style="color:var(--dim)">no transaction</span></div>
+        <div class="btns"><button class="btn primary" data-act="begin">BEGIN</button></div></div>`;
+    }
+    const snap = txn.snapshot;
+    const statusTxt = txn.active ? (txn.blockedOnXid ? `waiting on xid ${txn.blockedOnXid}` : "active") : txn.resolved.toUpperCase();
+    return `<div class="txnbox ${txn.active?"":"done"}"><div class="tb-h"><b>${label}</b><span>xid ${txn.xid} · ${statusTxt}</span></div>
+      <div class="tb-snap">snapshot: xmin=${snap.xmin} xmax=${snap.xmax} xip=[${snap.xip.join(",")}]</div>
+      <div class="btns">
+        <button class="btn" data-act="update" ${(!txn.active||txn.blockedOnXid)?"disabled":""}>UPDATE row</button>
+        <button class="btn good" data-act="commit" ${!txn.active?"disabled":""}>COMMIT</button>
+        <button class="btn danger" data-act="abort" ${!txn.active?"disabled":""}>ABORT</button>
+        ${!txn.active?`<button class="btn primary" data-act="begin">BEGIN new</button>`:""}
+      </div></div>`;
+  }
+  function wireTxnBox(id, label){
+    const box = el(id);
+    box.querySelectorAll("[data-act]").forEach(b=>{
+      b.onclick = ()=>{
+        const act = b.dataset.act;
+        if (act==="begin") doBegin(label);
+        else if (act==="update") doUpdate(label);
+        else if (act==="commit") doCommit(label);
+        else if (act==="abort") doAbort(label);
+      };
+    });
+  }
+
+  function xidLabelFor(xid){ return xidOwner[xid] ? ` (${xidOwner[xid]})` : ""; }
+
+  function renderChain(){
+    el("sim-vchain").innerHTML = versions.map((v,i)=>{
+      const alive = i===liveIdx;
+      const xminSt = xidStatus(v.xmin, clog);
+      const xmaxSt = v.xmax ? xidStatus(v.xmax, clog) : null;
+      const deadInsert = xminSt === "aborted";
+      const targetDead = xidStatus(versions[v.ctidTarget] ? versions[v.ctidTarget].xmin : v.xmin, clog) === "aborted" && v.ctidTarget !== i;
+      let arrow = v.ctidTarget === i ? "self (live head)" : `→ v${v.ctidTarget}` + (targetDead ? " (dead end — aborted insert, ignored)" : "");
+      return `<div class="vnode ${alive?"live":"dead"} ${selectedVersion===i?"sel":""}" data-vi="${i}">
+        <div class="vt">v${i}${v.reclaimed?" · RECLAIMED":""}${deadInsert?" · DEAD (xmin aborted)":""}</div>
+        <span class="vf"><b>xmin</b> ${v.xmin}${xidLabelFor(v.xmin)} — ${xminSt}
+          <span class="hintchip ${v.hintXmin?"on":""}" data-hb="xmin" data-vi="${i}">hint:${v.hintXmin?"ON":"off"}</span></span>
+        <span class="vf"><b>xmax</b> ${v.xmax || "0 (none)"}${v.xmax?xidLabelFor(v.xmax):""}${v.xmax?` — ${xmaxSt}`:""}
+          ${v.xmax?`<span class="hintchip ${v.hintXmax?"on":""}" data-hb="xmax" data-vi="${i}">hint:${v.hintXmax?"ON":"off"}</span>`:""}</span>
+        <span class="vf" style="color:var(--dim)">ctid ${arrow}</span>
+      </div>`;
+    }).join("");
+    el("sim-vchain").querySelectorAll(".vnode").forEach(n=>{
+      n.onclick = (e)=>{ if (e.target.closest(".hintchip")) return; selectedVersion = +n.dataset.vi; render(); };
+    });
+    el("sim-vchain").querySelectorAll(".hintchip").forEach(c=>{
+      c.onclick = ()=>{
+        const v = versions[+c.dataset.vi];
+        if (c.dataset.hb==="xmin") v.hintXmin = !v.hintXmin; else v.hintXmax = !v.hintXmax;
+        render();
+      };
+    });
+  }
+
+  function renderClog(){
+    const xids = Object.keys(clog).map(Number).sort((a,b)=>a-b);
+    el("sim-clog").innerHTML = xids.map(x=>`<span class="xidchip ${clog[x]}">xid ${x}${xidLabelFor(x)}: ${clog[x].toUpperCase()}</span>`).join("");
+  }
+
+  function renderViewerPicker(){
+    el("sim-viewer-picker").innerHTML = LABELS.map(l=>`<button class="chip ${viewer===l?"on":""}" data-l="${l}">viewer: ${l}${txns[l]?" (xid "+txns[l].xid+")":" (no txn)"}</button>`).join("");
+    el("sim-viewer-picker").querySelectorAll(".chip").forEach(c=>{ c.onclick = ()=>{ viewer=c.dataset.l; render(); }; });
+  }
+
+  function renderTraceSection(){
+    const txn = txns[viewer];
+    if (!txn){
+      el("sim-trace").innerHTML = `<div class="trace-step">${viewer} has never BEGUN — nothing to evaluate. Click BEGIN on ${viewer}'s panel first.</div>`;
+      el("sim-verdict").innerHTML = "";
+      return;
+    }
+    const v = versions[selectedVersion] || versions[liveIdx];
+    const snap = { xmin: txn.snapshot.xmin, xmax: txn.snapshot.xmax, xip: txn.snapshot.xip, clog };
+    const result = visibilityTrace({ xmin:v.xmin, xmax:v.xmax }, snap, txn.xid);
+    renderTrace(el("sim-trace"), el("sim-verdict"), result);
+    cnt.checks++;
+    if (v.xmin !== txn.xid && xidStatus(v.xmin, clog) !== "inprogress" && !v.hintXmin){ v.hintXmin = true; cnt.clogLookups++; }
+    if (v.xmax && v.xmax !== txn.xid && xidStatus(v.xmax, clog) !== "inprogress" && !v.hintXmax){ v.hintXmax = true; cnt.clogLookups++; }
+  }
+
+  function render(){
+    el("sim-phase").textContent = `${versions.filter(v=>!v.reclaimed).length} VERSION${versions.filter(v=>!v.reclaimed).length===1?"":"S"} LIVE`;
+    el("sim-t1").innerHTML = txnBox("T1"); wireTxnBox("sim-t1","T1");
+    el("sim-t2").innerHTML = txnBox("T2"); wireTxnBox("sim-t2","T2");
+    el("sim-t3").innerHTML = txnBox("T3"); wireTxnBox("sim-t3","T3");
+    el("sim-waitq").textContent = blockedQueue.length ? `⏳ waiting on a lock: ${blockedQueue.join(", ")}` : "";
+    renderChain();
+    renderClog();
+    renderViewerPicker();
+    renderTraceSection();
+    el("cnt-updates").textContent = cnt.updates;
+    el("cnt-checks").textContent = cnt.checks;
+    el("cnt-clog").textContent = cnt.clogLookups;
+  }
+
+  el("sc-vacuum").onclick = doVacuum;
+  el("sc-reset").onclick = doReset;
+
+  log("OK", "MVCC playground ready — one committed row version (xid 1) exists.");
+  doReset();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-05"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-04.html"><span>←</span><span><span class="cn-lbl">PREV · CH 04</span><span class="cn-ttl">Heap Storage: Segments, FSM, Visibility Map & TOAST</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html" selected>CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html">CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">05 / 21</span></div><a class="cn-btn" href="pg-06.html"><span><span class="cn-lbl">NEXT · CH 06</span><span class="cn-ttl">MVCC II: HOT Updates, Freezing & XID Wraparound</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

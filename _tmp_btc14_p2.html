@@ -1,0 +1,165 @@
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: a one-way refund channel via nSequence (2013)</h2>
+  <p>Derive it the way Satoshi's 2013 bitcointalk post and Mike Hearn's follow-up code did. Two parties, Alice
+  (payer) and Bob (payee), want Alice to pay Bob in small increments without a transaction per increment. Start
+  from primitives you already have from chapters 3 and 4: a 2-of-2 multisig output and the transaction's
+  <code>nSequence</code> field, which pre-SegWit was documented (if unreliably implemented) as a hint that a later
+  version of a transaction spending the same input could replace an earlier, not-yet-confirmed one in miners'
+  mempools.</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>spilman_channel.py — the 2013 construction, annotated</span></div>
+    <pre><span class="c"># 1. Alice funds a 2-of-2 multisig with 1.0 BTC. She does NOT</span>
+<span class="c">#    broadcast this until step 2 exists, to avoid being stuck.</span>
+funding_tx = <span class="f">multisig_output</span>(alice_pk, bob_pk, amount=<span class="n">1.0</span>)
+
+<span class="c"># 2. Before broadcasting funding_tx, Alice pre-signs a REFUND that</span>
+<span class="c">#    returns everything to her, timelocked far in the future (T).</span>
+<span class="c">#    This bounds her downside if Bob disappears: worst case, she</span>
+<span class="c">#    waits until T and reclaims all 1.0 BTC.</span>
+refund_tx = <span class="f">spend</span>(funding_tx, to=alice_pk, amount=<span class="n">1.0</span>, locktime=T)
+
+<span class="c"># 3. Now Alice broadcasts funding_tx. The channel is open.</span>
+
+<span class="c"># 4. Each time Alice wants to pay Bob some amount, she signs a NEW</span>
+<span class="c">#    commitment paying Bob more and refunding herself less, sets a</span>
+<span class="c">#    high nSequence, and hands the fully-signed tx to Bob directly</span>
+<span class="c">#    -- off the network, off-chain, no fee paid yet.</span>
+commit_1 = <span class="f">spend</span>(funding_tx, outs=[(bob_pk, <span class="n">0.1</span>), (alice_pk, <span class="n">0.9</span>)], nSequence=HIGH)
+commit_2 = <span class="f">spend</span>(funding_tx, outs=[(bob_pk, <span class="n">0.3</span>), (alice_pk, <span class="n">0.7</span>)], nSequence=HIGH+<span class="n">1</span>)
+<span class="c"># ... commit_N, whenever Alice wants, no on-chain footprint yet ...</span>
+
+<span class="c"># 5. Bob holds only the LATEST commitment he's been given. When he</span>
+<span class="c">#    wants to be paid, or T approaches, he broadcasts it.</span></pre>
+  </div>
+  <p>This is a genuine payment channel: after the single on-chain funding transaction, Alice and Bob can exchange
+  an arbitrary number of increasingly generous payments with <b>zero</b> additional on-chain transactions, and Bob
+  is protected because each new commitment he receives strictly increases his balance. It already demonstrates the
+  core mechanism this whole chapter builds on: <i>a signed-but-unbroadcast transaction is a valid, enforceable
+  claim the moment its predecessor confirms — broadcasting it is optional and can be deferred indefinitely.</i></p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">One direction, one relationship, and a replacement rule nobody enforces</h2>
+  <p>Three failures, in increasing order of fundamental-ness — the first two are engineering defects, the third is
+  structural and survives even a perfect implementation:</p>
+  <ul class="plain">
+    <li><b>nSequence replacement was never a consensus guarantee.</b> "Higher sequence number replaces lower" was a
+      mempool policy convention in reference software, not a rule enforced by proof of work. A miner under no
+      obligation to run that policy — or one who simply already has an earlier commitment in a block template —
+      can confirm commit_1 instead of commit_9, and once <i>any</i> valid spend of the funding output confirms, the
+      UTXO is gone; every other pre-signed commitment is now spending an already-spent input and is permanently
+      invalid. Bob has no recourse: the chain doesn't know he was owed more, because he was never given anything
+      that says so <i>except a transaction Alice can suppress by getting an earlier one mined first</i>, which she
+      is financially motivated to do near the end of the relationship.</li>
+    <li><b>It is strictly one-directional.</b> Every commitment must pay Bob <i>more</i> than the last (monotonic
+      by construction, or Bob would simply broadcast the more generous ancestor). There is no way to pay Alice back
+      without a second, independently funded channel running in the opposite direction — doubling the capital two
+      parties must lock up to transact bidirectionally, which for anything resembling a real commercial relationship
+      (a merchant refunding a customer, a market maker) is disqualifying.</li>
+    <li><b>The channel has a hard expiry, T, baked in at funding time.</b> Reaching T forces an on-chain close and
+      reopen to continue transacting — for a long-lived relationship this reintroduces exactly the per-relationship
+      on-chain cost the construction was built to amortize away, just at a lower frequency.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">QUANTIFY IT</div>
+    <p>Let <b>p</b> be the probability that some miner within the confirmation window includes an old, superseded
+    commitment instead of the newest one Bob holds — driven by mempool propagation gaps, miners running non-default
+    policy, or Alice paying an out-of-band side fee to a friendly pool to jump the queue. Bob's expected loss per
+    channel lifetime is <b>p × (final_balance − Bob's_confirmed_balance_if_cheated)</b>, and critically <b>p is not
+    under Bob's control</b> — he cannot inspect miners' mempool policies, only hope. A construction whose security
+    depends on unenforced, unobservable mempool convention is not a security property; chapter 11 will formalize
+    this same failure mode as <i>pinning</i>, and you'll see the identical shape reappear in §11 of this chapter
+    against the <i>fixed</i> version.</p>
+  </div>
+  <p>The fix for direction and expiry is comparatively easy — sign commitments both ways and let either party
+  extend the timeout. The fix for the replacement problem is where the real engineering is, and it requires
+  rethinking what a "commitment" is, not just how it's replaced.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION, EXAMINED</div>
+  <h2 class="sec">Attempt #2: symmetric, cooperatively-replaced commitments — and the cheat it invites</h2>
+  <p>Drop reliance on mempool policy entirely. Instead of many pre-signed transactions racing for a single spend of
+  the funding output, keep exactly <b>one live commitment transaction per party</b> at any moment, and make
+  updating the balance a cooperative act: to move from state N to state N+1, <i>both</i> parties sign a fresh
+  commitment transaction reflecting the new split, and both agree — verbally, by protocol convention — to discard
+  transaction N. Nothing about consensus enforces "discard"; it is a promise. Step through what that promise is
+  worth.</p>
+
+  <div class="widget deck" id="deckSymmetric">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Symmetric commitments: the promise and the exploit</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Notice what changed for the better: both directions are now representable (either party can be the one whose
+  balance increases in the next state), there's no expiry forcing periodic on-chain churn, and there is no
+  ambiguous mempool race — <i>any</i> of the fully-signed commitment transactions is unconditionally valid the
+  instant it's broadcast, by construction (both signatures are already on it). That last property is also exactly
+  the new problem: validity no longer depends on being first past the post, it depends on nothing at all except
+  having a copy. Every old commitment stays a live, spendable, fully-authorized transaction forever.</p>
+
+  <div class="callout warn">
+    <div class="co-t">THE INCENTIVE, MADE CONCRETE</div>
+    <p>Suppose Alice and Bob open a channel at 50/50, transact for months, and now sit at 10/90 in Bob's favor — 40
+    coins have net flowed to Bob. Alice still possesses a validly, mutually signed copy of the very first
+    commitment transaction, splitting the funds 50/50. Nothing on-chain distinguishes "the first state" from "the
+    current state" — both are equally well-formed, equally signed spends of the same funding outpoint. If Alice
+    broadcasts the old one and Bob isn't watching the chain at that exact moment, Alice recovers 40 coins she no
+    longer has any economic claim to, at the cost of one transaction fee. The cooperative-discard promise has
+    exactly the enforcement strength of an honor system between two people who opened this channel <i>because</i>
+    they didn't want to have to trust each other.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL FAILS</div>
+  <h2 class="sec">The requirement this forces: make the old state worse than broadcasting nothing</h2>
+  <p>You cannot prevent Alice from <i>holding</i> the old commitment — it is a fully signed, valid Bitcoin
+  transaction and nothing in cryptography lets you un-sign it. You also cannot prevent her from broadcasting it —
+  nodes will relay and mine any valid transaction. The only lever left is <b>economic</b>: make it so that if the
+  old state ever reaches the chain, the counterparty can respond within a window and take <i>the entire channel
+  balance</i>, not just their fair share. If broadcasting a revoked state has strictly negative expected value —
+  you might gain your old balance back for an instant, but you will almost certainly lose everything, including
+  funds that were legitimately yours — no rational party ever does it. This is the same move chapter 8 studied
+  in mining: raise the cost of the attack above any plausible gain, rather than trying to make the attack
+  impossible.</p>
+  <p>Deriving the mechanism from that requirement, three things must be simultaneously true of every commitment
+  transaction:</p>
+  <ul class="plain">
+    <li><b>Asymmetry.</b> The two parties cannot hold identical copies of "the current state," because a penalty
+      needs a party to react to a broadcast — if Alice's and Bob's copies were byte-identical, Bob's copy is
+      exactly what got broadcast and there is no separate "Bob's honest output" to protect. Each party must instead
+      hold a different transaction that pays out to the <i>same</i> two people but delays the broadcaster's own
+      payout, giving the other side a reaction window.</li>
+    <li><b>A revocable delay on your own output.</b> Whoever broadcasts a commitment must wait — via a relative
+      timelock, chapter 8's <code>OP_CHECKSEQUENCEVERIFY</code>, typically hundreds of blocks — before spending
+      their own balance out of it. That delay is the reaction window.</li>
+    <li><b>A trapdoor that opens only for old states.</b> When the parties move to a new state, they must exchange
+      something — a secret — that specifically unlocks an alternate spending path on the state they just agreed to
+      abandon, and only that state. Whoever receives the secret for a given old state can, if that state is ever
+      broadcast, claim the entire balance immediately, bypassing the delay entirely.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE COST OF THIS FIX, HONESTLY STATED</div>
+    <p>This is not free. Every commitment now needs a delayed output with a penalty branch (more script, more
+    on-chain bytes if it's ever force-closed); every party must retain every revocation secret it's ever received,
+    for the life of the channel, or it cannot punish a cheat on an old state — a channel that has updated 100,000
+    times naively needs 100,000 stored 32-byte secrets; and — the sharpest operational cost — <b>you must be online
+    and watching the chain</b> to see a cheat and react within the delay window, or the penalty right expires
+    unused and the broadcaster keeps their unearned balance. Sections 8 and 11 derive the exact data structure that
+    fixes the storage cost (a shachain, O(log n) not O(n)) and the exact service (a watchtower) that fixes the
+    online-availability cost. Neither cost disappears; each is engineered down to something tolerable.</p>
+  </div>
+</section>

@@ -1,0 +1,2767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMQ-12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled — RabbitMQ Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#ff9f43; --pg-dim:rgba(255,159,67,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa; --amber:#ffd166;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(255,159,67,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(255,159,67,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(255,159,67,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(255,159,67,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini (crash deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(255,159,67,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(255,159,67,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR (actor-playground shape, reused for small widgets) ---------- */
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:420px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  .snode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:7px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .25s;cursor:default;position:relative;display:inline-block}
+  .snode .st{display:block;font-size:9px;color:var(--dim)}
+  .snode.pm{border-color:var(--pg);color:var(--pg)}
+  .snode.pm.dead{border-color:var(--bad);color:var(--bad);opacity:.6}
+  .snode.crash{border-color:var(--bad);background:rgba(242,92,84,.15);color:var(--bad);animation:shake .35s}
+  .snode.new{border-color:var(--ok);color:var(--ok)}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- rmq-12 specific additions: full-broker console + trie viz ---------- */
+  .console-wrap{display:grid;grid-template-columns:1.1fr 1fr;gap:0;min-height:600px}
+  @media(max-width:900px){.console-wrap{grid-template-columns:1fr}}
+  .console-left{border-right:1px solid var(--border);display:flex;flex-direction:column}
+  @media(max-width:900px){.console-left{border-right:none;border-bottom:1px solid var(--border)}}
+  .console-out{background:#05070b;font-family:var(--mono);font-size:11.5px;line-height:1.7;padding:12px 15px;
+    height:320px;overflow-y:auto;border-bottom:1px solid var(--border)}
+  .console-out div{white-space:pre-wrap;word-break:break-word;margin-bottom:2px}
+  .console-out .c-in{color:var(--pg)} .console-out .c-out{color:#c6cddb} .console-out .c-err{color:var(--bad)} .console-out .c-warn{color:var(--warn)} .console-out .c-ok{color:var(--ok)}
+  .console-input-row{display:flex;gap:8px;padding:10px 12px;align-items:center}
+  .console-input-row input{flex:1;background:var(--bg-2);border:1px solid var(--border-hi);color:var(--text);
+    border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:12px}
+  .console-examples{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px;border-top:1px solid var(--border)}
+  .console-right{display:flex;flex-direction:column}
+  .cr-tabs{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--border)}
+  .cr-panel{padding:12px 15px;min-height:490px;overflow:auto;font-size:12.5px}
+  .tri-tab{border:1px solid var(--border-hi);background:var(--panel-2);color:var(--muted);border-radius:8px;
+    padding:6px 12px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s}
+  .tri-tab:hover{border-color:var(--pg);color:var(--text)}
+  .tri-tab.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+  .trie{font-family:var(--mono);font-size:12px;line-height:1.9}
+  .trie-node{padding-left:16px;border-left:1px dashed var(--border-hi);margin-left:5px}
+  .trie-tok{color:var(--muted)} .trie-tok.star{color:var(--warn)} .trie-tok.hash{color:var(--purple)}
+  .trie-q{color:var(--ok);font-size:10.5px;margin-left:6px}
+  .qcard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:10px 13px;margin-bottom:8px;font-family:var(--mono);font-size:11.5px}
+  .qcard .qc-name{color:var(--pg);font-weight:700}
+  .taglist{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+  .tag{border:1px solid var(--border-hi);background:var(--bg-2);border-radius:6px;padding:2px 7px;font-size:10.5px;color:var(--muted)}
+  .tag.unacked{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-rabbitmq.html">← RabbitMQ Internals</a>
+  <span class="crumb">RABBITMQ INTERNALS · <b>CH 12 / 12</b> · CAPSTONE</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Deriving the Architecture</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Frame Codec</a>
+  <a href="#s9"><span class="n">09</span>Actor Runtime</a>
+  <a href="#s10"><span class="n">10</span>Exchanges &amp; Topic Trie</a>
+  <a href="#s11"><span class="n">11</span>Queues, Acks &amp; Prefetch</a>
+  <a href="#s12"><span class="n">12</span>Credit, DLX &amp; TTL</a>
+  <a href="#s13"><span class="n">13</span>Kafka vs RabbitMQ</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Broker Sandbox</a>
+  <a href="#s16"><span class="n">✓</span>Course Complete</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 12 · CAPSTONE</div>
+  <h1>Build a Mini Broker.<br><span class="grad">Then settle Kafka vs RabbitMQ.</span></h1>
+  <p class="lead">Eleven chapters gave you the pieces: AMQP framing, the Erlang actor model, exchange routing,
+  the queue process, ack tracking and credit flow, quorum queues, streams, dead lettering, clustering, and
+  recovery. This chapter builds six of those pieces into one small but genuinely working broker — real
+  JavaScript, running in this page, that actually serializes a publish into frames and parses them back, actually
+  routes through a real trie, actually tracks unacked deliveries per channel, actually blocks a publisher when
+  credit runs out, and actually dead-letters a poison message with a real <code>x-death</code> header. Then, with
+  that machinery fresh in your hands, we do the thing every senior engineer eventually gets asked to do in a
+  design review: give the definitive, even-handed answer to "Kafka or RabbitMQ?" — derived from the internals,
+  not from a vibe.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will build</b>A frame codec, an actor runtime, a topic-trie router, queue actors with ack tracking, credit-based flow control, and DLX/TTL.</div>
+    <div class="obj"><b>You will run</b>Real declare/bind/publish/consume/ack/nack commands against your own broker, live, with every panel wired to real state.</div>
+    <div class="obj"><b>You will prove</b>That killing a channel genuinely requeues messages, that a poison message genuinely reaches a DLQ with an x-death trail, and that credit exhaustion genuinely blocks a publisher.</div>
+    <div class="obj"><b>You will settle</b>Push vs pull, routing vs partitioning, and broker-state vs consumer-state — with decision rules, not a verdict.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">You understand every piece. Can you assemble the whole?</h2>
+  <p class="lead">Chapters 1 through 11 each isolated one subsystem — the actor model, the frame protocol,
+  exchange routing, the queue process, ack tracking and flow control, quorum replication, streams, dead lettering,
+  clustering, and disk recovery. That isolation was pedagogically necessary and, in a specific sense, a lie: none
+  of those subsystems does anything alone. An exchange means nothing without a queue to route into. A queue's
+  prefetch limit means nothing without a channel actor tracking delivery tags to ack against. Credit-based flow
+  control means nothing without an actor chain — reader, channel, queue — with real mailboxes to apply backpressure
+  to. This chapter's job is to stop isolating and start assembling: build a small but genuinely working broker and
+  prove, by running real commands against it, that you understand not just each piece but how they depend on each
+  other.</p>
+  <p>"Working" means exactly four properties, chosen because they are the four properties that actually
+  distinguish a message broker from a shared array with a lock on it:</p>
+  <ul class="plain">
+    <li><b>Genuine wire framing.</b> A published message must actually be encoded into method/header/body frames
+      and actually parsed back from those bytes — not an object passed by reference pretending to have been
+      "sent."</li>
+    <li><b>Genuine process isolation.</b> Connections, channels, and queues must be separate actors with separate
+      mailboxes, so that killing one doesn't corrupt or block the others — the same guarantee chapter 1 built the
+      whole course's foundation on.</li>
+    <li><b>Genuine delivery accounting.</b> Every delivered-but-unacked message must be tracked by delivery tag,
+      requeued on channel death, and capped by prefetch — not "eventually consistent," but exactly right at every
+      step.</li>
+    <li><b>Genuine backpressure.</b> When a queue can't keep up, the channel publishing into it must actually
+      block — not silently buffer forever until the process falls over.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE RULE FOR THIS CHAPTER</div>
+    <p>Every component in §8–§12 is REAL, RUNNABLE JavaScript — the same functions the console in §15 calls when
+    you type a command. Nothing here is a diagram pretending to be code. Where the toy simplifies something away
+    from real RabbitMQ, that simplification is named explicitly, so you leave this chapter knowing not just what a
+    mini-broker looks like, but exactly how much harder the real thing is, and why.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Building a toy broker is a legitimate lineage, not a gimmick</h2>
+  <p>"Build your own message queue" has real intellectual history behind it, and it explains why this chapter's
+  approach works. Click through.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the lineage of small, real brokers</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl12-track"></div></div>
+    <div class="tl-detail" id="tl12-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY MINIATURIZING IS THE CORRECT FINAL MOVE, NOT A TOY FOR ITS OWN SAKE</div>
+    <p>Every mechanism in this course was originally a small idea before it was hardened into production
+    RabbitMQ — AMQP itself was first proven with reference implementations far smaller than any broker you'd run
+    today. Reading about a topic trie's backtracking is necessary but not sufficient; writing the dozen lines that
+    actually walk a "#" node across every possible split point, and watching it correctly match "stock.usd.nyse"
+    against four competing bindings, converts "I have read about this" into "I could not have gotten this wrong
+    and not noticed." That conversion is this chapter's entire purpose.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: a shared array and a function call</h2>
+  <p>The honest starting point, the way every naive solution in this course has been honest: if you needed
+  "publish/subscribe" inside one JavaScript process with no other constraints, you'd reach for this.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">js</span><span>naive-broker.js — the strawman, annotated</span></div>
+    <pre><span class="k">const</span> queues = {};                      <span class="c">// name -> plain array of messages</span>
+<span class="k">const</span> subscribers = {};                 <span class="c">// name -> array of callback functions</span>
+
+<span class="k">function</span> <span class="f">publish</span>(queueName, body) {
+  (subscribers[queueName] || []).forEach(cb => cb(body));  <span class="c">// call every callback, right now, in-line</span>
+  <span class="c">// no framing, no routing, no ack — if the callback throws, the publisher's</span>
+  <span class="c">// own call stack unwinds too. There is no "broker" here, only a phone book.</span>
+}
+<span class="k">function</span> <span class="f">subscribe</span>(queueName, cb) {
+  (subscribers[queueName] = subscribers[queueName] || []).push(cb);
+}</pre>
+  </div>
+  <p>This is not stupid — it is exactly right for an in-process event bus, and it is, not coincidentally, the
+  first draft of nearly every "let's build a message queue" tutorial. The question, as always, is what it costs
+  once you demand the four properties from §1.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Every property from §1 fails, and fails in a specific, informative way</h2>
+  <ul class="plain">
+    <li><b>No framing.</b> The "message" is a live JS reference, handed directly from publisher to subscriber
+      inside one call stack. There is no byte representation at all — this only works because everything lives in
+      one process; it says nothing about how two separate processes (or a real client and a real broker) would
+      ever exchange the same information.</li>
+    <li><b>No isolation.</b> Every subscriber callback runs synchronously, on the publisher's own stack, in the
+      publisher's own turn. A slow or throwing subscriber corrupts the publish call itself — there is no
+      mailbox, no separate actor, nothing standing between one queue's problem and every other queue's health.</li>
+    <li><b>No delivery accounting.</b> A callback either ran or didn't; there is no delivery tag, no unacked set,
+      no way to say "this specific message, to this specific consumer, is still outstanding" — so there's no way
+      to redeliver it if that consumer disappears mid-processing.</li>
+    <li><b>No backpressure.</b> <code>publish()</code> never blocks. A producer publishing faster than a
+      subscriber can keep up simply grows that subscriber's implicit backlog — inside its own closures, invisibly —
+      until the process runs out of memory. There is no signal anywhere that says "slow down."</li>
+    <li><b>No routing flexibility.</b> A publisher must already know the exact queue name it's calling into —
+      there's no indirection layer where a NEW subscriber could start receiving a copy of existing traffic without
+      the publisher's code changing at all.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE PATTERN, AGAIN</div>
+    <p>This is the same shape of failure every naive solution in this course has had: correctness is fine at toy
+    scale, and every missing property maps to exactly one component this chapter is about to build. That mapping
+    IS the roadmap for §5 — each elimination below adds back exactly the piece the previous attempt was missing.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three intermediate designs, each deriving the next missing piece</h2>
+  <p>Step through the derivation. Each candidate fixes the previous one's worst problem and immediately reveals
+  the next one — this IS how you arrive at the final architecture, not a list handed down from above.</p>
+
+  <div class="widget deck" id="deckDerive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Deriving the architecture, one elimination at a time</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>Candidate A: separate objects per queue, still direct function calls</h3>
+  <p>Give every queue its own object with its own array and its own subscriber list, and let a producer address a
+  queue by name instead of holding a callback directly. This genuinely fixes the "publisher must already know the
+  callback" coupling — but everything still runs on the publisher's own call stack, synchronously. There is still
+  no framing (this is one process, still), and a slow consumer's work still happens inline with the publish that
+  triggered it. <b>Rejected: this only fixes addressing, not isolation.</b></p>
+
+  <h3>Candidate B: queues as actors, connected by direct in-memory sends — but no encoding</h3>
+  <p>Give each queue its own mailbox and its own turn to run, decoupling a slow consumer's work from the
+  publisher's call stack — genuinely actor-shaped, and genuinely chapter 1's fix. But a "publish" is still a raw
+  JS object handed across an in-memory channel; there's no byte representation at all, so this design could never
+  actually talk to a real client over a real socket, and there is still no way to express "this exchange type
+  routes by routing key" without hardcoding it into the queue's own logic. <b>Correct instinct on isolation,
+  missing framing AND routing — motivating the frame codec and exchange trie directly.</b></p>
+
+  <h3>Candidate C: actors + framing + routing, but delivery is fire-and-forget</h3>
+  <p>Add the frame codec (encode/decode a real publish) and a real exchange/binding layer (direct, fanout, topic)
+  in front of the queue actors. This fixes framing and routing correctly — but delivery to a consumer is still
+  "send it and hope": there is no delivery tag, no unacked tracking, no prefetch cap, and a queue publishing into
+  a slow, unbounded consumer can still blow up memory with no signal to stop. <b>Correct wire model and routing,
+  no accounting or backpressure — motivating queue-side ack tracking, prefetch, and credit flow directly.</b></p>
+
+  <div class="callout ok">
+    <div class="co-t">WHAT'S STILL MISSING AFTER ALL THREE</div>
+    <p>Even with actors, framing, and routing, there is still no way to track which messages are outstanding to
+    which consumer, no cap on how many can be outstanding at once, no signal to block a publisher when a queue
+    can't keep up, and no way to route a poison message somewhere useful instead of losing it or looping on it
+    forever. §6 names these costs explicitly; §7 assembles the final six-piece architecture that answers all of
+    them.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL HURTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">Actors, framing, and routing are necessary — and still not sufficient</h2>
+  <ul class="plain">
+    <li><b>No delivery accounting.</b> Even with a real queue actor delivering real framed messages through real
+      routing, there's still no answer to "did the consumer that received this ever finish it?" A crashed
+      consumer's in-flight messages simply vanish — there's no unacked set to requeue from. This motivates ack
+      tracking with delivery tags, per channel, exactly as chapters 4 and 5 derive.</li>
+    <li><b>No cap on in-flight work.</b> Without a prefetch limit, the queue will happily push its entire backlog
+      at a single slow consumer, defeating the entire point of having a queue in the first place — a queue is
+      supposed to let a producer run ahead of a consumer, not hand a consumer more than it can hold. This motivates
+      prefetch as a per-consumer credit.</li>
+    <li><b>No upstream backpressure.</b> Even with prefetch protecting consumers, nothing protects the QUEUE
+      itself from a publisher that's simply publishing faster than the queue's own actor can process its mailbox —
+      unbounded mailbox growth is just unbounded memory growth with extra steps. This motivates credit-based flow
+      control between the channel and the queue, independent of consumer-side prefetch.</li>
+    <li><b>No answer for poison messages.</b> A message that a consumer can never successfully process (malformed,
+      or triggering a bug) will simply loop forever between delivery and rejection unless there's somewhere else
+      for it to go. This motivates dead lettering with an <code>x-death</code> trail, plus TTL as the same
+      mechanism applied to "this message's usefulness has an expiry.</b></p></li>
+  </ul>
+  <p>Closing these four gaps — ack tracking, prefetch, credit flow, and dead lettering/TTL — on top of the frame
+  codec, the actor runtime, and the trie-based router, is the rest of this chapter.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">Six components, one dependency graph</h2>
+  <p>Click any component to see its role, which chapter taught it, and — critically — what it depends on. The
+  dependency order below is also the build order in §8–§12, and it is not arbitrary: ack tracking cannot be built
+  before the actor runtime exists to give channels and queues separate mailboxes; credit flow cannot block a
+  publisher before there is a concrete channel→queue hop to gate.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Broker architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">WIRE &amp; RUNTIME LAYER</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="frame">Frame codec</div>
+          <div class="acard" data-p="actor">Actor runtime</div>
+        </div>
+        <div class="arch-row-label">ROUTING &amp; DELIVERY LAYER</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="exch">Exchanges + topic trie</div>
+          <div class="acard" data-p="queue">Queue actors + acks</div>
+        </div>
+        <div class="arch-row-label">FLOW CONTROL &amp; RELIABILITY LAYER</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="credit">Credit flow control</div>
+          <div class="acard" data-p="dlx">Dead lettering + TTL</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch12-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT THIS EXPLORER WILL NOT LET YOU FORGET</div>
+    <p>Every one of these six boxes is a real RabbitMQ mechanism in miniature, and every one gets an explicit "what
+    does the toy skip, and why can't the real broker skip it" callout in §8–§12. This chapter is not trying to
+    convince you the real thing is simple — it's trying to make the complexity of the real thing LEGIBLE, by
+    showing you exactly which corner was cut and what real corner-case it exists to handle.</p>
+  </div>
+</section>
+
+<!-- ================= S8 FRAME CODEC ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · COMPONENT 1 — chapter 2 in miniature</div>
+  <h2 class="sec">The frame codec: method, header, and body — genuinely on the wire</h2>
+  <p>Every AMQP 0-9-1 frame shares one envelope: a one-byte <b>type</b> (method / header / body / heartbeat), a
+  two-byte <b>channel</b> number (so many logical channels multiplex over one TCP connection), a four-byte
+  <b>payload size</b>, the payload itself, and a fixed trailing octet, <code>0xCE</code>, the frame-end marker
+  real RabbitMQ uses to detect a corrupt or torn frame before trusting its contents. A <code>Basic.Publish</code>
+  is not one frame — it is a <b>method frame</b> (exchange + routing key), a <b>content header frame</b> (total
+  body size + properties, so the receiver can pre-size a buffer), and one or more <b>body frames</b>, each
+  clamped to the connection's negotiated <code>frame_max</code>. That clamp is the whole reason large messages
+  don't require an unbounded single allocation: a 10&nbsp;MB body over a 128&nbsp;KB <code>frame_max</code> is
+  genuinely ~80 separate body frames, reassembled by the receiver as they arrive.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Encode a publish, then genuinely parse it back</span><span class="w-sub">SLIDER + BUTTON</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>body size (bytes)</label><input type="range" id="fc-body" min="8" max="4000" value="300" step="8"><span class="val" id="fc-body-val">300 B</span></div>
+      <div class="slider-row"><label>frame_max (bytes)</label><input type="range" id="fc-fmax" min="24" max="1024" value="128" step="8"><span class="val" id="fc-fmax-val">128 B</span></div>
+      <div class="toggle-row"><button class="btn primary" id="fc-encode">encode + decode</button></div>
+      <div id="fc-out" style="font-family:var(--mono);font-size:11.5px;line-height:1.8;margin-top:10px"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="fc-note"></p>
+    </div>
+  </div>
+
+  <div class="widget deck" id="deckFrame">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The actual encodePublish/decodePublish source, line by line</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT REAL RABBITMQ DOES THAT THIS TOY SKIPS</div>
+    <p>Real AMQP 0-9-1 encodes method fields and properties with a strict binary type table — short-string,
+    long-string, field-table, bit-packed booleans — specified octet-by-octet in the protocol spec; our method and
+    header payloads JSON-encode their fields for readability, which is not wire-compatible with anything but
+    itself. Real property flags are a 16-bit bitmask marking exactly which of 14 possible Basic properties are
+    present, so unset properties cost zero bytes; ours always serializes whatever object you give it. And real
+    RabbitMQ negotiates <code>frame_max</code> per connection during the AMQP handshake (<code>Connection.Tune</code>),
+    with a hard protocol floor of 4096 bytes — our slider happily goes below that floor purely so you can watch
+    chunking happen in three frames instead of scrolling through fifty.</p>
+  </div>
+</section>
+
+<!-- ================= S9 ACTOR RUNTIME ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · COMPONENT 2 — chapter 1 in miniature</div>
+  <h2 class="sec">The actor runtime: mailboxes, one message at a time, and a supervisor</h2>
+  <p>Every connection, channel, and queue in this chapter's broker is a genuinely separate actor: its own mailbox
+  (a plain array), its own private state object, and a scheduler that hands it exactly one message per turn. There
+  is no shared mutable object between a channel and a queue — the only way they interact is by pushing a message
+  into each other's mailbox, exactly mirroring the BEAM's own model from chapter 1. When an actor's handler throws
+  — simulating a crash — the runtime marks it dead and, if it was spawned under a supervisor, sends that
+  supervisor a <code>_DOWN</code> message with the reason. Our supervisor uses exactly <code>one_for_one</code>:
+  only the crashed queue is restarted; every other actor is completely unaffected, because there is no shared
+  state for the crash to have corrupted.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Spawn a queue actor, crash it, watch the supervisor restart it</span><span class="w-sub">BUTTONS</span></div>
+    <div class="w-body">
+      <div class="toggle-row">
+        <button class="btn primary" id="ar-spawn">spawn queue actor</button>
+        <button class="btn" id="ar-msg">send it a message</button>
+        <button class="btn danger" id="ar-crash">crash it</button>
+        <button class="btn" id="ar-reset">reset</button>
+      </div>
+      <div id="ar-tree" style="margin-top:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="ar-note"></p>
+    </div>
+  </div>
+
+  <div class="widget deck" id="deckActor">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The actual ActorRuntime.step(), line by line</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT REAL RABBITMQ DOES THAT THIS TOY SKIPS</div>
+    <p>Real BEAM processes are genuinely preempted by <b>reduction counting</b> — the scheduler forcibly rotates a
+    process out after roughly 2,000 reductions regardless of whether it would naturally yield, and dozens of
+    scheduler threads run thousands of processes truly in parallel across cores. Our runtime is cooperative and
+    single-threaded: one actor fully finishes handling one message before any other actor gets a turn, and our
+    public broker methods explicitly drain the whole runnable queue to quiescence before returning, so results are
+    deterministic for the console and the smoke tests. That determinism is a simplification chosen for
+    teachability — real concurrent delivery ordering across many simultaneously-running queues is exactly the kind
+    of subtlety that makes production RabbitMQ debugging its own skill.</p>
+  </div>
+</section>
+
+<!-- ================= S10 EXCHANGES + TRIE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · COMPONENT 3 — chapter 3 in miniature</div>
+  <h2 class="sec">Exchanges: direct and fanout are maps; topic is a real trie</h2>
+  <p>A <b>direct</b> exchange is nothing more than a <code>Map</code> from an exact routing key to a set of bound
+  queues — an O(1) lookup. A <b>fanout</b> exchange is a single set of every bound queue, routing key ignored
+  entirely. The interesting one is <b>topic</b>: a binding pattern like <code>stock.#</code> or
+  <code>*.usd.*</code> is compiled into a real trie, one node per dot-separated word, with two special
+  children — <code>star</code> for <code>*</code> (matches exactly one word) and <code>hash</code> for
+  <code>#</code> (matches zero or more words). Matching a routing key walks the trie recursively; a <code>#</code>
+  node requires genuine backtracking, because "zero or more words" means trying every possible split point between
+  where the <code>#</code> starts and the end of the routing key, not just greedily consuming everything.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Build bindings, route a key, watch the trie decide</span><span class="w-sub">TYPE + BUTTON</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>binding pattern</label><input id="tx-pattern" type="text" value="stock.#" style="flex:1;background:var(--bg-2);border:1px solid var(--border-hi);color:var(--text);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12px"><button class="btn primary" id="tx-add" style="flex:0 0 auto">bind to new queue</button></div>
+      <div class="slider-row"><label>routing key to test</label><input id="tx-key" type="text" value="stock.usd.nyse" style="flex:1;background:var(--bg-2);border:1px solid var(--border-hi);color:var(--text);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12px"><button class="btn good" id="tx-test" style="flex:0 0 auto">route it</button></div>
+      <div class="toggle-row"><button class="btn" id="tx-reset">reset trie</button></div>
+      <div id="tx-tree" class="trie" style="margin-top:10px"></div>
+      <div id="tx-result" style="font-family:var(--mono);font-size:12px;margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div class="widget deck" id="deckTrie">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">TopicTrie.match(), the backtracking, line by line</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT REAL RABBITMQ DOES THAT THIS TOY SKIPS</div>
+    <p>Real <code>rabbit_exchange_type_topic</code> stores its binding trie in <b>ETS</b> tables shared across
+    processes on a node, with reference counting so identical binding fragments across many bindings share
+    storage, and it participates in cluster-wide binding replication via Mnesia/Khepri — a distributed structure,
+    not a single in-process object. Our <code>TopicTrie</code> is a plain object graph that exists only for the
+    lifetime of one broker instance in one tab. Real RabbitMQ also supports the <b>headers exchange</b> (routing
+    by matching arbitrary header key/value pairs with <code>x-match: all/any</code> semantics) which this toy
+    omits entirely, since the capstone's routing story is deliberately limited to direct, fanout, and topic.</p>
+  </div>
+</section>
+
+<!-- ================= S11 QUEUE ACTORS + ACKS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · COMPONENT 4 — chapters 4 &amp; 5 in miniature</div>
+  <h2 class="sec">Queue actors: per-channel unacked sets, prefetch, and requeue-on-death</h2>
+  <p>Each queue actor owns a plain message list and a <code>Map</code> from consumer (channel id) to
+  <code>{ prefetch, outstanding[] }</code>. On delivery, the queue assigns a monotonically increasing
+  <b>delivery tag</b>, moves the message into that consumer's <code>outstanding</code> array, and — critically —
+  only keeps delivering to that consumer while <code>outstanding.length &lt; prefetch</code>. The delivery tag and
+  its <code>{queue, msgId}</code> mapping live on the <b>channel actor</b>, not the queue — exactly real
+  RabbitMQ's split, where <code>rabbit_channel</code> holds the unacked map and the queue only tracks how many are
+  outstanding per consumer. An <code>ack(tag)</code> looks the tag up on the channel, tells the right queue to
+  drop it from that consumer's outstanding list, and immediately attempts to deliver the next message if one is
+  waiting. A <code>nack(tag, requeue)</code> either pushes the message back onto the front of the queue or hands
+  it to dead lettering (§12). Kill a channel and every queue holding its outstanding messages receives a
+  <code>CHANNEL_DOWN</code>, unshifts those exact messages back onto the front of its list in their original
+  order, and deletes the dead consumer — the requeue chapter 5 promises, genuinely executed.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Publish, consume with a prefetch cap, ack/nack — watch unacked move</span><span class="w-sub">SLIDER + BUTTONS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>prefetch</label><input type="range" id="qk-prefetch" min="1" max="6" value="2" step="1"><span class="val" id="qk-prefetch-val">2</span></div>
+      <div class="toggle-row">
+        <button class="btn primary" id="qk-publish">publish one message</button>
+        <button class="btn good" id="qk-consume">(re)consume with this prefetch</button>
+        <button class="btn" id="qk-ack">ack oldest unacked</button>
+        <button class="btn warn" id="qk-nack-requeue">nack oldest (requeue)</button>
+        <button class="btn danger" id="qk-nack-drop">nack oldest (drop)</button>
+        <button class="btn" id="qk-reset">reset demo</button>
+      </div>
+      <div id="qk-state" style="margin-top:10px"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="qk-note"></p>
+    </div>
+  </div>
+
+  <div class="widget deck" id="deckQueue">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">attemptDeliver() and CHANNEL_DOWN, line by line</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT REAL RABBITMQ DOES THAT THIS TOY SKIPS</div>
+    <p>Real classic queues page messages between memory and disk under pressure (chapter 4's
+    <code>rabbit_variable_queue</code>) and persist the queue index separately from the message store so a crash
+    doesn't lose acknowledgement state; our queue actor is entirely in-memory and loses everything if its actor
+    crashes (§12 and §15 make this loss visible on purpose). Real publisher confirms are asynchronous and batched —
+    a broker can confirm many messages with a single multi-ack frame once they're all safely on disk (or
+    replicated, for quorum queues) — while our confirm flag simply resolves synchronously the moment a message is
+    routed and enqueued, since there is no replication delay to model in one JS process. Real delivery tags are
+    scoped per channel and reset to 1 on each new channel; ours are globally unique across the whole broker, purely
+    so the console's <code>ack &lt;tag&gt;</code> command doesn't need a channel argument.</p>
+  </div>
+</section>
+
+<!-- ================= S12 CREDIT FLOW + DLX/TTL ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · COMPONENTS 5 &amp; 6 — chapters 9 and 8 in miniature</div>
+  <h2 class="sec">Credit flow control, and dead lettering with head-of-queue TTL</h2>
+
+  <h3>Component 5: credit-based flow control</h3>
+  <p>Prefetch (§11) protects a <i>consumer</i> from being handed more than it can hold. Nothing so far protects
+  the <i>queue actor itself</i> from a publisher that's simply publishing faster than the queue's mailbox can be
+  drained — this is a completely different hop, upstream of delivery, and it needs its own mechanism. Real
+  RabbitMQ's internal <code>rabbit_flow</code> module solves this with a credit counter on every
+  reader→channel→queue hop: a fixed initial credit (our toy uses 20) is spent one unit per message sent; when it
+  hits zero, the sender is blocked from sending more on that hop. Credit is replenished only when the RECEIVER
+  reports it has processed a batch of work — our toy grants a lump sum back once the receiving actor has actually
+  handled <code>replenishBatch</code> (10) messages, not one-for-one, which is why credit doesn't visibly move
+  during smooth, fully-processed traffic: it only drains toward zero when messages are sent faster than they're
+  processed, exactly the condition credit flow exists to catch.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Flood the queue hop, watch credit deplete and block the publisher</span><span class="w-sub">BUTTONS</span></div>
+    <div class="w-body">
+      <div class="toggle-row">
+        <button class="btn danger" id="cf-burst">publish 5 without draining</button>
+        <button class="btn good" id="cf-drain">drain backlog (let the queue catch up)</button>
+        <button class="btn" id="cf-reset">reset demo</button>
+      </div>
+      <div class="meter" style="margin-top:12px">
+        <div class="m-l"><span>credit remaining, channel → queue</span><span id="cf-credit-num">20 / 20</span></div>
+        <div class="m-bar"><div class="m-fill" id="cf-meter" style="width:100%"></div></div>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="cf-note"></p>
+    </div>
+  </div>
+
+  <div class="widget deck" id="deckCredit">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">CreditFlow.trySend / markProcessed, line by line</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>Component 6: dead lettering and head-of-queue TTL</h3>
+  <p>A message is dead-lettered — routed to its queue's configured <code>x-dead-letter-exchange</code> — for
+  exactly three reasons: a consumer <code>nack</code>s it with <code>requeue=false</code>, it overflows a
+  <code>max-length</code> queue (drop-head policy), or it expires. Every hop appends an entry to the message's
+  <code>x-death</code> array — <code>{ queue, reason, exchange, "routing-keys", count, time }</code> — merging
+  into an existing entry's <code>count</code> if the same queue+reason combination has happened before, exactly
+  the trail real consumers use to distinguish "expired once" from "looped through this queue forty times."
+  TTL expiry is deliberately <b>lazy and head-only</b>: the queue only ever inspects <code>messages[0]</code>. This
+  is not a shortcut — it's the actual RabbitMQ behavior, and it produces the actual RabbitMQ gotcha: a message
+  with a short per-message TTL sitting behind an older message with a long TTL simply waits behind it, because the
+  queue never scans past the head to find "the next thing that's actually expired."</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Watch head-of-queue TTL expire messages into a DLQ</span><span class="w-sub">SLIDER + BUTTON</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>advance clock by (ms)</label><input type="range" id="dl-ms" min="10" max="200" value="50" step="10"><span class="val" id="dl-ms-val">50 ms</span></div>
+      <div class="toggle-row">
+        <button class="btn primary" id="dl-publish">publish one (ttl=100ms)</button>
+        <button class="btn warn" id="dl-advance">advance clock</button>
+        <button class="btn" id="dl-reset">reset demo</button>
+      </div>
+      <div id="dl-view" style="margin-top:10px"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="dl-note"></p>
+    </div>
+  </div>
+
+  <div class="widget deck" id="deckDlx">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">deadLetter() and checkExpiry(), line by line</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT REAL RABBITMQ DOES THAT THIS TOY SKIPS</div>
+    <p>Real <code>rabbit_flow</code> credit defaults are far larger (200 initial, replenished at roughly half
+    consumed) and apply uniformly to EVERY internal process hop on a node, not just one hop we chose to model;
+    real memory-alarm-triggered flow control (chapter 9/10's <code>vm_memory_high_watermark</code>) can additionally
+    block ALL publishers system-wide, a blunter and more global mechanism our per-hop credit doesn't model at all.
+    Real dead lettering also detects <b>cycles</b> — a DLX that eventually routes back to its own source queue —
+    and refuses to loop forever; our toy has no such guard, so a self-referential DLX configuration would recurse
+    until the call stack gives up, which is left as an instructive way to break it in §15.</p>
+  </div>
+</section>
+
+<!-- ================= S13 THE COMPARISON ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · THE DEFINITIVE COMPARISON</div>
+  <h2 class="sec">Kafka vs RabbitMQ, settled — derived from what you just built</h2>
+  <p class="lead">Every difference below is a direct consequence of an internals decision you just implemented or
+  saw in this course, not an opinion. Read each row as "because the broker is built this way, this is what
+  follows" — and use the decision rules, not a verdict, because both architectures are correct answers to
+  different questions.</p>
+
+  <h3>Push vs. pull delivery</h3>
+  <p>Your queue actor's <code>attemptDeliver()</code> (§11) actively <b>pushes</b> a message to a registered
+  consumer the instant one is available and the consumer has spare prefetch credit — the queue decides when and to
+  whom. Kafka inverts this entirely: a consumer <b>pulls</b> via <code>Fetch</code> requests at a cadence and batch
+  size it chooses; the broker never initiates delivery. Push gives RabbitMQ low latency and lets the BROKER enforce
+  fairness (prefetch, priority) across many small, heterogeneous consumers. Pull gives Kafka's consumer complete
+  control over pacing and batch size, which is exactly what lets a consumer replay from an arbitrary offset or fall
+  behind for hours without the broker doing anything different — there is no "unacked backlog" building up on the
+  broker side to manage, because the broker was never tracking per-consumer delivery state to begin with.</p>
+
+  <h3>Routing vs. partitioning as the distribution primitive</h3>
+  <p>Your topic trie (§10) answers "which of potentially many DIFFERENT queues should get a copy of this message,
+  based on its content" — a full many-to-many routing problem. Kafka's partitioner answers a narrower question:
+  "which ONE partition, of a FIXED topic, does this message's key hash to" — a distribution problem, not a routing
+  problem. This isn't a feature gap; it's what each system optimizes for. RabbitMQ's routing lets a single publish
+  reach an arbitrary, dynamically-changing set of queues with different bindings — genuine content-based fan-out.
+  Kafka's partitioning guarantees that all messages sharing a key land in the same partition, in order, which is
+  the property a consumer group's parallel workers actually need — routing flexibility would work against that
+  guarantee.</p>
+
+  <h3>Broker-held per-message state vs. consumer-held offsets</h3>
+  <p>This is the single difference every other row traces back to. Your queue actor's <code>outstanding</code>
+  array (§11) is broker-side, per-message, per-consumer state: the broker itself knows exactly which messages are
+  unacked, to whom, right now. Kafka's broker holds none of that — a consumer simply tracks "the last offset I've
+  processed" and periodically commits it back to the broker as a plain integer, log-per-partition. Broker-held
+  state is why RabbitMQ can give you per-message redelivery and fine-grained acknowledgement (§11) — but it's also
+  why a RabbitMQ queue can't cheaply "replay from three days ago": once a message is acked and removed, that
+  broker-side state is gone. Kafka's offset model is why a consumer group can replay any range of a partition on
+  demand (nothing was ever deleted on ack — there IS no per-message ack) — but it's also why Kafka has no concept
+  of "nack this one message and redeliver it now": the only lever is the consumer's own offset pointer.</p>
+
+  <h3>Destroy-on-consume vs. retention</h3>
+  <p>A direct consequence of the row above: your mini-broker's <code>ACK</code> handler physically removes the
+  message from the queue's list (§11) — consumption is destructive by design, because the message's only purpose
+  was to reach that one consumer. Kafka's log is retention-based: messages persist for a configured time or size
+  window (commonly days), utterly independent of whether any consumer has read them, because MULTIPLE consumer
+  groups may need to read the same message independently, at different paces, and none of them "consuming" it
+  should affect any other group's ability to read it later.</p>
+
+  <h3>Per-message acknowledgement/redelivery vs. offset commits</h3>
+  <p>Your <code>nack(tag, requeue)</code> (§11) operates on ONE message at a time, with genuine per-message
+  redelivery semantics and — when a DLX is configured (§12) — a genuine per-message escape hatch. Kafka commits an
+  offset, which implicitly says "everything up to and including this position is done" — there's no way to say
+  "skip just this one poison record and keep the rest," short of application-level bookkeeping (a separate
+  retry/dead-letter topic you build yourself). This is the most concrete operational difference the two ecosystems
+  argue about, and it's a direct, mechanical consequence of where the "what's been handled" state lives.</p>
+
+  <h3>Ordering guarantees and their scope</h3>
+  <p>Your queue actor delivers strictly FIFO from one message list (modulo explicit requeues) — ordering is
+  queue-wide, but only one queue actor processes it (see next row). Kafka's ordering guarantee is scoped to a
+  single partition: messages within a partition are strictly ordered, but there is NO ordering guarantee across
+  partitions of the same topic — which is precisely the tradeoff that lets Kafka parallelize a topic's throughput
+  across as many partitions as you configure, something a single ordered RabbitMQ queue cannot do without giving
+  up its single-queue ordering guarantee.</p>
+
+  <h3>The one-process-per-queue ceiling vs. partitions</h3>
+  <p>Chapter 4 and this chapter's actor runtime (§9) both make the same point concrete: one classic queue is one
+  Erlang process, and one Erlang process runs on one scheduler thread at a time — a single busy queue has a real
+  throughput ceiling regardless of how many CPU cores the node has. Kafka sidesteps this entirely at the topic
+  level: a topic's partitions are independent logs that can be written and read in full parallel across brokers
+  and consumer instances. This is why "just add more consumers" scales Kafka's per-topic throughput roughly
+  linearly with partition count, while scaling a single RabbitMQ queue's throughput means either accepting the
+  ceiling or explicitly sharding across multiple queues yourself (losing the single global order in the process).</p>
+
+  <h3>Operational complexity</h3>
+  <p>RabbitMQ's operational model — one broker (or cluster) holding live routing topology and per-message
+  delivery state — means the state you have to reason about during an incident is generally "what does this one
+  queue look like right now," a bounded, inspectable question your §15 sandbox mirrors directly. Kafka's
+  operational model trades that for a distributed log with partition leadership, in-sync replica sets, and
+  consumer-group rebalancing — genuinely more moving parts, but parts that scale horizontally by design rather
+  than by exception.</p>
+
+  <table class="cmp">
+    <tr><th>Dimension</th><th>RabbitMQ (this chapter's broker, faithfully)</th><th>Kafka</th></tr>
+    <tr><td>Delivery model</td><td>Push — broker decides when to send, gated by prefetch/credit</td><td>Pull — consumer decides pacing via Fetch requests</td></tr>
+    <tr><td>Distribution primitive</td><td>Content-based routing (exchange + bindings, incl. a real topic trie)</td><td>Key-hash partitioning across a fixed partition count</td></tr>
+    <tr><td>Where "handled" state lives</td><td>Broker-side, per message, per consumer (unacked map)</td><td>Consumer-side, one integer offset per partition</td></tr>
+    <tr><td>Post-consume behavior</td><td>Destructive — acked message is removed</td><td>Retained — independent of any consumer's progress</td></tr>
+    <tr><td>Redelivery granularity</td><td>Per message (ack/nack/DLX)</td><td>Per partition offset (coarser; app must build finer retry logic)</td></tr>
+    <tr><td>Ordering scope</td><td>Per queue (FIFO, whole queue)</td><td>Per partition only — no cross-partition order</td></tr>
+    <tr><td>Horizontal throughput scaling</td><td>Ceiling per queue (one actor); shard across queues yourself</td><td>Near-linear via partition count</td></tr>
+    <tr><td>Natural fit</td><td>Task queues, RPC-style workflows, complex routing, priority/TTL/DLX-driven pipelines</td><td>Event streams, replay/audit logs, high-throughput fan-out to many independent readers</td></tr>
+  </table>
+
+  <div class="callout ok">
+    <div class="co-t">DECISION RULES, NOT A VERDICT</div>
+    <p>Reach for <b>RabbitMQ</b> when you need per-message control — priority, TTL, complex content-based routing
+    to a dynamic set of consumers, or fine-grained retry/DLX semantics — and your per-queue throughput ceiling is
+    comfortably above your real load. Reach for <b>Kafka</b> when you need retention and replay (audit trails,
+    event sourcing, reprocessing history), many independent consumer groups reading the same stream at their own
+    pace, or throughput that must scale by adding partitions rather than re-architecting. Plenty of real systems
+    use both: Kafka as the durable event backbone, RabbitMQ fronting task queues that react to those events — a
+    combination that only makes sense once you can see, as you now can, exactly which internal decision each
+    broker is optimized around.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the whole assembly in your head</h2>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz12-progress">0 / 6</span></div>
+    <div id="quiz12"></div>
+    <div class="quiz-score" id="quiz12-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — killing a channel with unacked messages</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the steps in the order they actually execute inside this chapter's engine, from <code>kill-channel</code> to the messages being redelivered.</p>
+      <div id="order12-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order12-check">Check order</button>
+        <button class="btn" id="order12-reset">Reset</button>
+        <span id="order12-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · THE FULL BROKER SANDBOX</div>
+  <h2 class="sec">A real console, against the engine you just read</h2>
+  <p>Type commands into the console below. They execute against the ACTUAL <code>MiniRMQ</code> engine built in
+  §8–§12 — the same frame codec, actor runtime, topic trie, queue actors, credit-flow counters, and dead-letter
+  logic, with no separate "demo mode" underneath. Live panels on the right show the exchange/binding topology
+  (with the topic trie rendered), every queue's messages and per-channel unacked sets, credit counters on every
+  hop, and a wire-level frame log of every publish you've sent. Six one-click scenarios below the console run a
+  scripted sequence of the SAME commands for you, so you can watch a specific failure mode without typing it by
+  hand first.</p>
+
+  <div class="widget" id="sim12">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">MiniRMQ console</span><span class="w-sub" id="sim12-phase">READY</span></div>
+    <div class="console-wrap">
+      <div class="console-left">
+        <div class="console-out" id="c12-out"></div>
+        <div class="console-input-row">
+          <input id="c12-input" type="text" placeholder="e.g. declare-exchange ex1 topic" autocomplete="off" spellcheck="false">
+          <button class="btn primary" id="c12-run">Run</button>
+        </div>
+        <div class="console-examples" id="c12-examples"></div>
+      </div>
+      <div class="console-right">
+        <div class="cr-tabs" id="c12-tabs">
+          <button class="tri-tab on" data-t="topology">topology / trie</button>
+          <button class="tri-tab" data-t="queues">queues / unacked</button>
+          <button class="tri-tab" data-t="credit">credit</button>
+          <button class="tri-tab" data-t="wire">wire log</button>
+        </div>
+        <div class="cr-panel" id="c12-panel"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">COMMAND REFERENCE</div>
+    <p><code>declare-exchange name type</code> · <code>declare-queue name [--ttl N] [--dlx X] [--max-length N]</code> ·
+    <code>bind exchange queue pattern</code> · <code>publish exchange routing-key body [--persistent] [--confirm]</code> ·
+    <code>consume queue [--prefetch N]</code> (auto-assigns the next channel id) · <code>ack tag</code> ·
+    <code>nack tag [--requeue]</code> · <code>kill-channel N</code> · <code>kill-queue name</code> ·
+    <code>slow-consumer N</code> · <code>inspect</code>.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK / COURSE COMPLETE ================= -->
+<section id="s16">
+  <div class="arc">GATE · COURSE COMPLETION</div>
+  <h2 class="sec">Twelve chapters, three questions, and where to go next</h2>
+  <p>No forward references this time — there's no chapter 13. These three ask you to reflect on the whole course
+  through the broker you just built.</p>
+  <div id="qa12-check"></div>
+
+  <div class="callout deep">
+    <div class="co-t">WHERE TO GO NEXT</div>
+    <p><b>Read the real source.</b> RabbitMQ's server is open source at <code>github.com/rabbitmq/rabbitmq-server</code> —
+    start with <code>deps/rabbit/src/rabbit_channel.erl</code> (the real unacked map you just built a miniature
+    of), <code>rabbit_amqqueue_process.erl</code> and <code>rabbit_variable_queue.erl</code> (the real queue
+    actor), <code>rabbit_exchange_type_topic.erl</code> (the real trie, backed by ETS), and
+    <code>rabbit_reader.erl</code>/<code>rabbit_channel.erl</code>/<code>rabbit_flow.erl</code> for the real credit
+    chain this chapter's §12 miniaturized. Read them with this chapter's toy in your head — every simplification
+    callout in §8–§12 is a pointer at a real piece of complexity you now have the vocabulary to recognize on
+    sight.</p>
+    <p><b>Study Ra and osiris.</b> <code>github.com/rabbitmq/ra</code> is the real Raft implementation backing
+    quorum queues (chapter 6/7's subject) — genuinely readable Erlang, and a good next project for "build your own
+    Raft" once this chapter's actor runtime feels natural. <code>github.com/rabbitmq/osiris</code> is the
+    segment-log library behind streams (chapter 7's subject) — reading it side by side with this chapter's
+    dead-letter/TTL code is a good way to see how differently "log" and "queue" data structures are shaped once you
+    already understand queues from the inside.</p>
+    <p><b>Read the AMQP 0-9-1 specification itself.</b> It's short, precise, and — now that you've built a
+    (simplified) codec for it — genuinely readable rather than abstract; the official spec PDF and the
+    RabbitMQ-maintained AMQP 0-9-1 quick reference are both linked from rabbitmq.com's documentation.</p>
+    <p><b>Go deeper on Erlang/OTP.</b> "Learn You Some Erlang for Great Good," the official
+    <code>erlang.org</code> documentation for the <code>gen_server</code>/<code>supervisor</code> behaviours, and
+    the BEAM's own scheduler documentation are the natural next steps from this chapter's actor runtime — the real
+    thing has decades of engineering behind exactly the mailbox-and-supervision idea you just implemented in a few
+    dozen lines.</p>
+  </div>
+
+  <div class="lesson-end">
+    <h3>Course complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">Twelve chapters, from AMQP's 2003 banking-consortium origins to
+    a working miniature broker you built, ran, crashed, and dead-lettered yourself — and a settled, decision-rule
+    answer to the question every one of these systems eventually gets asked to defend against the other. You now
+    have both the internals vocabulary and the hands-on proof that every piece of it fits together.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn primary" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Course complete · Back to hub</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ===================== MINIRMQ ENGINE (pure, no DOM) ===================== */
+(function(global){
+
+/* ---------------------------------------------------------------------
+   1. FRAME CODEC (ch.2) — encode/decode method, header & body frames to
+   and from a real byte array, with frame_max chunking of the body.
+   --------------------------------------------------------------------- */
+const FRAME_METHOD = 1, FRAME_HEADER = 2, FRAME_BODY = 3, FRAME_HEARTBEAT = 8;
+const FRAME_END = 0xCE;
+const FRAME_OVERHEAD = 8; // type(1) + channel(2) + size(4) + frame-end(1)
+const CLASS_BASIC = 60, METHOD_BASIC_PUBLISH = 40;
+
+function encodeFrame(type, channel, payloadBytes){
+  const size = payloadBytes.length;
+  const buf = new Uint8Array(FRAME_OVERHEAD + size);
+  const dv = new DataView(buf.buffer);
+  dv.setUint8(0, type);
+  dv.setUint16(1, channel);
+  dv.setUint32(3, size);
+  buf.set(payloadBytes, 7);
+  dv.setUint8(7 + size, FRAME_END);
+  return buf;
+}
+function decodeFrame(bytes, offset){
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const type = dv.getUint8(offset);
+  const channel = dv.getUint16(offset + 1);
+  const size = dv.getUint32(offset + 3);
+  const payload = bytes.slice(offset + 7, offset + 7 + size);
+  const end = dv.getUint8(offset + 7 + size);
+  if (end !== FRAME_END) throw new Error("frame-end octet 0xCE missing/corrupt at offset " + offset);
+  return { type, channel, payload, nextOffset: offset + 7 + size + 1 };
+}
+function decodeAllFrames(bytes){
+  const frames = []; let off = 0;
+  while (off < bytes.length){
+    const f = decodeFrame(bytes, off);
+    frames.push(f);
+    off = f.nextOffset;
+  }
+  return frames;
+}
+function encodeMethodPayload(classId, methodId, fields){
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(fields));
+  const out = new Uint8Array(4 + jsonBytes.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint16(0, classId); dv.setUint16(2, methodId);
+  out.set(jsonBytes, 4);
+  return out;
+}
+function decodeMethodPayload(payload){
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const classId = dv.getUint16(0), methodId = dv.getUint16(2);
+  const fields = JSON.parse(new TextDecoder().decode(payload.slice(4)));
+  return { classId, methodId, fields };
+}
+function encodeHeaderPayload(classId, bodySize, properties){
+  const jsonBytes = new TextEncoder().encode(JSON.stringify({ bodySize, properties }));
+  const out = new Uint8Array(2 + jsonBytes.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint16(0, classId);
+  out.set(jsonBytes, 2);
+  return out;
+}
+function decodeHeaderPayload(payload){
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const classId = dv.getUint16(0);
+  const rest = JSON.parse(new TextDecoder().decode(payload.slice(2)));
+  return { classId, bodySize: rest.bodySize, properties: rest.properties };
+}
+function encodeBodyFrames(channel, bodyBytes, frameMax){
+  const maxChunk = frameMax - FRAME_OVERHEAD;
+  if (maxChunk <= 0) throw new Error("frame_max too small to carry any body payload");
+  const frames = [];
+  if (bodyBytes.length === 0){ frames.push(encodeFrame(FRAME_BODY, channel, bodyBytes)); return frames; }
+  for (let i = 0; i < bodyBytes.length; i += maxChunk)
+    frames.push(encodeFrame(FRAME_BODY, channel, bodyBytes.slice(i, i + maxChunk)));
+  return frames;
+}
+function encodePublish(channel, exchange, routingKey, bodyBytes, properties, frameMax){
+  const methodFrame = encodeFrame(FRAME_METHOD, channel, encodeMethodPayload(CLASS_BASIC, METHOD_BASIC_PUBLISH, { exchange, routingKey }));
+  const headerFrame = encodeFrame(FRAME_HEADER, channel, encodeHeaderPayload(CLASS_BASIC, bodyBytes.length, properties || {}));
+  const bodyFrames = encodeBodyFrames(channel, bodyBytes, frameMax || 4096);
+  const all = [methodFrame, headerFrame, ...bodyFrames];
+  const total = all.reduce((s,f)=>s+f.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0; for (const f of all){ out.set(f, off); off += f.length; }
+  return { bytes: out, frameCount: all.length };
+}
+function decodePublish(bytes){
+  const frames = decodeAllFrames(bytes);
+  const methodFrame = frames.find(f => f.type === FRAME_METHOD);
+  const headerFrame = frames.find(f => f.type === FRAME_HEADER);
+  const bodyFrames = frames.filter(f => f.type === FRAME_BODY);
+  const { fields } = decodeMethodPayload(methodFrame.payload);
+  const hdr = decodeHeaderPayload(headerFrame.payload);
+  let bodyLen = 0; for (const f of bodyFrames) bodyLen += f.payload.length;
+  const body = new Uint8Array(bodyLen);
+  let off = 0; for (const f of bodyFrames){ body.set(f.payload, off); off += f.payload.length; }
+  return { exchange: fields.exchange, routingKey: fields.routingKey, properties: hdr.properties, bodySize: hdr.bodySize, body, frameCount: frames.length };
+}
+
+/* ---------------------------------------------------------------------
+   2. ACTOR RUNTIME (ch.1) — a cooperative scheduler: mailboxes, one
+   message handled per step, crash isolation, and a supervisor.
+   --------------------------------------------------------------------- */
+class RtActor {
+  constructor(pid, name, obj, supervisorPid){
+    this.pid = pid; this.name = name; this.obj = obj;
+    this.mailbox = []; this.alive = true; this.paused = false;
+    this.supervisorPid = supervisorPid;
+  }
+}
+class ActorRuntime {
+  constructor(){ this.actors = new Map(); this.nextPid = 1; this.runnable = []; this.trace = []; }
+  spawn(name, obj, supervisorPid){
+    const pid = this.nextPid++;
+    this.actors.set(pid, new RtActor(pid, name, obj, supervisorPid || null));
+    return pid;
+  }
+  send(pid, msg){
+    const a = this.actors.get(pid);
+    if (!a || !a.alive) return false;
+    a.mailbox.push(msg);
+    if (!this.runnable.includes(pid)) this.runnable.push(pid);
+    return true;
+  }
+  kill(pid){ const a = this.actors.get(pid); if (a) a.alive = false; }
+  step(){
+    while (this.runnable.length){
+      const pid = this.runnable.shift();
+      const a = this.actors.get(pid);
+      if (!a || !a.alive || a.paused || !a.mailbox.length) continue;
+      const msg = a.mailbox.shift();
+      try {
+        a.obj.handle(msg, { pid, send: (p,m) => this.send(p,m) });
+        this.trace.push({ pid, name: a.name, event: "handled", type: msg.type });
+      } catch (err){
+        this._crash(a, err);
+      }
+      if (a.alive && a.mailbox.length) this.runnable.push(pid);
+      return true;
+    }
+    return false;
+  }
+  drain(maxSteps){ let n = 0; const cap = maxSteps || 100000; while (this.step() && n < cap) n++; return n; }
+  _crash(a, err){
+    a.alive = false;
+    this.trace.push({ pid: a.pid, name: a.name, event: "CRASH", err: err.message });
+    if (a.supervisorPid) this.send(a.supervisorPid, { type: "_DOWN", pid: a.pid, name: a.name, reason: err.message });
+  }
+}
+
+/* ---------------------------------------------------------------------
+   3. TOPIC TRIE + EXCHANGES (ch.3) — direct, fanout, and a real trie for
+   topic routing with backtracking over '*' and '#'.
+   --------------------------------------------------------------------- */
+class TopicTrie {
+  constructor(){ this.root = this._node(); }
+  _node(){ return { children: new Map(), star: null, hash: null, queues: new Set() }; }
+  bind(pattern, queue){
+    const words = pattern.split(".");
+    let node = this.root;
+    for (const w of words){
+      if (w === "*"){ if (!node.star) node.star = this._node(); node = node.star; }
+      else if (w === "#"){ if (!node.hash) node.hash = this._node(); node = node.hash; }
+      else { if (!node.children.has(w)) node.children.set(w, this._node()); node = node.children.get(w); }
+    }
+    node.queues.add(queue);
+  }
+  match(routingKey){
+    const words = routingKey.split(".");
+    const result = new Set();
+    const visit = (node, idx) => {
+      if (!node) return;
+      if (idx === words.length){
+        for (const q of node.queues) result.add(q);
+        if (node.hash) visit(node.hash, idx); // '#' matching zero remaining words
+        return;
+      }
+      const w = words[idx];
+      if (node.children.has(w)) visit(node.children.get(w), idx + 1);
+      if (node.star) visit(node.star, idx + 1);
+      if (node.hash){
+        // '#' matches zero-or-more words: try every split point (backtracking)
+        for (let k = idx; k <= words.length; k++) visit(node.hash, k);
+      }
+    };
+    visit(this.root, 0);
+    return result;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   4. CREDIT FLOW (ch.9) — real credit counters that block a hop when
+   the receiver has not signalled enough processed work to replenish.
+   --------------------------------------------------------------------- */
+class CreditFlow {
+  constructor(initial, replenishBatch){ this.initial = initial; this.replenishBatch = replenishBatch; this.state = new Map(); }
+  _get(k){ if (!this.state.has(k)) this.state.set(k, { credit: this.initial, processed: 0 }); return this.state.get(k); }
+  trySend(from, to){
+    const s = this._get(from + "=>" + to);
+    if (s.credit <= 0) return false;
+    s.credit--; return true;
+  }
+  markProcessed(from, to){
+    const s = this._get(from + "=>" + to);
+    s.processed++;
+    if (s.processed >= this.replenishBatch){ s.credit += s.processed; s.processed = 0; }
+  }
+  credit(from, to){ return this._get(from + "=>" + to).credit; }
+}
+
+/* ---------------------------------------------------------------------
+   5. QUEUE / CHANNEL / SUPERVISOR ACTOR BEHAVIOURS (ch.4, ch.5, ch.8)
+   --------------------------------------------------------------------- */
+function makeQueueActor(broker, name, opts){
+  const state = {
+    name, messages: [], consumers: new Map(),
+    ttl: opts.ttl || 0, dlx: opts.dlx || null, maxLength: (opts.maxLength && opts.maxLength > 0) ? opts.maxLength : Infinity
+  };
+  function checkExpiry(){
+    // Head-of-queue TTL: only the FRONT message is ever inspected. A short-TTL
+    // message stuck behind a long-TTL head simply waits — this is the real,
+    // deliberate gotcha, not a bug.
+    while (state.messages.length && state.ttl > 0 && (broker.now() - state.messages[0].insertedAt) >= state.ttl){
+      const dead = state.messages.shift();
+      broker.deadLetter(name, dead, "expired");
+    }
+  }
+  function attemptDeliver(){
+    checkExpiry();
+    for (const [channelId, consumer] of state.consumers){
+      while (state.messages.length && consumer.outstanding.length < consumer.prefetch){
+        checkExpiry();
+        if (!state.messages.length) break;
+        const msg = state.messages.shift();
+        const tag = broker.nextDeliveryTag++;
+        const delivered = { ...msg, deliveryTag: tag };
+        consumer.outstanding.push(delivered);
+        const chPid = broker.channels.get(channelId);
+        if (chPid) broker.rt.send(chPid, { type: "DELIVER", queue: name, message: delivered });
+      }
+    }
+  }
+  return {
+    state,
+    handle(msg){
+      if (msg.type === "_INJECT_CRASH") throw new Error('queue actor "' + name + '" crashed (simulated failure)');
+      if (msg.type === "ENQUEUE"){
+        broker.creditFlow.markProcessed("channel:" + msg.fromChannel, "queue:" + name);
+        if (state.messages.length >= state.maxLength){
+          const dropped = state.messages.shift();
+          broker.deadLetter(name, dropped, "maxlen");
+        }
+        state.messages.push(msg.message);
+        attemptDeliver();
+        return;
+      }
+      if (msg.type === "CONSUME"){
+        state.consumers.set(msg.channelId, { prefetch: msg.prefetch || 1, outstanding: [] });
+        attemptDeliver();
+        return;
+      }
+      if (msg.type === "ACK"){
+        const c = state.consumers.get(msg.channelId); if (!c) return;
+        const i = c.outstanding.findIndex(m => m.id === msg.msgId);
+        if (i >= 0) c.outstanding.splice(i, 1);
+        attemptDeliver();
+        return;
+      }
+      if (msg.type === "NACK"){
+        const c = state.consumers.get(msg.channelId); if (!c) return;
+        const i = c.outstanding.findIndex(m => m.id === msg.msgId);
+        if (i < 0) return;
+        const [m] = c.outstanding.splice(i, 1);
+        if (msg.requeue) state.messages.unshift(m);
+        else broker.deadLetter(name, m, "rejected");
+        attemptDeliver();
+        return;
+      }
+      if (msg.type === "CHANNEL_DOWN"){
+        const c = state.consumers.get(msg.channelId); if (!c) return;
+        for (let i = c.outstanding.length - 1; i >= 0; i--) state.messages.unshift(c.outstanding[i]);
+        state.consumers.delete(msg.channelId);
+        attemptDeliver();
+        return;
+      }
+      if (msg.type === "TICK"){
+        // a clock advance with no other traffic: just re-check the head for TTL expiry
+        attemptDeliver();
+        return;
+      }
+      throw new Error("queue actor got unknown message type: " + msg.type);
+    }
+  };
+}
+function makeChannelActor(broker, channelId){
+  const state = { id: channelId, unacked: new Map() };
+  return {
+    state,
+    handle(msg){
+      if (msg.type === "DELIVER"){
+        state.unacked.set(msg.message.deliveryTag, { queue: msg.queue, msgId: msg.message.id });
+        broker.deliveryLog.push({ channelId, queue: msg.queue, msgId: msg.message.id, tag: msg.message.deliveryTag, body: msg.message.body, ts: broker.now() });
+        return;
+      }
+      throw new Error("channel actor got unknown message type: " + msg.type);
+    }
+  };
+}
+function makeSupervisorActor(broker){
+  return {
+    state: { restarts: 0 },
+    handle(msg){
+      if (msg.type === "_DOWN"){
+        const name = broker.queuePidToName.get(msg.pid);
+        if (!name) return;
+        const opts = broker.queueOpts.get(name) || {};
+        const newPid = broker.rt.spawn(name, makeQueueActor(broker, name, opts), broker.supervisorPid);
+        broker.queuePids.set(name, newPid);
+        broker.queuePidToName.set(newPid, name);
+        this.state.restarts++;
+        broker.events.push({ t: "ok", m: 'supervisor restarted queue actor "' + name + '" (pid ' + msg.pid + ' -> ' + newPid + ') after: ' + msg.reason });
+        return;
+      }
+      throw new Error("supervisor got unknown message: " + msg.type);
+    }
+  };
+}
+
+/* ---------------------------------------------------------------------
+   6. BROKER — wires everything together
+   --------------------------------------------------------------------- */
+class Broker {
+  constructor(){
+    this.rt = new ActorRuntime();
+    this.exchanges = new Map();
+    this.queuePids = new Map(); this.queuePidToName = new Map(); this.queueOpts = new Map();
+    this.channels = new Map();
+    this.nextMsgId = 1; this.nextDeliveryTag = 1;
+    this.clock = 0;
+    this.creditFlow = new CreditFlow(20, 10);
+    this.wireLog = []; this.deliveryLog = []; this.events = [];
+    this.supervisorPid = this.rt.spawn("supervisor", makeSupervisorActor(this), null);
+  }
+  now(){ return this.clock; }
+  advanceClock(ms){
+    this.clock += ms;
+    for (const pid of this.queuePids.values()) this.rt.send(pid, { type: "TICK" });
+    this.rt.drain();
+  }
+  declareExchange(name, type){
+    if (!["direct","fanout","topic"].includes(type)) throw new Error("unknown exchange type: " + type);
+    this.exchanges.set(name, { type, direct: new Map(), fanoutSet: new Set(), trie: new TopicTrie(), bindings: [] });
+  }
+  declareQueue(name, opts){
+    opts = opts || {};
+    if (this.queuePids.has(name)) throw new Error("queue exists: " + name);
+    this.queueOpts.set(name, opts);
+    const pid = this.rt.spawn(name, makeQueueActor(this, name, opts), this.supervisorPid);
+    this.queuePids.set(name, pid); this.queuePidToName.set(pid, name);
+    return name;
+  }
+  bind(exchangeName, queueName, pattern){
+    const ex = this.exchanges.get(exchangeName);
+    if (!ex) throw new Error("no such exchange: " + exchangeName);
+    if (!this.queuePids.has(queueName)) throw new Error("no such queue: " + queueName);
+    ex.bindings.push({ queue: queueName, pattern: pattern || "" });
+    if (ex.type === "direct"){ if (!ex.direct.has(pattern)) ex.direct.set(pattern, new Set()); ex.direct.get(pattern).add(queueName); }
+    else if (ex.type === "fanout"){ ex.fanoutSet.add(queueName); }
+    else { ex.trie.bind(pattern || "#", queueName); }
+  }
+  routeMessage(exchangeName, routingKey){
+    const ex = this.exchanges.get(exchangeName);
+    if (!ex) throw new Error("no such exchange: " + exchangeName);
+    if (ex.type === "direct") return [...(ex.direct.get(routingKey) || [])];
+    if (ex.type === "fanout") return [...ex.fanoutSet];
+    return [...ex.trie.match(routingKey)];
+  }
+  ensureChannel(channelId){
+    if (!this.channels.has(channelId)){
+      const pid = this.rt.spawn("channel-" + channelId, makeChannelActor(this, channelId), null);
+      this.channels.set(channelId, pid);
+    }
+    return this.channels.get(channelId);
+  }
+  publish(channelId, exchangeName, routingKey, bodyStr, opts){
+    opts = opts || {};
+    this.ensureChannel(channelId);
+    const bodyBytes = new TextEncoder().encode(bodyStr);
+    const properties = { persistent: !!opts.persistent, confirm: !!opts.confirm };
+    const frameMax = opts.frameMax || 4096;
+    const enc = encodePublish(channelId, exchangeName, routingKey, bodyBytes, properties, frameMax);
+    this.wireLog.push({ channelId, exchange: exchangeName, routingKey, bytes: enc.bytes.length, frames: enc.frameCount, ts: this.now() });
+    const dec = decodePublish(enc.bytes); // genuinely re-parsed from the bytes just produced
+    const targets = this.routeMessage(dec.exchange, dec.routingKey);
+    if (!targets.length){
+      this.events.push({ t: "warn", m: 'published to "' + exchangeName + '" key "' + routingKey + '" — unroutable, no binding matched' });
+      return { routed: 0, blocked: false, frameBytes: enc.bytes.length, frameCount: enc.frameCount };
+    }
+    let anyBlocked = false;
+    const drain = opts.drain !== false;
+    for (const qname of targets){
+      const qpid = this.queuePids.get(qname);
+      const ok = this.creditFlow.trySend("channel:" + channelId, "queue:" + qname);
+      if (!ok){ anyBlocked = true; this.events.push({ t: "err", m: "BLOCKED: credit exhausted channel:" + channelId + " -> queue:" + qname }); continue; }
+      const message = { id: this.nextMsgId++, body: dec.body, properties: dec.properties, routingKey: dec.routingKey, exchange: dec.exchange, insertedAt: this.now(), xDeath: [] };
+      this.rt.send(qpid, { type: "ENQUEUE", fromChannel: channelId, message });
+    }
+    if (drain) this.rt.drain();
+    return { routed: targets.length, blocked: anyBlocked, frameBytes: enc.bytes.length, frameCount: enc.frameCount };
+  }
+  consume(queueName, channelId, prefetch){
+    this.ensureChannel(channelId);
+    const qpid = this.queuePids.get(queueName);
+    if (!qpid) throw new Error("no such queue: " + queueName);
+    this.rt.send(qpid, { type: "CONSUME", channelId, prefetch: prefetch || 1 });
+    this.rt.drain();
+  }
+  ack(tag){
+    for (const [cid, pid] of this.channels){
+      const ch = this.rt.actors.get(pid).obj.state;
+      if (ch.unacked.has(tag)){
+        const { queue, msgId } = ch.unacked.get(tag);
+        ch.unacked.delete(tag);
+        this.rt.send(this.queuePids.get(queue), { type: "ACK", channelId: cid, msgId });
+        this.rt.drain();
+        return { channelId: cid, queue, msgId };
+      }
+    }
+    throw new Error("unknown delivery tag: " + tag);
+  }
+  nack(tag, requeue){
+    for (const [cid, pid] of this.channels){
+      const ch = this.rt.actors.get(pid).obj.state;
+      if (ch.unacked.has(tag)){
+        const { queue, msgId } = ch.unacked.get(tag);
+        ch.unacked.delete(tag);
+        this.rt.send(this.queuePids.get(queue), { type: "NACK", channelId: cid, msgId, requeue: !!requeue });
+        this.rt.drain();
+        return { channelId: cid, queue, msgId };
+      }
+    }
+    throw new Error("unknown delivery tag: " + tag);
+  }
+  killChannel(channelId){
+    const pid = this.channels.get(channelId);
+    if (!pid) throw new Error("no such channel: " + channelId);
+    for (const qpid of this.queuePids.values()) this.rt.send(qpid, { type: "CHANNEL_DOWN", channelId });
+    this.rt.drain();
+    this.rt.kill(pid);
+    this.channels.delete(channelId);
+    return { channelId };
+  }
+  killQueue(name){
+    const pid = this.queuePids.get(name);
+    if (!pid) throw new Error("no such queue: " + name);
+    this.rt.send(pid, { type: "_INJECT_CRASH" });
+    this.rt.drain();
+    return { name };
+  }
+  deadLetter(originalQueueName, message, reason){
+    const already = message.xDeath.find(d => d.queue === originalQueueName && d.reason === reason);
+    let xDeath;
+    if (already) xDeath = message.xDeath.map(d => d === already ? { ...d, count: d.count + 1, time: this.now() } : d);
+    else xDeath = [...message.xDeath, { queue: originalQueueName, reason, exchange: message.exchange || "", "routing-keys": [message.routingKey], count: 1, time: this.now() }];
+    const qopts = this.queueOpts.get(originalQueueName);
+    if (qopts && qopts.dlx){
+      const targets = this.routeMessage(qopts.dlx, message.routingKey);
+      if (!targets.length) this.events.push({ t: "warn", m: 'DLX "' + qopts.dlx + '" has no binding matching "' + message.routingKey + '" — dead letter dropped' });
+      for (const qn of targets){
+        const qpid = this.queuePids.get(qn);
+        if (!qpid) continue;
+        const dead = { ...message, id: this.nextMsgId++, insertedAt: this.now(), xDeath };
+        this.rt.send(qpid, { type: "ENQUEUE", fromChannel: null, message: dead });
+      }
+    } else {
+      this.events.push({ t: "warn", m: 'message dead-lettered from "' + originalQueueName + '" (reason: ' + reason + ') — no DLX configured, dropped' });
+    }
+  }
+  inspectSummary(){
+    const exchanges = [...this.exchanges.entries()].map(([name, ex]) => ({ name, type: ex.type, bindings: ex.bindings }));
+    const queues = [...this.queuePids.entries()].map(([name, pid]) => {
+      const st = this.rt.actors.get(pid).obj.state;
+      return {
+        name, depth: st.messages.length, ttl: st.ttl || null, dlx: st.dlx || null,
+        maxLength: isFinite(st.maxLength) ? st.maxLength : null,
+        consumers: [...st.consumers.entries()].map(([cid, c]) => ({ channelId: cid, prefetch: c.prefetch, unacked: c.outstanding.length }))
+      };
+    });
+    return { exchanges, queues, credit: [...this.creditFlow.state.entries()] };
+  }
+}
+function createBroker(){ return new Broker(); }
+
+global.MiniRMQ = {
+  encodeFrame, decodeFrame, decodeAllFrames,
+  encodeMethodPayload, decodeMethodPayload, encodeHeaderPayload, decodeHeaderPayload,
+  encodeBodyFrames, encodePublish, decodePublish, FRAME_OVERHEAD,
+  TopicTrie, CreditFlow, ActorRuntime,
+  makeQueueActor, makeChannelActor, makeSupervisorActor,
+  Broker, createBroker
+};
+})(typeof window !== "undefined" ? window : globalThis);
+/* ===================== END MINIRMQ ENGINE ===================== */
+
+/* ===================== CONSOLE: parses the command grammar and drives MiniRMQ ===================== */
+(function(global){
+  function tokenize(text){
+    const out = []; let cur = ""; let q = null;
+    for (let i = 0; i < text.length; i++){
+      const c = text[i];
+      if (q){ if (c === q){ q = null; } else cur += c; continue; }
+      if (c === '"' || c === "'"){ q = c; continue; }
+      if (/\s/.test(c)){ if (cur){ out.push(cur); cur = ""; } continue; }
+      cur += c;
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+  const BOOL_FLAGS = new Set(["persistent","confirm","requeue"]);
+  function parseFlags(tokens){
+    const positional = []; const flags = {};
+    for (let i = 0; i < tokens.length; i++){
+      const t = tokens[i];
+      if (t.startsWith("--")){
+        const name = t.slice(2);
+        if (BOOL_FLAGS.has(name)) flags[name] = true;
+        else flags[name] = tokens[++i];
+      } else positional.push(t);
+    }
+    return { positional, flags };
+  }
+  function runCommand(broker, consoleState, raw){
+    const text = raw.trim();
+    if (!text) return [];
+    const tokens = tokenize(text);
+    const cmd = tokens[0];
+    const rest = tokens.slice(1);
+    const out = [];
+    try {
+      if (cmd === "declare-exchange"){
+        const { positional } = parseFlags(rest);
+        const [name, type] = positional;
+        if (!name || !type) throw new Error("usage: declare-exchange <name> <direct|fanout|topic>");
+        broker.declareExchange(name, type);
+        out.push({ t: "ok", m: 'exchange "' + name + '" declared (type=' + type + ')' });
+        return out;
+      }
+      if (cmd === "declare-queue"){
+        const { positional, flags } = parseFlags(rest);
+        const [name] = positional;
+        if (!name) throw new Error("usage: declare-queue <name> [--ttl N] [--dlx X] [--max-length N]");
+        const opts = {};
+        if (flags.ttl !== undefined) opts.ttl = Number(flags.ttl);
+        if (flags.dlx !== undefined) opts.dlx = flags.dlx;
+        if (flags["max-length"] !== undefined) opts.maxLength = Number(flags["max-length"]);
+        broker.declareQueue(name, opts);
+        out.push({ t: "ok", m: 'queue "' + name + '" declared' + (opts.ttl ? (" ttl=" + opts.ttl + "ms") : "") + (opts.dlx ? (" dlx=" + opts.dlx) : "") + (opts.maxLength ? (" max-length=" + opts.maxLength) : "") });
+        return out;
+      }
+      if (cmd === "bind"){
+        const { positional } = parseFlags(rest);
+        const [exchange, queue, pattern] = positional;
+        if (!exchange || !queue) throw new Error("usage: bind <exchange> <queue> <pattern>");
+        broker.bind(exchange, queue, pattern || "");
+        out.push({ t: "ok", m: "bound " + exchange + " -> " + queue + ' (pattern "' + (pattern || "") + '")' });
+        return out;
+      }
+      if (cmd === "publish"){
+        const { positional, flags } = parseFlags(rest);
+        const [exchange, routingKey, ...bodyParts] = positional;
+        if (!exchange || !routingKey) throw new Error("usage: publish <exchange> <routing-key> <body> [--persistent] [--confirm]");
+        const body = bodyParts.join(" ") || "";
+        const channelId = 0; // shared publisher channel for console commands
+        const r = broker.publish(channelId, exchange, routingKey, body, { persistent: !!flags.persistent, confirm: !!flags.confirm });
+        if (r.blocked) out.push({ t: "err", m: "PUBLISH blocked — credit exhausted on channel:" + channelId + " -> queue hop; message not accepted" });
+        else if (!r.routed) out.push({ t: "warn", m: "PUBLISH unroutable — no binding matched \"" + routingKey + '" on "' + exchange + '"' });
+        else out.push({ t: "ok", m: "PUBLISH ok — routed to " + r.routed + " queue(s), " + r.frameCount + " frame(s), " + r.frameBytes + " byte(s) on the wire" + (flags.confirm ? " [confirmed]" : "") });
+        return out;
+      }
+      if (cmd === "consume"){
+        const { positional, flags } = parseFlags(rest);
+        const [queue] = positional;
+        if (!queue) throw new Error("usage: consume <queue> [--prefetch N]");
+        const prefetch = flags.prefetch !== undefined ? Number(flags.prefetch) : 1;
+        const channelId = consoleState.nextConsumerChannel++;
+        broker.consume(queue, channelId, prefetch);
+        out.push({ t: "ok", m: "channel " + channelId + ' now consuming "' + queue + '" (prefetch=' + prefetch + ")" });
+        return out;
+      }
+      if (cmd === "ack"){
+        const { positional } = parseFlags(rest);
+        const tag = Number(positional[0]);
+        const r = broker.ack(tag);
+        out.push({ t: "ok", m: "ACK tag " + tag + " (channel " + r.channelId + ", queue " + r.queue + ")" });
+        return out;
+      }
+      if (cmd === "nack"){
+        const { positional, flags } = parseFlags(rest);
+        const tag = Number(positional[0]);
+        const r = broker.nack(tag, !!flags.requeue);
+        out.push({ t: "ok", m: "NACK tag " + tag + (flags.requeue ? " requeue=true" : " requeue=false") + " (channel " + r.channelId + ", queue " + r.queue + ")" });
+        return out;
+      }
+      if (cmd === "kill-channel"){
+        const { positional } = parseFlags(rest);
+        const id = Number(positional[0]);
+        broker.killChannel(id);
+        out.push({ t: "err", m: "*** channel " + id + " killed *** any unacked messages requeued to their queues" });
+        return out;
+      }
+      if (cmd === "kill-queue"){
+        const { positional } = parseFlags(rest);
+        const [name] = positional;
+        broker.killQueue(name);
+        out.push({ t: "err", m: '*** queue actor "' + name + '" crashed *** supervisor will restart it' });
+        return out;
+      }
+      if (cmd === "slow-consumer"){
+        const { positional } = parseFlags(rest);
+        const id = Number(positional[0]);
+        consoleState.slow.add(id);
+        out.push({ t: "warn", m: "channel " + id + " marked as a slow consumer (labelling only — stop acking it manually to see the effect)" });
+        return out;
+      }
+      if (cmd === "inspect"){
+        out.push({ t: "out", m: JSON.stringify(broker.inspectSummary(), null, 2) });
+        return out;
+      }
+      throw new Error("unrecognized command: " + cmd);
+    } catch (e){
+      out.push({ t: "err", m: e.message });
+      return out;
+    }
+  }
+  global.MiniRMQConsole = { run: runCommand, tokenize, parseFlags };
+})(typeof window !== "undefined" ? window : globalThis);
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL12 = [
+  { yr:"1970s-80s", l:"Actor model theory", d:"<b>Carl Hewitt's Actor Model</b> (1973) formalized the idea this chapter's actor runtime borrows directly: independent units of computation with private state, communicating only via asynchronous messages. Erlang's designers at Ericsson built on exactly this theory a decade later when they needed a language for telecom switches that must never let one call crash the whole exchange." },
+  { yr:"2003", l:"AMQP's banking origin", d:"Chapter 1's origin story: JPMorgan Chase's messaging sprawl motivates a vendor-neutral WIRE protocol, not a Java API. Small reference implementations proved the spec before any production-scale broker existed." },
+  { yr:"2007", l:"RabbitMQ 1.0 ships", d:"LShift and CohesiveFT ship the first RabbitMQ release on Erlang/OTP — itself, at the time, a small implementation of a young spec, not the mature multi-protocol broker it is today." },
+  { yr:"2010s", l:"'Build your own Redis/queue' genre", d:"A wave of widely-read tutorials and small projects (toy pub/sub systems, minimal actor runtimes, miniature broker clones) makes 'implement the pieces yourself' a mainstream way to learn messaging internals — this chapter is a more rigorous, course-integrated descendant of that genre." },
+  { yr:"2010s-20s", l:"Teaching actor runtimes", d:"University concurrency courses regularly assign a small cooperative actor scheduler as a teaching exercise — mailboxes, one message at a time, crash isolation — precisely the shape of §9's <code>ActorRuntime</code>, because it's the smallest system that makes the guarantee tangible rather than assumed." },
+  { yr:"today", l:"you, right now", d:"<b>This chapter.</b> Same lineage: build small, build real, build enough of it that a genuine channel-kill-and-requeue test, or a genuine credit-exhaustion block, can pass or fail on its own merits — not because the material says it should." }
+];
+const tl12Track = el("tl12-track"), tl12Detail = el("tl12-detail");
+TL12.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tl12Track.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tl12Detail.innerHTML = t.d; };
+  tl12Track.appendChild(item);
+});
+tl12Detail.innerHTML = TL12[1].d;
+
+/* ============================================================
+   2. DECK: deriving the architecture (§5)
+   ============================================================ */
+(function(){
+  const box = (t,c,ok) => `<div style="border:1px solid ${ok?'var(--ok)':'var(--border-hi)'};border-radius:12px;padding:16px;max-width:540px;margin:0 auto">
+    <div style="font-family:var(--mono);font-size:11px;color:${ok?'var(--ok)':'var(--pg)'};letter-spacing:.08em;margin-bottom:8px">${t}</div>
+    <div style="font-size:13px;color:#c6cddb;line-height:1.7">${c}</div></div>`;
+  stepper("deckDerive", [
+    { stage: box("CANDIDATE A — separate objects, still direct calls", "Every queue gets its own array + subscriber list. Producers address by name instead of holding a callback directly. Fixes coupling from §4."),
+      cap:`<b>Fixes addressing, not isolation.</b> Everything still runs on the publisher's own call stack. A slow consumer's work still happens inline with the publish that triggered it.` },
+    { stage: box("CANDIDATE B — queues as actors, no encoding", "Each queue gets a mailbox and its own turn to run. A publish is still a raw JS object handed across an in-memory channel — never actual bytes.", true),
+      cap:`<b>Correct instinct on isolation — this IS chapter 1's fix.</b> But there's no byte representation at all, so this design could never talk to a real socket, and there's still no routing indirection. Missing piece: a real frame codec AND a real exchange/binding layer.` },
+    { stage: box("CANDIDATE C — actors + framing + routing, fire-and-forget delivery", "Add the frame codec and direct/fanout/topic exchanges in front of the queue actors. Delivery is still 'send it and hope' — no delivery tag, no unacked set, no cap.", true),
+      cap:`<b>Correct wire model and routing.</b> But nothing tracks which messages are outstanding, nothing caps how many, and nothing signals a publisher to slow down. Missing piece: ack tracking, prefetch, and credit flow.` },
+    { stage: box("FINAL: 6 components — frame codec, actors, exchanges/trie, queue+acks, credit flow, DLX/TTL", "Every gap from §4 and §6 is now closed by a specific, named mechanism.", true),
+      cap:`§7 assembles all six into one dependency graph and §8–§12 build each one as real, runnable JavaScript.` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH12 = {
+  frame:{ n:"Frame codec", f:"real analog: rabbit_binary_generator.erl / rabbit_binary_parser.erl (ch.2)", r:"Encode/decode method, header, and body frames to/from a byte array, with frame_max chunking of the body.", l:"Depends on nothing else in this list — the substrate everything else rides on.", d:"Every publish in §11–§15 is genuinely encoded and decoded through this before it ever reaches routing." },
+  actor:{ n:"Actor runtime", f:"real analog: the BEAM scheduler + OTP supervisors (ch.1)", r:"A cooperative scheduler: mailboxes, one message handled per turn, crash isolation, and a one_for_one supervisor.", l:"Depends on nothing else — foundational.", d:"Every queue, channel, and the supervisor itself are actors spawned on this runtime; §12's credit flow and §11's ack tracking both ride on actor message-passing." },
+  exch:{ n:"Exchanges + topic trie", f:"real analog: rabbit_exchange_type_{direct,fanout,topic}.erl (ch.3)", r:"Direct (map lookup), fanout (set), and topic (a real trie with '*' / '#' backtracking) routing.", l:"Depends on the actor runtime only insofar as queues (its routing targets) are actors.", d:"§11's queue actors receive ENQUEUE messages only because this layer resolved a routing key into a queue name first; §12's DLX routing reuses the exact same routeMessage() function." },
+  queue:{ n:"Queue actors + acks", f:"real analog: rabbit_channel.erl (unacked map) + rabbit_amqqueue_process.erl (ch.4, ch.5)", r:"Per-queue message lists, per-consumer prefetch caps, delivery tags, requeue-on-channel-death.", l:"Depends on the actor runtime (queues and channels ARE actors) and exchanges (messages arrive already routed).", d:"§12's credit flow gates the exact hop feeding this layer's ENQUEUE handler; §12's dead lettering is called directly from inside this layer's NACK and maxlen-overflow paths." },
+  credit:{ n:"Credit flow control", f:"real analog: rabbit_flow.erl (ch.9)", r:"Per-hop credit counters (channel→queue) that block the sender when depleted, replenished in batches by the receiver.", l:"Depends on the actor runtime (it gates actor sends) and queue actors (it's checked before every ENQUEUE).", d:"Nothing downstream depends on it — it's a gate other components consult, not infrastructure they build on." },
+  dlx:{ n:"Dead lettering + TTL", f:"real analog: rabbit_dead_letter.erl + per-queue TTL logic (ch.8)", r:"x-death header construction, DLX re-routing through the exchange layer, and lazy head-of-queue TTL expiry.", l:"Depends on queue actors (it's invoked FROM inside NACK/maxlen/TTL paths) and exchanges (DLX routing reuses routeMessage()).", d:"§15's poison-message scenario and TTL scenario are this component, directly exercised end to end." }
+};
+const arch12Detail = el("arch12-detail");
+function showArch12(key){
+  const a = ARCH12[key];
+  arch12Detail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">DEPENDS ON</div>${a.l}<div class="ad-sec">WHAT DEPENDS ON IT</div>${a.d}`;
+  document.querySelectorAll("#s7 .acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll("#s7 .acard").forEach(c=> c.onclick = ()=>showArch12(c.dataset.p));
+showArch12("frame");
+/* ============================================================
+   4. FRAME CODEC WIDGET (§8)
+   ============================================================ */
+(function(){
+  function render(){
+    const bodySize = +el("fc-body").value;
+    const frameMax = +el("fc-fmax").value;
+    el("fc-body-val").textContent = bodySize + " B";
+    el("fc-fmax-val").textContent = frameMax + " B";
+    el("fc-note").textContent = "";
+  }
+  el("fc-body").oninput = render;
+  el("fc-fmax").oninput = render;
+  el("fc-encode").onclick = ()=>{
+    const bodySize = +el("fc-body").value;
+    const frameMax = +el("fc-fmax").value;
+    const body = new Uint8Array(bodySize);
+    for (let i=0;i<bodySize;i++) body[i] = 97 + (i % 26); // deterministic filler bytes
+    let enc, dec, ok = true, err = "";
+    try {
+      enc = MiniRMQ.encodePublish(3, "demo-ex", "demo.key", body, { persistent: true }, frameMax);
+      dec = MiniRMQ.decodePublish(enc.bytes);
+      ok = dec.body.length === body.length;
+      for (let i=0;i<body.length && ok;i++) if (dec.body[i] !== body[i]) ok = false;
+    } catch(e){ err = e.message; ok = false; }
+    if (err){
+      el("fc-out").innerHTML = `<span style="color:var(--bad)">encode failed: ${err}</span>`;
+      el("fc-note").innerHTML = `frame_max (${frameMax} B) is too small to carry even the frame overhead — real RabbitMQ enforces a 4096-byte protocol floor for exactly this reason.`;
+      return;
+    }
+    const frames = MiniRMQ.decodeAllFrames(enc.bytes);
+    const typeName = { 1:"METHOD", 2:"HEADER", 3:"BODY" };
+    el("fc-out").innerHTML = frames.map((f,i)=>
+      `<div class="frame ${f.type===3?'':'hot'}"><span class="ff">frame ${i+1}/${frames.length}</span> — type=${typeName[f.type]} channel=${f.channel} size=${f.payload.length}B<span class="fl">bytes: [${[...f.payload.slice(0,10)].join(",")}${f.payload.length>10?", …":""}]</span></div>`
+    ).join("");
+    el("fc-note").innerHTML = ok
+      ? `<b style="color:var(--ok)">Round-trip verified:</b> ${body.length} original bytes === ${dec.body.length} decoded bytes, byte-for-byte. ${frames.length} total frames (1 method + 1 header + ${frames.length-2} body frame(s)) at frame_max=${frameMax}B — total ${enc.bytes.length} bytes on the wire.`
+      : `<b style="color:var(--bad)">Round-trip MISMATCH</b> — this would be a codec bug.`;
+  };
+  render();
+})();
+
+/* deck: encodePublish/decodePublish source, annotated */
+(function(){
+  stepper("deckFrame", [
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>encodeFrame()</span></div><pre><span class="k">function</span> <span class="f">encodeFrame</span>(type, channel, payloadBytes) {
+  <span class="k">const</span> size = payloadBytes.length;
+  <span class="k">const</span> buf = <span class="k">new</span> Uint8Array(<span class="n">8</span> + size);   <span class="c">// 8 = type+channel+size+frame-end overhead</span>
+  <span class="k">const</span> dv = <span class="k">new</span> DataView(buf.buffer);
+  dv.setUint8(<span class="n">0</span>, type);
+  dv.setUint16(<span class="n">1</span>, channel);
+  dv.setUint32(<span class="n">3</span>, size);
+  buf.set(payloadBytes, <span class="n">7</span>);
+  dv.setUint8(<span class="n">7</span> + size, <span class="n">0xCE</span>);      <span class="c">// frame-end octet, real AMQP's corruption check</span>
+  <span class="k">return</span> buf;
+}</pre></div>`,
+      cap:`One frame is a real byte buffer: a 1-byte type, a 2-byte channel number, a 4-byte size, the payload itself, and the fixed trailing octet <code>0xCE</code>. Decoding checks that trailing byte before trusting anything else in the frame.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>encodeBodyFrames() — the frame_max chunking</span></div><pre><span class="k">function</span> <span class="f">encodeBodyFrames</span>(channel, bodyBytes, frameMax) {
+  <span class="k">const</span> maxChunk = frameMax - <span class="n">8</span>;              <span class="c">// leave room for this frame's own overhead</span>
+  <span class="k">const</span> frames = [];
+  <span class="k">for</span> (<span class="k">let</span> i = <span class="n">0</span>; i &lt; bodyBytes.length; i += maxChunk)
+    frames.push(encodeFrame(FRAME_BODY, channel, bodyBytes.slice(i, i + maxChunk)));
+  <span class="k">return</span> frames;
+}</pre></div>`,
+      cap:`A large body genuinely becomes many separate frames — no single frame ever exceeds <code>frame_max</code>. This is why a huge message never needs one unbounded allocation on the receiving side: it can pre-size from the header frame's announced body size and fill it in chunks as body frames arrive.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>decodePublish() — genuinely re-parsed</span></div><pre><span class="k">function</span> <span class="f">decodePublish</span>(bytes) {
+  <span class="k">const</span> frames = decodeAllFrames(bytes);            <span class="c">// walk the byte array frame by frame</span>
+  <span class="k">const</span> methodFrame = frames.find(f => f.type === FRAME_METHOD);
+  <span class="k">const</span> bodyFrames = frames.filter(f => f.type === FRAME_BODY);
+  <span class="k">let</span> body = <span class="k">new</span> Uint8Array(bodyFrames.reduce((s,f)=>s+f.payload.length,<span class="n">0</span>));
+  <span class="k">let</span> off = <span class="n">0</span>;
+  <span class="k">for</span> (<span class="k">const</span> f <span class="k">of</span> bodyFrames) { body.set(f.payload, off); off += f.payload.length; }
+  <span class="k">return</span> { <span class="c">/* exchange, routingKey, properties, body */</span> };
+}</pre></div>`,
+      cap:`This is not a mock — it's the exact function §11's <code>publish()</code> calls on the bytes it JUST produced, before routing even begins. The body frames are reassembled in order into one contiguous buffer, which is what makes the widget's byte-for-byte round-trip assertion meaningful rather than decorative.` }
+  ]);
+})();
+/* ============================================================
+   5. ACTOR RUNTIME WIDGET (§9)
+   ============================================================ */
+(function(){
+  const rt = new MiniRMQ.ActorRuntime();
+  let queuePid = null, supPid = null, msgCount = 0, restarts = 0;
+  function makeDemoQueue(){
+    return { state:{ received:0 }, handle(msg){
+      if (msg.type === "_INJECT_CRASH") throw new Error("simulated crash");
+      this.state.received++;
+    }};
+  }
+  function makeDemoSupervisor(){
+    return { state:{}, handle(msg){
+      if (msg.type === "_DOWN"){
+        restarts++;
+        queuePid = rt.spawn("demo-queue", makeDemoQueue(), supPid);
+        render(`supervisor: ${'"'}demo-queue${'"'} crashed (${msg.reason}) — restarted as a FRESH actor (pid ${queuePid}). old mailbox and state: gone.`);
+      }
+    }};
+  }
+  function render(note){
+    const box = el("ar-tree");
+    let html = "";
+    if (supPid !== null){
+      const sup = rt.actors.get(supPid);
+      html += `<div class="snode pm">supervisor (pid ${supPid})<span class="st">restarts: ${restarts}</span></div>`;
+    }
+    if (queuePid !== null){
+      const q = rt.actors.get(queuePid);
+      const alive = q && q.alive;
+      html += `<div class="snode ${alive?'new':'crash'}">queue actor (pid ${queuePid})<span class="st">${alive ? 'received: '+q.obj.state.received+' · mailbox: '+q.mailbox.length : 'DEAD'}</span></div>`;
+    }
+    box.innerHTML = html || `<span style="color:var(--dim);font-family:var(--mono);font-size:12px">spawn a queue actor to begin</span>`;
+    if (note) el("ar-note").innerHTML = note;
+  }
+  el("ar-spawn").onclick = ()=>{
+    rt.actors.clear(); rt.runnable = []; rt.nextPid = 1; restarts = 0; msgCount = 0;
+    supPid = rt.spawn("supervisor", makeDemoSupervisor(), null);
+    queuePid = rt.spawn("demo-queue", makeDemoQueue(), supPid);
+    render(`spawned a supervisor (pid ${supPid}) and a queue actor (pid ${queuePid}) under it — exactly <code>rt.spawn(name, obj, supervisorPid)</code>.`);
+  };
+  el("ar-msg").onclick = ()=>{
+    if (queuePid === null){ render(`spawn a queue actor first.`); return; }
+    rt.send(queuePid, { type: "PING" });
+    rt.drain();
+    msgCount++;
+    render(`sent message #${msgCount} into the queue actor's mailbox; <code>rt.drain()</code> processed it — one message, one turn.`);
+  };
+  el("ar-crash").onclick = ()=>{
+    if (queuePid === null){ render(`spawn a queue actor first.`); return; }
+    rt.send(queuePid, { type: "_INJECT_CRASH" });
+    rt.drain();
+    render();
+  };
+  el("ar-reset").onclick = ()=>{ queuePid = null; supPid = null; restarts = 0; msgCount = 0; render(`reset.`); };
+  render();
+})();
+
+/* deck: ActorRuntime.step(), annotated */
+(function(){
+  stepper("deckActor", [
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>send() — push into a mailbox</span></div><pre>send(pid, msg) {
+  <span class="k">const</span> a = <span class="k">this</span>.actors.get(pid);
+  <span class="k">if</span> (!a || !a.alive) <span class="k">return</span> <span class="k">false</span>;
+  a.mailbox.push(msg);                       <span class="c">// just an array push — no shared memory touched</span>
+  <span class="k">if</span> (!<span class="k">this</span>.runnable.includes(pid)) <span class="k">this</span>.runnable.push(pid);
+  <span class="k">return</span> <span class="k">true</span>;
+}</pre></div>`,
+      cap:`Sending a message never runs the receiver's code — it only appends to that actor's OWN mailbox array and marks it runnable. The sender's call stack returns immediately; there is no shared object here for two actors to race on.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>step() — one message, one actor, one turn</span></div><pre>step() {
+  <span class="k">const</span> pid = <span class="k">this</span>.runnable.shift();
+  <span class="k">const</span> a = <span class="k">this</span>.actors.get(pid);
+  <span class="k">const</span> msg = a.mailbox.shift();
+  <span class="k">try</span> { a.obj.handle(msg, ctx); }
+  <span class="k">catch</span> (err) { <span class="k">this</span>._crash(a, err); }   <span class="c">// the ONLY way a bug here can propagate</span>
+}</pre></div>`,
+      cap:`Exactly one message is handled per call. If <code>handle()</code> throws, the exception is caught right here — it can never unwind into any OTHER actor's turn, because there is no shared call stack to unwind through.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>_crash() — notify the supervisor, nothing else</span></div><pre>_crash(a, err) {
+  a.alive = <span class="k">false</span>;
+  <span class="k">if</span> (a.supervisorPid)
+    <span class="k">this</span>.send(a.supervisorPid, { type: <span class="s">"_DOWN"</span>, pid: a.pid, reason: err.message });
+}</pre></div>`,
+      cap:`The crashed actor is marked dead — its mailbox and state are simply abandoned. Exactly one message, <code>_DOWN</code>, goes to its supervisor. Every sibling actor's mailbox, state, and aliveness are completely untouched, because none of them were ever reachable FROM the crash in the first place.` }
+  ]);
+})();
+/* ============================================================
+   6. TOPIC TRIE WIDGET (§10)
+   ============================================================ */
+(function(){
+  let trie = new MiniRMQ.TopicTrie();
+  let nextQ = 1;
+  const bindings = [];
+  function seed(){
+    trie = new MiniRMQ.TopicTrie(); nextQ = 1; bindings.length = 0;
+    [["stock.#","q1"],["*.usd.*","q2"],["stock.*.nyse","q3"],["stock.eur.#","q4"]].forEach(([p,q])=>{
+      trie.bind(p,q); bindings.push({p,q}); nextQ++;
+    });
+  }
+  function renderNode(node, tokens){
+    let html = "";
+    for (const [word, child] of node.children){
+      html += `<div class="trie-node"><span class="trie-tok">${word}</span>${child.queues.size?`<span class="trie-q">→ ${[...child.queues].join(",")}</span>`:""}${renderNode(child, [...tokens,word])}</div>`;
+    }
+    if (node.star) html += `<div class="trie-node"><span class="trie-tok star">*</span>${node.star.queues.size?`<span class="trie-q">→ ${[...node.star.queues].join(",")}</span>`:""}${renderNode(node.star,[...tokens,"*"])}</div>`;
+    if (node.hash) html += `<div class="trie-node"><span class="trie-tok hash">#</span>${node.hash.queues.size?`<span class="trie-q">→ ${[...node.hash.queues].join(",")}</span>`:""}${renderNode(node.hash,[...tokens,"#"])}</div>`;
+    return html;
+  }
+  function render(){
+    el("tx-tree").innerHTML = `<div style="color:var(--dim);font-size:10.5px;margin-bottom:6px">(root)</div>` + renderNode(trie.root, []);
+  }
+  el("tx-add").onclick = ()=>{
+    const pattern = el("tx-pattern").value.trim() || "#";
+    const q = "q" + (nextQ++);
+    trie.bind(pattern, q);
+    bindings.push({p:pattern,q});
+    render();
+    el("tx-result").innerHTML = `bound <b style="color:var(--pg)">${pattern}</b> → new queue <b style="color:var(--ok)">${q}</b>`;
+  };
+  el("tx-test").onclick = ()=>{
+    const key = el("tx-key").value.trim();
+    const matched = [...trie.match(key)];
+    el("tx-result").innerHTML = `routing key <b>${key}</b> matches: ` + (matched.length ? matched.map(q=>`<span class="tag" style="color:var(--ok);border-color:rgba(74,222,128,.4)">${q}</span>`).join(" ") : `<span style="color:var(--dim)">nothing — unroutable</span>`);
+  };
+  el("tx-reset").onclick = ()=>{ seed(); render(); el("tx-result").innerHTML = "reset to the four canonical bindings from this section's prose."; };
+  seed(); render();
+  el("tx-result").innerHTML = `seeded with <code>stock.#</code>→q1, <code>*.usd.*</code>→q2, <code>stock.*.nyse</code>→q3, <code>stock.eur.#</code>→q4. Click "route it" to test <code>stock.usd.nyse</code>.`;
+})();
+
+/* deck: TopicTrie.match(), annotated */
+(function(){
+  stepper("deckTrie", [
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>the base case — end of the routing key</span></div><pre><span class="k">if</span> (idx === words.length) {
+  <span class="k">for</span> (<span class="k">const</span> q <span class="k">of</span> node.queues) result.add(q);
+  <span class="k">if</span> (node.hash) visit(node.hash, idx);   <span class="c">// '#' can ALSO match zero remaining words</span>
+  <span class="k">return</span>;
+}</pre></div>`,
+      cap:`When every word of the routing key has been consumed, any queue bound AT this exact node matches. The extra <code>visit(node.hash, idx)</code> call handles a subtle case: a binding like <code>stock.#</code> must match the bare key <code>stock</code> too — the <code>#</code> matching zero words.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>literal and '*' — consume exactly one word</span></div><pre><span class="k">const</span> w = words[idx];
+<span class="k">if</span> (node.children.has(w)) visit(node.children.get(w), idx + 1);
+<span class="k">if</span> (node.star) visit(node.star, idx + 1);</pre></div>`,
+      cap:`A literal child only continues if the exact word matches. A <code>*</code> child ALWAYS continues, consuming exactly one word regardless of what it is — both advance the index by exactly 1.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>'#' — the backtracking</span></div><pre><span class="k">if</span> (node.hash) {
+  <span class="c">// '#' matches ZERO OR MORE words: try every possible split point</span>
+  <span class="k">for</span> (<span class="k">let</span> k = idx; k &lt;= words.length; k++) visit(node.hash, k);
+}</pre></div>`,
+      cap:`This is the genuine backtracking. Rather than greedily consuming everything, the matcher tries continuing past the <code>#</code> at EVERY possible position from here to the end of the key — 0 words consumed, 1 word, 2 words, and so on — because a <code>#</code> earlier in the pattern might need to leave words for a LATER literal or <code>*</code> to match against.` }
+  ]);
+})();
+/* ============================================================
+   7. QUEUE / ACK WIDGET (§11)
+   ============================================================ */
+(function(){
+  const QK_CHANNEL = 900;
+  let broker, msgN;
+  function reset(){
+    broker = MiniRMQ.createBroker();
+    broker.declareExchange("demo-ex","direct");
+    broker.declareQueue("demo-q");
+    broker.bind("demo-ex","demo-q","k");
+    msgN = 0;
+  }
+  function render(note){
+    const qpid = broker.queuePids.get("demo-q");
+    const qstate = broker.rt.actors.get(qpid).obj.state;
+    const chpid = broker.channels.get(QK_CHANNEL);
+    const chstate = chpid ? broker.rt.actors.get(chpid).obj.state : null;
+    const consumer = qstate.consumers.get(QK_CHANNEL);
+    let html = `<div class="qcard"><span class="qc-name">demo-q</span> — queued: ${qstate.messages.length}, consumer prefetch: ${consumer?consumer.prefetch:"(not consuming)"}, unacked: ${consumer?consumer.outstanding.length:0}</div>`;
+    if (consumer && consumer.outstanding.length){
+      html += `<div class="taglist">` + consumer.outstanding.map(m=>`<span class="tag unacked">tag ${m.deliveryTag}: "${new TextDecoder().decode(m.body)}"</span>`).join("") + `</div>`;
+    }
+    el("qk-state").innerHTML = html;
+    if (note) el("qk-note").innerHTML = note;
+  }
+  el("qk-prefetch").oninput = ()=> el("qk-prefetch-val").textContent = el("qk-prefetch").value;
+  el("qk-publish").onclick = ()=>{
+    msgN++;
+    broker.publish(700, "demo-ex", "k", "msg-" + msgN);
+    render(`published msg-${msgN}. It's delivered immediately if the consumer has spare prefetch capacity, otherwise it waits.`);
+  };
+  el("qk-consume").onclick = ()=>{
+    const prefetch = +el("qk-prefetch").value;
+    broker.consume("demo-q", QK_CHANNEL, prefetch);
+    render(`channel ${QK_CHANNEL} now consuming with prefetch=${prefetch} — up to that many messages can be unacked at once.`);
+  };
+  el("qk-ack").onclick = ()=>{
+    const chpid = broker.channels.get(QK_CHANNEL);
+    if (!chpid){ render(`consume first.`); return; }
+    const tags = [...broker.rt.actors.get(chpid).obj.state.unacked.keys()];
+    if (!tags.length){ render(`nothing unacked.`); return; }
+    const tag = Math.min(...tags);
+    const r = broker.ack(tag);
+    render(`acked tag ${tag} — freed one prefetch slot, so the next queued message (if any) was immediately delivered.`);
+  };
+  el("qk-nack-requeue").onclick = ()=>{
+    const chpid = broker.channels.get(QK_CHANNEL);
+    if (!chpid){ render(`consume first.`); return; }
+    const tags = [...broker.rt.actors.get(chpid).obj.state.unacked.keys()];
+    if (!tags.length){ render(`nothing unacked.`); return; }
+    const tag = Math.min(...tags);
+    broker.nack(tag, true);
+    render(`nacked tag ${tag} with requeue=true — pushed back to the FRONT of demo-q, redelivered on the next available slot.`);
+  };
+  el("qk-nack-drop").onclick = ()=>{
+    const chpid = broker.channels.get(QK_CHANNEL);
+    if (!chpid){ render(`consume first.`); return; }
+    const tags = [...broker.rt.actors.get(chpid).obj.state.unacked.keys()];
+    if (!tags.length){ render(`nothing unacked.`); return; }
+    const tag = Math.min(...tags);
+    broker.nack(tag, false);
+    render(`nacked tag ${tag} with requeue=false — since demo-q has no DLX configured, it's dropped (see §12 for the DLX case).`);
+  };
+  el("qk-reset").onclick = ()=>{ reset(); render(`reset.`); };
+  reset(); render();
+})();
+
+/* deck: attemptDeliver + CHANNEL_DOWN, annotated */
+(function(){
+  stepper("deckQueue", [
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>attemptDeliver() — prefetch is the gate</span></div><pre><span class="k">for</span> (<span class="k">const</span> [channelId, consumer] <span class="k">of</span> state.consumers) {
+  <span class="k">while</span> (state.messages.length &amp;&amp; consumer.outstanding.length &lt; consumer.prefetch) {
+    <span class="k">const</span> msg = state.messages.shift();
+    <span class="k">const</span> tag = broker.nextDeliveryTag++;
+    consumer.outstanding.push({ ...msg, deliveryTag: tag });
+    broker.rt.send(channelPid, { type: <span class="s">"DELIVER"</span>, queue: name, message: delivered });
+  }
+}</pre></div>`,
+      cap:`The while-condition IS prefetch: a consumer only ever receives more while its own <code>outstanding.length</code> is below its configured cap. Delivery tags are assigned here, by the QUEUE — but the tag→{queue,msgId} mapping is stored on the CHANNEL actor that receives the DELIVER message, not here.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>ACK — free a slot, try again</span></div><pre><span class="k">if</span> (msg.type === <span class="s">"ACK"</span>) {
+  <span class="k">const</span> c = state.consumers.get(msg.channelId);
+  <span class="k">const</span> i = c.outstanding.findIndex(m => m.id === msg.msgId);
+  <span class="k">if</span> (i &gt;= <span class="n">0</span>) c.outstanding.splice(i, <span class="n">1</span>);
+  attemptDeliver();                     <span class="c">// a slot just freed up — try to fill it immediately</span>
+}</pre></div>`,
+      cap:`Acking doesn't just remove an entry — it immediately re-triggers delivery, which is exactly why acking one message can cause the NEXT queued message to appear the instant you click ack, with no separate poll needed.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>CHANNEL_DOWN — requeue in original order</span></div><pre><span class="k">if</span> (msg.type === <span class="s">"CHANNEL_DOWN"</span>) {
+  <span class="k">const</span> c = state.consumers.get(msg.channelId);
+  <span class="k">for</span> (<span class="k">let</span> i = c.outstanding.length - <span class="n">1</span>; i &gt;= <span class="n">0</span>; i--)
+    state.messages.unshift(c.outstanding[i]);   <span class="c">// front of the queue, original relative order preserved</span>
+  state.consumers.delete(msg.channelId);
+  attemptDeliver();                              <span class="c">// deliver to any OTHER consumer right away</span>
+}</pre></div>`,
+      cap:`Iterating backwards while unshifting is what preserves the original order at the front of the queue — the oldest of the dead channel's unacked messages ends up first in line again, exactly as chapter 5 promises for redelivery.` }
+  ]);
+})();
+/* ============================================================
+   8. CREDIT FLOW WIDGET (§12a)
+   ============================================================ */
+(function(){
+  const CF_CHANNEL = 800;
+  let broker, n;
+  function reset(){
+    broker = MiniRMQ.createBroker();
+    broker.declareExchange("cf-ex","direct");
+    broker.declareQueue("cf-q");
+    broker.bind("cf-ex","cf-q","k");
+    n = 0;
+  }
+  function render(note){
+    const c = broker.creditFlow.credit("channel:" + CF_CHANNEL, "queue:cf-q");
+    const pct = Math.max(0, Math.min(100, c / broker.creditFlow.initial * 100));
+    el("cf-credit-num").textContent = c + " / " + broker.creditFlow.initial;
+    const fill = el("cf-meter");
+    fill.style.width = pct + "%";
+    fill.className = "m-fill" + (pct <= 0 ? " hot" : pct <= 50 ? " warm" : "");
+    if (note) el("cf-note").innerHTML = note;
+  }
+  el("cf-burst").onclick = ()=>{
+    let blocked = 0;
+    for (let i=0;i<5;i++){
+      n++;
+      const r = broker.publish(CF_CHANNEL, "cf-ex", "k", "flood-" + n, { drain:false });
+      if (r.blocked) blocked++;
+    }
+    render(blocked
+      ? `sent 5 without draining — <b style="color:var(--bad)">${blocked} of them were BLOCKED</b>: credit hit zero because nothing has processed the backlog yet. This is the real mechanism, not a fake meter.`
+      : `sent 5 without draining the backlog (they sit unprocessed in cf-q's mailbox — credit only leaves, never returns, until something processes them).`);
+  };
+  el("cf-drain").onclick = ()=>{
+    broker.rt.drain();
+    render(`drained the backlog — the queue actor processed every pending ENQUEUE, calling <code>markProcessed()</code> for each, which replenishes credit in a batch once enough work has been reported done.`);
+  };
+  el("cf-reset").onclick = ()=>{ reset(); render(`reset.`); };
+  reset(); render();
+})();
+
+/* deck: CreditFlow, annotated */
+(function(){
+  stepper("deckCredit", [
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>trySend() — spend one credit, or refuse</span></div><pre>trySend(from, to) {
+  <span class="k">const</span> s = <span class="k">this</span>._get(from + <span class="s">"=>"</span> + to);
+  <span class="k">if</span> (s.credit &lt;= <span class="n">0</span>) <span class="k">return</span> <span class="k">false</span>;   <span class="c">// caller must NOT send — this hop is blocked</span>
+  s.credit--;
+  <span class="k">return</span> <span class="k">true</span>;
+}</pre></div>`,
+      cap:`Called once per message, BEFORE the ENQUEUE is even sent to the queue actor's mailbox. If it returns false, <code>Broker.publish()</code> skips the send entirely — the message is refused right there, which is the "block the publisher" behavior, not a buffering delay.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>markProcessed() — batch replenishment, not 1-for-1</span></div><pre>markProcessed(from, to) {
+  <span class="k">const</span> s = <span class="k">this</span>._get(from + <span class="s">"=>"</span> + to);
+  s.processed++;
+  <span class="k">if</span> (s.processed &gt;= <span class="k">this</span>.replenishBatch) {   <span class="c">// e.g. every 10 messages actually handled</span>
+    s.credit += s.processed;
+    s.processed = <span class="n">0</span>;
+  }
+}</pre></div>`,
+      cap:`Credit doesn't come back one-for-one as each message is processed — it comes back in a LUMP once a batch has genuinely been handled. Under smooth, fully-drained traffic this makes credit oscillate between roughly half and full, never truly blocking. It only races to zero when sends outpace processing — exactly the burst-without-draining scenario the widget demonstrates.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>where it's called from Broker.publish()</span></div><pre><span class="k">const</span> ok = <span class="k">this</span>.creditFlow.trySend(<span class="s">"channel:"</span>+channelId, <span class="s">"queue:"</span>+qname);
+<span class="k">if</span> (!ok) { <span class="c">/* mark blocked, do NOT send ENQUEUE */</span> <span class="k">continue</span>; }
+<span class="k">this</span>.rt.send(qpid, { type: <span class="s">"ENQUEUE"</span>, fromChannel: channelId, message });</pre></div>`,
+      cap:`This is the channel→queue hop specifically — upstream of delivery entirely, independent of consumer prefetch (§11). A queue can be credit-blocked from its PUBLISHER even while happily delivering its existing backlog to consumers; they are two different flow-control mechanisms solving two different problems.` }
+  ]);
+})();
+
+/* ============================================================
+   9. DEAD LETTER + TTL WIDGET (§12b)
+   ============================================================ */
+(function(){
+  let broker, n;
+  function reset(){
+    broker = MiniRMQ.createBroker();
+    broker.declareExchange("dl-ex","direct");
+    broker.declareExchange("dl-dlx","fanout");
+    broker.declareQueue("dl-deadq");
+    broker.bind("dl-dlx","dl-deadq","");
+    broker.declareQueue("dl-mainq", { ttl: 100, dlx: "dl-dlx" });
+    broker.bind("dl-ex","dl-mainq","k");
+    n = 0;
+  }
+  function render(note){
+    const mainSt = broker.rt.actors.get(broker.queuePids.get("dl-mainq")).obj.state;
+    const deadSt = broker.rt.actors.get(broker.queuePids.get("dl-deadq")).obj.state;
+    let html = `<div class="qcard"><span class="qc-name">dl-mainq</span> (ttl=100ms) — depth: ${mainSt.messages.length}, clock: ${broker.now()}ms</div>`;
+    html += `<div class="qcard"><span class="qc-name">dl-deadq</span> — depth: ${deadSt.messages.length}</div>`;
+    if (deadSt.messages.length){
+      html += deadSt.messages.map(m=>`<div class="frame"><span class="ff">"${new TextDecoder().decode(m.body)}"</span><span class="fl">x-death: ${JSON.stringify(m.xDeath)}</span></div>`).join("");
+    }
+    el("dl-view").innerHTML = html;
+    if (note) el("dl-note").innerHTML = note;
+  }
+  el("dl-ms").oninput = ()=> el("dl-ms-val").textContent = el("dl-ms").value + " ms";
+  el("dl-publish").onclick = ()=>{
+    n++;
+    broker.publish(600, "dl-ex", "k", "ttl-msg-" + n);
+    render(`published ttl-msg-${n} at clock=${broker.now()}ms. It expires at clock ${broker.now()+100}ms — but ONLY once something checks the head (a publish, ack, nack, or an explicit clock advance).`);
+  };
+  el("dl-advance").onclick = ()=>{
+    const ms = +el("dl-ms").value;
+    broker.advanceClock(ms);
+    render(`advanced the clock by ${ms}ms (now ${broker.now()}ms). If the HEAD message's age crossed 100ms, it was just dead-lettered into dl-deadq with an x-death entry.`);
+  };
+  el("dl-reset").onclick = ()=>{ reset(); render(`reset.`); };
+  reset(); render();
+})();
+
+/* deck: deadLetter + checkExpiry, annotated */
+(function(){
+  stepper("deckDlx", [
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>checkExpiry() — head-of-queue only</span></div><pre><span class="k">function</span> <span class="f">checkExpiry</span>() {
+  <span class="k">while</span> (state.messages.length &amp;&amp; state.ttl &gt; 0
+      &amp;&amp; (broker.now() - state.messages[<span class="n">0</span>].insertedAt) &gt;= state.ttl) {
+    <span class="k">const</span> dead = state.messages.shift();     <span class="c">// only ever looks at index 0</span>
+    broker.deadLetter(name, dead, <span class="s">"expired"</span>);
+  }
+}</pre></div>`,
+      cap:`This is not a scan of the whole queue — it's a while-loop over the FRONT only. A message with a short TTL sitting behind an older, longer-TTL head simply waits: this function will never even look at it until the head is gone. That's the real, documented RabbitMQ gotcha, reproduced exactly.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>deadLetter() — build or merge the x-death entry</span></div><pre><span class="k">const</span> already = message.xDeath.find(d => d.queue===originalQueueName &amp;&amp; d.reason===reason);
+<span class="k">let</span> xDeath = already
+  ? message.xDeath.map(d => d===already ? {...d, count: d.count+1} : d)   <span class="c">// merge: bump count</span>
+  : [...message.xDeath, { queue: originalQueueName, reason, "routing-keys":[...], count:1 }];</pre></div>`,
+      cap:`The SAME queue+reason combination merges into one entry with an incrementing <code>count</code>, instead of appending a duplicate — exactly how a real consumer distinguishes "this looped through the same dead-letter path forty times" from forty separate unrelated hops.` },
+    { stage:`<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">js</span><span>routing the dead letter back through the SAME exchange layer</span></div><pre><span class="k">if</span> (qopts.dlx) {
+  <span class="k">const</span> targets = <span class="k">this</span>.routeMessage(qopts.dlx, message.routingKey);   <span class="c">// same function as a normal publish!</span>
+  <span class="k">for</span> (<span class="k">const</span> qn <span class="k">of</span> targets)
+    <span class="k">this</span>.rt.send(<span class="k">this</span>.queuePids.get(qn), { type: <span class="s">"ENQUEUE"</span>, message: { ...message, xDeath } });
+}</pre></div>`,
+      cap:`Dead lettering isn't a separate delivery mechanism — it's an ordinary <code>routeMessage()</code> call against the queue's configured DLX, reusing §10's exchange layer completely unmodified. That's why a topic DLX with fancy routing "just works" for dead letters with zero extra code.` }
+  ]);
+})();
+/* ============================================================
+   10. QUIZ (§14)
+   ============================================================ */
+const QUIZ12 = [
+  { q:"Why is the topic exchange implemented as a trie rather than iterating every binding string against the routing key on every publish?",
+    opts:[ "A trie is required by the AMQP 0-9-1 specification",
+           "A trie lets shared prefixes across many bindings (e.g. many bindings starting with 'stock.') be walked once instead of re-checked per binding, turning routing cost into roughly the depth of the key rather than the number of bindings",
+           "A trie is the only data structure that can represent '*' and '#' at all",
+           "A trie makes topic exchanges faster than direct exchanges" ],
+    a:1,
+    why:"The AMQP spec says nothing about implementation data structures — B is the real reason: with N bindings sharing common prefixes, a linear scan re-checks that shared prefix N times, while a trie checks it once and fans out only where patterns actually diverge. A regex or manual splitting could technically represent '*'/'#' (C is false), and topic exchanges are never claimed to be faster than direct's O(1) map lookup (D is false — direct is simpler and cheaper by design)." },
+  { q:"In this chapter's engine, why does the CHANNEL actor hold the delivery-tag → {queue, msgId} unacked map, rather than the queue actor holding it?",
+    opts:[ "It's an arbitrary implementation choice with no real-world analog",
+           "Because delivery tags must be globally unique, and only the channel sees every queue a consumer might be attached to",
+           "Because ack/nack is a channel-scoped AMQP operation — the client calls basic.ack on a CHANNEL, not on a queue — and real RabbitMQ's rabbit_channel process holds exactly this map for exactly that reason",
+           "Because queues in this engine cannot store any per-consumer state at all" ],
+    a:2,
+    why:"AMQP's basic.ack/basic.nack methods are channel-scoped operations in the real protocol — a client acks against the channel it received the delivery on, and real RabbitMQ's rabbit_channel process is exactly where the unacked map lives. Queues DO hold per-consumer state in this engine (the outstanding array capped by prefetch — option D is false), and delivery tags being unique is a simplification of ours, not the real reason for the split (option B)." },
+  { q:"Why does killing a channel (kill-channel) requeue its unacked messages, while killing a queue (kill-queue) LOSES its messages entirely — even though both look like 'an actor died'?",
+    opts:[ "Killing a channel is not actually a crash, so a different, gentler code path runs; a queue crash goes through the supervisor, which respawns a brand-new, empty actor with no snapshot of prior state",
+           "Queues in this engine are never supervised",
+           "Channels always have fewer messages than queues, so requeuing is cheaper",
+           "This is a bug in the engine, not a deliberate design choice" ],
+    a:0,
+    why:"A dead channel triggers CHANNEL_DOWN messages to every queue, which is a normal, expected message the queue actor's handle() processes without throwing — so the messages that were in flight to that channel are deliberately unshifted back onto the queue. A queue crash is different: the actor's handle() itself throws, the runtime marks it dead, and the supervisor respawns a completely fresh actor (chapter 1's one_for_one) with no memory of the old one's message list — because this toy has no message store to recover from, exactly the point the ch.11-equivalent 'what this skips' callout makes. Queues here ARE supervised (option B is false), and the message-count claim (C) is not the mechanism." },
+  { q:"What does credit-based flow control (channel→queue) gate that consumer prefetch does not?",
+    opts:[ "Nothing — they are two names for the same mechanism",
+           "How many messages a CONSUMER can hold unacked at once",
+           "How fast a PUBLISHER can push new messages into a queue's own mailbox, independent of whether or how fast any consumer is acking",
+           "Whether an exchange type is direct, fanout, or topic" ],
+    a:2,
+    why:"Prefetch (chapter 5) is entirely about the delivery side: how many messages a specific consumer can hold unacked. Credit flow (chapter 9) is entirely about the publish side: whether the channel is even allowed to keep pushing ENQUEUE messages into a queue's mailbox faster than that queue can process them. A queue can be credit-blocked from its publisher while simultaneously delivering happily to consumers with room in their prefetch — they gate different hops (option A is false), and routing type (D) is unrelated to either." },
+  { q:"Why does TTL expiry in this engine only ever check the HEAD of the queue, and what's the resulting gotcha?",
+    opts:[ "Checking only the head is a bug that should be fixed with a full scan",
+           "It mirrors real RabbitMQ's lazy, head-only expiry check — the gotcha is that a short-TTL message stuck behind an older, longer-TTL message simply waits, uninspected, until the head is gone",
+           "Because messages in this engine expire in the order they were acked, not published",
+           "Because a full scan would require a second data structure this engine doesn't have" ],
+    a:1,
+    why:"This IS real RabbitMQ behavior, not a shortcut this toy took for convenience (option A is wrong framing) — expiry is checked lazily against the head only, which is exactly why a short per-message TTL behind a longer-TTL head can sit past its own expiry, uninspected, until the head is dequeued or expires first. Acking has nothing to do with expiry ordering (C), and a full scan is entirely possible with the existing array (D) — it's simply not what the real broker (or this miniature of it) does." },
+  { q:"Kafka's consumer holds an offset; this chapter's broker holds a per-message, per-consumer unacked set. What does the offset model give Kafka that the broker-state model structurally cannot, cheaply?",
+    opts:[ "Faster message delivery in all cases",
+           "The ability to replay any range of already-delivered messages on demand, because nothing was ever deleted from the log on 'ack' — there IS no per-message ack, only a movable read pointer",
+           "Stronger ordering guarantees across the entire topic",
+           "The ability to route one message to multiple different queues based on content" ],
+    a:1,
+    why:"Because Kafka never deletes a message when a consumer 'finishes' it — retention is time/size-based, independent of consumer progress — any consumer (or a NEW consumer group) can rewind its offset and replay history for free. This chapter's engine deletes a message on ack (§11), so once it's gone, replay isn't possible without republishing. Kafka's ordering guarantee is actually SCOPED to a single partition, not the whole topic (option C is false — see §13), and content-based multi-queue routing is exactly what RabbitMQ's exchanges do and Kafka's partitioning does not (option D describes the opposite system)." }
+];
+(function(){
+  const root = el("quiz12");
+  let answered = 0, correct = 0;
+  QUIZ12.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ12.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz12-progress").textContent = `${answered} / ${QUIZ12.length}`;
+        if (answered === QUIZ12.length)
+          el("quiz12-score").innerHTML = `Score: <b>${correct} / ${QUIZ12.length}</b> — ${correct===6?"flawless — you could review the pull request that adds this engine's flow control.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5's, §11's, and §12's decks, then spend a few minutes in §15's sandbox — the model clicks fast once you crash something yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz (§14) */
+(function(){
+  const CORRECT = [
+    "kill-channel N is issued against the broker",
+    "the broker sends a CHANNEL_DOWN message to every queue actor's mailbox",
+    "each queue actor's handle() looks up channel N's consumer record, if any",
+    "any outstanding (unacked) messages for that consumer are unshifted back onto the front of the queue, oldest first",
+    "the dead channel's consumer record is deleted from that queue's consumers map",
+    "attemptDeliver() runs immediately, redelivering to any OTHER registered consumer with spare prefetch",
+    "the channel actor itself is marked dead by rt.kill() — no supervisor is notified, because this was an expected disconnect, not a crash"
+  ];
+  const root = el("order12-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order12-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order12-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order12-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real sequence</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order12-reset").onclick = ()=>{ picks=[]; el("order12-verdict").textContent=""; render(); };
+  render();
+})();
+/* ============================================================
+   11. KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa12-check", [
+  { lvl:"THINK", q:"Chapter 6/7 covers quorum queues, built on the Ra library's Raft implementation, as the fix for mirrored classic queues' lack of real consensus. This chapter's queue actor has no replication at all — a single kill-queue permanently loses its messages. Sketch, using only mechanisms you've now implemented (actors, mailboxes, a supervisor), what a MINIMAL step toward quorum-queue-like durability would look like, without implementing actual Raft.",
+    a:"The smallest honest step is separating STATE from the ACTOR that processes it: instead of a queue actor's message list living only in its own closure, write every ENQUEUE/ACK/NACK as a small log entry to a separate, plain array (a stand-in for Ra's replicated log) BEFORE the in-memory list is mutated. On a crash, the supervisor's restart could replay that log to reconstruct the message list instead of starting empty — durable-within-one-process, though still not replicated across machines. Real quorum queues go further: that log is replicated to a majority of cluster members via Raft consensus before an operation is considered committed, so even losing the ENTIRE machine the leader was on doesn't lose acknowledged data — the piece this single-process sketch still can't provide, because there's only one process to begin with." },
+  { lvl:"THINK", q:"This chapter's credit-flow model gates exactly one hop (channel→queue). Chapter 9/10 also covers memory alarms (vm_memory_high_watermark) as a broker-wide backpressure mechanism. Predict: why might a real broker need BOTH a fine-grained per-hop credit system AND a blunt, global memory alarm, rather than just one or the other?",
+    a:"Per-hop credit solves a LOCAL problem well — one specific queue falling behind one specific publisher — but it can't see or react to GLOBAL memory pressure caused by many DIFFERENT queues each individually within their own credit limits yet collectively exhausting the node's RAM. A global memory alarm is the blunt instrument that catches exactly that aggregate case: when total memory crosses the watermark, ALL publishers block, regardless of which specific queue's credit state looks fine. Conversely, relying only on the global alarm would mean a single misbehaving queue gets no early, targeted backpressure until the WHOLE node is under stress — by which point the fix is much more disruptive. The two mechanisms cover different failure shapes: one local and specific, one global and last-resort." },
+  { lvl:"THINK", q:"Design exercise: using only this chapter's mechanics — actors, an exchange/trie router, queue actors with prefetch, credit flow, and DLX/TTL — sketch how you would build a 'retry with exponential backoff' pattern for a message that keeps failing, WITHOUT modifying any of the six components you built.",
+    a:"This is a genuinely clean fit for dead lettering exactly as built: configure the main queue's DLX to point at a chain of 'retry-N' queues, each with an increasing per-queue TTL (e.g. retry-1 ttl=1s, retry-2 ttl=5s, retry-3 ttl=30s) and each retry queue's OWN dlx pointing to the NEXT retry queue in the chain, with the final one's dlx pointing back at the original queue's exchange. A message that gets nacked with requeue=false lands in retry-1; it sits there until retry-1's TTL expires (using exactly §12's head-of-queue expiry), gets dead-lettered (with an x-death entry recording the hop) into retry-2, waits longer, and so on — an increasing backoff built ENTIRELY from TTL + DLX composition, no new engine code required. The x-death array even gives you a free retry-count: count entries with the same original queue and reason to decide when to give up and route to a true 'poison' queue instead." }
+]);
+/* ============================================================
+   12. FULL BROKER SANDBOX (§15)
+   ============================================================ */
+(function(){
+  let broker = MiniRMQ.createBroker();
+  let consoleState = { nextConsumerChannel: 1, slow: new Set() };
+  let activeTab = "topology";
+  const outEl = el("c12-out");
+
+  function appendLine(t, m){
+    const d = document.createElement("div");
+    d.className = { in:"c-in", ok:"c-ok", err:"c-err", warn:"c-warn", out:"c-out" }[t] || "c-out";
+    d.textContent = (t==="in" ? "rmq> " : "") + m;
+    outEl.appendChild(d);
+    outEl.scrollTop = outEl.scrollHeight;
+  }
+  function execLine(text){
+    appendLine("in", text);
+    const results = MiniRMQConsole.run(broker, consoleState, text);
+    results.forEach(r => appendLine(r.t, r.m));
+    renderPanel();
+  }
+
+  /* ---- trie rendering, reused from §10's shape but generic over any exchange's trie ---- */
+  function renderTrieNode(node){
+    let html = "";
+    for (const [word, child] of node.children)
+      html += `<div class="trie-node"><span class="trie-tok">${word}</span>${child.queues.size?`<span class="trie-q">→ ${[...child.queues].join(",")}</span>`:""}${renderTrieNode(child)}</div>`;
+    if (node.star) html += `<div class="trie-node"><span class="trie-tok star">*</span>${node.star.queues.size?`<span class="trie-q">→ ${[...node.star.queues].join(",")}</span>`:""}${renderTrieNode(node.star)}</div>`;
+    if (node.hash) html += `<div class="trie-node"><span class="trie-tok hash">#</span>${node.hash.queues.size?`<span class="trie-q">→ ${[...node.hash.queues].join(",")}</span>`:""}${renderTrieNode(node.hash)}</div>`;
+    return html;
+  }
+
+  function renderTopology(){
+    if (!broker.exchanges.size) return `<span style="color:var(--dim)">no exchanges declared yet — try <code>declare-exchange ex1 topic</code></span>`;
+    let html = "";
+    for (const [name, ex] of broker.exchanges){
+      html += `<div class="qcard"><span class="qc-name">${name}</span> <span class="tag">${ex.type}</span>`;
+      html += `<div class="taglist">` + ex.bindings.map(b=>`<span class="tag">${b.queue} ← "${b.pattern}"</span>`).join("") + `</div>`;
+      if (ex.type === "topic"){
+        html += `<div class="trie" style="margin-top:8px">${renderTrieNode(ex.trie.root) || '<span style="color:var(--dim)">(empty trie)</span>'}</div>`;
+      }
+      html += `</div>`;
+    }
+    return html;
+  }
+  function renderQueues(){
+    if (!broker.queuePids.size) return `<span style="color:var(--dim)">no queues declared yet — try <code>declare-queue q1</code></span>`;
+    let html = "";
+    for (const [name, pid] of broker.queuePids){
+      const a = broker.rt.actors.get(pid);
+      const alive = a && a.alive;
+      const st = alive ? a.obj.state : null;
+      html += `<div class="qcard"><span class="qc-name">${name}</span> ${alive ? "" : '<span style="color:var(--bad)">[CRASHED — awaiting supervisor restart]</span>'}`;
+      if (st){
+        html += ` — depth: ${st.messages.length}` + (st.ttl?` · ttl=${st.ttl}ms`:"") + (st.dlx?` · dlx=${st.dlx}`:"") + (isFinite(st.maxLength)?` · max-length=${st.maxLength}`:"");
+        if (st.messages.length) html += `<div class="taglist">` + st.messages.slice(0,6).map(m=>`<span class="tag">"${new TextDecoder().decode(m.body)}"</span>`).join("") + (st.messages.length>6?`<span class="tag">+${st.messages.length-6} more</span>`:"") + `</div>`;
+        for (const [cid, c] of st.consumers){
+          html += `<div style="margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--muted)">channel ${cid} · prefetch=${c.prefetch} · unacked=${c.outstanding.length}</div>`;
+          if (c.outstanding.length) html += `<div class="taglist">` + c.outstanding.map(m=>`<span class="tag unacked">tag ${m.deliveryTag}</span>`).join("") + `</div>`;
+        }
+      }
+      html += `</div>`;
+    }
+    return html;
+  }
+  function renderCredit(){
+    if (!broker.creditFlow.state.size) return `<span style="color:var(--dim)">no traffic yet — publish something first</span>`;
+    let html = `<p style="font-size:11.5px;color:var(--muted);margin-bottom:8px">initial=${broker.creditFlow.initial}, replenish batch=${broker.creditFlow.replenishBatch}</p>`;
+    for (const [key, s] of broker.creditFlow.state){
+      const pct = Math.max(0, Math.min(100, s.credit / broker.creditFlow.initial * 100));
+      html += `<div class="meter"><div class="m-l"><span>${key}</span><span>${s.credit} / ${broker.creditFlow.initial} (processed since bump: ${s.processed})</span></div>
+        <div class="m-bar"><div class="m-fill ${pct<=0?'hot':pct<=50?'warm':''}" style="width:${pct}%"></div></div></div>`;
+    }
+    return html;
+  }
+  function renderWire(){
+    let html = `<div class="ad-sec">PUBLISH FRAMES (frame codec, §8)</div>`;
+    html += broker.wireLog.length ? broker.wireLog.slice(-12).map(w=>`<div class="frame">t=${w.ts} ch=${w.channelId} ${w.exchange}/"${w.routingKey}" — ${w.frames} frame(s), ${w.bytes}B</div>`).join("") : `<span style="color:var(--dim)">none yet</span>`;
+    html += `<div class="ad-sec" style="margin-top:14px">DELIVERIES</div>`;
+    html += broker.deliveryLog.length ? broker.deliveryLog.slice(-12).map(d=>`<div class="frame">t=${d.ts} ch=${d.channelId} queue=${d.queue} tag=${d.tag} "${new TextDecoder().decode(d.body)}"</div>`).join("") : `<span style="color:var(--dim)">none yet</span>`;
+    if (broker.events.length){
+      html += `<div class="ad-sec" style="margin-top:14px">EVENTS</div>`;
+      html += broker.events.slice(-10).map(e=>`<div class="frame" style="border-color:${e.t==='err'?'var(--bad)':e.t==='warn'?'var(--warn)':'var(--ok)'}">${e.m}</div>`).join("");
+    }
+    return html;
+  }
+  function renderPanel(){
+    const fn = { topology: renderTopology, queues: renderQueues, credit: renderCredit, wire: renderWire }[activeTab];
+    el("c12-panel").innerHTML = fn();
+  }
+  document.querySelectorAll("#c12-tabs .tri-tab").forEach(btn=>{
+    btn.onclick = ()=>{
+      document.querySelectorAll("#c12-tabs .tri-tab").forEach(b=>b.classList.toggle("on", b===btn));
+      activeTab = btn.dataset.t;
+      renderPanel();
+    };
+  });
+
+  el("c12-run").onclick = ()=>{
+    const v = el("c12-input").value;
+    if (!v.trim()) return;
+    execLine(v);
+    el("c12-input").value = "";
+  };
+  el("c12-input").addEventListener("keydown", e=>{ if (e.key === "Enter") el("c12-run").click(); });
+
+  const EXAMPLES = [
+    "declare-exchange ex1 topic",
+    "declare-queue q1",
+    "bind ex1 q1 stock.#",
+    "publish ex1 stock.usd.nyse hello-world --confirm",
+    "consume q1 --prefetch 3",
+    "inspect"
+  ];
+  el("c12-examples").innerHTML = EXAMPLES.map(c=>`<button class="chip" data-c="${c.replace(/"/g,'&quot;')}">${c}</button>`).join("");
+  el("c12-examples").querySelectorAll(".chip").forEach(chip=> chip.onclick = ()=> execLine(chip.dataset.c));
+
+  /* ---- scripted scenarios ---- */
+  function resetSim(){
+    broker = MiniRMQ.createBroker();
+    consoleState = { nextConsumerChannel: 1, slow: new Set() };
+    outEl.innerHTML = "";
+  }
+  const SCENARIOS = {
+    "topic-fanout": { tab:"topology", steps:[
+      "declare-exchange topicx topic",
+      "declare-queue us-orders", "declare-queue eu-orders", "declare-queue all-orders",
+      "bind topicx us-orders order.us.#", "bind topicx eu-orders order.eu.#", "bind topicx all-orders order.#",
+      "consume us-orders --prefetch 5", "consume eu-orders --prefetch 5", "consume all-orders --prefetch 5",
+      "publish topicx order.us.electronics widget-order",
+      "publish topicx order.eu.books novel-order",
+      "inspect"
+    ]},
+    "channel-death": { tab:"queues", steps:[
+      "declare-exchange direx direct", "declare-queue work", "bind direx work job",
+      "publish direx job task-A", "publish direx job task-B",
+      "consume work --prefetch 5",
+      "kill-channel 1",
+      "consume work --prefetch 5",
+      "inspect"
+    ]},
+    "prefetch-fairness": { tab:"queues", steps:[
+      "declare-exchange direx direct", "declare-queue tasks", "bind direx tasks t",
+      "consume tasks --prefetch 1", "consume tasks --prefetch 10",
+      "publish direx t job-1", "publish direx t job-2", "publish direx t job-3",
+      "publish direx t job-4", "publish direx t job-5", "publish direx t job-6",
+      "inspect"
+    ]},
+    "poison-dlq": { tab:"queues", steps:[
+      "declare-exchange mainex direct", "declare-exchange dlxex fanout",
+      "declare-queue deadletters", "bind dlxex deadletters unused",
+      "declare-queue orders --dlx dlxex", "bind mainex orders neworder",
+      "publish mainex neworder poison-payload",
+      "consume orders --prefetch 1",
+      "nack 1",
+      "inspect"
+    ]},
+    "credit-exhaustion": { tab:"credit", steps:[
+      "declare-exchange crx direct", "declare-queue backlog", "bind crx backlog k",
+      { flood: 20, exchange:"crx", key:"k" },
+      "publish crx k one-too-many",
+      "inspect"
+    ]},
+    "supervisor-restart": { tab:"queues", steps:[
+      "declare-exchange direx direct", "declare-queue durable1", "bind direx durable1 k",
+      "publish direx k will-be-lost",
+      "kill-queue durable1",
+      "inspect",
+      "publish direx k fresh-after-restart",
+      "inspect"
+    ]}
+  };
+  const SCENARIO_LABELS = {
+    "topic-fanout": "topic routing fan-out",
+    "channel-death": "channel death → requeue",
+    "prefetch-fairness": "prefetch fairness vs throughput",
+    "poison-dlq": "poison message → DLQ (x-death)",
+    "credit-exhaustion": "credit exhaustion blocks publisher",
+    "supervisor-restart": "supervisor restarts crashed queue"
+  };
+  const scenarioRow = document.createElement("div");
+  scenarioRow.className = "console-examples";
+  scenarioRow.style.borderTop = "1px solid var(--border)";
+  scenarioRow.innerHTML = `<span style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.08em;width:100%;margin-bottom:4px">ONE-CLICK SCENARIOS (reset + run)</span>` +
+    Object.keys(SCENARIOS).map(k=>`<button class="btn warn" data-k="${k}">${SCENARIO_LABELS[k]}</button>`).join("");
+  el("sim12").querySelector(".console-left").appendChild(scenarioRow);
+  scenarioRow.querySelectorAll("button[data-k]").forEach(btn=>{
+    btn.onclick = ()=>{
+      resetSim();
+      const scenario = SCENARIOS[btn.dataset.k];
+      appendLine("warn", "=== scenario: " + SCENARIO_LABELS[btn.dataset.k] + " ===");
+      for (const step of scenario.steps){
+        if (typeof step === "string"){ execLine(step); continue; }
+        if (step.flood){
+          appendLine("in", `(internal) flooding ${step.flood} publishes to ${step.exchange}/${step.key} WITHOUT draining between them, to genuinely exhaust queue-hop credit`);
+          let blockedCount = 0;
+          for (let i=0;i<step.flood;i++){
+            const r = broker.publish(5, step.exchange, step.key, "flood-" + i, { drain:false });
+            if (r.blocked) blockedCount++;
+          }
+          appendLine("ok", `sent ${step.flood} publishes on channel 5; ${blockedCount} were already blocked (credit initial=${broker.creditFlow.initial})`);
+        }
+      }
+      activeTab = scenario.tab;
+      document.querySelectorAll("#c12-tabs .tri-tab").forEach(b=>b.classList.toggle("on", b.dataset.t===scenario.tab));
+      renderPanel();
+      el("sim12-phase").textContent = "SCENARIO: " + SCENARIO_LABELS[btn.dataset.k];
+    };
+  });
+
+  appendLine("ok", "MiniRMQ broker ready. Type a command, click an example, or run a scenario below.");
+  renderPanel();
+})();
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["rmq-12"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#ff9f43"><a class="cn-btn" href="rmq-11.html"><span>←</span><span><span class="cn-lbl">PREV · CH 11</span><span class="cn-ttl">Persistence, Disk Layout & Recovery</span></span></a><div class="cn-mid"><a class="cn-home" href="course-rabbitmq.html">☰ RabbitMQ Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="rmq-01.html">CH 01 · Genesis: AMQP & Why Erlang</option><option value="rmq-02.html">CH 02 · Connections, Channels & the Frame Protocol</option><option value="rmq-03.html">CH 03 · Exchanges, Bindings & Routing Algorithms</option><option value="rmq-04.html">CH 04 · Classic Queues: The Queue Process Internals</option><option value="rmq-05.html">CH 05 · Delivery: ACK, NACK, Confirms & Prefetch</option><option value="rmq-06.html">CH 06 · Quorum Queues: Raft Inside the Broker</option><option value="rmq-07.html">CH 07 · Streams: The Log Comes to RabbitMQ</option><option value="rmq-08.html">CH 08 · Dead Lettering, TTL & Priority Queues</option><option value="rmq-09.html">CH 09 · Flow Control & Memory Management</option><option value="rmq-10.html">CH 10 · Clustering, Federation & Shovel</option><option value="rmq-11.html">CH 11 · Persistence, Disk Layout & Recovery</option><option value="rmq-12.html" selected>CH 12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</option></select><span class="cn-prog">12 / 12</span></div><a class="cn-btn disabled"><span><span class="cn-lbl">END</span><span class="cn-ttl">Course complete</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

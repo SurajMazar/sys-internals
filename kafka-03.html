@@ -1,0 +1,1919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAFKA-03 · Log Internals: Segments, Indexes & the Record Format — Apache Kafka Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#f25c54; --pg-dim:rgba(242,92,84,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(242,92,84,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(242,92,84,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(242,92,84,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(242,92,84,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* candidate boxes (deck) */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(242,92,84,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars (reused for index-density bar) */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(242,92,84,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(242,92,84,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#ff9f43);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- new: segment / byte-level widgets (kafka-specific) ---------- */
+  .segrow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .segchip{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:8px;padding:6px 11px;
+    font-family:var(--mono);font-size:10.5px;color:var(--muted);cursor:pointer;transition:all .15s}
+  .segchip:hover{border-color:var(--pg)}
+  .segchip.active{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+  .segchip.probed{border-color:var(--ok);color:var(--ok)}
+  .segbar-wrap{margin:6px 0 14px}
+  .segbar-label{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:5px}
+  .segbar{position:relative;height:34px;border:1px solid var(--border-hi);border-radius:9px;background:var(--bg-2);overflow:hidden}
+  .segbar .fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--pg),#ff9f43);transition:width .3s ease;width:0%}
+  .segbar .tick{position:absolute;top:0;bottom:0;width:2px;background:rgba(167,139,250,.75)}
+  .segbar .tick.probed{background:var(--ok);box-shadow:0 0 8px var(--ok);width:3px}
+  .segbar .scanhi{position:absolute;top:0;bottom:0;background:rgba(255,159,67,.35);border-left:2px solid var(--warn);border-right:2px solid var(--warn);transition:left .15s,width .15s}
+  .bytepanel{font-family:var(--mono);font-size:11px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--bg-2);margin-top:10px}
+  .bytepanel .bp-title{font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:8px}
+  .bytepanel .bp-row{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--border)}
+  .bytepanel .bp-row:last-child{border-bottom:none}
+  .bytepanel .bp-f{color:var(--muted);flex:0 0 auto}
+  .bytepanel .bp-v{color:var(--text);text-align:right}
+  .varint-seq{display:inline-flex;gap:3px;flex-wrap:wrap;justify-content:flex-end}
+  .varint-byte{border:1px solid var(--border-hi);border-radius:4px;padding:0 5px;font-family:var(--mono);font-size:10px;background:var(--panel-2);color:#9fd0ff}
+  .varint-byte.cont{color:var(--warn);border-color:rgba(255,159,67,.4)}
+  .fieldmap{display:flex;flex-wrap:wrap;gap:4px;font-family:var(--mono);font-size:10px;margin:12px 0}
+  .fieldmap .fm{border:1px solid var(--border-hi);border-radius:6px;padding:5px 7px;background:var(--panel-2);color:var(--muted);text-align:center;cursor:default}
+  .fieldmap .fm b{display:block;color:var(--text);font-size:11px}
+  .fieldmap .fm.crc{border-color:var(--pg);color:var(--pg)}
+  .fieldmap .fm.crc b{color:var(--pg)}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-kafka.html">← Apache Kafka Internals</a>
+  <span class="crumb">APACHE KAFKA INTERNALS · <b>CH 03 / 15</b> · LOG INTERNALS</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Segmented Log</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">APACHE KAFKA INTERNALS · CHAPTER 03</div>
+  <h1>Log Internals: Segments,<br><span class="grad">Indexes & the Record Format</span></h1>
+  <p class="lead">A Kafka partition is sold to you as an infinite, append-only log. On disk it is a directory of
+  bounded files, a pair of sparse binary indexes per file, and a byte format engineered so a broker can validate,
+  route, and retain billions of records a day without ever deserializing most of them. This chapter takes the
+  partition apart at the byte level: <code>LogSegment</code>, <code>OffsetIndex</code>, <code>TimeIndex</code>,
+  and the KIP-98 record batch that everything downstream — the producer, the replica fetcher, the consumer — actually
+  ships over the wire.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Compute the physical byte offset of any record from its logical offset by hand.</div>
+    <div class="obj"><b>You will understand</b>Why the index is sparse, why entries are 8 bytes, and why the CRC sits where it does.</div>
+    <div class="obj"><b>You will predict</b>Bytes scanned per lookup, index file size, and segment-roll frequency from config alone.</div>
+    <div class="obj"><b>You will simulate</b>A live segmented log — append, roll, index, corrupt, and recover it yourself.</div>
+  </div>
+</div>
+
+<!-- ================= S1 THE PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">An infinite log has to live in finite files</h2>
+  <p class="lead">Every abstraction Kafka sells you — "the partition is an ordered, immutable, append-only sequence
+  of records" — is a promise about <i>logical</i> offsets: 0, 1, 2, 3, … forever. Nothing about that promise says
+  anything about how bytes sit on a disk. The moment you ask "where does record #4,213,009 physically live, and how
+  fast can I get to it," you have left the abstraction and entered this chapter's actual subject: the on-disk
+  representation that <code>UnifiedLog</code> and <code>LogManager</code> build and maintain under
+  <code>&lt;log.dirs&gt;/topic-3/</code> — a directory named for the topic and partition, e.g. a topic
+  <code>orders</code> partition <code>3</code> lives at <code>orders-3/</code>.</p>
+  <p>Three physical requirements have to be satisfied simultaneously, and they pull in different directions:</p>
+  <ul class="plain">
+    <li><b>Append at disk-saturating throughput.</b> Producers write continuously; the write path cannot pay for
+      random I/O or in-place restructuring per record. It must degrade to "append bytes to the end of a file" —
+      the one operation every filesystem and every disk (spinning or flash) does at its fastest.</li>
+    <li><b>Locate an arbitrary offset in better than O(n).</b> Consumers resume from a committed offset after a
+      restart; replicas fetch from a follower's last-known offset; <code>offsetsForTimes()</code> resolves a
+      timestamp to an offset for time-travel seeks. All of these need "find offset K" to cost far less than
+      reading every byte before it — but K could be anywhere in gigabytes of history.</li>
+    <li><b>Delete old data for the price of a directory listing.</b> Retention (<code>retention.ms</code>,
+      <code>retention.bytes</code>) must reclaim space continuously, on a partition that may be terabytes, without
+      pausing appends and without rewriting data that survives.</li>
+  </ul>
+  <p>Hold those three requirements in your head — sequential append, sub-linear lookup, cheap deletion — because
+  every design decision in this chapter is a direct, derivable answer to exactly one of them. Nothing here is
+  arbitrary; it is what falls out when you refuse to compromise on any of the three.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT 12 CHAPTERS</div>
+    <p>The record batch format you decode in §8 is the same byte layout the producer's <code>RecordAccumulator</code>
+    builds (chapter 4), the same bytes the leader appends without re-encoding (chapter 6 covers replication's
+    <code>fetch</code>/<code>produce</code> paths, which move these bytes verbatim), and the same bytes
+    <code>LogCleaner</code> rewrites during compaction (chapter 5). Get comfortable at the byte level now — it is
+    the substrate every later chapter reasons about.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORICAL CONTEXT ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">The log format's four eras</h2>
+  <p>Kafka's storage layer looks stable from the outside — "segments plus a sparse index" was present in the
+  earliest LinkedIn design notes. What actually changed, repeatedly and for concrete reasons, is the
+  <b>byte layout of a record</b> and the <b>indexing metadata built alongside it</b>. Click through: each event
+  left a field you will decode by hand in §8.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from message sets to record batches</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY THE INDEX WAS ALWAYS SPARSE, NOT DENSE</div>
+    <p>Jay Kreps' original 2011 design memo already rejects a dense (per-message) index outright: it would be
+    roughly the same size as the log itself for small messages, defeating the purpose of an index that should be
+    small enough to sit entirely in the page cache. The sparse index — one entry every few KB, not one per record —
+    is the oldest surviving design decision in this chapter, and every later KIP (32/33 for time, 98 for batching)
+    extends the same sparse philosophy rather than replacing it.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE SOLUTION ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: one file per partition, scan to find anything</h2>
+  <p>Derive it honestly, the way a first-principles engineer would in an afternoon. A partition is an append-only
+  sequence of records — so the simplest possible on-disk representation is <i>literally one file</i>, opened once,
+  appended to forever. To find a record by offset, you scan from the beginning, deserializing each record's framing
+  until you've counted your way to the target.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>naive_partition_log.c — the strawman, annotated</span></div>
+    <pre><span class="k">struct</span> partition_log {
+    <span class="k">int</span> fd;             <span class="c">/* one fd, opened O_APPEND, never closed */</span>
+    <span class="k">uint64_t</span> next_offset; <span class="c">/* next logical offset to assign        */</span>
+};
+
+<span class="c">/* Append: dumb, and dumb is exactly the point at this stage. */</span>
+<span class="k">void</span> <span class="f">append_record</span>(partition_log *p, <span class="k">byte</span> *key, <span class="k">int</span> klen, <span class="k">byte</span> *val, <span class="k">int</span> vlen) {
+    write_u64(p->fd, p->next_offset++);   <span class="c">/* offset          */</span>
+    write_u32(p->fd, klen + vlen + <span class="n">8</span>); <span class="c">/* record size     */</span>
+    write_u32(p->fd, <span class="f">crc32</span>(key, klen, val, vlen)); <span class="c">/* checksum */</span>
+    write(p->fd, key, klen);
+    write(p->fd, val, vlen);              <span class="c">/* append() only — always sequential */</span>
+}
+
+<span class="c">/* Lookup: the only tool we have is "start from zero and count". */</span>
+<span class="k">record</span> *<span class="f">find_offset</span>(partition_log *p, <span class="k">uint64_t</span> target) {
+    lseek(p->fd, <span class="n">0</span>, SEEK_SET);
+    <span class="k">uint64_t</span> off; <span class="k">uint32_t</span> size, crc;
+    <span class="k">while</span> (read_u64(p->fd, &off) > <span class="n">0</span>) {       <span class="c">/* O(n): one syscall-heavy   */</span>
+        read_u32(p->fd, &size);                    <span class="c">/* pass per candidate offset */</span>
+        read_u32(p->fd, &crc);
+        <span class="k">if</span> (off == target) <span class="k">return</span> <span class="f">read_record_body</span>(p->fd, size);
+        lseek(p->fd, size - <span class="n">8</span>, SEEK_CUR);  <span class="c">/* skip this record's body  */</span>
+    }
+    <span class="k">return</span> NULL;  <span class="c">/* fell off the end: offset doesn't exist yet */</span>
+}</pre>
+  </div>
+
+  <p>This already gets the append path right — every write is a sequential append, which is the fastest thing you
+  can ask a disk to do, HDD or SSD. That is not a coincidence; it is the one property naive and production Kafka
+  share. Everything that's about to go wrong is in <code>find_offset</code> and in what "one file, forever" does to
+  deletion.</p>
+</section>
+
+<!-- ================= S4 WHY IT FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The arithmetic that kills a single unbounded file</h2>
+  <p>Three failure modes, each quantified — because "it doesn't scale" is not an argument until you can put a
+  number on it.</p>
+  <h3>1. Offset lookup is O(n) in bytes, not O(n) in records</h3>
+  <p>The naive scan's cost is proportional to <i>bytes read</i> before the target, not record count — and it must
+  physically read every one of those bytes off disk (or page cache, if you're lucky and it's resident). Consider a
+  10&nbsp;GB partition file and a cold-cache lookup near the end:</p>
+  <ul class="plain">
+    <li><b>7,200&nbsp;RPM HDD, sequential read ≈ 150–200&nbsp;MB/s:</b> 10&nbsp;GB / 175&nbsp;MB/s ≈ <b>57 seconds</b>
+      for a full scan; on average you'd stop halfway, so ≈ 28&nbsp;s per lookup — for one client, on one partition,
+      with the disk doing nothing else.</li>
+    <li><b>SATA SSD, sequential read ≈ 500&nbsp;MB/s:</b> ≈ 20&nbsp;s worst case, ≈ 10&nbsp;s average.</li>
+    <li><b>NVMe SSD, sequential read ≈ 3&nbsp;GB/s:</b> ≈ 3.3&nbsp;s worst case, ≈ 1.7&nbsp;s average — still
+      absurd for an operation a consumer performs on every rebalance and every restart.</li>
+  </ul>
+  <p>None of these numbers are acceptable for "resume consuming from offset K," which needs to complete in
+  milliseconds. Multiply by dozens of consumer groups rebalancing simultaneously across thousands of partitions and
+  the naive scan doesn't just feel slow — it saturates disk bandwidth that appends need.</p>
+  <h3>2. Retention deletion means rewriting the file — or it doesn't work at all</h3>
+  <p>Retention needs to discard the oldest records once <code>retention.ms</code> or <code>retention.bytes</code>
+  is exceeded. In one giant file, the old data is at the <i>front</i>. No POSIX filesystem exposes "truncate from
+  the head" — <code>ftruncate()</code> only shrinks from the end. The only way to remove the front of a file is to
+  rewrite everything after the deletion point to a new file (or shift it within the same file) — an O(remaining
+  bytes) copy, competing for the same disk bandwidth the append path needs, on every retention pass.
+  <code>fallocate(FALLOC_FL_PUNCH_HOLE)</code> can free space in the middle of a file on some filesystems, but it
+  leaves a hole your reader has to know to skip and does nothing to shrink the byte offsets your index would still
+  need to track — it does not solve the addressing problem.</p>
+  <h3>3. A single ever-growing file cannot be safely or usefully memory-mapped</h3>
+  <p>Memory-mapping is the cheapest way to get page-cache-backed random access without <code>read()</code> syscalls
+  (§8 leans on this hard for the index). But <code>mmap()</code> maps a <i>fixed-size</i> region. A file that grows
+  without bound forces either remapping on every growth (invalidating pointers, costly) or reserving an
+  address-space region far larger than needed up front (wasteful, and eventually wrong anyway). A file with a
+  known, bounded maximum size is a precondition for using mmap safely and simply — which is exactly the tool §8
+  needs for the index files.</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS, ONE MORE TIME</div>
+    <p>A retention pass on a 500&nbsp;GB single-file partition, rewriting the surviving 400&nbsp;GB at
+    200&nbsp;MB/s, costs roughly <b>2,000 seconds — over half an hour</b> — of disk bandwidth contending directly
+    with live appends and fetches, repeated every time retention needs to reclaim space. That single number is
+    why "one file" is disqualified before you even get to indexing.</p>
+  </div>
+  <p>So: we need to bound file size, and we need an index. §5 derives what shape both should take.</p>
+</section>
+
+<!-- ================= S5 BETTER SOLUTION ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION, CANDIDATES EXAMINED</div>
+  <h2 class="sec">Three candidates, one survivor: the segmented log</h2>
+  <p>Step through the candidates a careful engineer considers, in the order they get eliminated.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Candidate A → B → C</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Candidate C — the segmented log — is what <code>LogManager</code> and <code>UnifiedLog</code> actually build.
+  A partition directory holds an ordered sequence of <b>segments</b>, each a bounded-size <code>.log</code> file
+  plus its own <code>.index</code>/<code>.timeindex</code> siblings. A segment <b>rolls</b> — closes and a new one
+  opens — when either threshold is crossed:</p>
+  <ul class="plain">
+    <li><code>segment.bytes</code> — default <b>1,073,741,824</b> (1&nbsp;GiB). Once the active segment's
+      <code>.log</code> file would exceed this, roll.</li>
+    <li><code>segment.ms</code> — default <b>604,800,000</b> ms (7 days). Even a low-throughput partition rolls
+      at least this often, so retention-by-time has segment-granularity to work with regardless of volume.</li>
+  </ul>
+  <p>Rolling is cheap by construction: it's opening a new file whose name encodes the next base offset, not
+  touching any existing file. Deletion becomes equally cheap in the other direction — once every record in a
+  segment is older than <code>retention.ms</code> (or the segment is behind the <code>retention.bytes</code>
+  cutoff), the whole segment — <code>.log</code>, <code>.index</code>, <code>.timeindex</code>, and friends — is
+  simply <code>unlink()</code>'d. No bytes are rewritten. Deletion cost drops from O(surviving bytes) to O(1)
+  per segment.</p>
+</section>
+
+<!-- ================= S6 WHY THAT STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Segments solve the big problems; here's what's left</h2>
+  <p>The segmented log doesn't make cost disappear — it relocates and bounds it. Four residual costs, each real and
+  each tunable:</p>
+  <ul class="plain">
+    <li><b>The active segment is structurally different from every other segment.</b> Only the last segment in the
+      sequence is ever appended to; every earlier segment is immutable the instant it rolls. That asymmetry is why
+      <code>LogSegment</code> tracks an <code>append()</code> path used exactly once per partition (on the current
+      active segment) and a <code>read()</code> path used on all of them. The active segment's index is also
+      incomplete by definition — it grows incrementally with each append, rather than existing fully-formed the
+      way a rolled segment's index does.</li>
+    <li><b>A sparse index still means a linear scan phase after the binary search.</b> §8 derives this precisely,
+      but the shape is: index entries are written only every <code>index.interval.bytes</code> (default 4,096) of
+      log data. A lookup gets you to the nearest <i>preceding</i> indexed position for free, then must scan forward
+      through up to ~4&nbsp;KB of raw log bytes, deserializing record-batch headers, until it finds the target.
+      Smaller intervals shrink that scan at the cost of a larger, more numerous index file — §8's slider makes this
+      tradeoff concrete.</li>
+    <li><b>Rolling has its own overhead, paid rarely but not for free.</b> On roll: the outgoing segment's index is
+      <code>trimToValidSize()</code>'d (its mmap is shrunk to just the entries actually written, since it was
+      pre-allocated at <code>segment.index.bytes</code>, default 10&nbsp;MiB, worth of address space) and flushed;
+      a producer-state <code>.snapshot</code> is written (§8); new file handles are opened for the fresh
+      <code>.log</code>/<code>.index</code>/<code>.timeindex</code>. None of this is expensive at 1&nbsp;GiB
+      cadence, but it is exactly the kind of "rare but synchronous" work that shows up as a p99 latency spike if
+      <code>segment.bytes</code> is set too low relative to throughput (§11 has the incident).</li>
+    <li><b>Recovery after an unclean shutdown must rebuild or validate at least the active segment's indexes.</b>
+      A crash mid-append can leave the <code>.log</code> file with a torn final record batch and the
+      <code>.index</code>/<code>.timeindex</code> undersized or stale relative to it. <code>Log.loadSegments()</code>
+      re-scans and re-validates on startup — §8 and §13 walk the exact mechanism.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THE KNOB THAT TRADES ALL FOUR AGAINST EACH OTHER</div>
+    <p><code>index.interval.bytes</code> is the single tuning lever that sits at the center of this section: smaller
+    values shrink the post-binary-search linear scan (cheaper lookups) but grow the index file and the number of
+    mmap pages touched per lookup (more index overhead, more page-cache pressure); larger values do the reverse.
+    Kafka's default of 4,096 is chosen so a rolled 1&nbsp;GiB segment's index is a few hundred KB — small enough to
+    live entirely in the page cache, on every segment, indefinitely.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The partition directory, component by component</h2>
+  <p>Click any file type below. Real Kafka names every file after the <b>base offset of its first record</b>,
+  zero-padded to 20 digits — e.g. a segment starting at offset 368,769 is <code>00000000000000368769.log</code>,
+  with siblings <code>00000000000000368769.index</code>, <code>.timeindex</code>, and (if any producer-state or
+  transactional data applies) <code>.snapshot</code> / <code>.txnindex</code> sharing the same base-offset name.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer — orders-3/ on disk</span><span class="w-sub">CLICK ANY FILE</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">PARTITION DIRECTORY</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="partdir">orders-3/ — one directory per partition replica, owned by LogManager</div></div>
+        <div class="arch-row-label">CLOSED (ROLLED) SEGMENTS — immutable</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="closedseg">00000000000000000000.log + .index + .timeindex</div>
+          <div class="acard" data-p="closedseg">00000000000000184320.log + .index + .timeindex</div>
+        </div>
+        <div class="arch-row-label">ACTIVE SEGMENT — the only one being appended to</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="activeseg">00000000000000368769.log</div>
+          <div class="acard" data-p="offsetindex">00000000000000368769.index</div>
+          <div class="acard" data-p="timeindex">00000000000000368769.timeindex</div>
+        </div>
+        <div class="arch-row-label">SUPPORTING METADATA FILES</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="snapshot">00000000000000368769.snapshot</div>
+          <div class="acard" data-p="txnindex">00000000000000368769.txnindex</div>
+          <div class="acard" data-p="leaderepoch">leader-epoch-checkpoint</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY BASE-OFFSET FILENAMES, NOT SEQUENCE NUMBERS</div>
+    <p>Naming each segment after its own first offset (rather than "segment 0, segment 1, …") means a reader who
+    knows a target offset can locate the right segment with a single lookup: find the largest base offset ≤ target
+    among the directory's segment names. <code>LogSegments</code> keeps these in a
+    <code>ConcurrentSkipListMap&lt;Long, LogSegment&gt;</code> keyed by base offset specifically so that lookup —
+    <code>floorEntry(targetOffset)</code> — is itself O(log(segment count)), before the per-segment index search
+    even begins. Two binary searches nested inside each other: one across segments, one across index entries.</p>
+  </div>
+</section>
+
+<!-- ================= S8 INTERNAL IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The sparse index, the two-phase lookup, and the record batch</h2>
+
+  <h3>(a) Why the index entry is exactly 8 bytes, and why it's memory-mapped</h3>
+  <p><code>OffsetIndex</code> (extending <code>AbstractIndex</code>) stores each entry as a fixed <b>8 bytes</b>:
+  a 4-byte <b>relative offset</b> and a 4-byte <b>physical position</b> within the <code>.log</code> file. Both
+  halves are derived, not arbitrary:</p>
+  <ul class="plain">
+    <li><b>Relative, not absolute, offset.</b> An absolute Kafka offset is a signed 64-bit long. But every offset in
+      a given segment differs from that segment's base offset by, at most, however many records fit in
+      <code>segment.bytes</code> — for any sane record size, that delta fits comfortably in 32 unsigned bits
+      (up to ~4.29 billion). Storing <code>offset - baseOffset</code> instead of <code>offset</code> halves this
+      field's width for free, because the expensive 64-bit information (which segment) is already encoded in the
+      filename and needs storing exactly once per segment, not once per index entry.</li>
+    <li><b>Physical position, not "record number."</b> The whole point of the index is to let a reader
+      <code>seek()</code>/<code>pread()</code> directly into the <code>.log</code> file without scanning from
+      byte 0. A position that isn't a real byte offset would force exactly the linear scan the index exists to
+      avoid — so the index must store what the filesystem actually understands: a byte position.</li>
+  </ul>
+  <p>The whole 10&nbsp;MiB-preallocated (<code>segment.index.bytes</code>, default 10,485,760) index file is opened
+  via <code>MappedByteBuffer</code> — a memory map, not buffered <code>read()</code>/<code>write()</code> calls.
+  Derive why: a lookup is <i>random access</i> by nature (binary search jumps around), and mmap turns each access
+  into a page-cache-backed memory read serviced by the kernel's existing page cache — no syscall, no buffer copy,
+  and the kernel — not the JVM — decides which pages to keep resident under memory pressure. Because the index is
+  small (a few hundred KB per 1&nbsp;GiB segment at the 4,096-byte default interval) it tends to stay fully
+  resident, making index lookups effectively free compared to the log read that follows.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sparse index density explorer</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>segment.bytes</label><input type="range" id="idx-seg-slider" min="0" max="4" value="2" step="1"><span class="val" id="idx-seg-val">1 GiB</span></div>
+      <div class="slider-row"><label>index.interval.bytes</label><input type="range" id="idx-int-slider" min="8" max="65536" value="4096" step="8"><span class="val" id="idx-int-val">4096 B</span></div>
+      <div class="memlegend" id="idx-legend"></div>
+      <div class="memmap" id="idx-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="idx-note"></p>
+    </div>
+  </div>
+
+  <h3>(b) The two-phase lookup, walked through with numbers</h3>
+  <p>To fetch offset <b>K</b> in a given segment (already located via the segment skip-list's <code>floorEntry</code>):</p>
+  <div class="widget deck" id="deckLookup">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">OffsetIndex.lookup() → linear scan</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(c) .timeindex: the same sparseness, a different key</h3>
+  <p><code>TimeIndex</code> entries are (8-byte timestamp, 4-byte relative offset) pairs, backing
+  <code>offsetsForTimes()</code> and time-based seeks (<code>auto.offset.reset</code> to a wall-clock time,
+  retention-by-time decisions). It is populated <i>in the same append call</i> as <code>OffsetIndex</code> — every
+  time <code>LogSegment.append()</code> decides bytes-since-last-index-entry has crossed
+  <code>index.interval.bytes</code>, it writes one <code>OffsetIndex</code> entry <i>and</i> one
+  <code>TimeIndex</code> entry together, using the largest timestamp observed since the last entry
+  (<code>maxTimestampSoFar</code>). They are two views onto the identical sampling cadence, not two independently
+  tuned structures — which is why there is no separate "time index interval" config.</p>
+
+  <h3>(d) The record batch, KIP-98 v2, field by field</h3>
+  <p>Everything the index points <i>into</i> is a stream of <b>record batches</b>. Since KIP-98 (Kafka 0.11, 2017)
+  every batch uses magic value 2 and is framed as follows — hover conceptually over each field as you read the
+  byte offsets:</p>
+  <div class="fieldmap" id="batch-fieldmap"></div>
+  <p>Two fields deserve special attention. <b>CRC placement</b>: the 4-byte CRC32C covers everything <i>after</i>
+  itself — from <code>attributes</code> through the last record — deliberately excluding <code>baseOffset</code>,
+  <code>batchLength</code>, <code>partitionLeaderEpoch</code>, and the CRC field itself. This lets a broker patch
+  <code>partitionLeaderEpoch</code> when a batch is assigned to a new leader epoch, and lets any component adjust
+  <code>batchLength</code> (e.g. after down-conversion) or read it to skip the whole batch, all <i>without</i>
+  recomputing a checksum the producer already committed to. <b>attributes (2 bytes)</b> packs the compression
+  codec into the low 3 bits (0=none, 1=gzip, 2=snappy, 3=lz4, 4=zstd), plus single bits for timestamp type
+  (create-time vs log-append-time), <code>isTransactional</code>, and <code>isControlBatch</code> — control
+  batches carry transaction markers (commit/abort), not user records, and are what chapter 7's transaction
+  coordinator emits.</p>
+  <p>Inside a batch, each record is <b>varint-framed</b>, not fixed-width — because within one batch, everything
+  expensive (offsets, timestamps) is stored as a small <i>delta</i> from the batch's own <code>baseOffset</code>/
+  <code>firstTimestamp</code>, and small deltas fit in 1–2 bytes instead of 8. A record is:
+  <code>length</code> (varint) · <code>attributes</code> (1 byte, currently unused per-record) ·
+  <code>timestampDelta</code> (varint, zigzag) · <code>offsetDelta</code> (varint, zigzag) ·
+  <code>keyLength</code> (varint) + key bytes · <code>valueLength</code> (varint) + value bytes ·
+  <code>headerCount</code> (varint) + headers (each a varint-length key string, varint-length value).</p>
+  <p><b>Varint + zigzag, worked example.</b> A varint spends 7 bits of payload per byte, using the 8th (high) bit
+  as a continuation flag. Zigzag encoding maps signed integers to unsigned ones so small negative deltas stay
+  small: <code>zigzag(n) = (n &gt;= 0) ? 2n : -2n - 1</code>. A <code>timestampDelta</code> of <b>+3</b> ms zigzags
+  to 6 (<code>0000 0110</code>) — one byte, no continuation bit, encoded as <code>0x06</code>. A delta of
+  <b>-3</b> ms zigzags to 5 (<code>0000 0101</code>) — also one byte, <code>0x05</code>: small deltas cost one byte
+  <i>regardless of sign</i>, which is the entire reason zigzag exists (plain two's-complement -3 would be a huge
+  unsigned number and blow the varint out to its full width).</p>
+  <div class="callout">
+    <div class="co-t">QUANTIFYING V1 → V2: 100 RECORDS OF 100 BYTES EACH</div>
+    <p><b>v1 (pre-KIP-98):</b> every message repeated a full per-message envelope — 8-byte offset + 4-byte size +
+    4-byte CRC + 1-byte magic + 1-byte attributes + 8-byte timestamp ≈ <b>26 bytes</b> of framing (some published
+    breakdowns count closer to ~34 bytes once wrapper-message overhead for compressed sets is included) —
+    <i>per message</i>, uncompressed. For 100 messages of 100 bytes: 100 × (100 + 26) ≈ <b>12,600 bytes</b>, of
+    which 2,600 is pure overhead — <b>~20.6%</b>.<br><b>v2 (KIP-98):</b> one ~61-byte batch header, amortized, plus
+    per-record varint framing (roughly 6–8 bytes for small key/value + deltas). For the same 100×100-byte records:
+    61 + 100 × (100 + 7) ≈ <b>10,761 bytes</b>, of which 761 is overhead — <b>~7.1%</b>. The gap widens further
+    once compression is enabled, because v2 compresses the whole batch as one stream (one codec context, shared
+    dictionary state across all 100 records) instead of compressing framing-heavy individual messages.</p>
+  </div>
+
+  <h3>(e) Recovery, and the producer-state snapshot</h3>
+  <p>On unclean shutdown, <code>Log.loadSegments()</code> (via <code>LogLoader</code>) re-scans segments whose
+  <code>.index</code>/<code>.timeindex</code> are missing, zero-length, or fail a fast sanity check, rebuilding them
+  from the raw <code>.log</code> bytes by replaying every batch header. It also validates the tail: it reads
+  forward batch by batch, checking each CRC, until it hits a batch that fails validation or is truncated
+  mid-write — the file is then hard-truncated at the start of that batch, discarding an in-flight write that never
+  fully landed. This is the same mechanism, run unconditionally at startup, whether or not the prior shutdown was
+  clean — clean shutdowns just find nothing to fix.</p>
+  <p><code>ProducerStateManager</code> persists a <code>.snapshot</code> file on every segment roll, holding — per
+  active producer ID on this partition — the last 5 <code>(sequence number, offset)</code> entries, used to detect
+  and drop duplicate retries from an idempotent producer (chapter 4 derives why 5: it's bounded by
+  <code>max.in.flight.requests.per.connection</code>'s default). On restart, the manager reloads the most recent
+  snapshot and replays only the small tail of records written after it, rather than replaying the entire log to
+  reconstruct producer state.</p>
+  <div class="callout deep">
+    <div class="co-t">NAME-CHECK: THE CLASSES THIS SECTION IS ABOUT</div>
+    <p><code>LogSegment</code> (append/read/recover for one segment), <code>FileRecords</code> (the raw
+    <code>.log</code> file wrapper, backed by a <code>FileChannel</code>), <code>OffsetIndex</code> /
+    <code>TimeIndex</code> / <code>AbstractIndex</code> (the mmap'd sparse indexes and their shared binary-search
+    machinery), <code>ProducerStateManager</code> (idempotence/transaction dedup state, <code>.snapshot</code>
+    files), <code>TransactionIndex</code> (aborted-transaction ranges, <code>.txnindex</code>).</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Everyone who ships a durable log solves this differently</h2>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>STORAGE MODEL</th><th>WHAT THEY BOUGHT</th><th>WHAT THEY PAID</th></tr>
+    <tr><td>Kafka</td><td>Segmented log per partition; sparse mmap'd offset + time index per segment</td>
+      <td><span class="pill g">O(1) sequential append</span> <span class="pill g">cheap unlink()-based retention</span> <span class="pill g">tiny resident index</span></td>
+      <td><span class="pill b">lookup pays a bounded linear scan</span> <span class="pill y">many small files at low segment.bytes</span></td></tr>
+    <tr><td>RabbitMQ (classic queue)</td><td>Per-queue message store + a separate queue index tracking delivery state; messages can also be embedded directly in the index for small payloads</td>
+      <td><span class="pill g">fine-grained per-message ack/requeue state</span></td>
+      <td><span class="pill b">index churn under high ack/requeue rates</span> <span class="pill y">not designed for long retention replay</span></td></tr>
+    <tr><td>RabbitMQ (quorum queue)</td><td>Raft log (via the Ra library) per queue — segments of a replicated log much closer in spirit to Kafka's, plus in-memory queue state machine</td>
+      <td><span class="pill g">strong replication guarantees</span></td>
+      <td><span class="pill b">per-queue Raft group overhead — doesn't amortize like a Kafka partition's segment reuse</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>Segmented log lives in BookKeeper: entries appended to ledgers spread across bookies; the broker's managed ledger keeps a separate offset/cursor index and metadata in ZooKeeper/metadata store</td>
+      <td><span class="pill g">storage and serving are separately scalable</span> <span class="pill g">tiered/tail-latency isolation</span></td>
+      <td><span class="pill b">extra network hop per write (broker→bookie)</span> <span class="pill y">more moving parts to operate</span></td></tr>
+    <tr><td>NATS JetStream</td><td>Its own file store: messages appended to blocks with an in-memory/on-disk index mapping sequence number to block+offset, no external dependency</td>
+      <td><span class="pill g">simple single-binary operations</span> <span class="pill g">low overhead for small deployments</span></td>
+      <td><span class="pill y">younger ecosystem for very large multi-tenant retention workloads</span></td></tr>
+    <tr><td>ActiveMQ (KahaDB)</td><td>Append-only data log files plus a separate B-tree index (a page file) mapping message IDs to log locations</td>
+      <td><span class="pill g">flexible message lookup by ID</span></td>
+      <td><span class="pill b">B-tree writes are not purely sequential — more write amplification than a sparse append-cadence index</span></td></tr>
+    <tr><td>Kinesis / SQS</td><td>Proprietary distributed storage (Kinesis shards are backed by internally-managed, replicated storage; no user-visible segment/index files) — the log-segment abstraction is entirely hidden</td>
+      <td><span class="pill g">zero operational surface for storage internals</span></td>
+      <td><span class="pill b">no visibility or tuning knobs into retention/indexing tradeoffs — you get what AWS decided</span></td></tr>
+  </table>
+  <p>Read the table as a spectrum of "who manages the index, and how sparse is it." Kafka's answer — sparse,
+  mmap'd, colocated with the data it indexes, one pair of small files per bounded segment — buys resident-in-cache
+  lookups and unlink()-cheap retention at the cost of accepting a bounded scan per read. Systems with denser or
+  B-tree-shaped indexes (KahaDB) buy more precise lookups at the cost of non-sequential index writes competing
+  with the append path.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">What you can predict before you benchmark</h2>
+  <ul class="plain">
+    <li><b>Lookup complexity:</b> O(log(segments)) to find the segment (skip-list <code>floorEntry</code>) +
+      O(log(index entries in that segment)) binary search + O(<code>index.interval.bytes</code>) worst-case linear
+      scan of raw log bytes. The dominant term in practice is the last one — it's bytes read off the page cache or
+      disk, not comparisons.</li>
+    <li><b>Disk access pattern:</b> appends are always sequential — one <code>FileChannel.write()</code> to the
+      current end of the active segment's <code>.log</code> file, regardless of how many partitions or producers
+      are involved, because each partition's active segment has exactly one writer position. This is why Kafka's
+      write throughput barely differentiates HDD from NVMe for the append path alone — sequential throughput on a
+      modern 7,200&nbsp;RPM HDD (~150–250&nbsp;MB/s) is often "enough," while random I/O on the same disk would be
+      orders of magnitude slower.</li>
+    <li><b>Page cache does double duty for fan-out reads.</b> Multiple consumer groups reading near the tail of the
+      same partition share the same resident page-cache pages — the broker doesn't re-read from disk per consumer,
+      and the OS's read-ahead keeps sequential consumer reads warm without Kafka doing anything explicit. This is
+      the physical basis for "Kafka fan-out is nearly free": it's a page-cache property, not a Kafka-specific
+      cache.</li>
+    <li><b>Durability doesn't come from fsync-per-write.</b> <code>log.flush.interval.messages</code> (default
+      effectively unbounded, <code>Long.MAX_VALUE</code>) and <code>log.flush.interval.ms</code> (default: rely on
+      the OS's own writeback, i.e. not forced per message) mean Kafka does <i>not</i> fsync on every produce
+      request by default. Durability instead comes from replication — <code>acks=all</code> plus
+      <code>min.insync.replicas</code> — because fsync-per-write would cap throughput at the disk's IOPS-for-small-
+      sync-writes ceiling, which is far below sequential throughput.</li>
+    <li><b>GC impact:</b> index files are memory-mapped, which means their backing pages live in the OS page cache,
+      <i>outside</i> the JVM heap. A broker holding thousands of segments' worth of index files pays essentially
+      zero extra GC pressure for them — the JVM only holds small <code>MappedByteBuffer</code>/off-heap handle
+      objects, not the index bytes themselves.</li>
+  </ul>
+  <p>Drag the sliders — the chart shows bytes scanned per lookup (the dominant cost term above) as a function of
+  the two knobs that actually control it:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Lookup cost vs index.interval.bytes &amp; segment.bytes</span><span class="w-sub">DRAG</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>index.interval.bytes</label><input type="range" id="perf-interval" min="256" max="65536" value="4096" step="256"><span class="val" id="perf-interval-val">4096 B</span></div>
+      <div class="slider-row"><label>segment.bytes (GiB)</label><input type="range" id="perf-segbytes" min="1" max="10" value="1" step="1"><span class="val" id="perf-segbytes-val">1 GiB</span></div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> avg bytes scanned per lookup</span>
+        <span><span style="color:var(--warn)">━</span> index file size (this segment)</span>
+        <span><span style="color:var(--purple)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch: index entries ≈ segment.bytes / index.interval.bytes, index file size ≈
+    entries × 8 bytes, average scan ≈ index.interval.bytes / 2 (uniform arrival assumption). Real workloads have
+    bursty record sizes and compression, which shift the effective bytes-per-record ratio; the <i>shape</i> —
+    linear tradeoff between index size and scan cost — is what to internalize, not the exact constant.</p>
+  </div>
+</section>
+
+<!-- ================= S11 REAL-WORLD PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three lessons this design has taught operators</h2>
+  <h3>1. LinkedIn's original motivation (2011)</h3>
+  <p>Kreps, Narkhede, and Rao's original Kafka paper describes the exact problem this chapter opened with: existing
+  messaging systems of the era kept per-message or per-consumer metadata (acked/unacked state, in-memory indexes)
+  that didn't scale to LinkedIn's target of hundreds of GB/day per broker. The segmented log with a sparse index
+  and near-zero per-consumer server-side bookkeeping (offsets tracked by the <i>consumer</i>, not the broker, in
+  the original design) was chosen specifically because it lets disk I/O stay sequential regardless of how many
+  consumer groups are reading — a direct ancestor of the page-cache fan-out argument in §10.</p>
+  <h3>2. The segment-count explosion incident</h3>
+  <p>A recurring operational failure mode: setting <code>segment.bytes</code> far below its 1&nbsp;GiB default
+  (sometimes done to make retention-by-size feel more "granular") on a topic with long retention and many
+  partitions. The result is thousands of tiny segments per partition instead of dozens, each holding open file
+  handles for its <code>.log</code>, <code>.index</code>, and <code>.timeindex</code> — three descriptors per
+  segment. Across many partitions this can multiply into tens of thousands of open file descriptors per broker,
+  colliding with the OS <code>ulimit -n</code> and eventually causing "too many open files" errors on new segment
+  rolls or partition reassignment. The fix is almost always leaving <code>segment.bytes</code> near its default and
+  controlling retention granularity with time instead (<code>segment.ms</code>), since segment count — not
+  retention precision — is what scales with this knob.</p>
+  <h3>3. KIP-98's batch format: the published payoff</h3>
+  <p>Confluent/LinkedIn engineering write-ups around the KIP-98 rollout described the record-batch redesign as
+  delivering substantial overhead reduction specifically for small-message, high-volume workloads — the exact
+  scenario quantified in §8(d), where per-message framing that once cost roughly a fifth of the payload dropped to
+  a small fraction of that once amortized across a batch and compressed once as a unit. The magnitude varies by
+  message size and compression codec, but the direction and mechanism are exactly what §8 derives: fewer repeated
+  fixed-width fields, more shared compression context.</p>
+  <h3>4. Index corruption after unclean shutdown / disk-full mid-write</h3>
+  <p>A broker that loses power or is OOM-killed mid-append can leave a segment's <code>.index</code> undersized
+  relative to its <code>.log</code>, or a <code>.log</code> file with a torn trailing batch, especially if the disk
+  filled up mid-write (a partial <code>write()</code> that never completed). On restart, <code>LogLoader</code>'s
+  recovery path (§8e) rebuilds affected indexes and truncates the torn tail — but if the underlying disk itself is
+  failing (not just the process crashing), that recovery can repeatedly fail. <code>log.dir.failure.timeout.ms</code>
+  (default 30,000&nbsp;ms) bounds how long the broker waits for a log directory to become usable before marking it
+  <b>offline</b> — moving every partition replica on that directory out of service on this broker (triggering
+  leader election elsewhere) rather than letting one bad disk hang the whole broker process indefinitely.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW QUESTIONS ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before revealing — these are Staff/Principal-depth expectations.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE WALKTHROUGH ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>kafka.log</code></h2>
+  <p>Files marked <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">core/src/main/scala/kafka/log/</span></div>
+<div>├── <span class="fhl">● LogSegment.scala</span> <span class="fnote">— append()/read()/recover() for one .log + its indexes</span></div>
+<div>├── LogSegments.scala <span class="fnote">— ConcurrentSkipListMap&lt;baseOffset, LogSegment&gt; per partition</span></div>
+<div>├── <span class="fhl">● UnifiedLog.scala</span> <span class="fnote">— the per-partition facade: append, read, roll, retention entrypoints</span></div>
+<div>├── LogManager.scala <span class="fnote">— owns every log/partition-replica on this broker; retention + cleanup threads</span></div>
+<div>├── LogLoader.scala <span class="fnote">— loadSegments(): rebuild/validate indexes at startup, truncate torn tails</span></div>
+<div>├── <span class="fhl">● OffsetIndex.scala</span> <span class="fnote">— sparse offset→physical-position mmap index + binary search</span></div>
+<div>├── TimeIndex.scala <span class="fnote">— sparse timestamp→relative-offset mmap index, same write cadence as OffsetIndex</span></div>
+<div>├── AbstractIndex.scala <span class="fnote">— shared mmap lifecycle: resize, trimToValidSize, binary search primitives</span></div>
+<div>├── <span class="fhl">● ProducerStateManager.scala</span> <span class="fnote">— idempotence/txn dedup state; writes .snapshot on roll</span></div>
+<div>└── TransactionIndex.scala <span class="fnote">— .txnindex: aborted-transaction offset ranges for READ_COMMITTED consumers</span></div>
+<div><span class="dir">clients/src/main/java/org/apache/kafka/common/record/</span></div>
+<div>├── <span class="fhl">● DefaultRecordBatch.java</span> <span class="fnote">— v2 batch header field offsets/constants, CRC scope</span></div>
+<div>├── DefaultRecord.java <span class="fnote">— varint-framed per-record read/write</span></div>
+<div>└── FileRecords.java <span class="fnote">— the raw .log file: FileChannel wrapper, zero-copy send</span></div>
+  </div></div>
+
+  <p>Simplified but faithful to the real shapes. First, the binary search that answers "where in the file is offset K":</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Scala</span><span>OffsetIndex.scala — lookup(), the sparse binary search</span></div>
+    <pre><span class="k">def</span> <span class="f">lookup</span>(targetOffset: <span class="t">Long</span>): OffsetPosition = {
+  maybeLock(lock) {
+    <span class="k">val</span> idx = mmap.duplicate()            <span class="c">// each caller gets its own position/limit</span>
+    <span class="k">val</span> slot = <span class="f">indexSlotFor</span>(idx, targetOffset)  <span class="c">// binary search over fixed 8-byte entries</span>
+    <span class="k">if</span> (slot == <span class="n">-1</span>) OffsetPosition(baseOffset, <span class="n">0</span>)
+    <span class="k">else</span> <span class="f">parseEntry</span>(idx, slot)             <span class="c">// (relativeOffset, physicalPosition) → absolute</span>
+  }
+}
+
+<span class="k">private def</span> <span class="f">indexSlotFor</span>(idx: ByteBuffer, target: <span class="t">Long</span>): <span class="t">Int</span> = {
+  <span class="c">// classic binary search, but comparing against relative offsets —</span>
+  <span class="c">// entries are 8 bytes apart: entrySize == 8</span>
+  <span class="k">var</span> lo = <span class="n">0</span>; <span class="k">var</span> hi = <span class="f">entries</span>(idx) - <span class="n">1</span>
+  <span class="k">if</span> (hi &lt; <span class="n">0</span>) <span class="k">return</span> <span class="n">-1</span>
+  <span class="k">while</span> (lo &lt; hi) {
+    <span class="k">val</span> mid = ceil((lo + hi) / <span class="n">2.0</span>).toInt
+    <span class="k">val</span> found = <span class="f">relativeOffset</span>(idx, mid)
+    <span class="k">if</span> (found &lt;= target - baseOffset) lo = mid <span class="k">else</span> hi = mid - <span class="n">1</span>
+  }
+  lo   <span class="c">// the largest indexed offset that is &lt;= target: our scan start</span>
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Scala</span><span>LogSegment.scala — append(), conditionally writing an index entry</span></div>
+    <pre><span class="k">def</span> <span class="f">append</span>(largestOffset: <span class="t">Long</span>, largestTimestamp: <span class="t">Long</span>,
+           shallowOffsetOfMaxTimestamp: <span class="t">Long</span>, records: MemoryRecords): <span class="t">Unit</span> = {
+  <span class="k">if</span> (records.sizeInBytes &gt; <span class="n">0</span>) {
+    <span class="k">val</span> physicalPosition = log.sizeInBytes()          <span class="c">// current end of .log — sequential append</span>
+    log.append(records)                              <span class="c">// one FileChannel.write(), no seeking</span>
+
+    <span class="c">// Only write an index entry once bytesSinceLastIndexEntry</span>
+    <span class="c">// crosses index.interval.bytes — this IS the sparseness.</span>
+    <span class="k">if</span> (bytesSinceLastIndexEntry &gt; indexIntervalBytes) {
+      offsetIndex.append(largestOffset, physicalPosition)
+      timeIndex.maybeAppend(largestTimestamp, shallowOffsetOfMaxTimestamp)
+      bytesSinceLastIndexEntry = <span class="n">0</span>
+    }
+    bytesSinceLastIndexEntry += records.sizeInBytes
+  }
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Java</span><span>DefaultRecordBatch.java — the v2 header's field offsets (constants, simplified)</span></div>
+    <pre><span class="k">class</span> DefaultRecordBatch {
+  <span class="k">static final int</span> BASE_OFFSET_OFFSET = <span class="n">0</span>;               <span class="c">// 8 bytes</span>
+  <span class="k">static final int</span> LENGTH_OFFSET = <span class="n">8</span>;                    <span class="c">// 4 bytes</span>
+  <span class="k">static final int</span> PARTITION_LEADER_EPOCH_OFFSET = <span class="n">12</span>;    <span class="c">// 4 bytes</span>
+  <span class="k">static final int</span> MAGIC_OFFSET = <span class="n">16</span>;                     <span class="c">// 1 byte  (== 2)</span>
+  <span class="k">static final int</span> CRC_OFFSET = <span class="n">17</span>;                       <span class="c">// 4 bytes — covers ATTRIBUTES_OFFSET..end</span>
+  <span class="k">static final int</span> ATTRIBUTES_OFFSET = <span class="n">21</span>;                  <span class="c">// 2 bytes  ← CRC coverage starts HERE</span>
+  <span class="k">static final int</span> LAST_OFFSET_DELTA_OFFSET = <span class="n">23</span>;           <span class="c">// 4 bytes</span>
+  <span class="k">static final int</span> FIRST_TIMESTAMP_OFFSET = <span class="n">27</span>;            <span class="c">// 8 bytes</span>
+  <span class="k">static final int</span> MAX_TIMESTAMP_OFFSET = <span class="n">35</span>;              <span class="c">// 8 bytes</span>
+  <span class="k">static final int</span> PRODUCER_ID_OFFSET = <span class="n">43</span>;                <span class="c">// 8 bytes</span>
+  <span class="k">static final int</span> PRODUCER_EPOCH_OFFSET = <span class="n">51</span>;             <span class="c">// 2 bytes</span>
+  <span class="k">static final int</span> BASE_SEQUENCE_OFFSET = <span class="n">53</span>;              <span class="c">// 4 bytes</span>
+  <span class="k">static final int</span> RECORDS_COUNT_OFFSET = <span class="n">57</span>;              <span class="c">// 4 bytes</span>
+  <span class="k">static final int</span> RECORDS_OFFSET = <span class="n">61</span>;                    <span class="c">// header ends; ~61-byte fixed cost, amortized</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Put the mutable fields before the CRC's coverage, not after.</b> <code>batchLength</code> and
+    <code>partitionLeaderEpoch</code> sit before <code>CRC_OFFSET</code> precisely so a leader (or a down-converting
+    broker) can rewrite them without invalidating a producer's checksum — a deliberate asymmetry, not an oversight.
+    <b>2. Sparseness is one <code>if</code>, not a separate subsystem.</b> <code>LogSegment.append()</code>'s index
+    write is a single conditional inside the hot append path — no background thread, no separate index-builder
+    service — which is exactly why it can't fall behind or race with the data it's indexing. <b>3. Binary search
+    against relative offsets, not absolute ones.</b> Every comparison in <code>indexSlotFor</code> subtracts
+    <code>baseOffset</code> first — the same relative-offset trick that shrinks the entry to 4 bytes also keeps the
+    comparison arithmetic entirely in 32-bit space for typical segment sizes.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — read them.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — the two-phase offset lookup</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the steps in the order they occur when a fetch request asks for a specific offset. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">A live segmented log</h2>
+  <p>Append batches, drag <code>segment.bytes</code> and <code>index.interval.bytes</code>, watch the active
+  segment fill and roll, and inspect the byte-level decode of the last batch you appended — with real computed
+  varint bytes. Then switch to lookup mode: type a target offset and watch the two-phase search — binary search
+  over sparse index entries, then a bounded linear scan — count its own bytes read.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">orders-3/ — live segmented log</span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="sim-ctl" style="border:none;padding:0 0 10px">
+            <div class="ctl-t">SEGMENTS (click to inspect)</div>
+            <div class="segrow" id="sim-segrow"></div>
+          </div>
+          <div class="segbar-wrap">
+            <div class="segbar-label"><span>ACTIVE SEGMENT — base offset <b id="sim-baseoffset" style="color:var(--pg)">0</b></span><span id="sim-segbytes">0 / 8192 B</span></div>
+            <div class="segbar" id="sim-segbar"><div class="fill" id="sim-segfill"></div></div>
+          </div>
+          <canvas id="sim-canvas" width="700" height="70" style="width:100%;border:1px solid var(--border);border-radius:9px;background:var(--bg-2)"></canvas>
+          <div class="bytepanel" id="sim-bytepanel"><div class="bp-title">LAST APPENDED BATCH — DECODE</div><div style="color:var(--dim)">append a batch to decode it…</div></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">APPEND</div>
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">records / append</label><span class="val" id="sim-batchsize-val" style="min-width:26px">3</span></div>
+            <input type="range" id="sim-batchsize" min="1" max="20" value="3" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:8px 0 4px"><label style="min-width:0;flex:1">value bytes</label><span class="val" id="sim-valsize-val" style="min-width:40px">100 B</span></div>
+            <input type="range" id="sim-valsize" min="8" max="1000" value="100" style="width:100%;accent-color:var(--pg)">
+            <div class="btns" style="margin-top:8px">
+              <button class="chip" id="sim-compress">compression: OFF</button>
+              <button class="btn primary" id="sim-append">append batch</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">CONFIG</div>
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">segment.bytes</label><span class="val" id="sim-segcfg-val" style="min-width:50px">8 KB</span></div>
+            <input type="range" id="sim-segcfg" min="2048" max="65536" value="8192" step="512" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:8px 0 4px"><label style="min-width:0;flex:1">index.interval.bytes</label><span class="val" id="sim-intcfg-val" style="min-width:50px">2 KB</span></div>
+            <input type="range" id="sim-intcfg" min="128" max="8192" value="2048" step="64" style="width:100%;accent-color:var(--pg)">
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">OFFSET LOOKUP</div>
+            <div style="display:flex;gap:6px">
+              <input type="number" id="sim-lookup-input" min="0" value="0" style="width:90px;background:var(--bg-2);border:1px solid var(--border-hi);border-radius:6px;color:var(--text);padding:5px 8px;font-family:var(--mono);font-size:12px">
+              <button class="btn good" id="sim-lookup-go">search</button>
+            </div>
+            <div id="sim-lookup-result" style="font-family:var(--mono);font-size:10.8px;color:var(--muted);margin-top:8px;line-height:1.6"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">FAILURE INJECTION</div>
+            <div class="btns">
+              <button class="btn danger" id="sim-kill">kill mid-append</button>
+              <button class="btn good" id="sim-recover">run recovery</button>
+              <button class="btn" id="sim-reset">reset log</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-records">0</div><div class="cl">records</div></div>
+            <div class="scounter"><div class="cv" id="cnt-segments">1</div><div class="cl">segments</div></div>
+            <div class="scounter"><div class="cv" id="cnt-idx">0</div><div class="cl">index entries</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Shrink <code>segment.bytes</code> to its minimum and append repeatedly — watch roll frequency and
+    segment count explode (§11's incident, live). <b>2.</b> Shrink <code>index.interval.bytes</code> to its
+    minimum, then search — the linear-scan phase should shrink toward zero, at the cost of more index entries.
+    <b>3.</b> Widen <code>index.interval.bytes</code> to its maximum and search the same offset — watch bytes
+    scanned grow. <b>4.</b> Kill mid-append, then search before running recovery — notice the torn batch is still
+    there until you recover. <b>5.</b> Run recovery and confirm the partial batch is truncated and the index
+    rebuilt.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 4: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer, then reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 03 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now compute a physical byte position from a logical
+    offset, explain why the index is 8 bytes and sparse, and decode a KIP-98 record batch field by field. Chapter 4
+    goes to the other end of this pipe: the producer's <code>RecordAccumulator</code>, batching, compression
+    codecs, and the idempotent producer's sequence numbers — the code that <i>builds</i> the batches this chapter
+    just took apart.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="kafka-04.html" style="text-decoration:none;display:inline-flex;align-items:center">KAFKA-04: Producer Internals →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* helper: varint / zigzag */
+function zigzag(n){ return n>=0 ? n*2 : (-n*2 - 1); }
+function varintBytes(u){
+  let v = u>>>0; if (u > 0xffffffff) v = u; // allow larger via normal number math
+  let bytes = [];
+  let val = u;
+  if (val === 0) return [0];
+  while (val > 0){
+    let b = val % 128;
+    val = Math.floor(val/128);
+    if (val > 0) b |= 0x80;
+    bytes.push(b);
+  }
+  return bytes;
+}
+function varintFieldBytes(signedOrUnsigned, signed){
+  const u = signed ? zigzag(signedOrUnsigned) : signedOrUnsigned;
+  return varintBytes(u);
+}
+function hex2(n){ return "0x"+n.toString(16).padStart(2,"0"); }
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2010", l:"LinkedIn", d:"<b>Internal need at LinkedIn.</b> Jay Kreps, Neha Narkhede, and Jun Rao build Kafka to replace a tangle of point-to-point pipelines with a single durable log. From the first design memo, the storage shape is already recognizable: bounded segment files plus a <i>sparse</i> index — a dense per-message index was considered and rejected as roughly log-sized for small messages." },
+  { yr:"2011", l:"Open-sourced", d:"<b>Kafka open-sourced</b> and later the LinkedIn team's paper ('Kafka: a Distributed Messaging System for Log Processing') formalizes the design: partitions as append-only segment sequences, offsets tracked by consumers (not the broker), and a message format (<b>v0</b>) with just offset + size + CRC + magic + attributes per message — no per-message timestamp yet." },
+  { yr:"2012", l:"Apache Incubator", d:"<b>Kafka enters the Apache Incubator.</b> The storage engine's shape is stable; most early evolution is in the network protocol and replication, not the log format itself." },
+  { yr:"2015", l:"KIP-32 / KIP-33", d:"<b>Timestamp support.</b> Message format <b>v1</b> adds an 8-byte timestamp per message (create-time or log-append-time, selectable via <code>message.timestamp.type</code>), and a new sparse <code>.timeindex</code> file appears alongside <code>.index</code> — built with the same interval-based sampling philosophy. This is what makes <code>offsetsForTimes()</code> and time-based retention possible at all." },
+  { yr:"2017", l:"KIP-98 (v2 batches)", d:"<b>Exactly-once semantics.</b> The single biggest storage-format change in Kafka's history: message <b>sets</b> (a flat list of independently-framed messages) are replaced by record <b>batches</b> (magic=2) — one shared header (baseOffset, CRC, producer ID/epoch/sequence for idempotence, transactional markers) amortized across many varint-framed records. This is the format §8 decodes byte-by-byte; it's also the foundation for the idempotent producer and transactions covered in chapters 4 and 7." },
+  { yr:"2018–19", l:"Ecosystem catches up", d:"<b>message.format.version defaults move to v2</b> across the ecosystem as clients and MirrorMaker catch up; compacted topics (chapter 5) and the batch format interact directly, since compaction operates at record-batch granularity." },
+  { yr:"2019 → GA 2023/24", l:"KIP-405 (forward ref)", d:"<b>Tiered storage proposed</b>, later shipped as an early-access/GA feature in Kafka 3.6+. It reuses this chapter's exact segment abstraction: rolled, immutable segments are the natural unit to offload to object storage, since only the active segment is ever mutated. You'll meet this properly in a later chapter — everything in §7's architecture explorer is what gets tiered." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===4 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[4].d;
+
+/* ============================================================
+   2. DECK: candidates A/B/C (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:12px;flex:1;min-width:220px;${style}">
+     <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:6px 9px;margin:5px 0;font-family:var(--mono);font-size:11px;color:${c};background:${bg}">${t}</div>`;
+  stepper("deckCandidates", [
+    { stage: box("CANDIDATE A — B-TREE OVER EVERY RECORD",
+        cell("insert record → rebalance tree nodes","#f25c54","rgba(242,92,84,.08)")
+      + cell("lookup: O(log n) — genuinely fast","#4ade80")
+      + cell("but: every insert is a RANDOM write somewhere in the tree","#f25c54","rgba(242,92,84,.08)")),
+      cap:`<b>Rejected: write-amplifying for a pure-append workload.</b> A B-tree gives excellent lookup, but its whole cost model assumes writes land all over the structure. Kafka's workload is nearly 100% sequential append — forcing every append through tree rebalancing trades away the one property (sequential I/O) the entire design exists to protect. This is the classic LSM-vs-B-tree tension, decided in favor of "optimize the write path" because Kafka's read pattern (sequential fetch from a cursor) doesn't need a B-tree's strengths anyway.` },
+    { stage: box("CANDIDATE B — ONE FILE, PERIODIC FULL RE-INDEX",
+        cell("append sequentially (good)","#4ade80")
+      + cell("periodically: rebuild one big index for the whole file","#ff9f43","rgba(255,159,67,.08)")
+      + cell("deletion: … still the same giant file","#f25c54","rgba(242,92,84,.08)")),
+      cap:`<b>Rejected: doesn't touch the deletion problem at all.</b> This candidate fixes lookups (eventually — the index lags between rebuilds) but retention still means "shift or rewrite a huge file with the old data at the front." Indexing and deletion are separate problems; solving only one leaves §4's arithmetic fully intact.` },
+    { stage: box("CANDIDATE C — SEGMENTED LOG ✓",
+        cell("many BOUNDED files, sequential append within each","#4ade80")
+      + cell("each segment: its own small sparse index, built incrementally","#4ade80")
+      + cell("delete = unlink() a whole segment — O(1), not O(bytes)","#4ade80","rgba(74,222,128,.08)")),
+      cap:`<b>Accepted.</b> Bound file size (<code>segment.bytes</code>/<code>segment.ms</code>) and the other two problems fall out for free: a bounded file can carry a small, fully mmap-able index, and retention becomes "delete whole files whose every record has aged out" — no rewriting, no shifting, no B-tree rebalancing. This is the only candidate that satisfies all three of §1's requirements simultaneously.` }
+  ]);
+})();
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  partdir:{ n:"orders-3/ (partition directory)", f:"owned by kafka.log.LogManager, one per (topic, partition, replica) on this broker's log.dirs", r:"The unit LogManager tracks. Holds an ordered sequence of segments plus a couple of partition-wide metadata files. Its name is literally <code>&lt;topic&gt;-&lt;partition&gt;</code>.", l:"Created the first time this broker becomes a replica for this partition; deleted wholesale if the partition is reassigned away or the topic is deleted.", d:"Not itself a failure unit — individual files inside it can be corrupted or missing, handled per-segment by LogLoader at startup." },
+  closedseg:{ n:"closed (rolled) segment", f:"kafka.log.LogSegment — immutable once its .log stops growing", r:"A fully-formed <code>.log</code> + fully-built <code>.index</code>/<code>.timeindex</code>. Never appended to again; only read (fetches, replication, compaction) or deleted wholesale by retention.", l:"Born when the previous active segment rolls; dies via retention's unlink() once every record in it is older than retention.ms or it's beyond retention.bytes.", d:"If its index is missing/corrupt at startup, LogLoader rebuilds it by re-scanning this segment's .log — the .log file itself is the ground truth; indexes are always reconstructable from it." },
+  activeseg:{ n:"active segment (.log)", f:"kafka.log.LogSegment — the ONE segment per partition currently receiving appends", r:"The only file in the directory a producer's bytes are ever written into. Its FileChannel position is the partition's true write cursor.", l:"Becomes active the instant the previous one rolls; stops being active (rolls itself) at segment.bytes or segment.ms, or on an explicit roll (e.g. before certain admin operations).", d:"On unclean shutdown, this is the one segment whose tail might be torn — LogLoader validates/truncates specifically this file's end during recovery." },
+  offsetindex:{ n:".index (OffsetIndex)", f:"kafka.log.OffsetIndex extends AbstractIndex — MappedByteBuffer, preallocated to segment.index.bytes (default 10 MiB)", r:"Sparse offset→physical-position map. One 8-byte entry (4-byte relative offset + 4-byte position) per ~index.interval.bytes of log data. Backs OffsetIndex.lookup()'s binary search (§13).", l:"Grows incrementally alongside the active segment's .log; on roll, trimmed to its actual used size and made read-only alongside the rest of the segment.", d:"If truncated/corrupt, rebuilt entirely from the .log file's batch headers — it holds no information the .log doesn't already contain." },
+  timeindex:{ n:".timeindex (TimeIndex)", f:"kafka.log.TimeIndex extends AbstractIndex — same mmap machinery as OffsetIndex", r:"Sparse (timestamp, relative offset) pairs, written in the SAME append call as OffsetIndex entries — one shared interval-bytes trigger, not an independently tuned cadence. Backs offsetsForTimes() and time-based retention checks.", l:"Same lifecycle as its sibling .index file — born, grows, trimmed, and deleted together.", d:"Also fully reconstructable from .log during recovery, using each batch's maxTimestamp field." },
+  snapshot:{ n:".snapshot (producer state)", f:"kafka.log.ProducerStateManager", r:"Per active producer ID on this partition: the last 5 (sequenceNumber, offset) entries, used to detect and discard duplicate retried batches from an idempotent producer (KIP-98 / chapter 4).", l:"Written on every segment roll (a natural, already-happening checkpoint); on restart, the newest snapshot is loaded and only the small tail after it is replayed.", d:"If missing at startup, producer state must be rebuilt by scanning back through recent segments' batch headers — more expensive, which is exactly why snapshots exist." },
+  txnindex:{ n:".txnindex (aborted transactions)", f:"kafka.log.TransactionIndex", r:"Offset ranges belonging to transactions that were ultimately ABORTED, so READ_COMMITTED consumers (chapter 7) know which offset ranges to skip even though the underlying records physically remain in the .log.", l:"Written as transaction markers (control batches) are appended; only exists on segments that saw transactional traffic.", d:"Empty/absent segments simply mean 'no aborted transactions touched this segment' — not an error." },
+  leaderepoch:{ n:"leader-epoch-checkpoint", f:"partition-wide, not per-segment — org.apache.kafka.storage.internals.log.LeaderEpochCheckpointFile", r:"Records which leader epoch (KIP-101) was in effect starting at which offset, for this partition replica. Used to resolve log divergence between a new leader and followers after a leader change, independent of any single segment.", l:"Updated on every leader-epoch change; consulted during replica truncation after a leader election.", d:"Lives at the partition-directory level because it describes leadership history, not any one segment's contents — a preview of chapter 6's replication mechanics." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON CORRUPTION / DEATH</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("partdir");
+
+/* ============================================================
+   4. INDEX DENSITY EXPLORER (§8a)
+   ============================================================ */
+(function(){
+  const SEGS = [128, 256, 512, 1024, 2048]; // MB - conceptual segment.bytes choices for the demo
+  function render(){
+    const segMB = SEGS[+el("idx-seg-slider").value];
+    const interval = +el("idx-int-slider").value;
+    el("idx-seg-val").textContent = segMB >= 1024 ? (segMB/1024)+" GiB" : segMB+" MiB";
+    el("idx-int-val").textContent = interval + " B";
+    const segBytes = segMB * 1024 * 1024;
+    const entries = Math.max(1, Math.floor(segBytes / interval));
+    const indexFileBytes = entries * 8;
+    const avgScan = interval / 2;
+    const capBytes = 10485760; // segment.index.bytes default
+    const cappedEntries = Math.min(entries, Math.floor(capBytes/8));
+    const segs = [
+      ["index file (8B/entry)", indexFileBytes/1024, "#f25c54"],
+      ["avg scan after binary search", avgScan/1024, "#ff9f43"],
+    ];
+    const total = segs.reduce((s,x)=>s+x[1],0) || 1;
+    const wsum = segs.reduce((s,x)=>s+Math.pow(Math.max(x[1],0.01),0.4),0);
+    el("idx-map").innerHTML = segs.map(([n,v,c])=>
+      `<div class="seg" style="background:${c};width:${(Math.pow(Math.max(v,0.01),0.4)/wsum*100).toFixed(2)}%" title="${n}">${v.toFixed(1)} KB</div>`).join("");
+    el("idx-legend").innerHTML = segs.map(([n,v,c])=>`<span><span class="sw" style="background:${c}"></span>${n}</span>`).join("");
+    el("idx-note").innerHTML = `At <b style="color:var(--pg)">${interval.toLocaleString()} B</b> intervals over a
+      <b>${segMB>=1024?(segMB/1024)+" GiB":segMB+" MiB"}</b> segment: <b>${entries.toLocaleString()}</b> index
+      entries ${entries>cappedEntries?`(capped by segment.index.bytes's 10 MiB preallocation to ~${cappedEntries.toLocaleString()})`:""}
+      → index file ≈ <b>${(indexFileBytes/1024).toFixed(1)} KB</b>, comfortably page-cache resident. Average bytes
+      scanned per lookup after the binary search lands you at the nearest entry ≈ <b>${(avgScan/1024).toFixed(2)} KB</b>
+      (half the interval, uniform-arrival assumption). This is the exact tradeoff §6 named: shrink the interval,
+      scans shrink and the index grows; the default of 4,096 B sits deliberately on the "index stays tiny" side.`;
+  }
+  el("idx-seg-slider").oninput = render;
+  el("idx-int-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   5. DECK: two-phase lookup (§8b)
+   ============================================================ */
+(function(){
+  const bar = (fillPct, ticks, scanFrom, scanTo, label) => {
+    let h = `<div style="max-width:560px;margin:0 auto"><div class="segbar-label"><span>${label}</span></div>
+      <div class="segbar" style="height:44px">`;
+    h += `<div class="fill" style="width:${fillPct}%"></div>`;
+    ticks.forEach(t=> h += `<div class="tick ${t.probed?'probed':''}" style="left:${t.pos}%"></div>`);
+    if (scanFrom!=null) h += `<div class="scanhi" style="left:${scanFrom}%;width:${scanTo-scanFrom}%"></div>`;
+    h += `</div></div>`;
+    return h;
+  };
+  // synthetic segment: base offset 368769, ~4KB interval, target offset 368812
+  const ticks4 = [{pos:14},{pos:32},{pos:50},{pos:68},{pos:86}];
+  stepper("deckLookup", [
+    { stage: bar(62, ticks4, null, null, "SEGMENT 00000000000000368769.log — target offset 368812"),
+      cap:`<b>Request arrives.</b> A fetch (or consumer resume) wants offset <b>368812</b>. The segment skip-list's <code>floorEntry(368812)</code> already told us this is segment base-offset <b>368769</b> — relative offset within this segment: <b>43</b>.` },
+    { stage: bar(62, ticks4.map((t,i)=>({...t, probed:i===2})), null, null, "Binary search over ~5 in-memory index entries"),
+      cap:`<b>Phase 1 — binary search the mmap'd .index.</b> <code>OffsetIndex.indexSlotFor()</code> binary-searches the small number of 8-byte entries (in this demo: 5 entries covering the segment). It lands on the entry whose relative offset is the largest one ≤ 43 — say relative offset <b>36</b> at physical position <b>14,720</b>. This search touches only resident page-cache memory: effectively free, O(log(entries)).` },
+    { stage: bar(62, ticks4.map((t,i)=>({...t, probed:i===2})), 50, 68, "Linear scan phase — reading forward from position 14,720"),
+      cap:`<b>Phase 2 — linear scan the .log from that physical position.</b> Starting at byte 14,720, the reader deserializes batch headers one at a time — reading <code>batchLength</code> to skip whole batches without parsing every record inside them — until it finds the batch whose offset range covers 368812 (relative 43). Because the index entry was for relative offset 36, this scan covers at most one <code>index.interval.bytes</code> window: bounded, not unbounded.` },
+    { stage: bar(62, ticks4.map((t,i)=>({...t, probed:i===2})), 50, 68, "Found — offset 368812 located"),
+      cap:`<b>Done.</b> Total work: one O(log n) in-memory binary search + one bounded forward scan of at most <code>index.interval.bytes</code> (≈4 KB at the default) of real log bytes. Compare to §3/§4's naive scan, which would have read from byte 0 of a multi-GB file — this is the entire payoff of the sparse index, made concrete with real offsets.` }
+  ]);
+})();
+
+/* ============================================================
+   6. RECORD BATCH FIELD MAP (§8d)
+   ============================================================ */
+(function(){
+  const FIELDS = [
+    ["baseOffset","8B"], ["batchLength","4B"], ["partitionLeaderEpoch","4B"], ["magic","1B"],
+    ["crc","4B","crc"], ["attributes","2B"], ["lastOffsetDelta","4B"], ["firstTimestamp","8B"],
+    ["maxTimestamp","8B"], ["producerId","8B"], ["producerEpoch","2B"], ["baseSequence","4B"],
+    ["recordsCount","4B"], ["records[]","varint-framed"]
+  ];
+  el("batch-fieldmap").innerHTML = FIELDS.map(([n,sz,cls])=>
+    `<div class="fm ${cls||''}"><b>${n}</b>${sz}</div>`).join("");
+})();
+
+/* ============================================================
+   7. PERF CHART (§10)
+   ============================================================ */
+(function(){
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function render(){
+    const interval = +el("perf-interval").value;
+    const segGiB = +el("perf-segbytes").value;
+    el("perf-interval-val").textContent = interval.toLocaleString()+" B";
+    el("perf-segbytes-val").textContent = segGiB+" GiB";
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const intervals = []; for (let x=256; x<=65536; x*=1.15) intervals.push(Math.round(x));
+    const segBytes = segGiB * 1024*1024*1024;
+    let maxScan = 0, maxIdx = 0;
+    const pts = intervals.map(iv=>{
+      const entries = segBytes/iv;
+      const idxBytes = entries*8;
+      const scan = iv/2;
+      maxScan = Math.max(maxScan, scan); maxIdx = Math.max(maxIdx, idxBytes);
+      return { scan, idxBytes };
+    });
+    const X = n => PAD + (Math.log10(n)/Math.log10(65536)) * (W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [256,1024,4096,16384,65536].forEach(n=>{ ctx.beginPath(); ctx.moveTo(X(n),10); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText(n, X(n)-14, H-6); });
+    function curve(get, max, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      intervals.forEach((n,i)=>{ const y = H-24 - (get(pts[i])/max)*(H-44); i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y); });
+      ctx.stroke();
+    }
+    curve(p=>p.scan, maxScan, "#f25c54");
+    curve(p=>p.idxBytes, maxIdx, "#ff9f43");
+    ctx.strokeStyle = "#a78bfa"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(interval),10); ctx.lineTo(X(interval),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const entries = segBytes/interval, idxBytes = entries*8, scan = interval/2;
+    el("perf-note").innerHTML = `At <b>${interval.toLocaleString()} B</b> intervals over a <b>${segGiB} GiB</b> segment: ≈<b style="color:var(--pg)">${Math.round(entries).toLocaleString()}</b> index entries, index file ≈ <b style="color:var(--warn)">${(idxBytes/1024/1024).toFixed(2)} MB</b>, average post-binary-search scan ≈ <b style="color:var(--pg)">${(scan/1024).toFixed(2)} KB</b>. Notice the index stays megabytes at most even at the smallest interval — small enough to stay page-cache resident across thousands of segments, which is the entire justification for §10's GC/page-cache claims.`;
+  }
+  el("perf-interval").oninput = render;
+  el("perf-segbytes").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Derive why the offset index stores a physical byte position rather than just letting a reader count records from the nearest entry.", hint:"what can a reader do with each kind of value?",
+    a:"A physical position is directly usable by the filesystem — seek()/pread() straight to that byte, no further work needed to start reading. A 'record count' would require the reader to still walk forward deserializing records one at a time just to convert count → byte offset, which is exactly the linear-scan cost the index exists to avoid paying twice. Storing the position collapses phase 1 (binary search) and the start of phase 2 (scan) into a single seek, with the scan only needed to walk the remaining sub-interval of ambiguity, not to recompute a position that should have already been known." },
+  { lvl:"SENIOR", q:"Why do 4 bytes suffice for the index's relative offset field, and when could that assumption break?", hint:"what bounds the delta between an offset and its segment's base offset?",
+    a:"The relative offset is offset − segmentBaseOffset, and the largest possible value of that delta is bounded by how many records can exist in one segment, which is itself bounded by segment.bytes (default 1 GiB) divided by the smallest realistic record size. Even in a pathological all-zero-byte-record scenario you'd need on the order of a billion records to approach 2^32 — segment.bytes would have to be raised to multi-GB territory alongside absurdly tiny records for a 4-byte relative offset to overflow. Kafka guards this in practice: LogSegment.append() checks for overflow and forces an early roll if a batch's relative offset would exceed Int.MaxValue, rather than silently wrapping." },
+  { lvl:"SENIOR", q:"What happens to an in-flight index write if the broker is killed mid-append, and why isn't that catastrophic?", hint:"which file is the ground truth — .log or .index?",
+    a:"The .log file is always the source of truth; .index/.timeindex are pure derived/cached structures containing no information the .log doesn't already encode in its batch headers. If the broker dies between writing log bytes and writing the corresponding index entry, the index is merely stale (missing that one entry) — not corrupt in a way that causes wrong answers, because LogLoader's recovery path re-scans and rebuilds indexes for any segment whose index looks inconsistent with its .log at startup. Losing an index write costs a slightly larger post-crash rebuild, never data loss or a wrong lookup." },
+  { lvl:"STAFF", q:"Estimate the page-cache footprint of index files for a topic with 200 segments at the default 1 GiB / 4,096 B settings, and explain why that number matters operationally.", hint:"entries per segment × 8 bytes × segment count",
+    a:"Per segment: 1,073,741,824 / 4,096 ≈ 262,144 entries × 8 bytes ≈ 2 MB for the offset index, roughly the same order for the time index (fewer or equal entries, same 12-byte-ish entry size) — call it ~2–4 MB combined per segment. Across 200 segments: roughly 400–800 MB of index data. That's specifically an off-heap, page-cache-resident number (mmap'd, not JVM heap) — it competes with the broker's page cache budget for actual record data (the much larger .log bytes), which is the real operational tension: aggressive retention settings that keep many small segments around inflate this number and can measurably reduce how much hot .log data stays cached." },
+  { lvl:"STAFF", q:"Why is the CRC field positioned where it is in the v2 batch header, and what real operational scenario does that positioning enable?", hint:"which fields get rewritten after a producer sends a batch?",
+    a:"The CRC covers everything from attributes onward but deliberately excludes baseOffset, batchLength, partitionLeaderEpoch, and itself. partitionLeaderEpoch specifically gets rewritten by the leader when it assigns a batch to the current leader epoch (KIP-101) — if that field were inside the CRC's coverage, every batch would need its checksum recomputed on the broker on every append, burning CPU proportional to batch size on the hot path. Placing the mutable fields before the CRC's start lets the broker patch them cheaply while the producer's original checksum — covering the record payload itself — remains valid end-to-end." },
+  { lvl:"PRINCIPAL", q:"Steelman keeping index.interval.bytes at its 4,096 default vs shrinking it aggressively (e.g. to 64 bytes) for a latency-sensitive point-lookup workload. Who's right?", hint:"what grows, and what's the actual cost of what grows?",
+    a:"Shrinking the interval linearly shrinks the average post-binary-search scan — real latency win for point lookups — but linearly grows index size (at 64 B intervals, a 1 GiB segment needs ~16.7M entries × 8 bytes ≈ 134 MB of index per segment, vs ~2 MB at the default). Multiply by hundreds of segments and you've traded a page-cache-resident, essentially-free index for one that itself starts contending for page cache and, past segment.index.bytes's 10 MiB preallocation cap, gets truncated anyway — so below a certain interval you stop gaining scan-time benefit because the index can no longer grow to match. The default sits where scan cost is already small (a few KB) relative to network/deserialization overhead per fetch; principal-level judgment says tune this only after measuring that the linear-scan phase is actually the bottleneck, which for most fetch-heavy (not single-offset-lookup-heavy) workloads it usually isn't." },
+  { lvl:"PRINCIPAL", q:"A broker's disk starts silently corrupting sectors (not full failure, occasional bit flips). Walk through where this chapter's mechanisms catch it, and where they don't.", hint:"CRC coverage vs filesystem-level checksumming",
+    a:"Kafka's own CRC32C, checked on read by consumers/replicas and during LogLoader's recovery scans, catches corruption within a batch's CRC-covered span (attributes through the last record) whenever that batch is actually read or re-validated — but a corrupted batch that's never read again (cold, near end of retention) can sit undetected until it ages out. Corruption in the parts of the header explicitly excluded from CRC coverage (baseOffset, batchLength, partitionLeaderEpoch) is NOT caught by Kafka's own checksum at all — that's exactly the tradeoff made for cheap epoch rewrites; those bytes rely entirely on filesystem/hardware-level protection (e.g. ZFS checksums, ECC RAM, RAID scrubbing). This is the honest answer to 'is Kafka safe against silent disk corruption': partially, by design, and the gap is a real reason production deployments layer filesystem-level checksumming underneath it." }
+]);
+
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 4 will show the producer's RecordAccumulator builds these exact v2 batches before they ever reach a broker. Predict: what does the producer need to know or guess about a batch BEFORE it's sent, given that offsetDelta and timestampDelta are relative to the batch's own baseOffset/firstTimestamp?",
+    a:"The producer assigns baseOffset = 0 conceptually at build time (it doesn't know the real partition offset yet — only the broker/leader does, at append time) and computes every record's offsetDelta relative to its position within the batch itself (0, 1, 2, …), not the eventual absolute partition offset. firstTimestamp is the first record's real timestamp, and later records' timestampDelta is relative to that. This is exactly why the batch header's baseOffset can be treated as a value the broker fills in / validates on append — the wire format is designed so a producer never needs to know its final partition offset to construct a valid batch." },
+  { lvl:"THINK", q:"This chapter showed ProducerStateManager keeps the last 5 sequence numbers per producer ID to de-duplicate retries. Predict: what happens if a producer's retries are reordered by the network so a retry of an OLD batch arrives after a NEWER batch has already been accepted?",
+    a:"This is exactly why max.in.flight.requests.per.connection defaults to 5 with idempotence enabled — bounding in-flight requests to 5 means at most 5 sequence numbers can be 'in question' at once, which is why the manager only needs to remember 5 entries, not an unbounded window. Chapter 4 will show the broker rejects a batch whose base sequence doesn't fit the expected next-sequence-or-recent-duplicate window with OutOfOrderSequenceException, forcing the producer to fail the connection rather than silently accept a reordered write — sequencing correctness is enforced per producer ID, not inferred from arrival order." },
+  { lvl:"THINK", q:"Given that only the active segment's index is incomplete and everything else in this chapter is either fully built (rolled segments) or the ground truth (.log bytes), predict which of this chapter's data structures chapter 5 (log compaction) can safely rewrite in place, and which it must always rebuild from scratch.",
+    a:"Compaction produces brand-new, fully rolled segments (it never edits a live .log in place — that would violate the append-only/immutable-once-rolled invariant this whole chapter is built on), so it always builds fresh .index/.timeindex files alongside its new .log output rather than patching old ones. The only thing that could theoretically be safe to touch in place is metadata that doesn't describe byte layout at all (like retention bookkeeping) — anything indexing into file bytes gets regenerated, because a compacted .log has an entirely different byte layout than the segment it replaced." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why is the sparse offset index entry exactly 8 bytes (4+4) instead of, say, 16 bytes (8+8)?",
+    opts:[ "8-byte entries fit better into CPU cache lines",
+           "The offset half is stored relative to the segment's base offset, so 4 bytes (up to ~4.29B) suffices instead of a full 64-bit absolute offset",
+           "Kafka rounds all binary structures to powers of two for alignment",
+           "The position half only needs 4 bytes because segments are capped at 4 GB" ],
+    a:1,
+    why:"The relative-offset trick is the whole reason: offset − segmentBaseOffset is bounded by how many records fit in one segment (segment.bytes), which for realistic record sizes never approaches 2^32. That's what shrinks the offset half from 8 to 4 bytes. Option D confuses segment.bytes's default (1 GiB) with a hard 4 GB cap that doesn't exist; A and C aren't the actual design rationale documented in the source or KIPs." },
+  { q:"A fetch request needs offset 5,000,042. The segment skip-list's floorEntry() returns segment base offset 4,800,000. What happens next?",
+    opts:[ "The broker scans from byte 0 of that segment's .log file",
+           "The broker binary-searches that segment's in-memory .index for the nearest entry ≤ relative offset 200,042, then linearly scans the .log from that physical position",
+           "The broker computes the byte position directly as relativeOffset × average record size",
+           "The broker re-reads the entire segment into memory before searching" ],
+    a:1,
+    why:"This is the two-phase lookup: binary search the sparse mmap'd index (cheap, in-memory) to find the nearest preceding physical position, then a bounded linear scan of raw log bytes from there. Option A ignores the index entirely (that's the naive §3 approach this chapter replaced); C assumes fixed record sizes, which Kafka never guarantees; D would defeat the entire point of mmap'd random access." },
+  { q:"Which of these is NOT part of the KIP-98 (v2) record batch header's CRC coverage?",
+    opts:[ "attributes", "firstTimestamp", "partitionLeaderEpoch", "producerId" ],
+    a:2,
+    why:"partitionLeaderEpoch sits BEFORE the CRC field in byte order and is deliberately excluded from its coverage, specifically so a leader can rewrite it on assignment without invalidating the producer's original checksum. attributes, firstTimestamp, and producerId all come after the CRC field and are covered by it." },
+  { q:"Why can't segment.bytes be lowered to, say, 10 KB without operational consequences, even though smaller segments sound like 'more granular retention'?",
+    opts:[ "Smaller segments corrupt the record batch format",
+           "Each segment holds open file handles for its .log/.index/.timeindex — many tiny segments multiply descriptor count and can hit the OS ulimit -n",
+           "Kafka enforces a hard minimum of 1 MB for segment.bytes",
+           "Smaller segments prevent the producer from batching records" ],
+    a:1,
+    why:"This is §11's segment-count-explosion incident: three open file descriptors per segment, multiplied across many more, much smaller segments (and across every partition on the broker), can exhaust ulimit -n. Retention granularity is much better controlled via segment.ms / retention.ms than by shrinking segment.bytes, which mainly just multiplies file count." },
+  { q:"On unclean shutdown, LogLoader finds the active segment's .log has a trailing record batch whose CRC doesn't validate. What does it do?",
+    opts:[ "Deletes the entire segment, not just the bad batch",
+           "Ignores the CRC failure and serves the batch anyway, logging a warning",
+           "Truncates the .log file at the start of that invalid batch, discarding only the torn write, then rebuilds the index up to the new end",
+           "Halts broker startup until an operator manually repairs the file" ],
+    a:2,
+    why:"Recovery truncates exactly at the boundary of the first invalid/torn batch — everything before it, which passed validation, is kept; the log's true end simply moves backward to that point. The index is then rebuilt/re-validated against the corrected .log. Deleting the whole segment (A) would lose valid, already-durable data; ignoring the CRC (B) risks serving corrupt bytes; a full startup halt (D) isn't how Kafka's automatic recovery is designed to behave." },
+  { q:"Why does .timeindex share the same index.interval.bytes trigger as .index instead of having its own tunable cadence?",
+    opts:[ "Because timestamps compress better at the same sampling rate as offsets",
+           "Because both entries are appended in the very same LogSegment.append() call whenever bytesSinceLastIndexEntry crosses the shared threshold",
+           "Because Kafka only allows one index file per segment for historical reasons",
+           "Because KIP-33 mandated identical file sizes for both index types" ],
+    a:1,
+    why:"LogSegment.append()'s conditional index write is a single code path: once bytesSinceLastIndexEntry exceeds index.interval.bytes, it appends BOTH an OffsetIndex entry and a TimeIndex entry (via maybeAppend, using the largest timestamp seen since the last entry) in the same call, then resets the counter once. There is no separate config for time-index density because there's no separate mechanism producing it." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could patch OffsetIndex.scala right now.":correct>=4?"solid — skim the explanations you missed.":"re-run §8's decks, then try the simulator's lookup mode — the two-phase search clicks fast once you drive it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+(function(){
+  const CORRECT = [
+    "Fetch request arrives naming a target offset",
+    "LogSegments.floorEntry() locates the segment by base offset (O(log segments))",
+    "OffsetIndex.indexSlotFor() binary-searches the segment's mmap'd sparse index",
+    "The nearest preceding (relativeOffset, physicalPosition) entry is found",
+    "FileRecords seeks/pread()s the .log file at that physical position",
+    "The reader linearly scans forward, deserializing batch headers only (not full records)",
+    "The batch whose offset range contains the target is located and returned"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real lookup path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   10. SIMULATOR (§15) — the flagship
+   ============================================================ */
+(function(){
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  const S = {
+    segBytesCfg: 8192,
+    intervalCfg: 2048,
+    closed: [],                       // array of {base, bytes, index:[{rel,pos}], records:[{off,size}]}
+    active: { base: 0, bytes: 0, index: [], records: [], bytesSinceIdx: 0 },
+    nextOffset: 0,
+    lastBatch: null,                  // decode info for byte panel
+    torn: null,                       // {bytes} pending-corruption info
+    paused: false
+  };
+
+  function recordSize(valBytes, keyBytes){ return keyBytes + valBytes + 7; } // ~7B fixed per-record varint overhead (demo approximation)
+
+  function segRow(){
+    let h = "";
+    S.closed.forEach((sg,i)=>{
+      h += `<div class="segchip" data-kind="closed" data-i="${i}">seg@${sg.base} · ${sg.bytes}B · ${sg.index.length} idx</div>`;
+    });
+    h += `<div class="segchip active" data-kind="active" data-i="0">seg@${S.active.base} · ${S.active.bytes}B (ACTIVE) · ${S.active.index.length} idx</div>`;
+    el("sim-segrow").innerHTML = h;
+  }
+
+  function drawCanvas(scanFrom, scanTo, probedIdx){
+    const cv = el("sim-canvas"), ctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0,0,W,H);
+    // background = whole active segment scaled to width
+    const cap = S.segBytesCfg;
+    const usedW = Math.min(1, S.active.bytes/cap) * W;
+    ctx.fillStyle = "#131824"; ctx.fillRect(0,0,W,H);
+    const grad = ctx.createLinearGradient(0,0,usedW,0);
+    grad.addColorStop(0,"#f25c54"); grad.addColorStop(1,"#ff9f43");
+    ctx.fillStyle = grad; ctx.fillRect(0,0,usedW,H);
+    // index ticks
+    ctx.strokeStyle = "rgba(167,139,250,.8)";
+    S.active.index.forEach((e,i)=>{
+      const x = (e.pos/cap)*W;
+      ctx.lineWidth = (probedIdx===i) ? 3 : 1.5;
+      ctx.strokeStyle = (probedIdx===i) ? "#4ade80" : "rgba(167,139,250,.8)";
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+    });
+    // scan highlight
+    if (scanFrom!=null){
+      const x0 = (scanFrom/cap)*W, x1 = (scanTo/cap)*W;
+      ctx.fillStyle = "rgba(255,159,67,.35)";
+      ctx.fillRect(x0,0,Math.max(2,x1-x0),H);
+      ctx.strokeStyle = "#ff9f43"; ctx.lineWidth=2;
+      ctx.strokeRect(x0,1,Math.max(2,x1-x0),H-2);
+    }
+    // torn marker
+    if (S.torn){
+      const x = (S.torn.at/cap)*W;
+      ctx.fillStyle = "#f25c54";
+      ctx.fillRect(Math.max(0,x-3),0,6,H);
+    }
+    ctx.strokeStyle = "#2a3446"; ctx.strokeRect(0,0,W,H);
+  }
+
+  function renderSegBar(){
+    const cap = S.segBytesCfg;
+    const pct = Math.min(100, (S.active.bytes/cap)*100);
+    el("sim-segfill").style.width = pct+"%";
+    el("sim-baseoffset").textContent = S.active.base;
+    el("sim-segbytes").textContent = `${S.active.bytes} / ${cap} B`;
+    const bar = el("sim-segbar");
+    [...bar.querySelectorAll(".tick")].forEach(n=>n.remove());
+    S.active.index.forEach(e=>{
+      const t = document.createElement("div");
+      t.className = "tick";
+      t.style.left = Math.min(100,(e.pos/cap)*100)+"%";
+      bar.appendChild(t);
+    });
+  }
+
+  function decodeLastBatch(){
+    if (!S.lastBatch){ el("sim-bytepanel").innerHTML = `<div class="bp-title">LAST APPENDED BATCH — DECODE</div><div style="color:var(--dim)">append a batch to decode it…</div>`; return; }
+    const b = S.lastBatch;
+    const rows = [
+      ["baseOffset", b.base],
+      ["batchLength", b.length + " B"],
+      ["magic", "2"],
+      ["crc", "covers attributes.. end"],
+      ["attributes", (b.compressed?"compressed(lz4-sim)":"none") ],
+      ["lastOffsetDelta", b.count-1],
+      ["producerId / epoch / baseSeq", `${b.producerId} / 0 / ${b.baseSeq}`],
+      ["recordsCount", b.count]
+    ];
+    let h = `<div class="bp-title">LAST APPENDED BATCH — DECODE (base offset ${b.base})</div>`;
+    rows.forEach(([f,v])=> h += `<div class="bp-row"><span class="bp-f">${f}</span><span class="bp-v">${v}</span></div>`);
+    // one sample record's varint bytes
+    const offDeltaBytes = varintFieldBytes(b.sampleOffsetDelta, true);
+    const tsDeltaBytes = varintFieldBytes(b.sampleTsDelta, true);
+    const keyLenBytes = varintFieldBytes(b.keyBytes, false);
+    const valLenBytes = varintFieldBytes(b.valBytes, false);
+    const chip = arr => `<span class="varint-seq">${arr.map(x=>`<span class="varint-byte ${x&0x80?'cont':''}">${hex2(x)}</span>`).join("")}</span>`;
+    h += `<div class="bp-row"><span class="bp-f">record[0].offsetDelta (zigzag varint)</span><span class="bp-v">${chip(offDeltaBytes)}</span></div>`;
+    h += `<div class="bp-row"><span class="bp-f">record[0].timestampDelta (zigzag varint)</span><span class="bp-v">${chip(tsDeltaBytes)}</span></div>`;
+    h += `<div class="bp-row"><span class="bp-f">record[0].keyLength (varint)</span><span class="bp-v">${chip(keyLenBytes)}</span></div>`;
+    h += `<div class="bp-row"><span class="bp-f">record[0].valueLength (varint)</span><span class="bp-v">${chip(valLenBytes)}</span></div>`;
+    el("sim-bytepanel").innerHTML = h;
+  }
+
+  function counters(){
+    el("cnt-records").textContent = S.nextOffset;
+    el("cnt-segments").textContent = S.closed.length + 1;
+    el("cnt-idx").textContent = S.closed.reduce((s,sg)=>s+sg.index.length,0) + S.active.index.length;
+  }
+
+  function rollIfNeeded(){
+    if (S.active.bytes >= S.segBytesCfg){
+      log("LOG", `segment.bytes (${S.segBytesCfg} B) reached at base ${S.active.base} — rolling`);
+      log("LOG", `trimToValidSize(): .index shrunk to ${S.active.index.length*8} B; ProducerStateManager writes ${String(S.active.base).padStart(6,'0')}.snapshot`);
+      S.closed.push(S.active);
+      S.active = { base: S.nextOffset, bytes: 0, index: [], records: [], bytesSinceIdx: 0 };
+      log("OK", `new active segment born at base offset ${S.active.base}`);
+    }
+  }
+
+  function appendBatch(){
+    if (S.torn){ log("WARN","a torn write is pending recovery — run recovery before appending more"); return; }
+    const batchSize = +el("sim-batchsize").value;
+    const valBytes = +el("sim-valsize").value;
+    const keyBytes = 8;
+    const compressed = el("sim-compress").classList.contains("on");
+    const base = S.nextOffset;
+    let bodyBytes = 0;
+    const perRec = recordSize(valBytes, keyBytes);
+    bodyBytes = perRec * batchSize;
+    if (compressed) bodyBytes = Math.round(bodyBytes * 0.42 + 20); // simulated compression ratio + codec overhead
+    const headerBytes = 61;
+    const totalBytes = headerBytes + bodyBytes;
+
+    S.active.bytes += totalBytes;
+    S.active.bytesSinceIdx += totalBytes;
+    for (let i=0;i<batchSize;i++){ S.active.records.push({off:S.nextOffset, size: perRec}); S.nextOffset++; }
+
+    if (S.active.bytesSinceIdx > S.intervalCfg){
+      const pos = S.active.bytes - totalBytes; // physical position where THIS batch started
+      S.active.index.push({ rel: base - S.active.base, pos });
+      S.active.bytesSinceIdx = 0;
+      log("LOG", `index entry written: (relOffset=${base-S.active.base}, position=${pos}) — bytesSinceLastIndexEntry exceeded ${S.intervalCfg} B`);
+    }
+
+    S.lastBatch = {
+      base, length: totalBytes, count: batchSize, compressed,
+      producerId: 9001, baseSeq: base,
+      sampleOffsetDelta: 0, sampleTsDelta: 0, keyBytes, valBytes
+    };
+    log("OK", `appended batch: base=${base}, records=${batchSize}, bytes=${totalBytes}${compressed?" (compressed)":""}`);
+    rollIfNeeded();
+    renderSegBar(); segRow(); drawCanvas(); decodeLastBatch(); counters();
+  }
+
+  function findSegmentFor(target){
+    if (target >= S.active.base) return { seg: S.active, isActive:true };
+    for (let i=S.closed.length-1;i>=0;i--){
+      if (target >= S.closed[i].base) return { seg: S.closed[i], isActive:false };
+    }
+    return null;
+  }
+
+  function doLookup(){
+    const target = +el("sim-lookup-input").value;
+    if (target < 0 || target >= S.nextOffset){
+      el("sim-lookup-result").innerHTML = `<span style="color:var(--bad)">offset ${target} does not exist yet (next offset: ${S.nextOffset})</span>`;
+      return;
+    }
+    const found = findSegmentFor(target);
+    if (!found){ el("sim-lookup-result").textContent = "segment not found"; return; }
+    const seg = found.seg;
+    const relTarget = target - seg.base;
+    // binary search seg.index for nearest entry with rel <= relTarget
+    let lo=0, hi=seg.index.length-1, ans=-1;
+    while (lo<=hi){
+      const mid=(lo+hi)>>1;
+      if (seg.index[mid].rel <= relTarget){ ans=mid; lo=mid+1; } else hi=mid-1;
+    }
+    const startPos = ans>=0 ? seg.index[ans].pos : 0;
+    // linear scan: walk seg.records counting bytes until offset found, starting from the record at/near startPos
+    let bytesScanned = 0;
+    let cumPos = 0, startIdx = 0;
+    // find first record whose cumulative position >= startPos (approx, since we track sizes not positions per record)
+    for (let i=0;i<seg.records.length;i++){
+      if (seg === S.active ? true : true){}
+      if (cumPos >= startPos){ startIdx = i; break; }
+      cumPos += seg.records[i].size + (i===0?61:0);
+      startIdx = i+1;
+    }
+    for (let i=startIdx;i<seg.records.length;i++){
+      bytesScanned += seg.records[i].size;
+      if (seg.records[i].off === target) break;
+    }
+    const fullScanBytes = seg.bytes;
+    const denseBytes = 8; // a dense (per-record) index would give an exact position: ~O(1) extra bytes read
+    if (S.active === seg){
+      // temporarily highlight on canvas
+      drawCanvas(startPos, startPos + Math.max(bytesScanned,40), ans);
+    }
+    el("sim-lookup-result").innerHTML =
+      `segment base <b style="color:var(--pg)">${seg.base}</b>, relative offset <b>${relTarget}</b><br>` +
+      `binary search → index entry #${ans>=0?ans:'none'} (pos ${startPos})<br>` +
+      `linear scan: <b style="color:var(--warn)">${bytesScanned} B</b> read<br>` +
+      `vs full scan from byte 0: <b style="color:var(--bad)">${fullScanBytes} B</b><br>` +
+      `vs a hypothetical dense index: <b style="color:var(--ok)">~${denseBytes} B</b> (exact position, no scan)`;
+    log("LOG", `lookup(${target}): binary search → entry@pos ${startPos}, then linear-scanned ${bytesScanned} B to reach the target`);
+  }
+
+  function killMidAppend(){
+    if (S.torn){ log("WARN","already in a torn state — run recovery first"); return; }
+    const valBytes = +el("sim-valsize").value;
+    const partial = Math.max(10, Math.floor((61 + valBytes) * 0.4));
+    S.active.bytes += partial;
+    S.torn = { at: S.active.bytes - partial, size: partial };
+    log("WARN", `simulated broker kill mid-append: ${partial} B of a new batch landed, header incomplete / CRC will not validate`);
+    drawCanvas(); renderSegBar();
+  }
+
+  function runRecovery(){
+    if (!S.torn){ log("LOG","nothing to recover — no torn write pending"); return; }
+    log("LOG", "LogLoader.loadSegments(): validating active segment tail against stored batch headers");
+    log("WARN", `CRC mismatch on trailing batch at byte ${S.torn.at} — truncating .log to ${S.torn.at} B`);
+    S.active.bytes = S.torn.at;
+    S.torn = null;
+    log("OK", "index rebuilt/re-validated up to the new (truncated) end of .log — recovery complete");
+    renderSegBar(); drawCanvas(); counters();
+  }
+
+  function resetLog(){
+    S.closed = [];
+    S.active = { base: 0, bytes: 0, index: [], records: [], bytesSinceIdx: 0 };
+    S.nextOffset = 0; S.lastBatch = null; S.torn = null;
+    log("OK", "log reset — orders-3/ is empty again");
+    renderSegBar(); segRow(); drawCanvas(); decodeLastBatch(); counters();
+  }
+
+  el("sim-batchsize").oninput = e=> el("sim-batchsize-val").textContent = e.target.value;
+  el("sim-valsize").oninput = e=> el("sim-valsize-val").textContent = e.target.value+" B";
+  el("sim-compress").onclick = ()=>{
+    const btn = el("sim-compress");
+    btn.classList.toggle("on");
+    btn.textContent = "compression: " + (btn.classList.contains("on")?"ON (lz4, simulated)":"OFF");
+  };
+  el("sim-append").onclick = appendBatch;
+  el("sim-segcfg").oninput = e=>{ S.segBytesCfg = +e.target.value; el("sim-segcfg-val").textContent = (S.segBytesCfg>=1024?(S.segBytesCfg/1024).toFixed(1)+" KB":S.segBytesCfg+" B"); renderSegBar(); drawCanvas(); };
+  el("sim-intcfg").oninput = e=>{ S.intervalCfg = +e.target.value; el("sim-intcfg-val").textContent = (S.intervalCfg>=1024?(S.intervalCfg/1024).toFixed(1)+" KB":S.intervalCfg+" B"); };
+  el("sim-lookup-go").onclick = doLookup;
+  el("sim-kill").onclick = killMidAppend;
+  el("sim-recover").onclick = runRecovery;
+  el("sim-reset").onclick = resetLog;
+
+  log("OK", "log initialized — orders-3/ base offset 0, empty active segment");
+  log("HINT", "Try: append a few batches → shrink segment.bytes → watch it roll → search an early offset.");
+  renderSegBar(); segRow(); drawCanvas(); decodeLastBatch(); counters();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["kafka-03"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#f25c54"><a class="cn-btn" href="kafka-02.html"><span>←</span><span><span class="cn-lbl">PREV · CH 02</span><span class="cn-ttl">Broker Architecture & the Request Pipeline</span></span></a><div class="cn-mid"><a class="cn-home" href="course-kafka.html">☰ Apache Kafka Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="kafka-01.html">CH 01 · Genesis: Why a Log, Not a Queue</option><option value="kafka-02.html">CH 02 · Broker Architecture & the Request Pipeline</option><option value="kafka-03.html" selected>CH 03 · Log Internals: Segments, Indexes & the Record Format</option><option value="kafka-04.html">CH 04 · Producer Internals: Batching, Compression & Idempotence</option><option value="kafka-05.html">CH 05 · Replication: ISR, High Watermark & Leader Epochs</option><option value="kafka-06.html">CH 06 · The Controller: From ZooKeeper to KRaft</option><option value="kafka-07.html">CH 07 · Consumer Groups & Rebalancing</option><option value="kafka-08.html">CH 08 · Offsets & Delivery Semantics</option><option value="kafka-09.html">CH 09 · Transactions & Exactly-Once</option><option value="kafka-10.html">CH 10 · Storage Performance: Page Cache, Zero-Copy & Sequential I/O</option><option value="kafka-11.html">CH 11 · Retention & Log Compaction</option><option value="kafka-12.html">CH 12 · Networking & the Wire Protocol</option><option value="kafka-13.html">CH 13 · Performance Tuning & Cluster Sizing</option><option value="kafka-14.html">CH 14 · Production Incidents & Failure Handling</option><option value="kafka-15.html">CH 15 · Capstone: Build a Mini Kafka</option></select><span class="cn-prog">03 / 15</span></div><a class="cn-btn" href="kafka-04.html"><span><span class="cn-lbl">NEXT · CH 04</span><span class="cn-ttl">Producer Internals: Batching, Compression & Idempotence</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

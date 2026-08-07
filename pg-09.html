@@ -1,0 +1,1810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PG-09 · Buffer Manager & the Clock-Sweep Algorithm — PostgreSQL Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#60a5fa; --pg-dim:rgba(96,165,250,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(96,165,250,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(96,165,250,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(96,165,250,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(96,165,250,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(96,165,250,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(96,165,250,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(96,165,250,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- buffer-manager specific widgets ---------- */
+  .bg-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  @media(max-width:700px){.bg-grid{grid-template-columns:1fr}}
+  .bg-card{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:11px;padding:11px 13px;font-size:12.5px;color:#c6cddb;line-height:1.55}
+  .bg-card b{color:var(--text);display:block;margin-bottom:4px;font-family:var(--mono);font-size:11.5px}
+  .ring{display:grid;grid-template-columns:repeat(16,1fr);gap:3px}
+  .ring .cell{aspect-ratio:1;border-radius:3px;border:1px solid var(--border-hi);background:var(--panel-2);position:relative;cursor:pointer}
+  .ring .cell.hand{outline:2px solid var(--pg);outline-offset:1px}
+  .ring .cell.dirty{background:rgba(255,159,67,.35)}
+  .ring .cell.pinned{border-color:var(--pg)}
+  .ring .cell.strategy{border-color:var(--purple)}
+  .buf-legend{display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--muted);margin:8px 0}
+  .buf-legend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-postgresql.html">← PostgreSQL Internals</a>
+  <span class="crumb">POSTGRESQL INTERNALS · <b>CH 09 / 21</b> · BUFFER MANAGER</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">POSTGRESQL INTERNALS · CHAPTER 09</div>
+  <h1>Buffer Manager &<br><span class="grad">the Clock-Sweep Algorithm</span></h1>
+  <p class="lead">The kernel already caches your files. PostgreSQL builds an entire second cache on top of it anyway
+  — and that decision, plus the algorithm it uses to decide which page to evict when the cache is full, shapes
+  every read and write your queries perform. This chapter derives why a database cannot simply trust the OS page
+  cache, walks <code>ReadBuffer()</code>'s exact path from a hash lookup to a pinned page, and shows why clock-sweep
+  — not true LRU — is the only replacement policy that scales.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Trace a page from a cold miss through eviction, WAL flush, and read into a pinned buffer.</div>
+    <div class="obj"><b>You will understand</b>Why true LRU was rejected and what clock-sweep approximates instead.</div>
+    <div class="obj"><b>You will predict</b>When a sequential scan will pollute your cache — and how ring buffers prevent it.</div>
+    <div class="obj"><b>You will simulate</b>A live buffer pool under mixed OLTP/scan load, with the ring-buffer strategy toggled on and off.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">The OS already caches your files. Why build a second cache?</h2>
+  <p class="lead">Every table and index PostgreSQL manages is, at the filesystem level, just a set of files made of
+  fixed-size 8&nbsp;KB pages. Linux (and every other production OS) already caches recently-read file pages in
+  free RAM via its own page cache, transparently, for free. A database engine that simply called
+  <code>read()</code>/<code>write()</code> for every page access would get OS-level caching for nothing — so why
+  does PostgreSQL maintain its own buffer pool, an entire parallel cache sitting on top of one the kernel already
+  provides?</p>
+  <p>Three requirements the OS page cache cannot satisfy, no matter how well-tuned:</p>
+  <ul class="plain">
+    <li><b>Control over eviction order.</b> The kernel's page cache is shared across every process and every file
+      on the machine, and its eviction policy has no idea that this particular 8&nbsp;KB page is the root of a
+      B-tree index touched by every query, while that one is a page from a one-time bulk import scanned once and
+      never again. PostgreSQL, by contrast, knows exactly how each page has been used and can make a
+      database-aware eviction decision the OS structurally cannot.</li>
+    <li><b>Knowing which pages are dirty, precisely.</b> Durability depends on a specific ordering: a page's
+      changes must never reach the underlying data file before the WAL record describing that change has been
+      flushed. The OS page cache's own dirty-page tracking and writeback timing are opaque to PostgreSQL and
+      offer no way to enforce "flush WAL up to LSN X before this exact page is written" — that ordering can only
+      be guaranteed by a cache PostgreSQL itself controls.</li>
+    <li><b>Pinning.</b> While a backend is actively reading or modifying a page's bytes, that page must not be
+      evicted or relocated out from under it — not by another backend, not by memory pressure elsewhere on the
+      machine. The OS page cache has no concept of "this page is in use right now by this process and may not be
+      dropped"; only an application-level cache can offer that guarantee.</li>
+  </ul>
+  <p>There is also a plain efficiency argument underneath all three: even a page cache hit inside the kernel still
+  costs a <code>read(2)</code> syscall — a mode switch into the kernel, a copy from kernel page-cache memory into a
+  user-space buffer, and back. A cache PostgreSQL controls entirely in its own shared memory lets a hit skip the
+  syscall and the copy altogether once the page is already resident.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT DOZEN CHAPTERS</div>
+    <p>The buffer pool is the single most contended shared structure in the entire server — nearly every operation
+    a backend performs touches it, which is exactly why chapter 8's three-tier lock hierarchy exists in the first
+    place. Everything below builds directly on that chapter: buffer pins use atomics faster than any lock, the
+    buffer mapping table is partitioned by LWLocks exactly like the heavyweight lock table, and eviction obeys the
+    same WAL-before-data discipline that makes crash recovery (chapter 11) possible at all.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a fixed pool to a lock-free state word</h2>
+  <p>The buffer manager's shape — a fixed-size array of pages plus a replacement algorithm — is as old as the
+  project; what changed over three decades is how cheaply that array can be touched under real concurrency. Click
+  through the timeline.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — hardening the buffer pool</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY "CLOCK," NOT "LRU"</div>
+    <p>The clock algorithm — approximating least-recently-used behavior with a circular scan and a per-page
+    "second chance" counter instead of an exactly-ordered list — predates PostgreSQL by decades; it traces to
+    Corbato's work on Multics-era virtual memory management in the 1960s and 70s. PostgreSQL's clock sweep is a
+    direct descendant of that operating-systems lineage, adapted with a multi-level <code>usage_count</code>
+    (0–5) instead of a single reference bit, precisely because a database's access pattern skew is sharper than a
+    generic VM system's and one bit of "was this used recently" isn't enough signal.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: trust the OS, cache nothing yourself</h2>
+  <p>Derive it honestly. If the kernel already caches file pages, the simplest architecture skips a second cache
+  entirely and issues a plain <code>read()</code>/<code>write()</code> per page access, leaning on the OS for
+  everything.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>naive_pager.c — the strawman</span></div>
+    <pre><span class="k">char</span> *
+<span class="f">ReadPageNaive</span>(<span class="k">int</span> fd, BlockNumber blocknum)
+{
+    <span class="k">char</span> *buf = <span class="f">malloc</span>(BLCKSZ);           <span class="c">/* 8 KB, fresh every call */</span>
+    <span class="f">pread</span>(fd, buf, BLCKSZ, (<span class="k">off_t</span>)blocknum * BLCKSZ);
+    <span class="c">/* Trust: the OS page cache already has this block resident
+     * if it was recently touched, so this "read" is often just a
+     * kernel-memory copy, not a disk seek. No pin, no dirty
+     * tracking, no eviction policy of our own — none needed,
+     * right?                                                      */</span>
+    <span class="k">return</span> buf;
+}
+
+<span class="k">void</span>
+<span class="f">WritePageNaive</span>(<span class="k">int</span> fd, BlockNumber blocknum, <span class="k">char</span> *buf)
+{
+    <span class="f">pwrite</span>(fd, buf, BLCKSZ, (<span class="k">off_t</span>)blocknum * BLCKSZ);
+    <span class="f">free</span>(buf);           <span class="c">/* no cache to keep it in — next reader re-reads it */</span>
+}</pre>
+  </div>
+
+  <p>This is not absurd — it is exactly how many simple tools (a one-shot ETL script, <code>cp</code>) operate,
+  and it inherits the kernel's own considerable engineering for free: readahead, writeback coalescing, and a
+  cache that's already sized to available RAM. Watch where it falls apart the moment a database's actual access
+  pattern — repeated random access to a working set, with strict durability requirements — is applied to it.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The syscall-per-access server under load</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Syscalls, double copies, and no way to keep a promise</h2>
+  <p>The naive design fails in ways that are each individually disqualifying for a database:</p>
+  <ul class="plain">
+    <li><b>Syscall overhead on every touch, even cache hits.</b> A <code>pread()</code> that the kernel satisfies
+      entirely from its page cache still costs a full user/kernel mode transition plus a memory copy from kernel
+      space into the caller's buffer — commonly hundreds of nanoseconds to low microseconds even with zero disk
+      I/O. A hot index root page touched thousands of times per second pays that tax every single time.</li>
+    <li><b>No pinning means no safety.</b> Nothing stops the kernel from evicting a page's cached copy the instant
+      after you read it and before you finish working with the bytes you copied out — which sounds harmless
+      (you already have your own copy) until you consider that <i>every</i> backend re-reads and re-copies
+      independently, with zero sharing of in-flight work, and zero way to say "don't let this go away, I'm
+      mid-modification."</li>
+    <li><b>No enforceable write ordering.</b> Durability requires WAL describing a change to reach stable storage
+      strictly before the changed data page does. The OS page cache's writeback (via <code>pdflush</code>-style
+      kernel threads, or explicit <code>fsync()</code>) has no concept of "wait for this other file's fsync
+      first" tied to a specific page — that ordering guarantee has to live in a layer PostgreSQL itself controls
+      end-to-end.</li>
+    <li><b>Double buffering, with no coordination.</b> Every backend's private <code>malloc()</code>'d 8&nbsp;KB
+      copy plus the kernel's own page-cache copy means the same page's bytes exist in at least two places in RAM
+      simultaneously, for every backend touching it — memory spent without a matching benefit, since neither copy
+      is shared with anyone.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>At even a modest 200,000 buffer touches/sec (unremarkable for an OLTP system with a decent-sized working
+    set) and ~300&nbsp;ns of avoidable syscall + copy overhead per touch on an already-cached page, that's
+    <b>60&nbsp;ms/sec of pure overhead</b> paid for work that provides zero additional caching benefit over an
+    application-level cache — and that number climbs steeply, not linearly, once contention and copy costs compound
+    under real concurrency. The naive design isn't slow because disk is slow; it's slow because it re-pays for a
+    cache hit it should get almost for free.</p>
+  </div>
+  <p>Durability and pinning aren't optimizations you can add on top of this design later — they require a cache
+  PostgreSQL owns and can reason about precisely. §5 looks at what shape that cache should take.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Fixed pool, yes — but replaced by what rule?</h2>
+
+  <h3>Candidate A: mmap() the whole file, let the OS manage everything</h3>
+  <p><code>mmap()</code> each relation's file and let page faults do the work of "reading" — no explicit
+  <code>read()</code> calls at all, and the kernel's own page cache <i>is</i> the buffer pool. This eliminates the
+  double-copy from §4, but reintroduces every other problem: no pinning (the kernel can still evict or the process
+  can still be sent a <code>SIGBUS</code> on I/O error mid-access, which is far worse than a controlled failure),
+  no enforceable WAL-before-data ordering (msync semantics don't give you fine per-page write ordering relative to
+  a separate WAL file), and no database-aware eviction. <b>Rejected</b> — it solves the copying inefficiency and
+  reintroduces the two harder problems (durability ordering, pinning) at the same time.</p>
+
+  <h3>Candidate B: an application-level cache with a global, exact LRU list</h3>
+  <p>Keep a fixed array of buffers in shared memory (solves control-over-eviction and pinning), and track recency
+  with a classic doubly-linked LRU list: every access moves its buffer to the head, eviction always takes the
+  tail. This is the textbook "correct" answer to cache replacement and is the resting assumption of most
+  data-structures courses. <b>Rejected in practice</b> for reasons quantified in §6 — a global list requires
+  a lock on every single access to reorder it, and it has no defense against one large sequential scan pushing an
+  entire working set out of cache.</p>
+
+  <h3>Candidate C: fixed pool + partitioned hash lookup + clock-sweep approximation ✓</h3>
+  <p>Keep the fixed array and the mapping-table idea from B, but replace exact LRU tracking with an
+  approximation that needs no reordering on every hit: each buffer carries a small saturating counter
+  (<code>usage_count</code>), bumped on access and decremented by a circulating "clock hand" looking for a victim.
+  No global list to maintain, no lock taken on the common-case hit path beyond a pin — the eviction scan itself is
+  the only place that walks buffers in order, and it does so lazily, only when a free buffer is actually needed.</p>
+
+  <div class="widget deck" id="deckCandidates">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Exact LRU vs. clock-sweep approximation</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: HITS SHOULD NOT PAY WRITE COSTS</div>
+    <p>The core insight clock-sweep encodes: <b>the overwhelmingly common operation is a cache hit</b>, and a hit
+    should be as close to a pure read as possible. An exact LRU list turns every hit into a write (unlink + relink
+    at the head), which means every hit needs exclusive access to shared list-pointer state — precisely the kind
+    of avoidable contention chapter 8 spent an entire chapter eliminating. Clock-sweep's hit path is a single
+    atomic increment of a small counter; its only "list maintenance" work happens lazily, during the rarer event
+    of needing to evict something.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">What a global LRU list actually costs, quantified</h2>
+  <p>It's worth being precise about exactly why candidate B is rejected, because the reasons generalize far beyond
+  buffer management:</p>
+  <ul class="plain">
+    <li><b>A lock on every access, full stop.</b> Moving a node to the head of a doubly-linked list on every touch
+      — including every read-only hit — means every single buffer access, the hottest operation in the entire
+      server, must take an exclusive lock on the shared list structure. This recreates precisely the single-global-bottleneck
+      failure mode chapter 8 derived and rejected, just relocated to the buffer pool instead of the lock table.</li>
+    <li><b>Sequential-scan pollution.</b> True LRU treats "most recently touched" as synonymous with "most valuable
+      to keep," which is false for a one-time sequential scan: a <code>SELECT *</code> over a 500&nbsp;GB table
+      touches every page exactly once, and under exact LRU every one of those pages becomes the most-recently-used
+      entry as it streams through — evicting the actual hot working set (frequently-reused index pages, hot rows)
+      to make room for pages that will never be touched again. The scan "pollutes" the cache with data that has
+      zero future value while displacing data with high future value.</li>
+    <li><b>Move-to-front itself is a cache-unfriendly operation.</b> Every LRU update touches at least three list
+      nodes (the moved node and its old neighbors) — three more cache lines to potentially fault or bounce between
+      cores, on top of whatever work the actual buffer access needed.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">CLOCK-SWEEP'S OWN COSTS, HONESTLY STATED</div>
+    <p>Clock-sweep is not free either. It is only an <i>approximation</i> of LRU — under certain access patterns
+    (a working set slightly larger than the buffer pool, cycled through repeatedly) it can perform measurably worse
+    than exact LRU would, because a full circular sweep can pass over a page more than once before deciding to
+    evict it, and does not perfectly distinguish "used once a while ago" from "used constantly until a moment
+    ago" beyond the saturating counter's small range (0–5). And the "victim search" itself is O(buffers examined)
+    in the worst case — if every buffer in the pool has a nonzero <code>usage_count</code>, the hand must make a
+    full circuit, decrementing every counter, before finding a victim. The trade is deliberate: pay an occasional,
+    bounded, lock-cheap sweep cost in exchange for never paying a lock on the hit path.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">Three parallel arrays and a circulating hand</h2>
+  <p>Click any component to see its struct, its file, and its role. The buffer pool is not one data structure but
+  three, kept in lockstep by index: <code>BufferDescriptors[i]</code> describes buffer <i>i</i>,
+  <code>BufferBlocks[i]</code> is the actual 8&nbsp;KB of page data at index <i>i</i>, and the buffer mapping hash
+  table separately maps a <code>BufferTag</code> (which page) to a buffer index.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Buffer manager explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">PARALLEL ARRAYS (indexed identically, 1:1)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="descriptors">BufferDescriptors[NBuffers]</div>
+          <div class="acard" data-p="blocks">BufferBlocks[NBuffers]</div>
+        </div>
+        <div class="arch-row-label">LOOKUP</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="maptable">buffer mapping hash table</div>
+          <div class="acard" data-p="partitions">128 mapping-table LWLocks</div>
+        </div>
+        <div class="arch-row-label">REPLACEMENT</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="clocksweep">clock sweep / StrategyGetBuffer</div>
+          <div class="acard" data-p="freelist">free list</div>
+          <div class="acard" data-p="ring">buffer access strategy (ring buffer)</div>
+        </div>
+        <div class="arch-row-label">WRITEBACK</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="bgwriter">background writer</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DOUBLE BUFFERING IS ACCEPTED, NOT ELIMINATED</div>
+    <p>Even with its own buffer pool, PostgreSQL still reads and writes through the OS, so the same page can still
+    sit in both the shared buffer pool and the kernel's page cache simultaneously — the "double buffering" problem
+    from §4 is reduced, not eliminated (a cache hit in <code>shared_buffers</code> skips the syscall, but a miss
+    that falls through to a page still resident in the OS cache is cheaper than a real disk read). This is exactly
+    why <code>effective_cache_size</code> exists as a planner hint: it tells the query planner roughly how much
+    total RAM (shared_buffers plus what the OS is likely caching on top of it) is probably available for caching
+    this database's data, so index-scan cost estimates aren't pessimistically assuming every page miss hits disk.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">ReadBuffer(), the state word, and the sweep</h2>
+  <p>Patch-level detail on: (a) the <code>BufferDesc</code> struct and its packed atomic state word, (b) the full
+  <code>ReadBuffer()</code> path from hash lookup to pinned page, (c) the clock-sweep algorithm itself, and
+  (d) buffer access strategies (ring buffers) that keep large scans from evicting the working set.</p>
+
+  <h3>(a) BufferDesc: one atomic word instead of a per-buffer spinlock</h3>
+  <p>Each buffer's metadata lives in a <code>BufferDesc</code> — its <code>BufferTag</code> (identifying which
+  relation, fork, and block number occupies this slot), a content LWLock (protecting the actual 8&nbsp;KB of page
+  data during reads/writes), and, critically, one <code>pg_atomic_uint32</code> <b>state</b> word packing several
+  fields that older PostgreSQL versions protected with a dedicated per-buffer spinlock. The state word bundles a
+  refcount (how many backends currently have this buffer pinned — up to 18 bits, far more than realistic
+  concurrent pins), a 4-bit <code>usage_count</code> (capped at <code>BM_MAX_USAGE_COUNT</code>, 5), and flag bits
+  including <code>BM_DIRTY</code>, <code>BM_VALID</code>, <code>BM_TAG_VALID</code>,
+  <code>BM_IO_IN_PROGRESS</code>, and <code>BM_JUST_DIRTIED</code>.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>buf_internals.h — BufferDesc, simplified</span></div>
+    <pre><span class="k">typedef struct</span> BufferDesc
+{
+    BufferTag   tag;                <span class="c">/* relfilenode + fork + blocknum: which page */</span>
+    <span class="k">int</span>         buf_id;             <span class="c">/* index into BufferDescriptors[]/BufferBlocks[] */</span>
+
+    <span class="c">/* One atomic word replaces the old per-buffer spinlock:
+     *   bits  0..17  refcount        (pin count, up to ~262K)
+     *   bits 18..21  usage_count     (0..BM_MAX_USAGE_COUNT=5)
+     *   bits 22..    flags: BM_DIRTY | BM_VALID | BM_TAG_VALID |
+     *                       BM_IO_IN_PROGRESS | BM_JUST_DIRTIED | ...  */</span>
+    pg_atomic_uint32 state;
+
+    <span class="k">int</span>         wait_backend_pgprocno;   <span class="c">/* who's waiting for our pin to clear */</span>
+    <span class="k">int</span>         freeNext;                <span class="c">/* freelist link */</span>
+    LWLock      content_lock;       <span class="c">/* protects the ACTUAL page bytes, not this struct */</span>
+} BufferDesc;</pre>
+  </div>
+
+  <p>The move from a per-buffer spinlock to a single atomic word matters for exactly the reason chapter 8
+  predicts: pinning and unpinning are the single hottest operations in the server, executed on every page touch by
+  every backend, and a compare-and-swap on one packed word is cheaper and less contention-prone than acquiring a
+  spinlock, mutating several separate fields, and releasing it — especially since several of those fields (bump
+  <code>usage_count</code>, increment refcount) can now be updated together in one CAS instead of as sequential
+  protected steps.</p>
+
+  <h3>(b) ReadBuffer(): the full path from request to pinned page</h3>
+  <p>Every page access — from the executor, from an index scan, from vacuum — funnels through
+  <code>ReadBuffer()</code> (or a strategy-aware variant), which delegates the actual work to
+  <code>BufferAlloc()</code>:</p>
+
+  <div class="widget deck" id="deckReadBuffer">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">ReadBuffer() → BufferAlloc(), step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout bad">
+    <div class="co-t">THE RULE THAT MAKES CRASH RECOVERY POSSIBLE: WAL BEFORE DATA</div>
+    <p>If the victim buffer chosen for eviction is dirty, its WAL record(s) — everything up to the page's current
+    LSN — must be flushed to durable storage <i>before</i> the page itself is written out. Get this order backwards
+    even once and a crash between the data write and the WAL flush leaves a data file reflecting a change whose
+    WAL record doesn't exist to describe it — recovery replays WAL from the last checkpoint forward and has no way
+    to represent "undo this data-file change, I never told you about it." This single ordering rule, enforced
+    inside <code>FlushBuffer()</code> on every eviction, is what makes chapter 11's crash recovery a sound
+    reconstruction rather than a best-effort guess.</p>
+  </div>
+
+  <h3>(c) Clock sweep: the circular scan with second chances</h3>
+  <p>When no buffer is available from the free list, <code>StrategyGetBuffer()</code> advances a shared
+  <code>nextVictimBuffer</code> "hand" around the buffer array (wrapping at <code>NBuffers</code>) and, for each
+  candidate, applies one rule: if the buffer's <code>usage_count</code> is above zero, decrement it and move on —
+  a "second chance" recording that this page has been used recently enough to deserve one more pass before
+  eviction; if <code>usage_count</code> is already zero <i>and</i> the buffer is unpinned, it becomes the victim.
+  A buffer touched constantly keeps getting its counter bumped back up by ordinary access faster than the hand can
+  drain it, so it survives indefinitely; a buffer touched once and never again has its counter drained to zero on
+  the hand's very next pass and gets reclaimed quickly.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Clock sweep, live — usage_count decay vs. access rate</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>buffer pool size (slots)</label><input type="range" id="cs-size" min="8" max="64" value="24" step="1"><span class="val" id="cs-size-val">24</span></div>
+      <div class="slider-row"><label>hand sweep speed</label><input type="range" id="cs-speed" min="1" max="10" value="4" step="1"><span class="val" id="cs-speed-val">4</span></div>
+      <div class="slider-row"><label>hot-key access rate</label><input type="range" id="cs-hot" min="0" max="10" value="5" step="1"><span class="val" id="cs-hot-val">5</span></div>
+      <div class="ring" id="cs-ring"></div>
+      <div class="buf-legend">
+        <span><span class="sw" style="background:var(--pg)"></span>outlined = clock hand</span>
+        <span><span class="sw" style="background:rgba(255,159,67,.5)"></span>dirty</span>
+        <span>digit = usage_count (0–5)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="cs-note"></p>
+    </div>
+  </div>
+
+  <h3>(d) Buffer access strategies: ring buffers for bulk operations</h3>
+  <p>Clock-sweep alone still lets a sufficiently large sequential scan or bulk load eventually drain every
+  buffer's <code>usage_count</code> to zero as the hand keeps passing without those pages ever being revisited —
+  the scan doesn't need to touch <i>every</i> buffer to cause damage, just enough of them repeatedly. PostgreSQL's
+  defense is a <b>buffer access strategy</b>: an operation that knows in advance it will touch far more pages than
+  fit productively in cache requests a small private ring of buffers — <code>BAS_BULKREAD</code> uses roughly
+  256&nbsp;KB (about 32 buffers at 8&nbsp;KB each), <code>BAS_BULKWRITE</code> and <code>BAS_VACUUM</code> have
+  their own sized rings — and reuses those same few buffers in a loop for the entire scan, evicting only its own
+  ring members instead of touching the shared pool's clock sweep at all for the bulk of its work.</p>
+
+  <div class="widget deck" id="deckRing">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Ring buffer strategy in action</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>One refinement matters: <code>StrategyRejectBuffer()</code> lets a ring give back a buffer rather than reuse
+  it if that buffer turns out to already be a popular, high-<code>usage_count</code> page that happened to fall
+  into the ring's path — the ring's whole purpose is protecting the shared pool from the <i>scan's</i> pages, not
+  stealing pages the shared pool already values highly.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same problem, five ways: comparative anatomy</h2>
+  <p>Every engine that maintains its own page cache on top of the OS solves scan pollution and replacement
+  differently — the differences map directly onto each engine's dominant workload assumptions:</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>REPLACEMENT POLICY</th><th>SCAN-POLLUTION DEFENSE</th><th>NOTES</th></tr>
+    <tr><td>PostgreSQL</td><td>clock-sweep (usage_count 0–5, circular hand)</td>
+      <td><span class="pill g">buffer access strategies (ring buffers)</span></td>
+      <td>Hit path is a single atomic increment; no global list to maintain.</td></tr>
+    <tr><td>MySQL / InnoDB</td><td>modified LRU with a midpoint insertion point (~5/8 old sublist, ~3/8 new sublist)</td>
+      <td><span class="pill g">new pages enter mid-list, not head — must be reused within a window to reach the hot end</span></td>
+      <td>A genuinely different solution to the identical pollution problem — insertion point, not a separate ring.</td></tr>
+    <tr><td>Oracle</td><td>LRU list + touch-count-aware placement</td>
+      <td><span class="pill g">large/full table scans placed at LRU end directly; direct-path reads bypass the cache entirely</span></td>
+      <td>"Bypass the cache for known-bad-fit access patterns" is the same instinct as a ring buffer, applied more bluntly.</td></tr>
+    <tr><td>SQLite</td><td>simple LRU over a much smaller page cache</td>
+      <td><span class="pill y">limited — relies on the OS cache underneath for the bulk of caching</span></td>
+      <td>Single-process, single-writer model means contention isn't the driving design pressure it is for PostgreSQL.</td></tr>
+    <tr><td>RocksDB</td><td>configurable block cache: LRU or a clock-based ("ClockCache") implementation</td>
+      <td><span class="pill y">workload-dependent; LSM compaction reads can be routed around the cache</span></td>
+      <td>Being an LSM engine (not in-place page updates) changes what "dirty" and "eviction" even mean.</td></tr>
+    <tr><td>Cassandra</td><td>OS page cache reliance + an off-heap row/key cache layer</td>
+      <td><span class="pill b">limited built-in defense; relies on off-heap sizing and workload isolation</span></td>
+      <td>SSTable immutability changes the caching problem shape significantly versus in-place B-tree pages.</td></tr>
+  </table>
+  <p>Read the table as convergent evolution: <b>every engine that owns its own cache ends up defending it from
+  large one-time scans</b>, whether via a midpoint-insertion LRU variant, a direct bypass, or (PostgreSQL's choice)
+  a dedicated small ring that isolates the scan's own churn from the shared pool entirely.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">Numbers you can predict before benchmarking</h2>
+  <ul class="plain">
+    <li><b>Buffer mapping hash lookup:</b> O(1) average, partitioned across <code>NUM_BUFFER_PARTITIONS</code>
+      (128) LWLocks — a hit only ever contends with other backends hashing into the same partition, not the whole
+      pool.</li>
+    <li><b>Pin/unpin (the hot path):</b> O(1) — one atomic CAS on the <code>BufferDesc</code> state word, no lock
+      acquisition beyond the (already-held, brief) mapping partition lock during the initial lookup.</li>
+    <li><b>Clock-sweep victim search:</b> amortized O(1) per allocation under normal working-set behavior, but
+      worst case O(NBuffers) if every buffer in the pool currently has a nonzero <code>usage_count</code> — the
+      hand must make a full circuit decrementing everything before it can claim a victim.</li>
+    <li><b>Cache/TLB/NUMA effects at scale:</b> a large <code>shared_buffers</code> means the
+      <code>BufferDescriptors</code> array itself — one entry per buffer, touched on every access — spans many
+      cache lines; a working set that doesn't fit in L2/L3 turns "hit in shared_buffers" into a real memory
+      latency event even without touching disk. On multi-socket NUMA hardware, buffers physically allocated near
+      one socket cost more to touch from another, the same effect chapter 1 described for the whole shared memory
+      segment.</li>
+    <li><b>Disk access patterns:</b> a cache miss on a random OLTP lookup is a random 8&nbsp;KB read; a miss during
+      a sequential scan benefits from OS/storage readahead the buffer manager doesn't have to orchestrate itself —
+      one more reason double buffering with the OS cache is tolerated rather than fought.</li>
+  </ul>
+  <p>Drag the cache size and access-pattern mix below and watch the hit ratio behave very differently with and
+  without a ring-buffer strategy protecting the pool from a concurrent large scan:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Hit ratio vs. shared_buffers, OLTP + concurrent scan</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>shared_buffers (relative to working set)</label><input type="range" id="perf-conn" min="5" max="200" value="40" step="1"><span class="val" id="perf-conn-val">40%</span></div>
+      <div class="slider-row"><label>concurrent scan intensity</label><input type="range" id="perf-cores" min="0" max="100" value="50" step="1"><span class="val" id="perf-cores-val">50%</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="perf-fastpath">ring-buffer strategy enabled</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> OLTP hit ratio (%)</span>
+        <span><span style="color:var(--bad)">━</span> relative backend-initiated writes</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch, shaped to match the qualitative, well-documented behavior of ring buffers
+    protecting OLTP hit ratios from concurrent bulk scans — real numbers depend on your working set's actual
+    skew, storage latency, and checkpoint pacing. Measure your own workload with
+    <code>pg_stat_database.blks_hit</code>/<code>blks_read</code> and <code>pg_buffercache</code> (chapter 20's
+    methodology).</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents you will eventually meet</h2>
+
+  <h3>Incident 1: shared_buffers too small for the working set</h3>
+  <p>A schema grows past what <code>shared_buffers</code> was originally sized for; the same "hot" pages that
+  used to survive clock-sweep indefinitely now cycle in and out as the pool churns to fit a working set larger
+  than it is. <code>pg_stat_database</code> shows <code>blks_hit</code>/<code>blks_read</code> ratio degrading
+  over months as data grows, invisible until it crosses a threshold where read latency spikes system-wide.
+  <b>Fix:</b> size <code>shared_buffers</code> against the actual working set (not total data size — the working
+  set is what's <i>repeatedly</i> touched), track the hit ratio as a trending metric rather than a one-time
+  setting, and remember that raising <code>shared_buffers</code> requires a restart (chapter 1) — this is not a
+  same-day fix once discovered.</p>
+
+  <h3>Incident 2: backend-initiated writes spike — the sign the background writer is losing</h3>
+  <p>Under sustained write load, the clock sweep increasingly finds its victim candidates dirty, and if the
+  background writer (which is supposed to dribble dirty pages out just ahead of the sweeping hand, per
+  <code>bgwriter_delay</code>) hasn't kept pace, an ordinary foreground backend doing a plain read is forced to
+  perform the eviction's write itself — flushing WAL and issuing the page write synchronously, inline, before it
+  can even complete the read it originally wanted. This is the buffer-manager equivalent of an OOM cascade: a
+  backend just trying to do a cheap operation gets stuck doing an expensive one because a background process fell
+  behind. <b>Fix:</b> tune <code>bgwriter_lru_maxpages</code>/<code>bgwriter_lru_multiplier</code> more
+  aggressively, watch <code>pg_stat_bgwriter.buffers_backend</code> vs. <code>buffers_clean</code> as the direct
+  signal of who is doing the writing, and treat a rising <code>buffers_backend</code> share as an early-warning
+  metric, not a curiosity.</p>
+
+  <h3>Incident 3: an unprotected bulk scan tanks OLTP latency</h3>
+  <p>Before ring-buffer strategies were applied consistently (and still today, for operations that bypass them),
+  a large sequential scan or bulk load can push enough pages through the clock sweep that genuinely hot OLTP
+  pages get evicted despite having been touched constantly moments before — the sweep simply cannot distinguish
+  "touched a million times over the last hour" from "touched a million times because a scan is currently passing
+  through" using only a 0–5 counter under sufficiently sustained pressure. Application teams see a nightly batch
+  job or an ad-hoc analytical query correlate with an OLTP latency spike that has nothing to do with lock
+  contention or CPU — pure cache-eviction collateral damage. <b>Fix:</b> confirm the operation actually uses a
+  ring-buffer-eligible access pattern (most sequential scans and <code>VACUUM</code> do automatically), isolate
+  genuinely adversarial workloads onto a replica, and treat a scheduled batch job's cache impact as a capacity
+  question, not just a CPU/IO one.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is the level of detail a Staff interview (or a pgsql-hackers reply) expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>bufmgr.c</code> and <code>freelist.c</code></h2>
+  <p>Where everything from this chapter lives. Files marked <span style="color:var(--warn)">●</span> are this
+  chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">src/backend/storage/buffer/</span></div>
+<div>├── <span class="fhl">● bufmgr.c</span> <span class="fnote">— ReadBuffer()/BufferAlloc(): the whole hit/miss/evict/read path (~6k lines)</span></div>
+<div>├── <span class="fhl">● freelist.c</span> <span class="fnote">— StrategyGetBuffer(): clock sweep, free list, buffer access strategies</span></div>
+<div>├── <span class="fhl">● buf_table.c</span> <span class="fnote">— BufTableLookup()/Insert(): the BufferTag → buffer id hash table</span></div>
+<div>└── localbuf.c <span class="fnote">— the parallel, unshared buffer manager for temp tables (no locking needed — private per backend)</span></div>
+<div><span class="dir">src/include/storage/</span></div>
+<div>└── <span class="fhl">● buf_internals.h</span> <span class="fnote">— BufferDesc, the packed state word's bit layout, BM_* flags</span></div>
+<div><span class="dir">src/backend/access/transam/</span>xlog.c <span class="fnote">— XLogFlush(): the WAL-before-data call FlushBuffer() makes</span></div>
+  </div></div>
+
+  <p>First, the hash-lookup fast path — most buffer requests are a hit and never reach the replacement algorithm at all:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>bufmgr.c — BufferAlloc(), the hit path, simplified</span></div>
+    <pre><span class="k">static BufferDesc</span> *
+<span class="f">BufferAlloc</span>(SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum,
+             BufferAccessStrategy strategy, <span class="k">bool</span> *foundPtr)
+{
+    BufferTag  newTag;
+    <span class="f">INIT_BUFFERTAG</span>(newTag, smgr-&gt;smgr_rlocator, forkNum, blockNum);
+
+    uint32 hash = <span class="f">BufTableHashCode</span>(&amp;newTag);
+    LWLock *partitionLock = <span class="f">BufMappingPartitionLock</span>(hash);   <span class="c">/* 1 of 128 */</span>
+
+    <span class="f">LWLockAcquire</span>(partitionLock, LW_SHARED);
+    <span class="k">int</span> bufId = <span class="f">BufTableLookup</span>(&amp;newTag, hash);
+    <span class="k">if</span> (bufId &gt;= <span class="n">0</span>)
+    {
+        <span class="c">/* HIT. Pin it — an atomic CAS on the state word bumps
+         * refcount and usage_count together, no separate lock at
+         * all beyond the partition lock we're about to release.  */</span>
+        BufferDesc *buf = <span class="f">GetBufferDescriptor</span>(bufId);
+        <span class="k">bool</span> valid = <span class="f">PinBuffer</span>(buf, strategy);
+        <span class="f">LWLockRelease</span>(partitionLock);
+        *foundPtr = <span class="k">true</span>;
+        <span class="k">return</span> buf;
+    }
+    <span class="f">LWLockRelease</span>(partitionLock);
+
+    <span class="c">/* MISS. Must find a victim, evict it, and read the new page —
+     * the expensive, rarer path. See the ReadBuffer deck in §8b.   */</span>
+    <span class="k">return</span> <span class="f">BufferAllocMiss</span>(smgr, forkNum, blockNum, strategy, foundPtr, &amp;newTag, hash);
+}</pre>
+  </div>
+
+  <p>Next, the clock sweep itself — the algorithm that decides which buffer becomes available when a miss forces
+  an eviction:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>freelist.c — StrategyGetBuffer(), the clock-sweep core, simplified</span></div>
+    <pre><span class="k">static BufferDesc</span> *
+<span class="f">ClockSweep</span>(<span class="k">void</span>)
+{
+    <span class="k">for</span> (;;)
+    {
+        <span class="c">/* Advance the shared, atomically-incremented hand -
+         * wraps around NBuffers, so the "clock" is circular.       */</span>
+        <span class="k">int</span> victimId = <span class="f">pg_atomic_fetch_add_u32</span>(&amp;StrategyControl-&gt;nextVictimBuffer, <span class="n">1</span>) % NBuffers;
+        BufferDesc *buf = <span class="f">GetBufferDescriptor</span>(victimId);
+
+        uint32 state = <span class="f">pg_atomic_read_u32</span>(&amp;buf-&gt;state);
+
+        <span class="k">if</span> (BUF_STATE_GET_REFCOUNT(state) != <span class="n">0</span>)
+            <span class="k">continue</span>;                       <span class="c">/* pinned right now — never touch it */</span>
+
+        <span class="k">if</span> (BUF_STATE_GET_USAGECOUNT(state) != <span class="n">0</span>)
+        {
+            <span class="c">/* Second chance: decrement and keep sweeping. A page
+             * touched often gets its counter bumped back up by
+             * ordinary access faster than the hand can drain it.  */</span>
+            <span class="f">pg_atomic_fetch_sub_u32</span>(&amp;buf-&gt;state, BUF_USAGECOUNT_ONE);
+            <span class="k">continue</span>;
+        }
+
+        <span class="k">return</span> buf;      <span class="c">/* usage_count == 0 AND unpinned: victim found */</span>
+    }
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Make the common case (a hit) touch as little shared state as possible.</b> A hit only ever takes a
+    <i>shared</i>-mode partition LWLock briefly during lookup, then pins via a lock-free atomic CAS — no exclusive
+    lock, no list maintenance, on the single most frequent operation the buffer manager performs. <b>2. Make the
+    replacement decision lazy and self-correcting, not exact.</b> Rather than maintaining a perfectly-ordered
+    recency list at write cost on every access, clock-sweep defers all the "which page matters more" reasoning to
+    the rare moment a victim is actually needed, and encodes recency crudely-but-cheaply (a 4-bit counter) rather
+    than precisely-but-expensively (list position). <b>3. Separate "in danger of eviction" from "currently in
+    use."</b> The refcount and usage_count fields answer two different questions — is this buffer safe to touch at
+    all right now, versus has this buffer earned a reprieve — and packing both into one atomically-updated word
+    means neither question needs its own separate lock.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — ReadBuffer() on a cold miss</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from the initial hash lookup to a fully valid, pinned buffer. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">A live buffer cache — the clock hand, sweeping</h2>
+  <p>A ring of buffer slots, the clock hand circling live. Mix an OLTP workload (hot-key, zipfian-ish access) with
+  a large sequential scan, toggle the ring-buffer strategy, and watch the hit ratio, dirty pages, evictions, and
+  who's doing the writing — backends or the background writer — in real time. Run it once with the strategy off
+  and once with it on; the difference is the entire point of §8(d).</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">buffer pool — live clock sweep</span><span class="w-sub" id="sim-phase">RUNNING</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="ring" id="buf-ring"></div>
+          <div class="buf-legend">
+            <span><span class="sw" style="background:var(--pg)"></span>outline = clock hand position</span>
+            <span><span class="sw" style="background:rgba(255,159,67,.5)"></span>dirty</span>
+            <span><span class="sw" style="background:var(--purple)"></span>ring-buffer member (scan)</span>
+            <span>digit = usage_count</span>
+          </div>
+          <div class="slog" id="sim-log"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">WORKLOAD</div>
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">shared_buffers (slots)</label><span class="val" id="sim-size-val" style="min-width:24px">32</span></div>
+            <input type="range" id="sim-size" min="12" max="60" value="32" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:8px 0 4px"><label style="min-width:0;flex:1">OLTP rate (hot keys)</label><span class="val" id="sim-oltp-val" style="min-width:24px">6/s</span></div>
+            <input type="range" id="sim-oltp" min="0" max="20" value="6" style="width:100%;accent-color:var(--pg)">
+            <div class="btns" style="margin-top:8px">
+              <button class="btn warn" id="sc-scan">▶ start big sequential scan</button>
+              <button class="btn" id="sc-stopscan">■ stop scan</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">CONFIG</div>
+            <div class="btns">
+              <button class="chip" id="sc-ring">ring-buffer strategy: ON</button>
+              <button class="chip" id="sc-pause">⏸ pause</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-hits">0</div><div class="cl">hits</div></div>
+            <div class="scounter"><div class="cv" id="cnt-miss">0</div><div class="cl">misses</div></div>
+            <div class="scounter"><div class="cv" id="cnt-evict" style="color:var(--bad)">0</div><div class="cl">evictions</div></div>
+          </div>
+          <div style="padding:11px 15px">
+            <div class="meter"><div class="m-l"><span>hit ratio</span><span id="m-hit-v">0%</span></div><div class="m-bar"><div class="m-fill" id="m-hit"></div></div></div>
+            <div class="meter"><div class="m-l"><span>dirty buffers</span><span id="m-dirty-v">0</span></div><div class="m-bar"><div class="m-fill" id="m-dirty"></div></div></div>
+            <div class="meter"><div class="m-l"><span>backend writes</span><span id="m-bw-v">0</span></div><div class="m-bar"><div class="m-fill" id="m-bw"></div></div></div>
+            <div class="meter"><div class="m-l"><span>bgwriter writes</span><span id="m-bgw-v">0</span></div><div class="m-bar"><div class="m-fill" id="m-bgw"></div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Start the scan with the ring-buffer strategy OFF — watch the OLTP hit ratio collapse as the scan
+    drains everyone's usage_count. <b>2.</b> Stop and reset, turn the strategy ON, start the scan again — the
+    purple ring members absorb the scan's churn while the rest of the pool's usage_counts stay intact. <b>3.</b>
+    Push OLTP rate high with a small pool — watch backend-initiated writes appear as the bgwriter falls behind.
+    <b>4.</b> Shrink shared_buffers below the hot-key working set and watch hit ratio degrade even with no scan
+    running at all — the incident from §11.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 10: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head (or out loud — it's better), <i>then</i>
+  reveal. If any reveal surprises you, re-run the relevant simulator experiment.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 09 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now trace <code>ReadBuffer()</code> from a hash
+    lookup through eviction to a pinned page, explain why clock-sweep beats exact LRU for a database's access
+    patterns, and predict when a ring buffer is protecting your cache versus when it's absent. Chapter 10 follows
+    the WAL-before-data rule this chapter leaned on all the way down: how the write-ahead log itself is structured,
+    flushed, and made the single source of truth a crash can always recover from.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="pg-10.html" style="text-decoration:none;display:inline-flex;align-items:center">PG-10: Write-Ahead Log →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1986", l:"POSTGRES", d:"<b>A fixed-size shared buffer pool from day one.</b> Even the original design keeps a bounded array of in-memory page slots rather than trusting the OS alone — the need for pinning and controlled eviction is recognized from the start, inherited from the same Unix-database engineering culture that produced the process model (chapter 1)." },
+  { yr:"1990s", l:"clock-sweep adopted", d:"<b>A circular second-chance scan replaces any notion of exact LRU.</b> The clock algorithm's Multics-era lineage (Corbato, 1960s-70s virtual memory management) is adapted with a small saturating usage_count instead of a single reference bit — sharper signal for a database's more skewed access patterns than a generic VM page's single yes/no." },
+  { yr:"~8.3", l:"buffer access strategies", d:"<b>Ring buffers arrive for VACUUM, bulk reads, and bulk writes.</b> As data volumes grow, operators increasingly report exactly the pollution failure mode this chapter derives: a big scan evicting the working set. BAS_BULKREAD/BAS_BULKWRITE/BAS_VACUUM give these operations their own small, private, reused ring of buffers instead of touching the shared pool's clock sweep at scale." },
+  { yr:"8.4 era", l:"128 buffer-mapping partitions", d:"<b>NUM_BUFFER_PARTITIONS raised well past its early value.</b> As core counts and shared_buffers both grow, a coarser partitioning of the buffer-mapping hash table becomes a measurable bottleneck in its own right — more partitions means fewer backends' lookups collide on the same partition LWLock." },
+  { yr:"9.6", l:"atomic buffer header state", d:"<b>The per-buffer spinlock is retired.</b> Buffer header manipulation — pin, unpin, usage_count bump, dirty-flag set — moves onto a single pg_atomic_uint32 state word manipulated with compare-and-swap, removing a spinlock acquisition from the single hottest code path in the server (this chapter's §8a struct is the result)." },
+  { yr:"ongoing", l:"effective_cache_size and double buffering", d:"<b>The OS page cache is never eliminated, only supplemented.</b> effective_cache_size remains a pure planner hint — it changes no caching behavior, only the query planner's estimate of how much total RAM (shared_buffers plus whatever the OS is likely holding) is probably available, directly shaping index-vs-seqscan cost estimates." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===4 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[4].d;
+
+/* ============================================================
+   2. DECK: syscall-per-access naive server (§3) — canvas sim
+   ============================================================ */
+(function(){
+  let cfg = { rate: 20 };
+  const steps = [
+    { stage:`<canvas id="nv-c" width="740" height="230" style="width:100%"></canvas>`,
+      cap:`<b>Light access rate.</b> Each page touch is a pread()/pwrite() syscall — even ones the OS page cache satisfies from RAM still pay the mode switch and copy. At low rates the overhead is invisible.`,
+      onshow:()=>{ cfg.rate=10; } },
+    { stage:`<canvas id="nv-c" width="740" height="230" style="width:100%"></canvas>`,
+      cap:`<b>Realistic OLTP rate.</b> Hundreds of thousands of touches/sec against a hot working set — every single one still round-trips through the kernel, even though the same 8 KB bytes are being re-fetched over and over. Watch the "syscall tax" accumulate.`,
+      onshow:()=>{ cfg.rate=55; } },
+    { stage:`<canvas id="nv-c" width="740" height="230" style="width:100%"></canvas>`,
+      cap:`<b>Verdict.</b> None of this overhead buys additional caching — the OS was already caching the page. It is pure avoidable cost, which is exactly why an application-level cache that can skip the syscall on a hit is worth building.`,
+      onshow:()=>{ cfg.rate=80; } }
+  ];
+  stepper("deckNaive", steps);
+
+  let taxAcc = 0, touches = 0;
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min((now-last)/1000, .1); last = now;
+    const c = document.getElementById("nv-c");
+    if (c){
+      const thisTick = cfg.rate * dt * 1000;
+      touches += thisTick;
+      taxAcc += thisTick * 0.0003; // ms of syscall+copy overhead
+      const ctx = c.getContext("2d");
+      const W = c.width, H = c.height;
+      ctx.clearRect(0,0,W,H);
+      ctx.fillStyle = "#8b94a7"; ctx.font="11px monospace"; ctx.textAlign="left";
+      ctx.fillText("backend  →  pread()/pwrite()  →  kernel page cache  →  copy back", 15, 24);
+      const n = Math.min(40, Math.round(cfg.rate));
+      for (let i=0;i<n;i++){
+        const x = 20 + (i%20)*35, y = 50 + Math.floor(i/20)*30;
+        ctx.fillStyle = "rgba(96,165,250,.5)";
+        ctx.beginPath(); ctx.arc(x,y,6,0,7); ctx.fill();
+      }
+      ctx.fillStyle = "#5b6475";
+      ctx.fillText(`syscalls/sec (relative): ~${Math.round(cfg.rate*4000).toLocaleString()}`, 15, 140);
+      ctx.fillText(`cumulative avoidable overhead: ${taxAcc.toFixed(1)} ms`, 15, 160);
+      ctx.fillStyle = "#f25c54";
+      ctx.fillRect(15, 175, Math.min(700, taxAcc*2), 14);
+      ctx.fillStyle = "#5b6475"; ctx.fillText("overhead paid for zero additional caching benefit", 15, 205);
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+
+/* ============================================================
+   3. DECK: exact LRU vs clock-sweep (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:220px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...a)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${a.join("")}</div>`;
+  stepper("deckCandidates", [
+    { stage: wrap(box("EXACT LRU — a doubly-linked list, exclusive lock on every touch", cell("hit: unlink + relink at head","#f25c54") + cell("cost: exclusive lock on EVERY access, even reads","#f25c54") + cell("scan pollution: total — every page becomes MRU","#f25c54",'rgba(242,92,84,.08)'))),
+      cap:`Textbook-correct recency tracking, and textbook-wrong for a shared, highly concurrent cache: it turns every read into a write against shared list pointers.` },
+    { stage: wrap(box("CLOCK-SWEEP — a saturating counter, no list at all", cell("hit: one atomic increment of usage_count","#60a5fa") + cell("cost: zero extra locking on the hit path","#60a5fa") + cell("scan pollution: bounded by buffer access strategies","#60a5fa",'rgba(96,165,250,.06)'))),
+      cap:`<b>The winner.</b> Recency becomes a cheap, approximate, saturating signal rather than an exact, expensive, exclusively-locked one — and the actual "which page loses" decision is deferred entirely to the rare moment a victim is needed.` },
+    { stage: wrap(box("WHERE THE APPROXIMATION SHOWS", cell("working set slightly larger than pool: clock-sweep can lag exact LRU","#ff9f43") + cell("but: bounded, and the hand's cost is paid only on eviction, never on a hit","#4ade80"))),
+      cap:`Clock-sweep is not strictly better than LRU in every access pattern — it is better <i>for the cost profile a shared, highly concurrent cache needs</i>, which is the metric that actually matters here.` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  descriptors:{ n:"BufferDescriptors[NBuffers]", f:"include/storage/buf_internals.h · backend/storage/buffer/bufmgr.c", r:"One BufferDesc per buffer slot: BufferTag (which page), the packed atomic state word (refcount + usage_count + flags), a content LWLock, and bookkeeping fields. Indexed identically to BufferBlocks.", l:"Allocated once at boot as part of the shared memory segment (chapter 1); fixed size until restart.", d:"Never individually 'dies' — its contents are simply overwritten when the slot it describes is evicted and reused for a different page." },
+  blocks:{ n:"BufferBlocks[NBuffers]", f:"backend/storage/buffer/bufmgr.c", r:"The actual 8 KB of page data for each buffer slot — raw bytes, no structure PostgreSQL imposes beyond what the page-format layer (chapter 6) reads out of it.", l:"Same lifetime as BufferDescriptors — one contiguous shared-memory region sized as NBuffers × BLCKSZ.", d:"Overwritten on eviction; the corresponding BufferDesc's BM_VALID flag is cleared during the swap so no reader can see a half-replaced page." },
+  maptable:{ n:"buffer mapping hash table", f:"backend/storage/buffer/buf_table.c", r:"Maps a BufferTag (relfilenode + fork + block number) to a buffer id. This is how ReadBuffer() answers 'is this page already cached, and where.'", l:"Lives in shared memory; entries added on a cache miss's successful read, removed on eviction.", d:"A stale or missing entry simply means the next lookup treats the page as a miss — no correctness risk, just a performance one." },
+  partitions:{ n:"128 mapping-table LWLocks", f:"include/storage/lwlock.h (NUM_BUFFER_PARTITIONS)", r:"The mapping hash table is split across 128 independently-locked partitions (by BufferTag hash), so unrelated pages' lookups/inserts don't contend on the same partition lock — the same partitioning instinct as chapter 8's 16 lock-table partitions.", l:"Allocated at boot alongside the rest of the shared LWLock array.", d:"A hot single relation can still make many backends contend on the SAME partition — partitioning spreads unrelated contention, it doesn't eliminate contention on one popular object." },
+  clocksweep:{ n:"clock sweep / StrategyGetBuffer", f:"backend/storage/buffer/freelist.c", r:"The replacement algorithm: a shared, atomically-advanced 'hand' (nextVictimBuffer) circles the buffer array, decrementing usage_count on candidates and selecting the first unpinned buffer whose usage_count has reached zero.", l:"Runs once per cache miss that isn't satisfied by the free list — i.e., only when a victim actually needs to be found.", d:"Its own cost is amortized O(1) typically, worst-case O(NBuffers) if the whole pool currently has nonzero usage_counts." },
+  freelist:{ n:"free list", f:"backend/storage/buffer/freelist.c (StrategyControl)", r:"A simple list of buffer ids known to be immediately reusable (never-yet-used slots at startup, or explicitly freed buffers) — checked before falling back to the clock sweep, since a free-list hit needs no victim search at all.", l:"Populated at boot (all buffers start 'free') and drained as the pool fills; rarely repopulated once the server has been running a while under real load.", d:"An empty free list simply means every subsequent allocation goes through the clock sweep — the normal steady-state condition." },
+  ring:{ n:"buffer access strategy (ring buffer)", f:"backend/storage/buffer/freelist.c (GetAccessStrategy, StrategyRejectBuffer)", r:"A small, private, reused set of buffers (BAS_BULKREAD ~256 KB / ~32 buffers, BAS_BULKWRITE, BAS_VACUUM) an operation requests up front so its own churn never touches the shared pool's clock sweep at scale.", l:"Requested for the duration of one scan/vacuum/bulk-copy operation; discarded when it finishes.", d:"StrategyRejectBuffer() lets the ring skip reusing a buffer that turns out to already be popular in the shared pool, protecting hot pages even from a scan that would otherwise have claimed them." },
+  bgwriter:{ n:"background writer", f:"postmaster/bgwriter.c (chapter 1) · interacts with freelist.c", r:"Proactively writes dirty buffers with low usage_count just ahead of where the clock hand is about to sweep, so an ordinary foreground backend rarely has to perform an eviction's write itself.", l:"Resident process, wakes every bgwriter_delay (200ms default) and scans a bounded number of buffers ahead of the hand each cycle.", d:"Falling behind under heavy write load is exactly the incident in §11 — backend-initiated writes are the visible symptom." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">FAILURE MODE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("descriptors");
+
+/* ============================================================
+   5. DECK: ReadBuffer path (§8b)
+   ============================================================ */
+(function(){
+  const F = (fn, file, mode="") => ({fn, file, mode});
+  function stacks(frames, title){
+    let h = `<div class="stacks"><div class="stackcol"><div class="sc-t">${title}</div>`;
+    frames.forEach(f=> h += `<div class="frame ${f.mode}"><span class="ff">${f.fn}</span><span class="fl">${f.file}</span></div>`);
+    return h + `</div></div>`;
+  }
+  stepper("deckReadBuffer", [
+    { stage: stacks([F("ReadBuffer(rel, blocknum)","bufmgr.c"), F("BufferAlloc()","bufmgr.c","hot"), F("BufTableHashCode() + BufTableLookup()","buf_table.c","hot")], "REQUEST"),
+      cap:`<b>Hash lookup.</b> Compute the BufferTag's hash, acquire the owning partition's LWLock in SHARED mode, and look up the tag in the mapping table. Most of the time — this is the common case — the page is already resident.` },
+    { stage: stacks([F("BufferAlloc() — HIT branch","bufmgr.c","hot"), F("PinBuffer()","bufmgr.c","hot"), F("pg_atomic_compare_exchange_u32() on BufferDesc.state","buf_internals.h","hot")], "HIT PATH"),
+      cap:`<b>Hit: pin and go.</b> One atomic CAS bumps refcount and usage_count together; the partition LWLock is released immediately after. No exclusive lock, no eviction logic touched at all — this is why the buffer manager's hit path is so cheap.` },
+    { stage: stacks([F("BufferAlloc() — MISS branch","bufmgr.c"), F("BufferAllocMiss()","bufmgr.c","hot"), F("StrategyGetBuffer()","freelist.c","hot"), F("ClockSweep() / free list check","freelist.c","hot")], "MISS: FIND A VICTIM"),
+      cap:`<b>Miss.</b> No entry in the mapping table. StrategyGetBuffer() first checks the free list; if empty, the clock sweep runs — advancing the shared hand, decrementing usage_count on each candidate, until it finds an unpinned buffer with usage_count already at zero.` },
+    { stage: stacks([F("victim chosen — is it dirty?","freelist.c"), F("FlushBuffer()","bufmgr.c","hot"), F("XLogFlush() up to the page's LSN","xlog.c","hot"), F("smgrwrite() — the actual page write","smgr.c","hot")], "IF DIRTY: WAL BEFORE DATA"),
+      cap:`<b>Eviction, if dirty.</b> WAL describing every change up to this page's current LSN is flushed to durable storage FIRST; only then is the page itself written out. Getting this order backwards is exactly what would break chapter 11's crash recovery.` },
+    { stage: stacks([F("old mapping-table entry removed","buf_table.c","hot"), F("smgrread() — read the new page in","smgr.c","hot"), F("BufTableInsert() — new tag registered","buf_table.c","hot"), F("BM_VALID set; PinBuffer() returns to caller","bufmgr.c","hot")], "COMPLETE THE SWAP"),
+      cap:`<b>Swap and return.</b> The old tag is removed from the mapping table, the new page is read from disk (or the OS cache) into the now-reusable slot, the new tag is inserted, BM_VALID is set, and the pinned, valid buffer is finally handed back to the original caller — who has been waiting through this entire miss path.` }
+  ]);
+})();
+
+/* ============================================================
+   6. CLOCK SWEEP LIVE WIDGET (§8c)
+   ============================================================ */
+(function(){
+  let bufs = [];
+  function init(n){
+    bufs = Array.from({length:n}, (_,i)=>({ usage: Math.floor(Math.random()*3), dirty: Math.random()<0.2, hot: i % 5 === 0 }));
+  }
+  let hand = 0, sweeps=0, evictions=0, lastTick = performance.now();
+  function render(){
+    const size = +el("cs-size").value, speed = +el("cs-speed").value, hotRate = +el("cs-hot").value;
+    el("cs-size-val").textContent = size;
+    el("cs-speed-val").textContent = speed;
+    el("cs-hot-val").textContent = hotRate;
+    if (bufs.length !== size) init(size);
+    const ring = el("cs-ring");
+    ring.style.gridTemplateColumns = `repeat(${Math.min(16,size)},1fr)`;
+    ring.innerHTML = bufs.map((b,i)=>{
+      const cls = ["cell"]; if (i===hand%bufs.length) cls.push("hand"); if (b.dirty) cls.push("dirty");
+      return `<div class="${cls.join(' ')}" title="usage_count=${b.usage}">${b.usage}</div>`;
+    }).join("");
+    el("cs-note").innerHTML = `Hand has completed <b>${sweeps}</b> full circuits; <b>${evictions}</b> victims chosen so far. Hot keys (every 5th slot) get bumped by simulated access at rate <b>${hotRate}</b>/tick — watch them survive the hand while cold slots drain to 0 and get reclaimed.`;
+  }
+  function tick(){
+    const speed = +el("cs-speed").value, hotRate = +el("cs-hot").value;
+    // simulated access: hot slots get bumped
+    bufs.forEach((b,i)=>{ if (b.hot && Math.random() < hotRate/12) b.usage = Math.min(5, b.usage+1); });
+    for (let s=0; s<speed; s++){
+      const idx = hand % bufs.length;
+      const b = bufs[idx];
+      if (b.usage > 0){ b.usage--; }
+      else { evictions++; b.usage = 0; b.dirty = false; if (Math.random()<0.15) b.dirty = true; }
+      hand++;
+      if (hand % bufs.length === 0) sweeps++;
+    }
+    render();
+  }
+  ["cs-size","cs-speed","cs-hot"].forEach(id=> el(id).oninput = render);
+  init(24); render();
+  setInterval(tick, 350);
+})();
+
+/* ============================================================
+   7. DECK: ring buffer strategy (§8d)
+   ============================================================ */
+(function(){
+  function pool(cells, labelStyle){
+    return `<div style="display:grid;grid-template-columns:repeat(12,1fr);gap:4px;max-width:480px;margin:0 auto">${cells.map(c=>
+      `<div style="aspect-ratio:1;border-radius:4px;border:1.5px solid ${c.ring?'var(--purple)':'var(--border-hi)'};background:${c.dirty?'rgba(255,159,67,.35)':(c.ring?'rgba(167,139,250,.12)':'var(--panel-2)')};display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;color:${c.hot?'var(--pg)':'var(--muted)'}">${c.label!==undefined?c.label:c.usage}</div>`
+    ).join("")}</div>`;
+  }
+  function makeCells(n, ringSize, scanRunning){
+    return Array.from({length:n}, (_,i)=>({
+      usage: i%6===0 ? 5 : Math.floor(Math.random()*2),
+      hot: i%6===0,
+      ring: scanRunning && i < ringSize,
+      dirty: false
+    }));
+  }
+  stepper("deckRing", [
+    { stage: pool(makeCells(48, 0, false)),
+      cap:`<b>Steady state, no scan.</b> A handful of hot pages (blue, usage_count 5) sit among ordinary pages with lower counts — a typical OLTP working set the clock sweep is protecting well.` },
+    { stage: pool([...makeCells(48,0,false).map(c=>({...c, usage:0}))]),
+      cap:`<b>A big sequential scan starts, no ring buffer.</b> Without a strategy, the scan's pages flow through the ordinary clock sweep exactly like any other access — and because the scan touches so many distinct pages once each, it can drain usage_count across a large swath of the pool, including the previously-hot pages, before they get touched again.` },
+    { stage: pool(makeCells(48, 10, true)),
+      cap:`<b>Same scan, ring buffer enabled.</b> The scan requests a small ring (purple, ~10 slots here for illustration) and reuses only those buffers in a loop for its entire duration. The hot pages (blue) outside the ring are never touched by the scan's eviction pressure at all — protected simply by never being candidates.` },
+    { stage: pool(makeCells(48, 10, true).map((c,i)=> i===3 ? {...c, ring:false, usage:5, hot:true} : c)),
+      cap:`<b>StrategyRejectBuffer() in action.</b> If a buffer that would normally fall into the ring's rotation turns out to already be a popular page (high usage_count), the ring gives it back instead of evicting it — the ring protects the shared pool from the SCAN, not the other way around.` }
+  ]);
+})();
+
+/* ============================================================
+   8. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let ring = true;
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function model(sbPct, scanPct, ring){
+    const baseHit = Math.min(97, 30 + sbPct*0.55);
+    const pollution = ring ? scanPct*0.06 : scanPct*0.42;
+    const hit = Math.max(4, baseHit - pollution);
+    const backendWrites = ring ? scanPct*0.15 + Math.max(0,(60-sbPct))*0.1 : scanPct*0.55 + Math.max(0,(60-sbPct))*0.25;
+    return { hit, backendWrites };
+  }
+  function render(){
+    const sb = +el("perf-conn").value, scan = +el("perf-cores").value;
+    el("perf-conn-val").textContent = sb+"%";
+    el("perf-cores-val").textContent = scan+"%";
+    el("perf-fastpath").classList.toggle("on", ring);
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=5;x<=200;x+=3) xs.push(x);
+    const pts = xs.map(x=>model(x, scan, ring));
+    const X = x => PAD + ((x-5)/195)*(W-PAD-12);
+    ctx.strokeStyle="#1c2330"; ctx.fillStyle="#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [5,50,100,150,200].forEach(x=>{ ctx.beginPath(); ctx.moveTo(X(x),10); ctx.lineTo(X(x),H-20); ctx.stroke(); ctx.fillText(x+"%", X(x)-12, H-6); });
+    function curve(get, max, color){
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const y = H-24 - (get(pts[i])/max)*(H-44); i?ctx.lineTo(X(x),y):ctx.moveTo(X(x),y); });
+      ctx.stroke();
+    }
+    curve(m=>m.hit, 100, "#60a5fa");
+    curve(m=>m.backendWrites, 100, "#f25c54");
+    ctx.strokeStyle="#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(sb),10); ctx.lineTo(X(sb),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(sb, scan, ring);
+    el("perf-note").innerHTML = `At <b>${sb}%</b> of working-set-sized shared_buffers with a scan at <b>${scan}%</b> intensity: OLTP hit ratio ≈ <b style="color:var(--pg)">${here.hit.toFixed(0)}%</b>, relative backend-initiated writes ≈ <b style="color:var(--bad)">${here.backendWrites.toFixed(0)}</b>. ${ring ? "The ring buffer keeps the scan's own churn from draining hot-page usage_counts, so hit ratio degrades far more gently as scan intensity rises." : "With the ring disabled, the scan competes directly in the clock sweep against the OLTP working set — hit ratio degrades sharply as scan intensity increases, exactly the §11 incident."}`;
+  }
+  el("perf-conn").oninput = render;
+  el("perf-cores").oninput = render;
+  el("perf-fastpath").onclick = ()=>{ ring=!ring; render(); };
+  render();
+})();
+
+/* ============================================================
+   9. INTERVIEW QA (§12)
+   ============================================================ */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"The OS already caches file pages. Give the three concrete guarantees PostgreSQL's own buffer pool provides that the OS page cache structurally cannot.", hint:"eviction awareness, write ordering, in-use protection",
+    a:"(1) Database-aware eviction: the OS has no idea a given page is a constantly-reused index root versus a once-touched bulk-load page, so it cannot make the same replacement decision PostgreSQL's clock-sweep (with real usage_count signal) can. (2) Enforceable write ordering: durability requires WAL up to a page's LSN to reach disk strictly before that page's data does — the OS's own writeback has no concept of this cross-file ordering constraint. (3) Pinning: a page actively being read or modified must not be evicted or relocated mid-operation, a guarantee the OS page cache offers no application-level API for at all." },
+  { lvl:"SENIOR", q:"Why is a cache hit against the OS page cache still meaningfully more expensive than a hit against shared_buffers, even though 'the data is already in RAM' in both cases?", hint:"what does pread() cost even when it never touches disk?",
+    a:"A pread() call that the kernel satisfies entirely from its own page cache still performs a full user/kernel mode transition and copies the page's bytes from kernel memory into the caller's user-space buffer — real, measurable overhead (hundreds of nanoseconds to low microseconds) with zero actual I/O involved. A shared_buffers hit, once the page is resident, needs only a hash lookup and an atomic pin — no syscall, no extra copy, because the backend can read the bytes directly out of the shared memory segment it already has mapped." },
+  { lvl:"STAFF", q:"Explain precisely why clock-sweep's hit path requires no exclusive lock at all, while an exact LRU list's hit path requires one on every single access.", hint:"what does 'recording a hit' cost under each scheme?",
+    a:"Clock-sweep records a hit as a single atomic increment of the buffer's own usage_count field within its packed state word — a self-contained, single-word compare-and-swap that touches no other buffer's state. An exact LRU list records a hit by unlinking the touched node from its current position and relinking it at the list head, which necessarily mutates the pointers of at least two OTHER nodes (the old neighbors) in a shared, globally-visible structure — an operation that cannot be made safe against concurrent mutation without an exclusive lock on the list, because two backends moving different nodes to the head simultaneously would corrupt the shared pointer structure without one." },
+  { lvl:"STAFF", q:"A dirty buffer is chosen as a clock-sweep victim. Walk through exactly what has to happen, in order, before that buffer's slot can be reused for a different page — and name the one rule that must never be violated.", hint:"which comes first, the WAL flush or the page write?",
+    a:"FlushBuffer() is invoked on the victim: it first calls XLogFlush() to force every WAL record up to the page's current LSN out to durable storage, and only after that flush completes does it call smgrwrite() to write the actual dirty page out. The rule that must never be violated is WAL-before-data: if the data page reaches disk before its describing WAL record does, a crash in that window leaves a data file reflecting a change recovery has no WAL record to reconstruct or justify — breaking the entire crash-recovery contract chapter 11 depends on." },
+  { lvl:"STAFF", q:"Your monitoring shows pg_stat_bgwriter.buffers_backend climbing as a share of total buffer writes. What is physically happening, and what's the fix?", hint:"who normally writes dirty victims, and what happens when they fall behind?",
+    a:"buffers_backend rising means ordinary foreground backends are increasingly performing the write half of an eviction themselves — the background writer, which is supposed to proactively flush dirty, low-usage_count buffers just ahead of the clock hand, isn't keeping pace with the rate at which the hand needs to reclaim dirty victims. A backend doing a plain read gets stuck synchronously flushing WAL and writing a page before it can complete its own operation — a direct, foreground-visible latency cost. Fix: tune bgwriter_lru_maxpages/bgwriter_lru_multiplier more aggressively so the background writer covers more ground per wake cycle, and treat the buffers_backend-vs-buffers_clean ratio as a standing capacity signal, not a one-time check." },
+  { lvl:"PRINCIPAL", q:"Steelman raising shared_buffers to 80% of system RAM, then steelman keeping it modest (say, 25%) and relying on the OS cache for the rest. Which do you pick, and what does your answer depend on?", hint:"double buffering, checkpoint cost, and who manages what",
+    a:"A very large shared_buffers maximizes hits that skip the OS entirely and gives PostgreSQL maximum control over what stays resident — but it also means checkpoints must flush a larger population of dirty pages (chapter 11's checkpoint-spreading math gets harder), page-table overhead per backend grows (chapter 1's huge_pages discussion), and double buffering wastes RAM holding the same page in both caches for any page also touched via a path that falls through to the OS cache. A modest shared_buffers leaves most RAM to the OS, which has its own well-tuned readahead and writeback, at the cost of PostgreSQL having less direct control over what survives eviction and more syscall overhead on the hits it does serve from its own pool. In practice the answer depends on write-heavy vs. read-heavy skew and checkpoint tolerance — most production guidance clusters around 25% of RAM as a starting point specifically because checkpoint and page-table costs both scale with shared_buffers size, not because larger can't ever help." },
+  { lvl:"PRINCIPAL", q:"Design exercise: a new bulk-loading extension will insert billions of rows in one operation. Using this chapter's mechanics, what should it request from the buffer manager, and what would go wrong if it just called ordinary ReadBuffer()/WriteBuffer() with no strategy?", hint:"what's the access pattern, and what does the shared pool assume about 'recently used'?",
+    a:"It should request a BAS_BULKWRITE buffer access strategy — a small private ring of buffers reused in a loop for the entire load, exactly the mechanism in §8d — so its own massive, one-time write volume never drains usage_count across the shared pool's actual working set. Without a strategy, every one of the billions of new pages would compete in the ordinary clock sweep, and because each is touched (written) at least once, it would start with meaningful usage_count and displace genuinely hot, frequently-reused pages the rest of the system depends on — precisely the sequential-scan pollution failure mode from §6, just triggered by writes instead of reads." }
+]);
+
+/* ============================================================
+   10. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Why does a shared_buffers cache hit avoid the overhead a plain pread() pays even when the OS page cache also has the page resident?",
+    opts:[ "shared_buffers uses a faster disk controller than the OS page cache",
+           "A shared_buffers hit needs only a hash lookup and an atomic pin on already-mapped shared memory — no syscall, no user/kernel copy",
+           "The OS page cache is disabled whenever PostgreSQL is running",
+           "shared_buffers pages are compressed, so less data needs to move" ],
+    a:1,
+    why:"Both caches hold the same bytes in RAM in this scenario, but reaching them costs differently: pread() always crosses into the kernel and copies data into a user buffer, while a shared_buffers hit reads directly out of memory the backend already has mapped, needing only a lookup and an atomic pin. Options A, C, and D describe mechanisms that don't exist in PostgreSQL." },
+  { q:"A buffer's usage_count is at 3 and the clock hand passes over it while sweeping for a victim. What happens?",
+    opts:[ "It is immediately evicted regardless of usage_count, since the hand reached it",
+           "usage_count is decremented to 2 and the hand moves on without evicting it",
+           "usage_count is reset to 0 and the buffer is marked for priority eviction next pass",
+           "The buffer is pinned so it can never be evicted again" ],
+    a:1,
+    why:"Clock-sweep's rule is: if usage_count is nonzero, decrement it (the 'second chance') and continue to the next candidate — only a buffer already at usage_count zero AND unpinned becomes the victim. A buffer that's genuinely popular gets its counter bumped back up by ordinary access faster than the hand can drain it, which is exactly the mechanism that lets it survive indefinitely." },
+  { q:"Why must WAL be flushed before a dirty buffer's page is written to its data file during eviction?",
+    opts:[ "It's an arbitrary ordering convention with no correctness impact",
+           "Writing the page first would be faster, but PostgreSQL prioritizes WAL writes for auditing purposes",
+           "If the page reaches disk first and a crash occurs before the matching WAL record is flushed, recovery has no record describing that change to reconstruct or justify",
+           "WAL writes are always faster than page writes, so ordering them first minimizes total I/O time" ],
+    a:2,
+    why:"Crash recovery works by replaying WAL forward from the last checkpoint to reconstruct all committed changes. If a data page's change reached disk without a corresponding WAL record ever being durably written, recovery has no way to represent or verify that change — the data file and the WAL-derivable history diverge, which is exactly the corruption scenario the WAL-before-data rule exists to prevent. This is a hard correctness requirement, not a performance or auditing choice." },
+  { q:"A large, unprotected sequential scan is running concurrently with normal OLTP traffic and no buffer access strategy is in play. What's the mechanism by which OLTP hit ratio degrades?",
+    opts:[ "The scan holds an exclusive lock on the entire buffer pool for its duration",
+           "The scan's pages, each touched once, flow through the ordinary clock sweep and can drain usage_count across previously-hot OLTP pages before those pages are touched again",
+           "The scan forces a checkpoint, which flushes the OLTP working set from cache",
+           "PostgreSQL automatically evicts all OLTP pages whenever any sequential scan begins" ],
+    a:1,
+    why:"Without a ring-buffer strategy, a large scan's pages compete for buffer slots exactly like any other access, and because the scan touches vast numbers of distinct pages, it can push enough churn through the clock sweep to drain usage_count on pages that are genuinely hot for OLTP but happen to get swept in between their normal accesses. Nothing about scans triggers exclusive pool locks or automatic checkpoints — the damage is purely a side effect of shared replacement-algorithm pressure." },
+  { q:"What does a BAS_BULKREAD buffer access strategy (ring buffer) actually change about how ReadBuffer() behaves for that scan?",
+    opts:[ "It disables WAL logging for pages read during the scan",
+           "It routes the scan's page reads to bypass the shared buffer pool and read directly from disk every time",
+           "It reuses a small, fixed set of buffer slots in a loop for the scan's duration instead of drawing new victims from the shared pool's clock sweep each time",
+           "It increases the scan's usage_count priority so its pages are protected from eviction" ],
+    a:2,
+    why:"A ring buffer strategy claims a small number of buffer slots up front and cycles through reusing just those for the whole operation — the scan's own churn stays contained to its ring instead of repeatedly drawing fresh victims from (and thereby disturbing) the shared pool. It doesn't disable WAL, doesn't bypass caching entirely, and doesn't grant the scan's own pages special protection — quite the opposite, the scan's pages are the ones being aggressively recycled." },
+  { q:"Why did PostgreSQL move buffer header manipulation from a per-buffer spinlock to a single pg_atomic_uint32 state word (around version 9.6)?",
+    opts:[ "Spinlocks were removed from PostgreSQL entirely at that point",
+           "Pinning/unpinning is the hottest operation in the server; a single atomic CAS updating packed fields together is cheaper and less contention-prone than acquiring a spinlock to mutate several separate fields",
+           "The atomic word allows buffers to be pinned by multiple backends without any coordination at all",
+           "It was required to support buffers larger than 8 KB" ],
+    a:1,
+    why:"Spinlocks remain a core PostgreSQL primitive (chapter 8) — this change was specific to buffer headers, not a wholesale removal. Since pin/unpin happens on nearly every page touch by every backend, replacing a spinlock-protected multi-field update with one atomic compare-and-swap on a packed word removes a lock acquisition from the hottest path in the system. Pinning still requires coordination (the CAS itself enforces it) — it isn't uncoordinated — and the change has nothing to do with page size." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could patch freelist.c tomorrow.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks and the §15 simulator — the clock sweep clicks fast once you've watched it live."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "ReadBuffer() computes the BufferTag and its hash",
+    "BufTableLookup() checks the mapping table under a SHARED partition LWLock",
+    "MISS: no entry found — StrategyGetBuffer() is invoked",
+    "Free list checked first; empty, so the clock sweep begins advancing the shared hand",
+    "Clock sweep finds an unpinned buffer with usage_count already at zero",
+    "If the victim is dirty: XLogFlush() flushes WAL up to the page's LSN",
+    "smgrwrite() writes the dirty victim page out; old mapping-table entry removed",
+    "smgrread() reads the new page in; BufTableInsert() registers the new tag; BM_VALID set and buffer is pinned"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real ReadBuffer() path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 10 will show that WAL records are appended to a strictly sequential log, never randomly rewritten, and that this chapter's WAL-before-data rule depends on knowing exactly how far the log has been flushed. Predict: why does the WAL insert path need its own separate concurrency mechanism from the buffer pool's, rather than reusing the same clock-sweep/pin machinery?",
+    a:"WAL is append-only and monotonically increasing — there is no replacement decision to make at all, since nothing is ever evicted in the sense a data page is; the entire problem is instead 'let many backends reserve non-overlapping byte ranges to write into concurrently, then track how far it's durably been flushed.' That's a fundamentally different concurrency shape than a fixed-size, randomly-accessed, replaceable page cache, so chapter 10 introduces its own dedicated mechanism (WAL insertion locks, a shared insert pointer) rather than forcing WAL through the buffer manager's clock-sweep abstraction, which solves a problem WAL doesn't have." },
+  { lvl:"THINK", q:"A checkpoint has to write out every currently-dirty buffer in the pool as of a point in time. Using what you now know about the clock sweep and the background writer, predict what determines how long a checkpoint takes and why spreading it out (rather than flushing everything at once) matters.",
+    a:"Checkpoint duration scales with how many buffers are dirty at the checkpoint's start and how fast they can be written — a number the background writer's steady dribbling (per this chapter) is already trying to keep low. Flushing everything at once would create a massive, synchronous I/O burst competing directly with foreground query I/O; spreading the writes across the checkpoint interval (checkpoint_completion_target) trades a longer checkpoint wall-clock duration for a much gentler, less latency-spiking I/O profile — the same 'don't let a background necessity stampede the foreground' instinct that motivates the background writer running continuously in the first place." },
+  { lvl:"THINK", q:"Design exercise: predict what would go wrong for durability if PostgreSQL's clock sweep were allowed to evict a dirty buffer WITHOUT first checking whether its WAL had been flushed — purely from a performance-optimization mindset of 'let's skip the flush check to make eviction faster.'",
+    a:"Skipping the check would let a data page reach disk with changes whose describing WAL record might still only exist in an in-memory WAL buffer, not yet durably written. A crash in that exact window would leave a data file reflecting a change that recovery — which reconstructs everything by replaying WAL from the last checkpoint — has no record of and no way to verify happened correctly at all; the data file and the recoverable history would silently diverge. This is precisely why FlushBuffer() is not an optional optimization step but a mandatory gate every single dirty eviction passes through, no exceptions — you'll see in chapter 10 exactly how the LSN comparison that makes this check possible is implemented." }
+]);
+
+/* ============================================================
+   11. SIMULATOR (§15) — live buffer cache
+   ============================================================ */
+(function(){
+  const S = {
+    size: 32, oltpRate: 6, ringOn: true, paused: false, scanRunning: false,
+    bufs: [], hand: 0, hits:0, misses:0, evictions:0, backendWrites:0, bgwriterWrites:0,
+    ringSlots: [], ringPtr: 0, scanBlockCounter: 0
+  };
+  const logEl = el("sim-log");
+  function log(msg, cls){
+    const d = document.createElement("div");
+    if (cls) d.className = "lv-"+cls;
+    d.textContent = msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 60) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function initPool(){
+    S.bufs = Array.from({length:S.size}, (_,i)=>({
+      tag: "seed"+i, usage: 1, dirty:false, pinned:0, hot: i % 6 === 0, ring:false
+    }));
+    S.hand = 0; S.hits=0; S.misses=0; S.evictions=0; S.backendWrites=0; S.bgwriterWrites=0;
+    S.ringSlots = []; S.ringPtr = 0;
+  }
+  const HOTKEYS = ["hot-A","hot-B","hot-C","hot-D"];
+  function oltpTouch(){
+    const key = Math.random() < 0.7 ? HOTKEYS[Math.floor(Math.random()*HOTKEYS.length)] : "cold-"+Math.floor(Math.random()*500);
+    const existing = S.bufs.find(b=>b.tag===key);
+    if (existing){
+      S.hits++;
+      existing.usage = Math.min(5, existing.usage+1);
+      if (Math.random()<0.3) existing.dirty = true;
+    } else {
+      S.misses++;
+      loadPage(key, true);
+    }
+  }
+  function scanTouch(){
+    const key = "scan-"+(S.scanBlockCounter++);
+    if (S.ringOn){
+      // reuse ring slots
+      const ringSize = Math.max(4, Math.round(S.size*0.3));
+      if (S.ringSlots.length < ringSize){
+        const b = pickVictimForRing();
+        b.tag = key; b.usage = 1; b.dirty=false; b.ring = true;
+        S.ringSlots.push(b);
+        S.misses++;
+      } else {
+        const b = S.ringSlots[S.ringPtr % S.ringSlots.length];
+        S.ringPtr++;
+        if (b.usage > 2){ /* reject: popular buffer, skip reuse, pick a different one via normal sweep */
+          const nb = pickVictimForRing();
+          nb.tag = key; nb.usage = 1; nb.dirty=false; nb.ring = true;
+          S.misses++;
+        } else {
+          b.tag = key; b.usage = 1; b.dirty=false;
+          S.misses++;
+        }
+      }
+    } else {
+      S.misses++;
+      loadPage(key, false);
+    }
+  }
+  function pickVictimForRing(){
+    // simple: find any non-hot, unpinned buffer with low usage
+    let tries = 0;
+    while (tries++ < S.bufs.length*2){
+      const b = S.bufs[S.hand % S.bufs.length]; S.hand++;
+      if (b.pinned) continue;
+      if (b.usage > 0){ b.usage--; continue; }
+      return b;
+    }
+    return S.bufs[Math.floor(Math.random()*S.bufs.length)];
+  }
+  function loadPage(key, isOltp){
+    let tries = 0, victim = null;
+    while (tries++ < S.bufs.length*3){
+      const b = S.bufs[S.hand % S.bufs.length]; S.hand++;
+      if (b.pinned) continue;
+      if (b.usage > 0){ b.usage--; continue; }
+      victim = b; break;
+    }
+    if (!victim) victim = S.bufs[Math.floor(Math.random()*S.bufs.length)];
+    S.evictions++;
+    if (victim.dirty){
+      // who writes it: bgwriter if it's "ahead", else backend
+      if (Math.random() < bgwriterCoverage()) S.bgwriterWrites++;
+      else S.backendWrites++;
+    }
+    victim.tag = key; victim.usage = 1; victim.dirty = !isOltp ? false : Math.random()<0.3; victim.ring=false;
+  }
+  function bgwriterCoverage(){
+    // more coverage when pool is bigger relative to load; degrade under high oltp + scan
+    const load = S.oltpRate + (S.scanRunning ? 8 : 0);
+    return Math.max(0.15, Math.min(0.9, 1 - load/40 + S.size/120));
+  }
+  function renderRing(){
+    const ring = el("buf-ring");
+    ring.style.gridTemplateColumns = `repeat(${Math.min(16, S.size)},1fr)`;
+    ring.innerHTML = S.bufs.map((b,i)=>{
+      const cls = ["cell"]; if (i===S.hand%S.bufs.length) cls.push("hand"); if (b.dirty) cls.push("dirty"); if (b.ring) cls.push("strategy");
+      return `<div class="${cls.join(' ')}" title="${b.tag}">${b.usage}</div>`;
+    }).join("");
+    const totalTouches = S.hits+S.misses;
+    const hitPct = totalTouches ? Math.round(S.hits/totalTouches*100) : 0;
+    el("cnt-hits").textContent = S.hits;
+    el("cnt-miss").textContent = S.misses;
+    el("cnt-evict").textContent = S.evictions;
+    el("m-hit-v").textContent = hitPct+"%";
+    const hf = el("m-hit"); hf.style.width = hitPct+"%"; hf.className="m-fill "+(hitPct<40?"hot":hitPct<70?"warm":"");
+    const dirtyN = S.bufs.filter(b=>b.dirty).length;
+    el("m-dirty-v").textContent = dirtyN;
+    el("m-dirty").style.width = Math.round(dirtyN/S.size*100)+"%";
+    el("m-bw-v").textContent = S.backendWrites;
+    el("m-bw").style.width = Math.min(100, S.backendWrites*3)+"%";
+    el("m-bw").className = "m-fill " + (S.backendWrites>15?"hot":S.backendWrites>6?"warm":"");
+    el("m-bgw-v").textContent = S.bgwriterWrites;
+    el("m-bgw").style.width = Math.min(100, S.bgwriterWrites*3)+"%";
+  }
+  el("sim-size").oninput = e=>{ S.size = +e.target.value; el("sim-size-val").textContent = S.size; initPool(); log("shared_buffers resized to "+S.size+" slots — pool reinitialized"); };
+  el("sim-oltp").oninput = e=>{ S.oltpRate = +e.target.value; el("sim-oltp-val").textContent = S.oltpRate+"/s"; };
+  el("sc-scan").onclick = ()=>{ S.scanRunning = true; log("big sequential scan STARTED","WARN"); };
+  el("sc-stopscan").onclick = ()=>{ S.scanRunning = false; S.ringSlots=[]; log("sequential scan stopped"); };
+  el("sc-ring").onclick = ()=>{ S.ringOn = !S.ringOn; el("sc-ring").textContent = "ring-buffer strategy: "+(S.ringOn?"ON":"OFF"); el("sc-ring").classList.toggle("on", S.ringOn); log("ring-buffer strategy "+(S.ringOn?"ENABLED":"DISABLED")); S.ringSlots=[]; };
+  el("sc-pause").onclick = ()=>{ S.paused = !S.paused; el("sc-pause").textContent = S.paused ? "▶ resume" : "⏸ pause"; };
+
+  initPool();
+  el("sc-ring").classList.add("on");
+  log("OK: buffer pool initialized — "+S.size+" slots","OK");
+  log("HINT: start the scan with ring OFF, watch hit ratio collapse; then try it ON.");
+
+  setInterval(()=>{
+    if (S.paused) return;
+    for (let i=0;i<S.oltpRate;i++) if (Math.random()<0.4) oltpTouch();
+    if (S.scanRunning) scanTouch();
+    // background writer proactively cleans a few dirty low-usage buffers each tick
+    let cleaned = 0;
+    S.bufs.forEach(b=>{ if (b.dirty && b.usage<=1 && cleaned<3 && Math.random()<0.5){ b.dirty=false; S.bgwriterWrites++; cleaned++; } });
+    renderRing();
+  }, 220);
+})();
+
+/* ============================================================
+   12. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.target.tagName==="SELECT"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["pg-09"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#60a5fa"><a class="cn-btn" href="pg-08.html"><span>←</span><span><span class="cn-lbl">PREV · CH 08</span><span class="cn-ttl">The Lock Manager: Heavyweight, LWLocks & Spinlocks</span></span></a><div class="cn-mid"><a class="cn-home" href="course-postgresql.html">☰ PostgreSQL Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="pg-01.html">CH 01 · Genesis: History & the Process Model</option><option value="pg-02.html">CH 02 · Memory Internals: Contexts, palloc & Shared Memory</option><option value="pg-03.html">CH 03 · The Page: On-Disk Layout, Byte by Byte</option><option value="pg-04.html">CH 04 · Heap Storage: Segments, FSM, Visibility Map & TOAST</option><option value="pg-05.html">CH 05 · MVCC I: Tuple Versions, Snapshots & Visibility</option><option value="pg-06.html">CH 06 · MVCC II: HOT Updates, Freezing & XID Wraparound</option><option value="pg-07.html">CH 07 · Transactions & Isolation: From Read Committed to SSI</option><option value="pg-08.html">CH 08 · The Lock Manager: Heavyweight, LWLocks & Spinlocks</option><option value="pg-09.html" selected>CH 09 · Buffer Manager & the Clock-Sweep Algorithm</option><option value="pg-10.html">CH 10 · WAL: The Physics of Durability</option><option value="pg-11.html">CH 11 · Checkpoints & Crash Recovery</option><option value="pg-12.html">CH 12 · VACUUM, Autovacuum & the Anatomy of Bloat</option><option value="pg-13.html">CH 13 · B-Tree Internals: Lehman & Yao in Production</option><option value="pg-14.html">CH 14 · Beyond B-Tree: GIN, GiST, SP-GiST, BRIN & Hash</option><option value="pg-15.html">CH 15 · Query Pipeline I: Parser, Analyzer & Rewriter</option><option value="pg-16.html">CH 16 · Query Pipeline II: The Cost-Based Planner</option><option value="pg-17.html">CH 17 · The Executor: Volcano Model, Parallel Query & JIT</option><option value="pg-18.html">CH 18 · Replication: Streaming, Logical & Slots</option><option value="pg-19.html">CH 19 · Connections, Partitioning & Extensibility</option><option value="pg-20.html">CH 20 · Production Engineering: Incidents, Profiling & Tuning</option><option value="pg-21.html">CH 21 · Capstone: Build a Mini PostgreSQL</option></select><span class="cn-prog">09 / 21</span></div><a class="cn-btn" href="pg-10.html"><span><span class="cn-lbl">NEXT · CH 10</span><span class="cn-ttl">WAL: The Physics of Durability</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>
+

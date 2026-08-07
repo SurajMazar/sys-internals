@@ -1,0 +1,1734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMQ-11 · Persistence, Disk Layout & Recovery — RabbitMQ Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#ff9f43; --pg-dim:rgba(255,159,67,.12); --pg2:#ffd166;
+    --ok:#4ade80; --warn:#e8b23d; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(255,159,67,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(255,159,67,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(255,159,67,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames for call-chain deck */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(255,159,67,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(255,159,67,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(255,159,67,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(232,178,61,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(255,159,67,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR base ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:70px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--pg2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+  /* ---------- rmq-11 specific: disk / segment visuals ---------- */
+  .rdqrow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .rdqfile{flex:1;min-width:74px;max-width:110px;border:1px solid var(--border-hi);background:var(--panel-2);
+    border-radius:10px;overflow:hidden;font-family:var(--mono);font-size:9.5px;color:var(--muted);text-align:center}
+  .rdqfile .rdq-t{padding:5px 4px;border-bottom:1px solid var(--border);background:var(--bg-2)}
+  .rdqfile .rdq-fill{height:64px;position:relative;background:
+    repeating-linear-gradient(45deg,rgba(255,159,67,.06),rgba(255,159,67,.06) 4px,transparent 4px,transparent 8px)}
+  .rdqfile .rdq-bar{position:absolute;bottom:0;left:0;right:0;background:var(--pg);transition:height .35s ease}
+  .rdqfile .rdq-hole{position:absolute;left:0;right:0;background:var(--bg);border-top:1px dashed var(--bad);border-bottom:1px dashed var(--bad)}
+  .rdqfile.active{border-color:var(--pg)}
+  .rdqfile.compact{animation:framein .4s ease}
+  .rdqfile.gone{opacity:.15;filter:grayscale(1)}
+  .rdqfile .rdq-pct{padding:3px;font-size:9px;color:var(--dim)}
+  .seg-track{display:flex;gap:4px;flex-wrap:wrap;margin:10px 0}
+  .seg-cell{width:15px;height:15px;border-radius:3px;background:var(--panel-2);border:1px solid var(--border-hi);position:relative}
+  .seg-cell.pub{background:rgba(255,159,67,.35);border-color:var(--pg)}
+  .seg-cell.del{background:rgba(167,139,250,.35);border-color:var(--purple)}
+  .seg-cell.ack{background:var(--bg-2);border-color:var(--border)}
+  .seg-cell.cur{box-shadow:0 0 0 2px var(--ok)}
+  .truthgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:12px 0}
+  @media(max-width:600px){.truthgrid{grid-template-columns:repeat(2,1fr)}}
+  .tcell{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 10px;font-family:var(--mono);font-size:10.5px;cursor:pointer;transition:all .15s}
+  .tcell:hover{border-color:var(--pg)}
+  .tcell .tc-flags{color:var(--muted);margin-bottom:5px}
+  .tcell .tc-res{font-weight:700}
+  .tcell.survives .tc-res{color:var(--ok)}
+  .tcell.lost .tc-res{color:var(--bad)}
+  .tcell.on{border-color:var(--pg);box-shadow:0 0 0 1px var(--pg)}
+  .recopanel{font-family:var(--mono);font-size:11.5px;color:var(--muted);padding:12px 15px;border-top:1px solid var(--border);min-height:96px;line-height:1.7}
+  .recopanel b{color:var(--pg)}
+  .diskgraph-wrap{margin-top:10px}
+
+/* ===== injected inter-chapter navigation (placeholder — added by site build) ===== */
+body{padding-bottom:24px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-rabbitmq.html">← RabbitMQ Internals</a>
+  <span class="crumb">RABBITMQ INTERNALS · <b>CH 11 / 12</b> · PERSISTENCE &amp; RECOVERY</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solutions</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Crash Lab Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">RABBITMQ INTERNALS · CHAPTER 11</div>
+  <h1>Persistence, Disk Layout<br>&amp; <span class="grad">Recovery</span></h1>
+  <p class="lead">"Durable" is not a checkbox — it is a conjunction of three independent conditions that must all
+  hold at once, and getting one of them wrong is the single most common way production RabbitMQ deployments
+  silently lose messages. This chapter opens the node's data directory, reads the actual bytes of the message
+  store and the queue index, derives the garbage-collection algorithm that keeps disk usage from growing forever,
+  and walks the exact startup sequence that rebuilds a queue's state after a crash.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>State, precisely, the three conditions a message needs to survive a restart — and why two of three isn't enough.</div>
+    <div class="obj"><b>You will understand</b>Why disk usage lags message count, sometimes for hours, and why that is correct behavior, not a leak.</div>
+    <div class="obj"><b>You will predict</b>How long a broker takes to recover N million queued messages, and why the number is dominated by the index, not the store.</div>
+    <div class="obj"><b>You will simulate</b>Crashes — clean and SIGKILL — against every combination of durability flag, and watch exactly what comes back.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Durability is an AND, not an OR</h2>
+  <p class="lead">Ask ten engineers "how do I make a RabbitMQ message durable?" and most will answer "set
+  <code>delivery_mode=2</code>." That answer is necessary and almost never sufficient. A message survives a
+  broker restart if and only if <b>three independent conditions all hold at once</b>: the exchange it was
+  published through was declared <code>durable</code>, the queue it landed in was declared <code>durable</code>,
+  and the message itself carried <code>delivery_mode=2</code> (the AMQP 0-9-1 property that means "persistent").
+  Every one of those three is a separate piece of metadata, set in a separate place, by a separate call, and
+  RabbitMQ enforces none of them on your behalf — it will happily accept a persistent message into a
+  non-durable queue bound to a durable exchange, and drop every copy of it the instant the node stops.</p>
+  <p>Unpack why each condition is independently necessary, because each one protects a different piece of state:</p>
+  <ul class="plain">
+    <li><b>Exchange durability</b> protects <i>routing metadata</i>. A durable exchange's existence and type are
+      recorded in the metadata store (Mnesia, or Khepri from 4.0) and survive a restart; a transient exchange is
+      recreated empty, with no bindings, the moment the node comes back — so even if the queue and message were
+      both durable, nothing routes to the queue anymore because the exchange that pointed at it is gone.</li>
+    <li><b>Queue durability</b> protects <i>the queue's own existence and its bindings</i>. A durable queue's
+      declaration is written to the metadata store, so <code>rabbit_amqqueue_process</code> is respawned for it
+      on startup and its bindings are restored. A transient queue simply does not exist after restart — there is
+      no queue for a recovered persistent message to be placed into, even if that message's bytes are sitting
+      safely on disk in the shared message store.</li>
+    <li><b>Message <code>delivery_mode=2</code></b> protects <i>the message body itself</i>. Only messages
+      published with this flag are written to the message store's <code>.rdq</code> files at all. A
+      <code>delivery_mode=1</code> ("transient") message published into a fully durable topology is held only in
+      the queue process's own memory (and, if the queue is a classic queue under memory pressure, spilled to a
+      transient-only message store that is deliberately deleted on every startup) — it was never written anywhere
+      that survives.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE PRODUCTION MISTAKE, PRECISELY STATED</div>
+    <p>The overwhelmingly common failure mode is not "we forgot persistence entirely" — it's "we got 2 of 3."
+    Teams declare their queues durable (it shows up in the management UI as a reassuring padlock icon) and set
+    <code>delivery_mode=2</code> on every publish, and stop there — because the exchange was declared once, years
+    ago, by a deploy script that didn't pass <code>durable: true</code>, and nobody has looked at it since. The
+    queue survives a restart. The bindings do not. Messages published after that restart route into a black hole
+    with no error, because publishing to an exchange with no matching binding is, by AMQP 0-9-1 design, a silent
+    no-op unless the publisher is using the <code>mandatory</code> flag. The bug is invisible until the exact
+    moment it matters most — a crash.</p>
+  </div>
+  <p>This chapter derives the on-disk mechanism that makes the "AND" true when all three conditions are met:
+  what a message store file actually contains, what a queue index segment records, how the two cross-reference
+  each other, how space is reclaimed from an append-only structure that never overwrites in place, and exactly
+  what happens between "process receives SIGTERM" and "the first post-recovery message is delivered." Chapter 12
+  will use every one of these mechanics inside a real, running toy broker.</p>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From Mnesia disk tables to a dedicated append-only store</h2>
+  <p>RabbitMQ's persistence layer was not designed once — it was rebuilt at least three times as the project
+  learned, the hard way, that a general-purpose Erlang database was the wrong tool for storing message bodies.
+  Click through the timeline.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — building a broker's storage layer</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY MNESIA WAS NEVER GOING TO WORK FOR MESSAGE BODIES</div>
+    <p>Mnesia is a schema'd, transactional, replicated Erlang term database — superb for small, structured
+    records like exchange and binding definitions, which is exactly what RabbitMQ still uses it (or, since 4.0,
+    Khepri) for today. It was never built to hold millions of opaque binary blobs of wildly varying size with
+    high write throughput; every write goes through Mnesia's transaction manager and its own on-disk log format,
+    which adds overhead completely unrelated to "append these bytes to a file." The first persistence rewrite's
+    entire thesis was: <b>split metadata from message bodies</b>. Metadata — small, relational, needs
+    transactions — stays in Mnesia/Khepri. Message bodies — large, opaque, need raw throughput — get a
+    purpose-built store. That split is the single most important architectural decision this chapter explains.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: one file per message, fsync every write</h2>
+  <p>Derive the architecture honestly, the way every chapter in this course has. If your only requirement is
+  "a persistent message must survive a crash," the simplest possible mechanism is obvious: write each message to
+  its own file, and call <code>fsync()</code> before acknowledging the publish.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudo-erlang</span><span>naive_store.erl — the strawman, annotated</span></div>
+    <pre><span class="f">publish</span>(QueueName, MsgId, Body) -&gt;
+    Path = <span class="f">filename</span>:<span class="f">join</span>([<span class="s">"/var/lib/rabbitmq/naive"</span>, QueueName,
+                            <span class="f">integer_to_list</span>(MsgId) ++ <span class="s">".msg"</span>]),
+    {ok, Fd} = <span class="f">file</span>:<span class="f">open</span>(Path, [write, raw, binary]),
+    <span class="f">file</span>:<span class="f">write</span>(Fd, Body),
+    <span class="f">file</span>:<span class="f">sync</span>(Fd),           <span class="c">%% fsync(2) — do not return until this message</span>
+    <span class="f">file</span>:<span class="f">close</span>(Fd),          <span class="c">%% is physically on the platter/flash, every time</span>
+    ok.
+
+<span class="f">ack</span>(QueueName, MsgId) -&gt;
+    Path = <span class="f">filename</span>:<span class="f">join</span>([<span class="s">"/var/lib/rabbitmq/naive"</span>, QueueName,
+                            <span class="f">integer_to_list</span>(MsgId) ++ <span class="s">".msg"</span>]),
+    <span class="f">file</span>:<span class="f">delete</span>(Path),      <span class="c">%% reclaiming space is just unlink(2)</span>
+    ok.</pre>
+  </div>
+
+  <p>This gets the core property right: every acknowledged publish is genuinely on disk before the confirm is
+  sent, and reclaiming space on ack is a single, instantaneous <code>unlink()</code> — no compaction, no
+  bookkeeping, nothing left behind. For a system publishing a few messages a second, this is not a bad design at
+  all. The trouble is what happens as throughput rises, which the next section quantifies.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Three failures, and they compound</h2>
+  <p>The naive design fails along three independent axes, and — unlike some naive solutions in this course —
+  none of them is subtle; all three show up in the first load test.</p>
+  <ul class="plain">
+    <li><b>fsync latency caps throughput at 1/latency, per writer.</b> A single <code>fsync()</code> on a
+      spinning disk costs roughly 5–15&nbsp;ms (a full rotation to get the write head where it needs to be, plus
+      the write itself); even on an NVMe SSD with power-loss protection it is commonly 0.1–0.5&nbsp;ms because the
+      drive still has to flush its own write buffer to durable media. At 10&nbsp;ms per fsync, one writer caps
+      at <b>100 messages/second</b>, full stop — no amount of CPU, network, or Erlang scheduler tuning moves that
+      number, because the bottleneck is a physical write barrier, not compute.</li>
+    <li><b>File-per-message wastes space and inodes at small sizes.</b> Filesystems allocate in blocks — typically
+      4&nbsp;KB. A 200-byte message consumes a full 4&nbsp;KB block plus an inode, meaning a queue holding a
+      million small messages can consume 4&nbsp;GB of block allocation for a few hundred MB of actual payload,
+      a >10x amplification, and can exhaust the filesystem's inode table entirely on some configurations well
+      before it exhausts disk space.</li>
+    <li><b>Directory operations degrade as file count grows.</b> Even on filesystems with reasonably efficient
+      directory indexes, a directory holding millions of entries makes <code>readdir</code>-based recovery scans
+      (exactly what startup needs to do — "what messages exist for this queue?") measurably slower, and many
+      real-world deployments still see ext4/XFS directory metadata contention under concurrent create/unlink at
+      this rate.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS, AND WHY BATCHING IS THE ONLY WAY OUT</div>
+    <p>A production exchange doing 50,000 msg/s of persistent traffic needs an effective fsync cost of
+    <b>20 microseconds</b> to keep up if every message pays its own fsync — three orders of magnitude faster
+    than even a good NVMe drive's real flush latency. The only way to reconcile "every acknowledged message is
+    durable" with "the disk cannot fsync 50,000 times a second" is to stop fsyncing per message: batch many
+    messages' writes together and pay <i>one</i> fsync for the whole batch, then confirm all of them at once.
+    That single idea — <b>batch, don't serialize</b> — is what §5 builds toward, and it is the same idea that
+    makes publisher confirms asynchronous rather than a call-and-block round trip per message.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">Three candidates, and why the third one wins</h2>
+  <p>Step through the candidates the same way real RabbitMQ development did — each one fixes the previous
+  candidate's most glaring problem and exposes a new one.</p>
+
+  <div class="widget deck" id="deckBetter">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Eliminating the field</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE WINNING SHAPE, IN ONE SENTENCE</div>
+    <p>Separate <i>what</i> was published (a shared, append-only, reference-counted message store keyed by
+    message id) from <i>where and in what state</i> each copy of it sits (a small per-queue index recording
+    publish/deliver/ack positions). Neither structure alone solves persistence; together, they let ten queues
+    fed by a fanout exchange share one on-disk copy of a message while independently tracking their own delivery
+    progress against it — which is exactly <code>rabbit_msg_store</code> plus <code>rabbit_queue_index</code>,
+    the pair §7 and §8 open up in full.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Append-only never gets cheaper on its own — someone has to clean up</h2>
+  <p>The shared, reference-counted, append-only store from §5 solves throughput and space amplification, but it
+  introduces a new problem it cannot avoid: <b>an append-only file never shrinks</b>. Every ack decrements a
+  reference count and, at refcount zero, marks that message's bytes as garbage — but the bytes are still sitting
+  in the middle of a file that other, still-referenced messages also live in. You cannot simply
+  <code>ftruncate()</code> a hole out of the middle of a file.</p>
+  <ul class="plain">
+    <li><b>Fragmentation grows monotonically under churn.</b> A queue that publishes and acks continuously
+      accumulates holes throughout every <code>.rdq</code> file it has ever written to; without intervention,
+      disk usage grows forever even though the number of live messages is stable or falling.</li>
+    <li><b>Reclaiming those holes means rewriting live data.</b> The only way to actually free disk space is to
+      copy the still-valid messages out of two fragmented files into one, then delete the originals — which is
+      write amplification: you pay disk I/O for data that didn't change, purely to compact around data that did.</li>
+    <li><b>Doing this too eagerly defeats the point of batching.</b> If compaction ran on every single ack, you'd
+      be back to a per-message disk operation — the exact throughput ceiling §4 identified. Compaction has to be
+      a background, threshold-triggered process, which means it necessarily lags behind the actual message
+      count — the disk usage graph in §15 will show you exactly how much.</li>
+  </ul>
+  <p>So the final architecture needs one more component beyond "shared store + per-queue index": a background
+  garbage collector that decides <i>when</i> two files are fragmented enough to be worth compacting, and does the
+  rewrite without blocking publishers or consumers. That is exactly what §8 derives.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The node's data directory, mapped</h2>
+  <p>Everything in this chapter lives under one directory tree. Click any component to see what it holds, which
+  module owns it, and what happens to it during recovery.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">METADATA STORE (small, transactional, replicated)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="mnesia">Mnesia / Khepri tables</div>
+          <div class="acard" data-p="recoveryterms">rabbit_recovery_terms</div>
+        </div>
+        <div class="arch-row-label">MESSAGE STORE (large, append-only, shared, per vhost)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="msgstore">msg_stores/vhosts/&lt;hash&gt;/msg_store_persistent/</div>
+          <div class="acard" data-p="rdq">*.rdq files</div>
+          <div class="acard" data-p="gc">rabbit_msg_store_gc</div>
+        </div>
+        <div class="arch-row-label">QUEUE INDEX (small, per classic queue)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="qindex">queues/&lt;hash&gt;/</div>
+          <div class="acard" data-p="segment">segment .idx files (16384 entries)</div>
+        </div>
+        <div class="arch-row-label">QUORUM QUEUES (Ra — independent WAL per node)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="rawal">ra_log_wal (shared write-ahead log)</div>
+          <div class="acard" data-p="rasegs">per-server Ra log segments</div>
+          <div class="acard" data-p="rasnap">ra_snapshot</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">ONE STORE, MANY QUEUES: WHY THE HASH-BASED DIRECTORY NAMES</div>
+    <p>Vhost and queue names are arbitrary UTF-8 strings that can contain characters unsafe for filesystem paths
+    (slashes, unicode, arbitrary length) — so RabbitMQ never uses the name directly as a directory name. Instead
+    it hashes the name to a fixed-format, filesystem-safe identifier and keeps the name→hash mapping in the
+    metadata store. This is also why you cannot identify a queue's on-disk files by eyeballing the data
+    directory — you need <code>rabbitmq-diagnostics</code> (§13) or the queue's own recorded index location to
+    map a name back to a path.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Bytes on disk: the message store, the queue index, and the GC that keeps them small</h2>
+
+  <h3>(a) The message store: append-only <code>.rdq</code> files, reference-counted by message id</h3>
+  <p><code>rabbit_msg_store</code> is a <code>gen_server2</code> — one instance per vhost per store class
+  (persistent / transient) — that owns a single "current" file it appends to. Each file is capped at
+  <code>msg_store_file_size_limit</code> (16&nbsp;MB by default); when the current file would exceed that, the
+  store rolls to a new file with the next integer name (<code>0.rdq</code>, <code>1.rdq</code>, …). Every write
+  is a flat record: the message id, the serialized message (properties, headers, and body, in the same external
+  binary format used on the wire), and enough length information to read the record back without consulting
+  anything else. Because the store is <i>content-addressed by message id</i> rather than by queue, publishing
+  one message to a fanout exchange bound to five queues writes the body to disk <b>once</b> — an in-memory index
+  (an ETS table, <code>rabbit_msg_store_ets_index</code>, itself checkpointed to disk) maps each message id to
+  <code>{File, Offset, TotalSize, RefCount}</code>, and every additional queue that references the same message
+  id merely increments <code>RefCount</code>. The message is only eligible for garbage collection once
+  <code>RefCount</code> reaches zero — i.e., every queue that ever held a copy has acked it.</p>
+
+  <div class="widget deck" id="deckStore">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A publish, traced through the message store</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) The queue index: per-queue segments of exactly 16,384 entries</h3>
+  <p>Alongside the shared store, every classic queue owns its own <code>rabbit_queue_index</code> under
+  <code>queues/&lt;hash&gt;/</code>: a sequence of fixed-size segment files, each covering exactly
+  <b>16,384</b> consecutive queue sequence ids. A segment entry does not duplicate the message body — for
+  messages routed through the shared store it records only the message id (a reference) and three bits of state:
+  published, delivered, acked. For small messages below <code>queue_index_embed_msgs_below</code> (default
+  <b>4,096 bytes</b>), the queue index embeds the entire serialized message <i>inline in the segment entry
+  itself</i>, skipping the message store entirely — the reasoning being that for small messages, the fixed
+  overhead of a message-store round trip (an ETS lookup, a separate file write, a reference-count bookkeeping
+  update) costs more than just duplicating the few hundred bytes directly into the structure you were going to
+  write anyway. This is a real, tunable space/time tradeoff: raising the threshold shifts more messages into
+  inline storage, trading message-store indirection for slightly larger, less deduplicated index segments — the
+  slider below makes the split concrete.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">queue_index_embed_msgs_below — where does a message land?</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>embed threshold (bytes)</label><input type="range" id="embed-slider" min="0" max="16000" value="4096" step="256"><span class="val" id="embed-val">4096 B</span></div>
+      <div class="slider-row"><label>typical message size (bytes)</label><input type="range" id="msz-slider" min="16" max="16000" value="800" step="16"><span class="val" id="msz-val">800 B</span></div>
+      <div id="embed-vis" style="margin-top:12px"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="embed-note"></p>
+    </div>
+  </div>
+
+  <p>A queue's index also tracks its journal of pending changes in memory (a batched write-behind buffer) before
+  flushing to the segment file, precisely so that a burst of publish/ack activity against the same sequence id
+  range doesn't force a disk write per event — the same batching principle from §4, applied one layer up.</p>
+
+  <h3>(c) Garbage collection by compaction — reclaiming holes without blocking anyone</h3>
+  <p>The message store never edits a file in place; it only appends and, separately, tracks per-file bookkeeping
+  in <code>rabbit_msg_store</code>'s <code>file_summary</code> ETS table: for every <code>.rdq</code> file, the
+  total bytes written and the bytes still <i>valid</i> (referenced by at least one live queue). As acks drive
+  <code>RefCount</code> to zero across a file's messages, its valid-byte count falls further and further below
+  its total size — the file fills up with holes. <code>rabbit_msg_store_gc</code> runs as a background process
+  that periodically inspects adjacent file pairs; when the <b>combined valid data of two neighboring files falls
+  below a configured fraction of one file's capacity</b>, it triggers a compaction pass: read every still-valid
+  message out of both files in file order, append them contiguously into whichever of the two files has more
+  room (or a fresh file), update the ETS index's <code>{File, Offset}</code> for every message that moved, and
+  finally delete the now-empty source file. Crucially, this happens entirely in the background relative to
+  publishers and consumers — a message being actively read out of a file mid-compaction is unaffected because
+  the compactor copies bytes, it never mutates a message a reader might be holding an offset into concurrently
+  without first updating the index those readers consult.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Compaction threshold — when do two files get merged?</span><span class="w-sub">DRAG + BUTTON</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>ack rate (msgs/sec acked)</label><input type="range" id="gc-ackrate" min="0" max="2000" value="400" step="20"><span class="val" id="gc-ackrate-val">400/s</span></div>
+      <div class="slider-row"><label>compaction threshold</label><input type="range" id="gc-thresh" min="10" max="90" value="50" step="5"><span class="val" id="gc-thresh-val">50%</span></div>
+      <div class="rdqrow" id="gc-files"></div>
+      <div class="chartbox diskgraph-wrap"><canvas id="gc-canvas" width="740" height="200"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> disk bytes used</span>
+        <span><span style="color:var(--purple)">━</span> live message count</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="gc-note"></p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">THE SUPPORT TICKET THIS EXPLAINS</div>
+    <p>"We drained the queue completely and disk usage didn't drop" is one of the most common RabbitMQ operations
+    questions, and it is not a bug: acking a message only marks it as garbage <i>in the bookkeeping</i>; the bytes
+    are freed from disk only when the GC's threshold trips for the specific file pair those particular messages
+    happened to land in. If your queue's messages are spread thinly across many mostly-full files, no single pair
+    may cross the compaction threshold for a long time. Disk usage genuinely, correctly, lags message count — the
+    chart above is the shape of that lag, not a leak.</p>
+  </div>
+
+  <h3>(d) fsync batching: why publisher confirms are asynchronous</h3>
+  <p>Neither the message store nor the queue index calls <code>fsync()</code> per write. Both batch: writes
+  accumulate in the OS page cache / the process's own buffer, and an <code>fsync</code> is issued either on a
+  timer interval or when a configured number of bytes have been buffered — whichever comes first. A publisher
+  confirm (the AMQP extension that lets a publisher know a message is safely handled) is only sent back once the
+  relevant <code>fsync</code> covering that message's write has actually completed, which is precisely why
+  confirms are delivered <i>asynchronously and out of publish order relative to when you called publish</i> —
+  the broker is deliberately holding your confirm until it can batch it with others. This single design decision
+  is the entire reason publisher confirms are commonly cited as roughly <b>two orders of magnitude</b> faster in
+  aggregate throughput than the old AMQP 0-9-1 transactions (<code>tx.commit</code>), which forced a round trip
+  — and, in most naive client implementations, a synchronous disk flush — per transaction rather than per batch.</p>
+
+  <h3>(e) Quorum queues: a different, stricter disk contract</h3>
+  <p>Quorum queues do not use <code>rabbit_msg_store</code> or <code>rabbit_queue_index</code> at all — each
+  quorum queue is a replicated Raft log driven by <code>rabbit_fifo</code> (the state machine) on top of the
+  <code>ra</code> library. Every accepted command (enqueue, ack, etc.) is first appended to a per-node, shared
+  <b>write-ahead log</b> (<code>ra_log_wal</code>) before it is applied to any state machine, and periodically
+  rolled into per-Ra-server <b>segment files</b> by <code>ra_log_segment_writer</code>, with periodic
+  <b>snapshots</b> (<code>ra_snapshot</code>) letting old log segments be deleted once their entries are
+  reflected in a snapshot every replica has durably stored. Because Raft's correctness proof depends on "a
+  majority of replicas have durably persisted an entry" as the precise definition of "committed," a quorum queue
+  <i>must</i> fsync its WAL before acknowledging a write to its Raft peers — there is no equivalent of "batch and
+  confirm later" available to skip, because the durability isn't cosmetic, it's the mechanism that makes
+  leader election and log matching safe after a crash. This is why quorum queues are consistently measured as
+  fsync'ing more aggressively, and at somewhat lower steady-state throughput, than classic queues under the same
+  publish load — the extra durability guarantee (survives loss of a minority of the cluster, not just of disk)
+  is bought with strictly more disk-flush work per accepted write.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Persistence, compared</h2>
+  <p>Every message system makes a different bet about where durability, throughput, and retention semantics
+  intersect. RabbitMQ's bet — small, transient, per-message-acked queues backed by a compacting store — looks
+  very different from a log-structured system built for retention.</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>DURABILITY MODEL</th><th>WHAT IT BUYS</th><th>WHAT IT COSTS</th></tr>
+    <tr><td>RabbitMQ (classic)</td><td>Shared append-only store + per-queue index, background compaction</td>
+      <td><span class="pill g">dedup across queues</span> <span class="pill g">batched fsync</span></td>
+      <td><span class="pill b">disk usage lags acks</span> <span class="pill y">compaction write-amp</span></td></tr>
+    <tr><td>RabbitMQ (quorum)</td><td>Raft WAL, fsync per committed entry, snapshots</td>
+      <td><span class="pill g">survives minority node loss</span> <span class="pill g">no msg-store GC needed</span></td>
+      <td><span class="pill b">stricter fsync cost</span> <span class="pill y">log grows during partitions</span></td></tr>
+    <tr><td>Apache Kafka</td><td>Sequential segment log, retention by time/size, no per-message ack index</td>
+      <td><span class="pill g">pure sequential I/O</span> <span class="pill g">cheap long retention</span></td>
+      <td><span class="pill b">no per-message delete</span> <span class="pill y">consumer owns offset tracking</span></td></tr>
+    <tr><td>Apache Pulsar</td><td>Segmented ledgers on a separate storage tier (BookKeeper)</td>
+      <td><span class="pill g">storage/serving decoupled</span> <span class="pill g">independent scaling</span></td>
+      <td><span class="pill b">extra hop per write</span> <span class="pill y">operational surface (bookies + brokers)</span></td></tr>
+    <tr><td>NATS JetStream</td><td>File store, per-stream message blocks, its own Raft (for clustering)</td>
+      <td><span class="pill g">simple single-binary ops</span></td>
+      <td><span class="pill y">younger, smaller ecosystem for this feature</span></td></tr>
+    <tr><td>Amazon SQS</td><td>Fully managed, redundant across AZs, no exposed disk model</td>
+      <td><span class="pill g">zero ops</span> <span class="pill g">no GC/compaction to reason about</span></td>
+      <td><span class="pill b">no control over storage engine tradeoffs at all</span></td></tr>
+    <tr><td>ActiveMQ (KahaDB)</td><td>Very similar shape: append-only journal + per-destination index</td>
+      <td><span class="pill g">same batching benefits</span></td>
+      <td><span class="pill y">historically more prone to index corruption on unclean shutdown</span></td></tr>
+    <tr><td>Redis Streams</td><td>In-memory, optional AOF/RDB persistence</td>
+      <td><span class="pill g">extremely low latency</span></td>
+      <td><span class="pill b">durability bolted on, not the primary design goal</span></td></tr>
+  </table>
+  <p>Read the RabbitMQ classic-queue row against Kafka's row as the chapter's central contrast, because chapter
+  12 makes it the capstone's centerpiece: RabbitMQ's index tracks <i>per-message</i> delivery state because
+  messages are expected to be deleted once consumed; Kafka's log tracks no such thing because a Kafka partition
+  is a durable retention window that consumers read non-destructively at their own offset. Neither is "more
+  correct" — they are solving different problems, and §13 of chapter 12 makes that precise.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE CHARACTERISTICS</div>
+  <h2 class="sec">What you can predict before benchmarking</h2>
+  <ul class="plain">
+    <li><b>Message store write:</b> O(1) amortized — an append plus an ETS index insert; the per-message cost is
+      independent of how many messages already exist in the store.</li>
+    <li><b>Message store read:</b> O(1) — one ETS lookup for <code>{File, Offset, Size}</code>, then one
+      <code>pread</code> at that offset. No scanning, ever, in steady state.</li>
+    <li><b>Queue index lookup for the next deliverable message:</b> O(1) amortized against the in-memory journal
+      for hot (recently written) entries; a cold segment not currently resident costs one segment-file read
+      (a few hundred KB at most, since a segment covers 16,384 entries).</li>
+    <li><b>Garbage collection pass:</b> O(valid bytes in the two files being compacted) — proportional to how
+      much live data survives, not to how much garbage is being discarded, which is why compaction of a mostly-dead
+      file pair is cheap and compaction of a mostly-live pair (rare, since it wouldn't have crossed the threshold)
+      would be expensive.</li>
+    <li><b>Per-queue memory overhead:</b> a classic queue keeps a bounded in-memory window of its index journal
+      plus whatever messages are held for immediate delivery; the bulk of a very deep queue's backlog lives on
+      disk, not in the Erlang process heap, which is exactly why RabbitMQ can hold queues far larger than
+      available RAM without OOMing (at the cost of read-back latency for old messages, since they're no longer
+      hot in any cache).</li>
+    <li><b>Recovery time:</b> dominated by the queue index — replaying and cross-checking every segment for every
+      queue with a persistent backlog — not by the message store, since store recovery is a single directory scan
+      building one index rather than replaying per-queue delivery state. §15 makes this scaling visible directly.</li>
+  </ul>
+  <p>Drag the batch interval and message rate below and watch effective throughput and average confirm latency
+  move in opposite directions — the same tension every batching system in this course exhibits.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">fsync batch interval vs throughput vs confirm latency</span><span class="w-sub">DRAG</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>publish rate (msgs/sec)</label><input type="range" id="perf-rate" min="100" max="60000" value="8000" step="100"><span class="val" id="perf-rate-val">8000/s</span></div>
+      <div class="slider-row"><label>fsync batch interval (ms)</label><input type="range" id="perf-interval" min="1" max="200" value="25" step="1"><span class="val" id="perf-interval-val">25 ms</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-quorum">quorum queue (fsyncs per committed entry)</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> achievable throughput</span>
+        <span><span style="color:var(--bad)">━</span> p99 confirm latency</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch — fsync count ≈ ceil(rate × interval / 1000) per second, and each fsync
+    has a fixed latency floor regardless of batch size — tuned to match the qualitative shape reported in
+    RabbitMQ's own performance documentation and community benchmarks. Real hardware, replication factor, and
+    message size all shift the exact numbers; the shape (larger batches trade latency for throughput, up to the
+    point the disk itself saturates) is what to internalize.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three incidents this chapter explains</h2>
+
+  <h3>Incident 1: the disk-usage alarm that wouldn't clear</h3>
+  <p>A team purges a multi-million-message backlog queue during an incident, expecting disk usage to drop
+  immediately and the <code>disk_free_limit</code> alarm to clear. It doesn't — for nearly an hour, disk usage
+  stays flat, publishers remain blocked (RabbitMQ blocks all publishing connections cluster-wide when the disk
+  alarm trips, by design, since accepting more persistent writes while already low on disk risks losing exactly
+  the messages you're trying to protect), and the on-call engineer nearly restarts the node under the mistaken
+  theory that "something is stuck." Nothing is stuck: §8(c)'s compaction is background and threshold-triggered,
+  and a purge of live entries doesn't force an immediate rewrite of every file they happened to live in. The
+  actual fix in the moment is to <i>wait</i> (compaction does eventually run) or to trigger it more aggressively
+  by understanding which files are fragmented; the durable fix is provisioning disk headroom well above what a
+  single large backlog could ever consume, specifically because reclaiming space is not instantaneous.</p>
+
+  <h3>Incident 2: quorum queue disk growth during a network partition</h3>
+  <p>During a partition that isolates one node from the majority, that node's Ra log for every quorum queue it
+  hosts keeps accepting local WAL writes for entries it cannot get acknowledged by a majority, and — more
+  importantly — the log cannot be trimmed via snapshot until the node rejoins and catches up, because a snapshot
+  can only discard log entries that are known to be durably replicated. A long partition on a busy quorum queue
+  cluster shows up as one node's disk usage climbing steadily with no obvious cause in the application logs; the
+  <code>rabbitmq-diagnostics</code> output for that queue's Ra members shows a large, growing
+  <code>commit_index</code>/<code>last_applied</code> gap. The lesson generalizes: any Raft-backed system pays for
+  partition tolerance in local log growth on the minority side, and operators need disk headroom sized for
+  "longest tolerable partition," not just "steady-state throughput."</p>
+
+  <h3>Incident 3: "durable" queue, transient messages, silent loss after a routine restart</h3>
+  <p>A rolling upgrade restarts brokers one at a time, as documented. On the first node restart, a queue believed
+  fully durable loses every message that was in flight. Post-incident review finds the publisher library's
+  default was <code>delivery_mode=1</code> — nobody had explicitly set persistence at the message level, because
+  the team's mental model was "the queue is durable, so messages in it are safe." The exchange and queue were
+  both correctly durable; the message property, the third independent condition from §1, was never set. The
+  actual fix was trivial (set the property) but took hours to diagnose because every piece of visible
+  configuration — the queue's durability flag in the management UI — looked correct.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing</h2>
+  <p>Files marked <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">deps/rabbit/src/</span></div>
+<div>├── <span class="fhl">● rabbit_msg_store.erl</span> <span class="fnote">— gen_server2; owns .rdq files, file_summary ETS, refcounted index</span></div>
+<div>├── <span class="fhl">● rabbit_msg_store_gc.erl</span> <span class="fnote">— background compaction: picks file pairs, rewrites, deletes</span></div>
+<div>├── <span class="fhl">● rabbit_queue_index.erl</span> <span class="fnote">— per-queue segment files (16384 entries), journal batching</span></div>
+<div>├── <span class="fhl">● rabbit_variable_queue.erl</span> <span class="fnote">— classic queue backing store logic; drives msg_store + queue_index together</span></div>
+<div>├── rabbit_classic_queue_store_v2.erl <span class="fnote">— CQv2 (3.10+): per-queue message store, replacing the shared store for classic queues</span></div>
+<div>├── rabbit_recovery_terms.erl <span class="fnote">— per-vhost dets table of "clean shutdown" markers, consulted at boot</span></div>
+<div>├── <span class="fhl">● rabbit_fifo.erl</span> <span class="fnote">— quorum queue Raft state machine (enqueue/settle/return/discard)</span></div>
+<div>└── rabbit_fifo_client.erl <span class="fnote">— client-side API quorum queues present to channels</span></div>
+<div><span class="dir">deps/ra/src/</span></div>
+<div>├── <span class="fhl">● ra_log_wal.erl</span> <span class="fnote">— shared write-ahead log every Ra server appends to before applying</span></div>
+<div>├── ra_log_segment_writer.erl <span class="fnote">— rolls WAL entries into per-server segment files</span></div>
+<div>└── ra_snapshot.erl <span class="fnote">— periodic snapshotting; lets old segments be deleted</span></div>
+  </div></div>
+
+  <p>Simplified but faithful in structure and naming. First, writing a persistent message into the store:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">erlang</span><span>rabbit_msg_store.erl — write/3, simplified</span></div>
+    <pre><span class="f">write</span>(MsgId, Msg, State = #msstate{current_file = CurFile,
+                                    current_offset = Offset,
+                                    index_ets = IndexEts}) -&gt;
+    Bin = rabbit_msg_file:<span class="f">serialize</span>(MsgId, Msg),
+    Size = byte_size(Bin),
+    <span class="c">%% append-only: always write at the current file's end offset</span>
+    ok = <span class="f">append_to_current_file</span>(State, Bin),
+    <span class="c">%% one ETS row per message id: where it lives, how many queues reference it</span>
+    <span class="k">case</span> ets:<span class="f">lookup</span>(IndexEts, MsgId) <span class="k">of</span>
+        [] -&gt;
+            ets:<span class="f">insert</span>(IndexEts, {MsgId, CurFile, Offset, Size, _RefCount = 1});
+        [{MsgId, F, O, S, RefCount}] -&gt;
+            <span class="c">%% same message id published again (e.g. fanout to another queue) —</span>
+            <span class="c">%% do NOT write the bytes twice, just bump the refcount</span>
+            ets:<span class="f">insert</span>(IndexEts, {MsgId, F, O, S, RefCount + 1})
+    <span class="k">end</span>,
+    <span class="f">maybe_roll_file</span>(State#msstate{current_offset = Offset + Size}).</pre>
+  </div>
+
+  <p>Then, the compaction pass — the code that actually reclaims the holes §6 and §8(c) describe:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">erlang</span><span>rabbit_msg_store_gc.erl — attempt_compaction/3, simplified</span></div>
+    <pre><span class="f">attempt_compaction</span>(FileA, FileB, State) -&gt;
+    #file_summary{valid_total = ValidA} = <span class="f">summary</span>(FileA),
+    #file_summary{valid_total = ValidB} = <span class="f">summary</span>(FileB),
+    Threshold = State#gcstate.file_size_limit * State#gcstate.gc_ratio,
+    <span class="k">case</span> ValidA + ValidB &lt; Threshold <span class="k">of</span>
+        <span class="k">false</span> -&gt;
+            {skip, <span class="s">"not fragmented enough yet"</span>};
+        <span class="k">true</span> -&gt;
+            <span class="c">%% read every still-referenced message out of BOTH files, in file order —</span>
+            <span class="c">%% dead (refcount==0) messages are simply never re-read, i.e. discarded</span>
+            LiveMsgs = <span class="f">read_live_messages</span>(FileA) ++ <span class="f">read_live_messages</span>(FileB),
+            {ok, DestFile} = <span class="f">open_compaction_target</span>(State),
+            NewLocations = <span class="f">append_all</span>(DestFile, LiveMsgs),
+            <span class="c">%% update the ETS index BEFORE deleting the old files — readers must</span>
+            <span class="c">%% never observe a location that points at a file that no longer exists</span>
+            <span class="f">update_index_locations</span>(NewLocations),
+            <span class="f">delete_file</span>(FileA), <span class="f">delete_file</span>(FileB),
+            {ok, compacted}
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <p>Finally, the recovery entry point — reconciling queue index against message store at boot:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">erlang</span><span>rabbit_queue_index.erl — recover_segment/2, simplified</span></div>
+    <pre><span class="f">recover_segment</span>(SegmentPath, MsgStore) -&gt;
+    {ok, Bin} = file:<span class="f">read_file</span>(SegmentPath),
+    Entries = <span class="f">parse_entries</span>(Bin),      <span class="c">%% may raise on a torn trailing record</span>
+    <span class="k">case</span> Entries <span class="k">of</span>
+        {ok, Parsed, TornTailBytes} -&gt;
+            <span class="k">case</span> byte_size(TornTailBytes) &gt; 0 <span class="k">of</span>
+                <span class="k">true</span>  -&gt; rabbit_log:<span class="f">warning</span>(<span class="s">"discarding torn trailing entry, ~p bytes"</span>,
+                                                [byte_size(TornTailBytes)]);
+                <span class="k">false</span> -&gt; ok
+            <span class="k">end</span>,
+            <span class="c">%% cross-check: every message id this segment references must actually</span>
+            <span class="c">%% exist in the message store, or it was never durably written</span>
+            [Entry || Entry &lt;- Parsed,
+                      rabbit_msg_store:<span class="f">contains</span>(MsgStore, Entry#entry.msg_id)]
+    <span class="k">end</span>.</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Update the index before deleting anything.</b> The GC pass always makes the new location durable and
+    visible before removing the old one — an ordering that guarantees a crash mid-compaction leaves either the
+    old files intact (if the crash was before the index update) or the new file intact with a correct index (if
+    after), never a dangling reference. <b>2. Recovery trusts nothing it can't cross-check.</b> A queue index
+    entry referencing a message id is not proof the message exists — a crash could have truncated the message
+    store's own write. Recovery reconciles both structures rather than trusting either alone. <b>3. Torn writes
+    are expected, not exceptional.</b> The last segment written before a crash may contain a partial record; the
+    parser is written to detect and discard it cleanly rather than fail recovery outright — a design borrowed
+    from write-ahead logging in general and reused nearly verbatim in <code>ra_log_wal</code>'s own recovery
+    path.</p>
+  </div>
+
+  <p>Operationally, <code>rabbitmq-diagnostics</code> exposes most of this without reading raw files:
+  <code>rabbitmq-diagnostics observer</code> for live process/queue-index memory, and management-plugin metrics
+  for message-store file counts and per-queue disk-message counts. Topology — exchanges, queues, bindings,
+  policies — can be exported and imported via <code>rabbitmqctl export_definitions</code> /
+  <code>import_definitions</code>, but this is explicitly <b>not</b> a message backup: it recreates the empty
+  shape of your broker, not its data. The honest operational posture, stated plainly: RabbitMQ is a message
+  broker, not a database of record. Treat topology as reproducible infrastructure-as-code, and treat "the broker
+  cluster is permanently destroyed" as a scenario your application design — not your backup strategy — must be
+  able to tolerate, typically by having producers able to replay from an upstream source of truth.</p>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — startup recovery</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur during a broker's boot after an unclean shutdown.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The crash lab</h2>
+  <p>Publish messages with any combination of exchange durability, queue durability, <code>delivery_mode</code>,
+  and confirms on/off. Then kill the broker — <b>clean stop</b> or <b>SIGKILL</b> — and restart it. Watch the
+  truth table fill in, the disk panel show files, holes, and compaction, and the recovery panel step through
+  exactly what startup does.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Crash lab — durability truth table</span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body">
+      <div class="toggle-row">
+        <button class="chip on" id="cfg-exdur">exchange: durable</button>
+        <button class="chip on" id="cfg-qdur">queue: durable</button>
+        <button class="chip on" id="cfg-dmode">delivery_mode: 2 (persistent)</button>
+        <button class="chip on" id="cfg-confirm">publisher confirms: ON</button>
+      </div>
+      <div class="toggle-row">
+        <button class="btn primary" id="sim-publish">publish 20 messages</button>
+        <button class="btn" id="sim-ack">ack half (drives GC)</button>
+        <button class="btn warn" id="sim-clean">clean stop (SIGTERM)</button>
+        <button class="btn danger" id="sim-kill">kill -9 (SIGKILL)</button>
+        <button class="btn good" id="sim-restart">restart broker</button>
+      </div>
+
+      <h3 style="margin-top:22px">Truth table — every combination you've tried</h3>
+      <div class="truthgrid" id="truth-grid"></div>
+
+      <h3>Disk panel — .rdq files</h3>
+      <div class="rdqrow" id="disk-files"></div>
+      <p style="font-size:12px;color:var(--muted)" id="disk-note"></p>
+
+      <h3>Recovery panel</h3>
+      <div class="recopanel" id="reco-panel">Broker running normally. Kill it to see recovery.</div>
+
+      <div class="sim-counters" style="border-bottom:none;border-top:1px solid var(--border)">
+        <div class="scounter"><div class="cv" id="cnt-pub">0</div><div class="cl">published</div></div>
+        <div class="scounter"><div class="cv" id="cnt-survived">0</div><div class="cl">survived crash</div></div>
+        <div class="scounter"><div class="cv" id="cnt-lost" style="color:var(--bad)">0</div><div class="cl">lost</div></div>
+      </div>
+    </div>
+    <div class="slog" id="sim-log"></div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> All four toggles ON, clean stop, restart — everything survives. <b>2.</b> Turn queue durability
+    OFF, keep the rest ON, kill -9 — messages are gone even though delivery_mode was persistent, because the
+    queue itself doesn't exist after restart. <b>3.</b> All ON, publish, ack half, watch the disk panel — holes
+    appear immediately, disk usage drops later, on its own schedule. <b>4.</b> All ON, publish a large batch, then
+    kill -9 mid-flight (before confirms return) — some late messages may not have been fsynced yet and are lost
+    even with every flag correct, which is exactly why you wait for the confirm.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before the capstone: three questions, no options</h2>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 11 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now state the three durability conditions precisely,
+    explain why disk usage lags acks, and trace a queue index segment through recovery. Chapter 12 — the
+    capstone — builds a real, running miniature broker in this page: a frame codec, an actor runtime, a topic
+    trie, queue actors with acks and credit-based flow control, and dead lettering — and then uses everything
+    this course has taught to deliver the definitive, decision-ready comparison between RabbitMQ and Kafka.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn primary" href="rmq-12.html" style="text-decoration:none;display:inline-flex;align-items:center">Capstone: Mini Broker + Kafka vs RabbitMQ →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2007", l:"Mnesia persister", d:"<b>RabbitMQ 1.0's original persistence layer stores everything — metadata AND message bodies — in Mnesia disk tables.</b> It works, but every message write pays Mnesia's transaction-manager overhead, which was designed for small structured records, not high-throughput binary blobs of arbitrary size." },
+  { yr:"2009", l:"rabbit_msg_store arrives", d:"<b>A dedicated, purpose-built message store replaces Mnesia for message bodies.</b> The core idea introduced here — and still true today — is the split this chapter is built around: small, transactional, relational metadata stays in Mnesia; large, opaque message bytes move to append-only files designed for raw sequential I/O." },
+  { yr:"2010", l:"rabbit_queue_index", d:"<b>The per-queue index is split out from the shared store.</b> Delivery state (published/delivered/acked) is now tracked in small, fixed-size segment files per queue, cross-referencing message ids in the shared store rather than duplicating bodies — enabling the fanout-dedup property this chapter leans on." },
+  { yr:"2012", l:"embed_msgs_below tuning", d:"<b>queue_index_embed_msgs_below</b> is introduced (later defaulting to 4096 bytes), letting small messages skip the message store entirely and live inline in index segments — a direct answer to the observation that message-store indirection has a fixed per-message cost not worth paying for tiny payloads." },
+  { yr:"2018", l:"Ra research begins", d:"<b>Work begins on Ra</b>, a general-purpose Raft implementation, aimed squarely at replacing the aging, split-brain-prone mirrored-queue model with a consensus-backed replicated queue — a fundamentally different storage contract from the classic queue's shared store." },
+  { yr:"2020", l:"Quorum queues GA (3.8)", d:"<b>Quorum queues ship as generally available in 3.8</b>, backed by <code>rabbit_fifo</code> on Ra. Mirrored classic queues are formally deprecated in this same release — the beginning of the end for the old replication model, in favor of Raft's much stronger consistency guarantees." },
+  { yr:"2021", l:"Streams (3.9)", d:"<b>Streams introduce log-structured, non-destructive-read storage</b> as a first-class RabbitMQ queue type — explicitly borrowing the Kafka-style retention model chapter 12's comparison formalizes, offered alongside (not replacing) classic and quorum queues." },
+  { yr:"2022", l:"Classic Queue v2 (3.10)", d:"<b>CQv2 replaces the shared cross-queue message store with a per-queue store</b> for classic queues, trading away cross-queue deduplication for simpler, more predictable per-queue memory and disk accounting — a real architectural reversal of the original 2009 design, made once operational experience showed the shared store's GC behavior was hard to reason about at scale." },
+  { yr:"2024", l:"Mirrored queues removed; Khepri (4.0)", d:"<b>RabbitMQ 4.0 removes classic mirrored queues entirely</b> and offers Khepri — a Raft-backed metadata store — as a modern replacement for Mnesia, closing the loop: even the small, transactional metadata layer this chapter treats as 'the easy part' eventually adopts the same consensus machinery quorum queues pioneered for message data." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===1 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[1].d;
+
+/* ============================================================
+   2. DECK: eliminating the field (§5)
+   ============================================================ */
+stepper("deckBetter", [
+  { stage:`<div class="ptree"><div class="pnode pm">Candidate A: Mnesia disk_log for persistent messages</div>
+      <div class="prow"><div class="pnode">transaction per write</div><div class="pnode">generic term format</div></div></div>`,
+    cap:`<b>Just use what's already there.</b> Mnesia already exists for metadata — route message bodies through it too. Rejected fast: Mnesia's transaction manager and generic Erlang term serialization add overhead per write that has nothing to do with "append these bytes," and its disk table format wasn't built for large, high-churn binary blobs. This is literally what RabbitMQ 1.0 did, and the 2009 rewrite exists because of exactly this problem.` },
+  { stage:`<div class="ptree"><div class="pnode pm">Candidate B: one file per queue</div>
+      <div class="prow"><div class="pnode crash">fanout ×5 queues</div><div class="pnode crash">5 copies on disk</div></div></div>`,
+    cap:`<b>Fine — skip Mnesia, but keep it simple: one append-only file per queue.</b> Better throughput (pure sequential append), but a message published to a fanout exchange bound to five queues gets written to disk <i>five separate times</i> — once per queue's file — because each queue's file only knows about its own messages. For high fanout topologies this multiplies both write I/O and disk usage by the fanout factor, for no benefit.` },
+  { stage:`<div class="ptree"><div class="pnode new">Candidate C: shared store (keyed by msg id) + per-queue index</div>
+      <div class="prow"><div class="pnode">msg written ONCE</div><div class="pnode">5 index entries, refcount=5</div></div></div>`,
+    cap:`<b>Separate what was published from where each copy stands.</b> One shared, append-only, reference-counted store holds the actual bytes once, regardless of fanout. Each queue keeps only a small index of references — message id plus publish/deliver/ack state — into that shared store. Fanout to five queues costs one message-store write and five cheap index entries. This is the shape RabbitMQ actually ships (§7, §8).` }
+]);
+
+/* ============================================================
+   3. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  mnesia: { name:"Mnesia / Khepri tables", file:"deps/rabbit/src/rabbit_mnesia.erl · rabbit_khepri.erl",
+    body:`Holds exchange, queue, and binding <b>definitions</b> — the small, structured, transactional metadata this chapter's split (§2) pulled out of the message path entirely. Survives restart for durable objects because it's itself a replicated, disk-backed store; recreated empty for anything transient. Khepri (Raft-backed) is the 4.0+ replacement, chosen for the same reasons quorum queues replaced mirrored classic queues — stronger, provable consistency than Mnesia's older replication model.` },
+  recoveryterms: { name:"rabbit_recovery_terms", file:"deps/rabbit/src/rabbit_recovery_terms.erl",
+    body:`A small per-vhost <code>dets</code> table recording, for each queue, whether the LAST shutdown was clean. A clean shutdown lets startup skip a full index rebuild for that queue and trust its last-known state; an unclean shutdown (crash, kill -9, power loss) forces the full recovery path §8 and §15 walk through — cross-checking every segment against the message store from scratch.` },
+  msgstore: { name:"msg_stores/vhosts/<hash>/msg_store_persistent/", file:"rabbit_msg_store.erl",
+    body:`The shared, append-only store for this vhost's persistent messages. One directory per vhost (hashed, since vhost names are arbitrary strings); a parallel <code>msg_store_transient/</code> directory exists too but is deliberately deleted on every clean startup, since transient messages were never meant to survive a restart at all.` },
+  rdq: { name:"*.rdq files", file:"rabbit_msg_store.erl",
+    body:`The actual bytes. Fixed-size-capped (default 16 MB via <code>msg_store_file_size_limit</code>), named by increasing integer, appended to sequentially. Never edited in place — only appended to while "current," and only ever rewritten wholesale by the GC's compaction pass (§8c), never patched.` },
+  gc: { name:"rabbit_msg_store_gc", file:"rabbit_msg_store_gc.erl",
+    body:`The background process that reclaims holes left by acked-and-dereferenced messages. Watches per-file valid-byte counts; when two adjacent files' combined valid data falls below a threshold, compacts them into one and deletes the other. This is why disk usage lags message count (§6, §8c, §11).` },
+  qindex: { name:"queues/<hash>/", file:"rabbit_queue_index.erl",
+    body:`One directory per classic queue (hashed name), holding that queue's own segment files. Nothing here duplicates message bodies except for small embedded messages below the configured threshold (§8b) — everything else is a reference into the shared message store above.` },
+  segment: { name:"segment .idx files (16384 entries)", file:"rabbit_queue_index.erl",
+    body:`Each segment file covers exactly 16,384 consecutive queue sequence ids. An entry records publish/deliver/ack state for one sequence id, plus either a message-id reference into the shared store or (below the embed threshold) the message inline. A pending in-memory journal batches writes before they hit a segment file, for the same batching reason §4 derives.` },
+  rawal: { name:"ra_log_wal (shared write-ahead log)", file:"deps/ra/src/ra_log_wal.erl",
+    body:`Every quorum queue on a node shares one physical write-ahead log process. Every Raft-log-entry append goes through here FIRST, fsynced, before the entry is considered committed-eligible — there is no batching-away of this fsync the way the classic-queue message store can, because Raft's safety proof depends on durable-before-acknowledged (§8e).` },
+  rasegs: { name:"per-server Ra log segments", file:"deps/ra/src/ra_log_segment_writer.erl",
+    body:`WAL entries are periodically rolled into per-Ra-server (i.e., per-quorum-queue-replica) segment files, analogous in spirit to classic queue index segments but serving a completely different consistency model — these represent one replica's view of a replicated log, not an independent source of truth.` },
+  rasnap: { name:"ra_snapshot", file:"deps/ra/src/ra_snapshot.erl",
+    body:`Periodically snapshots the Raft state machine's applied state so old log segments — everything before the snapshot point — can be deleted. Without snapshotting, a long-lived quorum queue's log would grow forever; §11's partition incident shows what happens when snapshotting is blocked.` }
+};
+(function(){
+  const cards = document.querySelectorAll(".acard");
+  const detail = el("arch-detail");
+  function show(key){
+    cards.forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+    const a = ARCH[key];
+    detail.innerHTML = `<div class="ad-name">${a.name}</div><div class="ad-file">${a.file}</div><div class="ad-sec">WHAT IT HOLDS</div><p>${a.body}</p>`;
+  }
+  cards.forEach(c=> c.onclick = ()=> show(c.dataset.p));
+  show("msgstore");
+})();
+
+/* ============================================================
+   4. DECK: publish traced through msg store (§8a)
+   ============================================================ */
+stepper("deckStore", [
+  { stage:`<div class="ptree"><div class="pnode pm">Publisher → rabbit_channel</div><div class="pnode">delivery_mode=2, durable queue+exchange</div></div>`,
+    cap:`<b>All three conditions hold.</b> The channel hands the message to the queue process, which recognizes it must be persisted and calls into <code>rabbit_msg_store:write/3</code>.` },
+  { stage:`<div class="ptree"><div class="pnode new">write/3 appends to CURRENT .rdq file</div><div class="pnode">offset recorded, no fsync yet</div></div>`,
+    cap:`<b>The bytes land immediately — but not durably yet.</b> The write is a plain append to the current file's in-flight buffer. This is fast (no per-message disk barrier) and is exactly the batching principle from §4.` },
+  { stage:`<div class="ptree"><div class="pnode new">ETS index: {MsgId → File, Offset, Size, RefCount=1}</div></div>`,
+    cap:`<b>The index makes the message findable in O(1).</b> Any future read for this message id is one ETS lookup plus one <code>pread</code> at the recorded offset — no scanning.` },
+  { stage:`<div class="ptree"><div class="pnode pm">fsync timer fires (batch interval elapsed)</div><div class="pnode new">confirm sent to publisher</div></div>`,
+    cap:`<b>Only now is the message actually durable</b> — and only now does the publisher's confirm arrive. This is why confirms are asynchronous: the broker deliberately delays them to batch the disk flush across many messages, trading a little latency for a lot of throughput (§4, §10).` },
+  { stage:`<div class="ptree"><div class="pnode crash">Fanout to 4 more queues</div><div class="pnode new">RefCount → 5, ZERO extra bytes written</div></div>`,
+    cap:`<b>The payoff of content-addressing by message id.</b> Four more queues reference the exact same stored bytes; only the ETS refcount changes. This is precisely what candidate B in §5 could not do.` }
+]);
+
+/* ============================================================
+   5. EMBED THRESHOLD SLIDER (§8b)
+   ============================================================ */
+(function(){
+  const embed = el("embed-slider"), msz = el("msz-slider");
+  const embedVal = el("embed-val"), mszVal = el("msz-val");
+  const vis = el("embed-vis"), note = el("embed-note");
+  function render(){
+    const t = +embed.value, m = +msz.value;
+    embedVal.textContent = t + " B"; mszVal.textContent = m + " B";
+    const inline = m <= t;
+    vis.innerHTML = `<div class="rdqrow">
+        <div class="rdqfile ${inline?'':'active'}"><div class="rdq-t">msg store</div>
+          <div class="rdq-fill"><div class="rdq-bar" style="height:${inline?8:70}%"></div></div>
+          <div class="rdq-pct">${inline?'not used':'message body here'}</div></div>
+        <div class="rdqfile ${inline?'active':''}"><div class="rdq-t">queue index segment</div>
+          <div class="rdq-fill"><div class="rdq-bar" style="height:${inline?70:20}%"></div></div>
+          <div class="rdq-pct">${inline?'message embedded inline':'msg id reference only'}</div></div>
+      </div>`;
+    note.textContent = inline
+      ? `${m} B ≤ ${t} B threshold → this message is embedded directly in its queue index segment entry, skipping the message store round trip entirely.`
+      : `${m} B > ${t} B threshold → this message is written to the shared message store; the queue index holds only a reference (message id + delivery state).`;
+  }
+  embed.oninput = render; msz.oninput = render; render();
+})();
+
+/* ============================================================
+   6. GC COMPACTION SLIDER + CHART (§8c)
+   ============================================================ */
+(function(){
+  const ackrate = el("gc-ackrate"), thresh = el("gc-thresh");
+  const ackrateVal = el("gc-ackrate-val"), threshVal = el("gc-thresh-val");
+  const filesEl = el("gc-files"), note = el("gc-note");
+  const canvas = el("gc-canvas");
+  let diskHist = [], msgHist = [], t = 0;
+  const NFILES = 6;
+  let files = Array.from({length:NFILES}, (_,i)=>({ total:100, valid: i<2?90:0, gone:false }));
+
+  function step(){
+    const rate = +ackrate.value, th = (+thresh.value)/100;
+    // simulate: files fill up with publishes, then acks create holes proportional to rate
+    files.forEach((f,i)=>{
+      if (f.gone) return;
+      if (f.valid < f.total && Math.random() < 0.4) f.valid = Math.min(f.total, f.valid + 8);
+      const ackHoles = (rate/2000) * 6;
+      f.valid = Math.max(0, f.valid - ackHoles);
+    });
+    // compaction pass: check adjacent pairs
+    for (let i=0;i<files.length-1;i++){
+      const a = files[i], b = files[i+1];
+      if (a.gone || b.gone) continue;
+      if ((a.valid + b.valid) < th*a.total && (a.valid+b.valid) > 0){
+        a.valid = a.valid + b.valid; a.total = 100; b.gone = true; b.valid = 0;
+      }
+    }
+    const diskUsed = files.reduce((s,f)=> s + (f.gone?0:f.total), 0);
+    const liveMsgs = files.reduce((s,f)=> s + (f.gone?0:f.valid), 0);
+    diskHist.push(diskUsed); msgHist.push(liveMsgs);
+    if (diskHist.length>150){ diskHist.shift(); msgHist.shift(); }
+    render();
+  }
+  function render(){
+    ackrateVal.textContent = ackrate.value + "/s";
+    threshVal.textContent = thresh.value + "%";
+    filesEl.innerHTML = files.map((f,i)=>{
+      if (f.gone) return `<div class="rdqfile gone"><div class="rdq-t">${i}.rdq</div><div class="rdq-fill"></div><div class="rdq-pct">deleted</div></div>`;
+      const pct = Math.round((f.valid/f.total)*100);
+      return `<div class="rdqfile"><div class="rdq-t">${i}.rdq</div>
+        <div class="rdq-fill"><div class="rdq-bar" style="height:${pct}%"></div></div>
+        <div class="rdq-pct">${pct}% valid</div></div>`;
+    }).join("");
+    const canv = canvas.getContext("2d"), W=canvas.width, H=canvas.height;
+    canv.clearRect(0,0,W,H);
+    const maxV = Math.max(100, ...diskHist);
+    function plot(hist, color){
+      canv.strokeStyle = color; canv.lineWidth = 2; canv.beginPath();
+      hist.forEach((v,i)=>{
+        const x = (i/149)*W, y = H - (v/maxV)*H*0.9 - 5;
+        i===0 ? canv.moveTo(x,y) : canv.lineTo(x,y);
+      });
+      canv.stroke();
+    }
+    plot(diskHist, "#ff9f43"); plot(msgHist, "#a78bfa");
+    note.textContent = `Disk bytes used (orange) vs live message bytes (purple) — watch disk usage step down only when a compaction pass fires, always after live usage has already dropped.`;
+  }
+  ackrate.oninput = render; thresh.oninput = render;
+  setInterval(step, 220);
+  render();
+})();
+
+/* ============================================================
+   7. PERF CHART (§10)
+   ============================================================ */
+(function(){
+  const rate = el("perf-rate"), interval = el("perf-interval"), quorum = el("perf-quorum");
+  const rateVal = el("perf-rate-val"), intervalVal = el("perf-interval-val");
+  const canvas = el("perf-chart"), note = el("perf-note");
+  let quorumOn = true;
+  quorum.classList.add("on");
+  quorum.onclick = ()=>{ quorumOn = !quorumOn; quorum.classList.toggle("on", quorumOn); render(); };
+  function render(){
+    const r = +rate.value, iv = +interval.value;
+    rateVal.textContent = r + "/s"; intervalVal.textContent = iv + " ms";
+    const ctx = canvas.getContext("2d"), W=canvas.width, H=canvas.height;
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle = "#1c2330"; ctx.beginPath();
+    for(let gx=0; gx<=W; gx+=W/10){ ctx.moveTo(gx,0); ctx.lineTo(gx,H); }
+    for(let gy=0; gy<=H; gy+=H/6){ ctx.moveTo(0,gy); ctx.lineTo(W,gy); }
+    ctx.stroke();
+    const N = 80;
+    let thr=[], lat=[];
+    for(let i=0;i<N;i++){
+      const rr = (i/N)*60000;
+      const fsyncsPerSec = quorumOn ? rr : Math.max(1, 1000/iv);
+      const fsyncLatency = quorumOn ? 3 : 3; // ms floor per fsync
+      const diskCeiling = quorumOn ? 15000 : 55000; // msgs/s ceiling given fsync floor
+      const achievable = Math.min(rr, diskCeiling);
+      const p99 = quorumOn ? (fsyncLatency + rr/diskCeiling*8) : (iv + fsyncLatency + rr/diskCeiling*4);
+      thr.push(achievable); lat.push(p99);
+    }
+    const maxThr = 60000, maxLat = Math.max(...lat, 40);
+    function plot(arr, max, color){
+      ctx.strokeStyle=color; ctx.lineWidth=2.5; ctx.beginPath();
+      arr.forEach((v,i)=>{ const x=(i/(N-1))*W, y=H-(v/max)*H*0.92-4; i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); });
+      ctx.stroke();
+    }
+    plot(thr, maxThr, "#ff9f43");
+    plot(lat, maxLat, "#f25c54");
+    const cx = (r/60000)*W;
+    ctx.strokeStyle = "#e8b23d"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke(); ctx.setLineDash([]);
+    note.textContent = quorumOn
+      ? `Quorum queue mode: every accepted write needs a Raft-durable fsync, so throughput plateaus earlier and latency climbs faster as rate increases.`
+      : `Classic queue mode: fsyncs are batched on a ${iv} ms timer, so throughput scales much further before the disk becomes the bottleneck — at the cost of up to one batch interval of confirm latency.`;
+  }
+  rate.oninput = render; interval.oninput = render; render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A team declares their queue durable and sets delivery_mode=2 on every publish, yet loses messages on restart. What's the most likely third piece they missed?", hint:"there are three independent conditions, not two",
+    a:"The exchange the messages were published through almost certainly wasn't declared durable. A transient exchange is recreated empty on restart — no bindings — so even though the queue and message survive, nothing routes new (or, if the queue itself also didn't survive some other way) old messages into it. All three of exchange durability, queue durability, and delivery_mode=2 must hold simultaneously; teams very commonly get two of three right and never notice the third because the UI shows the queue's durable padlock and nothing draws attention to the exchange." },
+  { lvl:"SENIOR", q:"Why doesn't RabbitMQ fsync every persistent message individually?", hint:"do the arithmetic on fsync latency vs required throughput",
+    a:"A single fsync commonly costs low single-digit milliseconds even on fast storage, capping single-writer throughput at a few hundred messages/second if paid per message — far below real production rates of tens of thousands per second. Instead, writes are batched: fsync fires on a timer interval or when a buffer threshold fills, and publisher confirms are held back until the fsync covering that message actually completes. This trades a small amount of confirm latency for throughput that isn't bottlenecked by physical disk-flush latency." },
+  { lvl:"STAFF", q:"You purge a huge backlog queue and disk usage doesn't drop for nearly an hour. Is this a bug? Explain the mechanism.", hint:"acking marks garbage; it doesn't reclaim space",
+    a:"Not a bug. Acking a message only decrements its reference count in the message store's index to zero, marking the bytes as garbage — it does not free disk space. Space is only reclaimed when the background GC's compaction pass finds two adjacent .rdq files whose combined VALID data has fallen below a configured threshold, at which point it rewrites the survivors into one file and deletes the other. If the purged messages were spread thinly across many otherwise-full files, no pair may cross that threshold for a long time, so disk usage correctly lags the message count — sometimes substantially." },
+  { lvl:"STAFF", q:"Why can quorum queues not get the same 'batch fsync and confirm later' optimization that classic queues get?", hint:"what does Raft's safety proof actually require?",
+    a:"Raft's correctness depends on the precise definition that an entry is 'committed' once a majority of replicas have DURABLY persisted it — not merely received it. If a quorum queue batched fsyncs and only flushed periodically, a leader could acknowledge a write to a client, then crash before that write was actually durable, and a new leader elected from replicas that never durably had the entry would silently lose committed data — breaking the exact guarantee quorum queues exist to provide. So each accepted Raft log entry must be fsynced to the shared WAL before it's eligible to count toward a commit, trading some throughput for a strictly stronger durability guarantee than classic queues offer." },
+  { lvl:"STAFF", q:"Classic Queue v2 (3.10) moved from a shared, cross-queue message store to a per-queue store. What did that change trade away, and why was it worth it?", hint:"think about what the shared store's refcounting bought — and what it cost operationally",
+    a:"The original shared store's chief benefit was deduplication: a message fanned out to many queues was stored once, referenced many times. The cost was that garbage collection and disk-usage accounting became a cross-queue concern — one queue's slow consumer could hold references that block compaction of files other, fully-drained queues also happen to share, making per-queue disk usage hard to reason about and occasionally surprising. CQv2's per-queue store gives up cross-queue deduplication (worse for high-fanout topologies) in exchange for isolated, predictable per-queue memory and disk accounting — a queue's disk footprint depends only on its own messages and its own consumers, which in practice was judged the better tradeoff for typical workloads." },
+  { lvl:"PRINCIPAL", q:"Design review: an on-call engineer proposes eliminating disk_free_limit alarms by 'just adding more disk.' Steelman the alarm's real purpose and explain what it does NOT protect against.", hint:"what specifically is the alarm preventing, mechanically?",
+    a:"disk_free_limit exists because, past a certain point of remaining free space, continuing to accept new persistent writes actively risks the durability of ALL persistent data — an out-of-space condition mid-write to the message store or queue index could corrupt in-progress structures, not just fail cleanly. Tripping the alarm blocks publishers cluster-wide specifically to stop digging the hole deeper. Adding more disk raises the ceiling but doesn't remove the need for the alarm — any finite disk can still be exhausted by an unbounded backlog (e.g., a permanently stalled consumer on a durable queue), and the alarm is the last line of defense against silently corrupting the message store under that exact scenario, not a workaround for capacity planning." },
+  { lvl:"PRINCIPAL", q:"A long network partition isolates one node hosting several busy quorum queues. Its disk usage climbs steadily with no obvious application-level cause. Diagnose the mechanism and the operational lesson.", hint:"what does a Raft log need before it can be trimmed?",
+    a:"The isolated node keeps accepting local WAL writes for Raft log entries it cannot get committed by a majority while partitioned, and — critically — it cannot snapshot away old log entries, because a snapshot can only discard entries known to be durably replicated to enough of the cluster, which a minority-side node cannot verify while cut off. The log simply grows for the duration of the partition. The operational lesson: any Raft-backed (or generally, consensus-backed) storage system pays for its partition-tolerance guarantee in local log growth on the minority side, so disk capacity for quorum queues must be provisioned for the longest partition you're willing to tolerate, not just for steady-state throughput." }
+]);
+
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 12's capstone will build a toy broker with real credit-based flow control between queue and channel. Predict: does the message store / queue index split you just learned map onto anything in that toy engine, or is it purely a real-RabbitMQ concern the toy can skip?", hint:"think about what 'durability' would mean inside a JavaScript object graph" },
+  { lvl:"THINK", q:"You now know quorum queues fsync per committed entry while classic queues batch. If you were designing a NEW queue type from scratch today, what third point on that spectrum might you choose, and what would you give up to get it?", hint:"is 'batch, but only among entries that are already individually acceptable to lose if truly simultaneous' a real design a system could make?" },
+  { lvl:"THINK", q:"This chapter treated 'disk usage lags message count' as correct, expected behavior rather than a bug. Chapter 12's Kafka-vs-RabbitMQ comparison will ask you to reason about retention. Predict: does a Kafka partition have anything analogous to 'disk usage lagging' — and if not, why is the comparison not even meaningful for a log that isn't meant to shrink on consumption at all?" }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A message is published with delivery_mode=2 to a durable queue bound to a NON-durable exchange. What happens on restart?",
+    opts:[ "The message survives; delivery_mode and queue durability are the only conditions that matter",
+           "The exchange is recreated empty with no bindings; the message's fate depends on whether the queue itself is independently reachable, but new publishes silently fail to route",
+           "The broker refuses to start until the exchange is redeclared durable",
+           "RabbitMQ automatically upgrades the exchange to durable the first time a persistent message passes through it" ],
+    a:1,
+    why:"All three conditions — exchange durable, queue durable, delivery_mode=2 — are independent. A non-durable exchange's definition (including its bindings) is not preserved in the metadata store, so it's recreated empty on restart. Existing durably-stored messages already IN the queue are unaffected by the exchange (they don't route through it again), but any binding-dependent routing going forward is broken with no error raised — this is precisely the 'got 2 of 3' failure mode from §1 and §11." },
+  { q:"Why does the message store use reference counting keyed by message id instead of storing a copy per queue?",
+    opts:[ "To make deletion simpler", "So a message fanned out to N queues is written to disk once, not N times, and is only garbage-collected once every queue has acked it",
+           "Because Erlang processes cannot each open their own file handles", "To support message priority" ],
+    a:1,
+    why:"Content-addressing by message id is what lets a fanout exchange bound to five queues store the message body exactly once; each queue's index holds only a reference plus its own delivery state, and the refcount only reaches zero — making the bytes eligible for GC — once every referencing queue has acked. Storing N copies (candidate B in §5) was explicitly rejected for wasting both write I/O and disk space proportional to fanout." },
+  { q:"Why does disk usage often stay flat for a while after acking a large batch of messages?",
+    opts:[ "It's a bug that should be reported", "Acking only decrements a reference count to zero (marking bytes as garbage); actual space is reclaimed only when the background GC's compaction threshold is crossed for the specific files involved",
+           "RabbitMQ caches acked messages for potential redelivery", "Because the queue index hasn't been flushed yet" ],
+    a:1,
+    why:"The message store is append-only and never edits files in place. Acking makes a message's bytes garbage in bookkeeping only; the actual disk bytes are freed only when rabbit_msg_store_gc compacts a pair of files whose combined valid data has fallen below the configured threshold. If your acked messages are spread thinly, no pair may cross that threshold soon, and the lag can be substantial — this is expected, not a bug (§6, §8c, §11)." },
+  { q:"Why must a quorum queue fsync its write-ahead log on every accepted write, unlike a classic queue's batched approach?",
+    opts:[ "Because Ra always fsyncs regardless of correctness requirements, as a conservative default",
+           "Because Raft's safety guarantee is defined in terms of a majority of replicas having DURABLY persisted an entry before it counts as committed — batching would let a leader acknowledge data that could be lost on crash before a new leader observes it",
+           "Because quorum queues store larger messages on average", "Because classic queues don't support replication at all" ],
+    a:1,
+    why:"Raft's correctness proof hinges on 'committed' meaning durably persisted by a majority — not merely received. If fsyncs were batched and delayed, a write could be acknowledged to a client and then genuinely lost if the node crashed before the batched fsync ran, breaking the exact guarantee that makes quorum queues worth their cost. This is a correctness requirement, not a conservative default." },
+  { q:"What does queue_index_embed_msgs_below actually control?",
+    opts:[ "The maximum size of any message RabbitMQ will accept", "The size threshold below which a message's full body is stored inline in its queue index segment entry instead of in the shared message store",
+           "The number of messages kept in memory before spilling to disk", "The compaction threshold used by the GC" ],
+    a:1,
+    why:"It's a space/time tradeoff on where a small message's body physically lives: below the threshold (default 4096 bytes), the queue index embeds the full serialized message directly in its segment entry, skipping the message store round trip (an ETS lookup, a separate file write, refcount bookkeeping) that isn't worth paying for a few hundred bytes. Above the threshold, only a message-id reference is stored in the index, and the body lives in the shared store as usual." },
+  { q:"During recovery, a queue index segment references a message id that the message store reports it does not contain. What is the correct interpretation?",
+    opts:[ "This is always data corruption requiring manual repair", "The message was never durably written to the store before the crash (e.g., a torn write), and the index entry referencing it must be discarded — it was never truly durable despite being referenced",
+           "The broker should recreate the missing message with empty content to preserve the sequence id", "This can never happen because writes to both structures are atomic together" ],
+    a:1,
+    why:"Recovery explicitly does NOT trust the queue index alone — it cross-checks every referenced message id against the actual message store, because a crash can leave a torn or missing message-store write even if the index entry referencing it made it to disk. When the cross-check fails, the correct behavior is to treat that entry as not durable and discard it, exactly as rabbit_queue_index's recovery path does; there is no atomic two-structure write guaranteeing they always agree, which is precisely why the cross-check exists at all." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could write the recovery cross-check yourself.":correct>=4?"solid — reread the explanations you missed.":"re-run §8's decks and the crash lab in §15 — this clicks fast once you crash it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz (§14) */
+(function(){
+  const CORRECT = [
+    "Node process starts; reads rabbit_recovery_terms for each vhost/queue",
+    "For any queue NOT marked as a clean shutdown: full index rebuild begins",
+    "Each queue index segment file is read and parsed in sequence-id order",
+    "A torn/partial trailing record (if any) is detected and discarded",
+    "Every referenced message id is cross-checked against the message store",
+    "References the store cannot confirm are dropped from the index",
+    "Refcounts in the message store's ETS index are rebuilt from surviving references",
+    "Queue processes are started with their now-consistent index and store state",
+    "Broker begins accepting connections; consumers may resume delivery"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real recovery path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   10. SIMULATOR — CRASH LAB (§15)
+   ============================================================ */
+(function(){
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  const cfg = { exdur:true, qdur:true, dmode:true, confirm:true };
+  ["exdur","qdur","dmode","confirm"].forEach(k=>{
+    el("cfg-"+k).onclick = ()=>{ cfg[k] = !cfg[k]; el("cfg-"+k).classList.toggle("on", cfg[k]); };
+  });
+
+  let msgs = []; // {id, fsynced, acked}
+  let nextId = 1;
+  let files = [ {id:0, total:0, valid:0} ];
+  let brokerUp = true;
+  let truthSeen = {};
+  let counters = { pub:0, survived:0, lost:0 };
+
+  function key(){ return `${cfg.exdur?1:0}${cfg.qdur?1:0}${cfg.dmode?1:0}`; }
+  function willSurvive(){ return cfg.exdur && cfg.qdur && cfg.dmode; }
+
+  function publish(n){
+    if (!brokerUp){ log("FATAL","broker is down — restart it first"); return; }
+    for (let i=0;i<n;i++){
+      const id = nextId++;
+      const persisted = cfg.dmode; // only delivery_mode=2 hits the store at all
+      const fsynced = persisted && cfg.confirm; // confirm implies we waited for the flush in this sim
+      msgs.push({ id, persisted, fsynced, acked:false, qdur: cfg.qdur, exdur: cfg.exdur });
+      if (persisted){
+        let f = files[files.length-1];
+        f.total += 5; if (fsynced) f.valid += 5;
+        if (f.total >= 100) files.push({id: files.length, total:0, valid:0});
+      }
+    }
+    counters.pub += n;
+    log("LOG", `published ${n} messages (exchange durable=${cfg.exdur}, queue durable=${cfg.qdur}, delivery_mode=${cfg.dmode?2:1}, confirms=${cfg.confirm?"ON":"OFF"})`);
+    render();
+  }
+  function ackHalf(){
+    const live = msgs.filter(m=>!m.acked);
+    live.slice(0, Math.ceil(live.length/2)).forEach(m=>{ m.acked = true; });
+    // simulate GC compaction opportunistically
+    for (let i=0;i<files.length-1;i++){
+      const a=files[i], b=files[i+1];
+      if (a.valid+b.valid < 60 && (a.valid+b.valid)>0 && a.total>0 && b.total>0){
+        a.valid=a.valid+b.valid*0.6; a.total=Math.max(a.total,60); b.total=0; b.valid=0;
+      }
+    }
+    log("OK", "acked half of all outstanding messages — bytes marked garbage, disk not yet reclaimed");
+    render();
+  }
+  function cleanStop(){
+    if (!brokerUp){ log("WARN","already down"); return; }
+    brokerUp = false;
+    log("LOG", "SIGTERM received — smart shutdown: flush pending writes, checkpoint, exit cleanly");
+    el("reco-panel").innerHTML = "Clean shutdown recorded in rabbit_recovery_terms. Next boot will trust existing index state (fast path, no full rebuild needed).";
+    el("sim-phase").textContent = "STOPPED (clean)";
+    render();
+  }
+  function killNine(){
+    if (!brokerUp){ log("WARN","already down"); return; }
+    brokerUp = false;
+    log("FATAL", "SIGKILL — no cleanup, no checkpoint, recovery_terms NOT updated to 'clean'");
+    el("reco-panel").innerHTML = "Unclean shutdown detected at next boot. Full recovery path required: every queue index segment will be parsed and cross-checked against the message store.";
+    el("sim-phase").textContent = "STOPPED (killed)";
+    render();
+  }
+  function restart(){
+    if (brokerUp){ log("WARN","broker is already up"); return; }
+    log("LOG", "booting… reading rabbit_recovery_terms for each queue");
+    const survivors = msgs.filter(m => m.exdur && m.qdur && m.persisted && m.fsynced);
+    const lostCount = msgs.length - survivors.length;
+    counters.survived = survivors.length;
+    counters.lost = lostCount;
+    msgs = survivors;
+    files = survivors.length ? [{id:0,total:Math.min(100,survivors.length*5),valid:Math.min(100,survivors.length*5)}] : [{id:0,total:0,valid:0}];
+    brokerUp = true;
+    el("sim-phase").textContent = "READY";
+    log("OK", `recovery complete: ${survivors.length} message(s) recovered, ${lostCount} lost`);
+    const k = key();
+    truthSeen[k] = { exdur:cfg.exdur, qdur:cfg.qdur, dmode:cfg.dmode, survives: willSurvive() };
+    render();
+  }
+  function renderTruth(){
+    const grid = el("truth-grid");
+    const combos = Object.keys(truthSeen);
+    if (!combos.length){ grid.innerHTML = `<div style="color:var(--dim);font-family:var(--mono);font-size:12px;grid-column:1/-1">no combinations tried yet — publish, crash, and restart to fill this in</div>`; return; }
+    grid.innerHTML = combos.map(k=>{
+      const t = truthSeen[k];
+      return `<div class="tcell ${t.survives?'survives':'lost'}">
+        <div class="tc-flags">exch:${t.exdur?"dur":"trans"} · queue:${t.qdur?"dur":"trans"} · dmode:${t.dmode?"2":"1"}</div>
+        <div class="tc-res">${t.survives?"SURVIVES":"LOST"}</div></div>`;
+    }).join("");
+  }
+  function renderDisk(){
+    el("disk-files").innerHTML = files.map(f=>{
+      const pct = f.total ? Math.round((f.valid/f.total)*100) : 0;
+      return `<div class="rdqfile ${f===files[files.length-1]?'active':''}"><div class="rdq-t">${f.id}.rdq</div>
+        <div class="rdq-fill"><div class="rdq-bar" style="height:${pct}%"></div></div>
+        <div class="rdq-pct">${f.total?pct+"% valid":"empty"}</div></div>`;
+    }).join("");
+    el("disk-note").textContent = `Orange fill = still-valid (unacked or unreferenced-nowhere-else) bytes. Gaps mean acked-but-not-yet-compacted messages.`;
+  }
+  function render(){
+    el("cnt-pub").textContent = counters.pub;
+    el("cnt-survived").textContent = counters.survived;
+    el("cnt-lost").textContent = counters.lost;
+    renderTruth(); renderDisk();
+  }
+
+  el("sim-publish").onclick = ()=> publish(20);
+  el("sim-ack").onclick = ackHalf;
+  el("sim-clean").onclick = cleanStop;
+  el("sim-kill").onclick = killNine;
+  el("sim-restart").onclick = restart;
+
+  log("OK", "broker ready. Toggle the four flags, publish, crash, and restart to fill in the truth table.");
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["rmq-11"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#ff9f43"><a class="cn-btn" href="rmq-10.html"><span>←</span><span><span class="cn-lbl">PREV · CH 10</span><span class="cn-ttl">Clustering, Federation & Shovel</span></span></a><div class="cn-mid"><a class="cn-home" href="course-rabbitmq.html">☰ RabbitMQ Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="rmq-01.html">CH 01 · Genesis: AMQP & Why Erlang</option><option value="rmq-02.html">CH 02 · Connections, Channels & the Frame Protocol</option><option value="rmq-03.html">CH 03 · Exchanges, Bindings & Routing Algorithms</option><option value="rmq-04.html">CH 04 · Classic Queues: The Queue Process Internals</option><option value="rmq-05.html">CH 05 · Delivery: ACK, NACK, Confirms & Prefetch</option><option value="rmq-06.html">CH 06 · Quorum Queues: Raft Inside the Broker</option><option value="rmq-07.html">CH 07 · Streams: The Log Comes to RabbitMQ</option><option value="rmq-08.html">CH 08 · Dead Lettering, TTL & Priority Queues</option><option value="rmq-09.html">CH 09 · Flow Control & Memory Management</option><option value="rmq-10.html">CH 10 · Clustering, Federation & Shovel</option><option value="rmq-11.html" selected>CH 11 · Persistence, Disk Layout & Recovery</option><option value="rmq-12.html">CH 12 · Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</option></select><span class="cn-prog">11 / 12</span></div><a class="cn-btn" href="rmq-12.html"><span><span class="cn-lbl">NEXT · CH 12</span><span class="cn-ttl">Capstone: Mini Broker + Kafka vs RabbitMQ, Settled</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

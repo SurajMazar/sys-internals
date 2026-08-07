@@ -1,0 +1,134 @@
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is calibrated to the depth a Staff-level systems interview, or a
+  lightning-dev mailing-list reply, actually expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · CODE WALKTHROUGH</div>
+  <h2 class="sec">Where the enforcement actually lives</h2>
+  <p>Lightning itself is not in Bitcoin Core — it is a separate peer-to-peer protocol (specified by the BOLTs and
+  implemented by LND, Core Lightning, Eclair, and others) that only ever touches the base layer at open and close.
+  What <i>is</i> in Core, and load-bearing for every claim this chapter makes, are the two opcodes that make
+  timelocked, revocable outputs enforceable by consensus rather than by promise: <code>OP_CHECKSEQUENCEVERIFY</code>
+  (the relative delay on <code>to_local</code>) and <code>OP_CHECKLOCKTIMEVERIFY</code> (the absolute HTLC timeout).
+  Read those first, then the BOLT #3 script text they enforce.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">bitcoin/src/</span></div>
+<div>├── <span class="dir">script/</span></div>
+<div>│   ├── <span class="fhl">● interpreter.cpp</span> <span class="fnote">— CHECKSEQUENCEVERIFY / CHECKLOCKTIMEVERIFY opcode handlers (BIP68/112/65/113)</span></div>
+<div>│   ├── script.h <span class="fnote">— opcode enum, CScript builder helpers</span></div>
+<div>│   └── sign.cpp <span class="fnote">— witness construction for P2WSH multisig + timelocked scripts</span></div>
+<div>├── <span class="dir">policy/</span>rbf.cpp <span class="fnote">— replace-by-fee eligibility (BIP125); the surface §11's replacement-cycling attack exploits</span></div>
+<div>└── <span class="dir">consensus/</span>tx_verify.cpp <span class="fnote">— LockTime/Sequence validation against chain tip (nLockTime, BIP68 relative-time rules)</span></div>
+<div style="margin-top:10px"><span class="dir">lightning/bolts/</span> <span class="fnote">(specification, not Core — implemented independently by LND/CLN/Eclair)</span></div>
+<div>├── <span class="fhl">● 03-transactions.md</span> <span class="fnote">— commitment tx layout, HTLC scripts, shachain (this section)</span></div>
+<div>├── 02-peer-protocol.md <span class="fnote">— channel open/update/close message flow</span></div>
+<div>├── <span class="fhl">● 04-onion-routing.md</span> <span class="fnote">— Sphinx packet construction, the 1,300-byte payload</span></div>
+<div>└── 07-routing-gossip.md <span class="fnote">— channel_announcement / channel_update flooding</span></div>
+  </div></div>
+
+  <p>First, the two consensus primitives. Both are soft-fork opcodes — before their respective BIPs they were
+  <code>OP_NOP3</code>/<code>OP_NOP2</code>, no-ops that scripts could include harmlessly; the soft fork redefined
+  them to fail the script unless a condition holds, which is why old, non-upgraded nodes still accept these
+  transactions (they see a no-op) while upgraded nodes enforce the new rule:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C++</span><span>script/interpreter.cpp — OP_CHECKSEQUENCEVERIFY (simplified, faithful to structure)</span></div>
+    <pre><span class="k">case</span> OP_CHECKSEQUENCEVERIFY:
+{
+    <span class="c">// BIP112: the top stack item is the relative-locktime an input</span>
+    <span class="c">// MUST have waited before this script can succeed -- e.g. Lightning's</span>
+    <span class="c">// to_self_delay guarding a commitment's to_local output.</span>
+    <span class="k">if</span> (!(flags & SCRIPT_VERIFY_CHECKSEQUENCEVERIFY)) {
+        <span class="k">break</span>; <span class="c">// pre-fork: behaves as OP_NOP3, always succeeds</span>
+    }
+    <span class="k">if</span> (stack.<span class="f">size</span>() &lt; <span class="n">1</span>)
+        <span class="k">return</span> <span class="f">set_error</span>(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+    <span class="k">const</span> CScriptNum nSequence(stacktop(-<span class="n">1</span>), fRequireMinimal, <span class="n">5</span>);
+    <span class="k">if</span> (nSequence &lt; <span class="n">0</span>)
+        <span class="k">return</span> <span class="f">set_error</span>(serror, SCRIPT_ERR_NEGATIVE_LOCKTIME);
+    <span class="k">if</span> (nSequence.<span class="f">GetInt64</span>() & CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG)
+        <span class="k">break</span>; <span class="c">// script author explicitly opted out of the check</span>
+
+    <span class="c">// checker delegates to the actual spending input's nSequence field</span>
+    <span class="c">// and the UTXO's confirmation depth -- this is where "has enough</span>
+    <span class="c">// blocks actually passed since this output confirmed" gets decided.</span>
+    <span class="k">if</span> (!<span class="f">checker</span>.<span class="f">CheckSequence</span>(nSequence))
+        <span class="k">return</span> <span class="f">set_error</span>(serror, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+    <span class="k">break</span>;
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C++</span><span>script/interpreter.cpp — OP_CHECKLOCKTIMEVERIFY (simplified)</span></div>
+    <pre><span class="k">case</span> OP_CHECKLOCKTIMEVERIFY:
+{
+    <span class="c">// BIP65: the top stack item is an ABSOLUTE block height or</span>
+    <span class="c">// timestamp before which this script cannot succeed -- Lightning's</span>
+    <span class="c">// HTLC timeout branch: "Bob can reclaim after block T if Carol</span>
+    <span class="c">// never revealed the preimage."</span>
+    <span class="k">if</span> (!(flags & SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)) {
+        <span class="k">break</span>; <span class="c">// pre-fork: OP_NOP2, always succeeds</span>
+    }
+    <span class="k">const</span> CScriptNum nLockTime(stacktop(-<span class="n">1</span>), fRequireMinimal, <span class="n">5</span>);
+    <span class="k">if</span> (nLockTime &lt; <span class="n">0</span>)
+        <span class="k">return</span> <span class="f">set_error</span>(serror, SCRIPT_ERR_NEGATIVE_LOCKTIME);
+    <span class="k">if</span> (!<span class="f">checker</span>.<span class="f">CheckLockTime</span>(nLockTime))
+        <span class="k">return</span> <span class="f">set_error</span>(serror, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+    <span class="k">break</span>; <span class="c">// note: this only VERIFIES -- it does not consume the</span>
+                <span class="c">// stack item, so scripts follow it with OP_DROP</span>
+}</pre>
+  </div>
+
+  <p>Now the scripts BOLT #3 actually builds from those two opcodes. This is the offered-HTLC witness script — the
+  one Alice's commitment holds, giving Bob two ways in and giving Alice one, exactly matching §8(c)'s derivation:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Script (BOLT #3)</span><span>offered_htlc_script — three spending branches, annotated</span></div>
+    <pre><span class="c"># Branch 1 (fastest path): remote node reveals the preimage and</span>
+<span class="c"># claims immediately -- this is Bob claiming from Alice's HTLC.</span>
+OP_DUP OP_HASH160 &lt;RIPEMD160<span class="f">(</span>revocationkey<span class="f">)</span>&gt; OP_EQUAL
+OP_IF
+    <span class="c"># Branch 0 (always available): counterparty proves it holds the</span>
+    <span class="c"># REVOCATION key for this exact commitment -- i.e. this state was</span>
+    <span class="c"># revoked and is being cheated with. Immediate, no delay, no HTLC</span>
+    <span class="c"># condition at all: revocation always wins.</span>
+    OP_CHECKSIG
+OP_ELSE
+    &lt;remote_htlcpubkey&gt; OP_SWAP OP_SIZE <span class="n">32</span> OP_EQUAL
+    OP_NOTIF
+        <span class="c"># Branch 2 (timeout path): NOT a 32-byte preimage on the stack --</span>
+        <span class="c"># must be Alice reclaiming after CLTV expiry.</span>
+        OP_DROP <span class="n">2</span> OP_SWAP &lt;local_htlcpubkey&gt; <span class="n">2</span> OP_CHECKMULTISIG
+    OP_ELSE
+        <span class="c"># Branch 3 (success path): a real 32-byte value was given --</span>
+        <span class="c"># verify it actually hashes to H before allowing the claim.</span>
+        OP_HASH160 &lt;RIPEMD160<span class="f">(</span>SHA256<span class="f">(</span>R<span class="f">)</span><span class="f">)</span>&gt; OP_EQUALVERIFY
+        OP_CHECKSIG
+    OP_ENDIF
+OP_ENDIF</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THIS WASN'T BUILT INTO BITCOIN CORE ITSELF</div>
+    <p>Three reasons, and they generalize to most Layer 2 design: <b>(1) iteration speed</b> — Lightning's protocol
+    has revised its transaction formats, added anchor outputs, and is still evolving PTLC support; a consensus
+    change to Bitcoin Core requires the entire network to upgrade, which takes years, while a BOLT revision only
+    needs the participating Lightning nodes to agree. <b>(2) minimality</b> — Core's job is to provide the smallest
+    stable set of primitives (timelocks, multisig, hash locks) that many different Layer 2 protocols can build on;
+    baking Lightning-specific logic into consensus would privilege one design over channel factories, statechains,
+    or whatever comes next. <b>(3) failure containment</b> — a bug in a Lightning implementation can lose funds in
+    channels using that implementation; a bug in Core's script interpreter is a critical vulnerability across every
+    Bitcoin holder simultaneously. Keeping the enforcement primitives generic and small in consensus, and the
+    actual protocol logic in independently-implemented, independently-upgradable software, is the same
+    minimal-trusted-computing-base instinct chapter 4's Script chapter argued for when explaining why loops were
+    excluded.</p>
+  </div>
+</section>
