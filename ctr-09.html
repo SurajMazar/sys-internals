@@ -1,0 +1,1816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-09 · The OCI Runtime Spec: runc, crun & config.json — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+  .eng-docker{color:var(--docker);font-weight:600}
+  .eng-podman{color:var(--podman);font-weight:600}
+  .chipd{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(36,150,237,.4);color:var(--docker);background:rgba(36,150,237,.08)}
+  .chipp{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(137,44,160,.4);color:var(--podman);background:rgba(137,44,160,.08)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames / bundle files */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc/lifecycle tree */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+  .chip.off2{opacity:.45;text-decoration:line-through}
+
+  /* memory map bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 09 / 16</b> · OCI RUNTIME SPEC</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Security</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 09</div>
+  <h1>The OCI Runtime Spec:<br><span class="grad">runc, crun & config.json</span></h1>
+  <p class="lead">Strip away <code>docker run</code> and <code>podman run</code> entirely and there is still a
+  working container underneath: a directory holding a root filesystem and one JSON file, handed to a small binary
+  that knows exactly four verbs. Everything Docker and Podman do on top — image pulls, networking, compose files,
+  pods — is orchestration bolted onto that one narrow, versioned contract. This chapter hand-writes the contract.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Hand-write a valid <code>config.json</code> bundle and launch it with <code>runc</code> or <code>crun</code> directly — no engine involved.</div>
+    <div class="obj"><b>You will understand</b>Why <code>create</code> and <code>start</code> are separate verbs, and exactly what a container process is doing in between.</div>
+    <div class="obj"><b>You will predict</b>Which of two similar-looking bundles a spec-compliant runtime accepts, and which specific field rejects the other.</div>
+    <div class="obj"><b>You will simulate</b>The full create→start→kill→delete lifecycle against a bundle you edit yourself, including a cgroup OOM kill mid-run.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Every engine needs the same primitive — but whose?</h2>
+  <p class="lead">By 2015, "container" already meant several incompatible things. Docker shipped its own
+  <span class="term" data-def="Docker's original low-level container library — the code that actually called clone(), set up cgroups, and pivoted the root filesystem, extracted from Docker's engine in 2014.">libcontainer</span>,
+  CoreOS's <b>rkt</b> ran its own <code>appc</code>-format containers with its own launcher, and every PaaS and
+  scheduler that wanted to "run a container" had to either shell out to a specific engine's CLI or vendor that
+  engine's internal Go packages directly into its own codebase. None of these low-level launchers agreed on an
+  image format, a filesystem-bundle layout, or even what "running" versus "created" meant for a container process.</p>
+  <p>This is a familiar shape of problem: a specific mechanism (namespaces + cgroups + capabilities + a chrooted
+  filesystem — chapters 2 through 7 gave you every primitive involved) has stabilized, but the <i>interface</i>
+  to that mechanism has not. Every orchestrator that wants to launch a container — Kubernetes' kubelet, Docker's
+  engine, a CI runner, a bare shell script — faces the same three questions with no shared answer:</p>
+  <ul class="plain">
+    <li><b>What does "the container to run" look like on disk?</b> A directory? A tarball? Which file names, which layout?</li>
+    <li><b>What does "run it" mean as an API?</b> One blocking call? A background daemon? What are the valid states a container can be in, and what are their names?</li>
+    <li><b>Who is allowed to write a different implementation</b> of the launcher — a Go one, a C one, a Rust one, one that uses a microVM instead of namespaces — and still be a legitimate participant in the ecosystem?</li>
+  </ul>
+  <p>The <span class="term" data-def="A Linux Foundation project, founded June 2015 by Docker, CoreOS, and others, to define an open, vendor-neutral specification for container formats and runtimes.">Open Container Initiative</span>'s
+  answer is not a piece of software — it's a contract. The <b>OCI Runtime Specification</b> defines exactly two
+  things with no room left for interpretation: the on-disk shape of a <b>bundle</b> (a root filesystem plus one
+  <code>config.json</code>), and a small set of lifecycle operations — <code>create</code>, <code>start</code>,
+  <code>kill</code>, <code>delete</code> — that any conforming runtime binary must expose and any conforming
+  higher-level engine can drive. <b>runc</b> (Docker's donated reference implementation, Go) and <b>crun</b>
+  (Red Hat's from-scratch reimplementation, C, and Podman's default) are two independently written binaries that
+  both satisfy that one contract — which is the entire point: you can swap one for the other underneath Docker,
+  Podman, containerd, or CRI-O, and nothing above the runtime boundary needs to know or care.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT SEVEN CHAPTERS</div>
+    <p>This chapter is the floor everything else in the second half of the course stands on. Chapter 10's image
+    layers exist to <i>produce</i> the rootfs half of a bundle. Chapter 11's registries exist to <i>distribute</i>
+    the layers that become that rootfs. Chapter 12's daemon-vs-fork-exec comparison is really a comparison of what
+    sits <i>above</i> the exact four verbs you'll call by hand in this chapter's simulator. Once you've run a
+    container with zero Docker and zero Podman involved, every later "under the hood, this calls runc" sentence
+    stops being a hand-wave.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a Docker-only library to a shared spec in three years</h2>
+  <p>The runtime spec did not appear from nowhere — it is the direct byproduct of Docker's own architecture
+  churn, formalized once the industry needed to trust it. Click through the timeline; each event fixed something
+  the previous state genuinely couldn't do.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — how one company's library became everyone's contract</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY DOCKER GAVE THIS AWAY</div>
+    <p>Donating <code>libcontainer</code> to become <code>runc</code>, under a foundation Docker didn't unilaterally
+    control, looks like giving up leverage — and it was, deliberately. By 2015 Docker's real business risk wasn't
+    a competitor cloning its CLI; it was the ecosystem fragmenting around rkt's incompatible format and
+    Kubernetes needing a runtime interface it didn't have to reverse-engineer from Docker's changing internals.
+    A shared, boring, versioned spec that Docker no longer fully owned was the price of staying the default —
+    and it worked: containerd, CRI-O, and eventually every Kubernetes CRI shim standardized on OCI runtimes,
+    which is precisely why <span class="eng-podman">Podman</span>, a project with zero Docker code in it, can
+    run the exact same bundles <span class="eng-docker">Docker</span> produces.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: every engine ships its own bespoke launcher</h2>
+  <p>Derive the failure honestly by building the thing the spec replaced. Before a shared contract, the obvious
+  approach is: each engine hardcodes its own isolation logic directly against the kernel, with its own
+  ad hoc on-disk format and its own notion of "running."</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">bash</span><span>bespoke_launcher.sh — the strawman, annotated</span></div>
+    <pre><span class="c"># Engine A's private launcher — invented, versioned, and understood by nobody but Engine A</span>
+<span class="f">launch</span>() {
+    local id=<span class="n">$1</span> rootfs=<span class="n">$2</span> cmd=<span class="n">$3</span>
+    <span class="c"># Namespaces, mounts, cgroup paths — all hand-rolled, all Engine A's private conventions</span>
+    <span class="f">unshare</span> --pid --mount --uts --ipc --net --fork \
+        <span class="f">chroot</span> <span class="s">"$rootfs"</span> <span class="n">$cmd</span> &amp;
+    <span class="f">echo</span> <span class="n">$!</span> &gt; <span class="s">"/var/run/enginea/$id.pid"</span>   <span class="c"># "running" = a PID file exists. That's the whole state machine.</span>
+}
+<span class="c"># Engine B, written independently, invents a DIFFERENT directory layout, a DIFFERENT
+# state file format, and has no idea Engine A's launcher, or its containers, exist.</span></pre>
+  </div>
+  <p>This is not a strawman built to be knocked down cheaply — it is <i>exactly</i> what Docker's own internals
+  looked like pre-2014, and what rkt's launcher looked like in parallel. It gets the isolation itself right
+  (the primitives from chapters 2–7 don't care who calls them); what it gets wrong is <b>legibility to anyone
+  else</b>. Watch it fail as soon as a second party needs to interoperate with it.</p>
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Kubernetes tries to run a container in 2015</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The integration math: O(N×M) versus O(N+M)</h2>
+  <p>Quantify what "everyone invents their own launcher" actually costs an ecosystem. Let <b>N</b> be the number
+  of container engines/runtimes (Docker's libcontainer, rkt, LXC-based tools, a cloud provider's proprietary
+  launcher…) and <b>M</b> be the number of things that want to <i>drive</i> one (Kubernetes, Nomad, a CI system,
+  a PaaS control plane, systemd). With no shared contract, every orchestrator must write and maintain a
+  bespoke adapter per engine it wants to support:</p>
+  <ul class="plain">
+    <li><b>Integration surface: N × M adapters.</b> Kubernetes alone, supporting Docker and rkt in its earliest
+      multi-runtime era, needed engine-specific code paths inside <code>kubelet</code> itself — not a plugin
+      boundary, a fork in the control-plane logic. Add a third runtime and every orchestrator that cares about
+      portability pays again.</li>
+    <li><b>No shared verification.</b> "Is this container running?" has a different true answer depending on
+      which bespoke state file format you're parsing — a PID file, a lock file, a database row. There is no
+      single command any tool can run against any runtime to get a trustworthy answer.</li>
+    <li><b>Innovation is gated by the incumbent.</b> A new, better low-level runtime (say, one written in a
+      memory-safe language, or one that starts 2× faster) has no path to adoption without also either cloning an
+      incumbent's entire private API or convincing every orchestrator to add a bespoke adapter just for it.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>With a shared spec, the integration surface collapses from <b>N × M</b> to <b>N + M</b>: each runtime
+    implements the spec once, each orchestrator implements <i>calling</i> the spec once, and the two sets meet
+    at a single, versioned interface neither side controls unilaterally. This is exactly the argument that let
+    Kubernetes retire <code>dockershim</code> in 2022 without breaking clusters: kubelet had already moved to
+    speaking <span class="term" data-def="Container Runtime Interface — Kubernetes' own gRPC API for talking to any container runtime, introduced 2016, layered on top of OCI-compliant low-level runtimes underneath.">CRI</span>
+    against any OCI-compliant runtime years earlier — Docker's engine became one implementation choice among
+    several (via <code>cri-dockerd</code>), not a hardcoded dependency.</p>
+  </div>
+  <p>So the fix is not "pick the best bespoke launcher and standardize on it" — that just relabels the N×M
+  problem with N=1 today and a hard fight over who gets to be N=2 tomorrow. The fix has to be a contract nobody
+  privately owns. §5 derives its minimum viable shape.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION</div>
+  <h2 class="sec">Deriving the minimum viable contract</h2>
+  <p>Work out, from first principles, the smallest interface that lets any runtime and any orchestrator
+  interoperate without either seeing the other's source code. It needs exactly three things: a description of
+  <i>what to run</i>, a description of <i>where it is on disk</i>, and a fixed, small vocabulary of <i>verbs</i>
+  with unambiguous state transitions. Step through the derivation:</p>
+  <div class="widget deck" id="deckSpec">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Building the OCI runtime contract from nothing</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <p>Two runtimes — <b>runc</b> and <b>crun</b> — are the two implementations this course cares about, because
+  they're the ones Docker and Podman actually ship by default. Neither is "the" reference in a privileged sense
+  any more; both are simply judged against the same spec text:</p>
+  <ul class="plain">
+    <li><b>runc</b> — Go, the direct descendant of Docker's original <code>libcontainer</code>, donated to OCI
+      in 2015. Docker/containerd's default low-level runtime today.</li>
+    <li><b>crun</b> — C, written from scratch in 2018–2019 by Giuseppe Scrivano at Red Hat specifically to be
+      smaller and faster to start than runc. Podman's default low-level runtime since around Podman 2.0 (2020)
+      on Fedora-family distributions.</li>
+  </ul>
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING PROPERTY: THE SAME JSON COMES OUT</div>
+    <p>Ask <code>runc state mycontainer</code> and <code>crun state mycontainer</code> about the exact same
+    container and — running under the exact same engine — you get structurally identical JSON:
+    <code>ociVersion</code>, <code>id</code>, <code>status</code>, <code>pid</code>, <code>bundle</code>. Two
+    teams, two languages, zero shared code, and the output is indistinguishable at the schema level. That
+    convergence is not a coincidence of good taste — it's the spec doing exactly its job. §8 shows you the
+    schema; §15 lets you generate it from both runtimes yourself.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">A shared interface is not a shared guarantee</h2>
+  <p>The spec solves the interoperability problem completely and solves almost nothing else. Be precise about
+  what "OCI compliant" does <i>not</i> promise, because every one of these gaps becomes an operational surprise
+  eventually:</p>
+  <ul class="plain">
+    <li><b>Compliance is a schema, not a security level.</b> A runtime that starts a full hardware-virtualized
+      guest per container — Kata Containers, wrapping a microVM around the workload — can be just as OCI-compliant
+      as runc, because the spec only mandates the bundle format and the four verbs, never <i>how</i> isolation is
+      achieved. Same for <code>gVisor</code>'s <code>runsc</code>, which intercepts syscalls in a userspace kernel
+      instead of trusting the host kernel's namespace boundary directly. "OCI compliant" tells you nothing about
+      blast radius if the container escapes.</li>
+    <li><b>Feature adoption is not synchronized.</b> When the spec adds a field — say, a new hook type, or a new
+      <code>linux.resources</code> sub-object for a kernel feature that just landed — runc and crun implement it on
+      their own schedules. A <code>config.json</code> built assuming the newest field silently no-ops on an older
+      runtime binary that doesn't recognize it, or hard-fails, depending on how strict that runtime's parser is.</li>
+    <li><b>The spec covers Linux almost exclusively in practice.</b> Runtime-spec technically has provisions for
+      Windows and Solaris containers, but the overwhelming majority of real usage, tooling, and this course's
+      depth is Linux namespaces/cgroups — treat non-Linux OCI runtimes as a footnote, not a parallel universe with
+      equal engineering investment.</li>
+    <li><b>Two compliant runtimes can still disagree at the edges.</b> Default capability lists, exact error
+      message text, and behavior on malformed-but-not-technically-invalid input are all under-specified enough
+      that <code>runc</code> and <code>crun</code> occasionally diverge on corner cases — which is precisely why
+      §9's comparison table exists instead of a single "OCI runtime" row.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THE HONEST TAKEAWAY</div>
+    <p>"This runtime is OCI compliant" answers exactly one question — <i>can my orchestrator drive it without
+    engine-specific code</i> — and answers zero questions about performance, memory safety, or how hard it is to
+    escape from. Treat the spec as what it is: a wire-format and lifecycle contract, not a security
+    certification. §10 makes the security comparison explicit and honest instead of assuming compliance implies
+    equivalence.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The full chain, from CLI to kernel</h2>
+  <p>Click any piece below. Note the deliberate shape: the bundle is inert data on disk, the low-level runtime
+  is a short-lived process that touches the kernel directly, and everything above the runtime — however
+  different <span class="eng-docker">Docker</span>'s and <span class="eng-podman">Podman</span>'s architectures
+  are (chapter 12 goes deep on that) — exists purely to produce a bundle and call the same four verbs on it.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY PIECE</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">BUNDLE ON DISK (inert data, produced by ch. 10's image layers)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="rootfs">rootfs/</div>
+          <div class="acard" data-p="configjson">config.json</div>
+        </div>
+        <div class="arch-row-label">LOW-LEVEL OCI RUNTIME BINARIES (this chapter's subject)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="runc">runc</div>
+          <div class="acard" data-p="crun">crun</div>
+        </div>
+        <div class="arch-row-label">PER-ENGINE SHIMS & MONITORS (ch. 12 territory)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="shim">containerd-shim-runc-v2</div>
+          <div class="acard" data-p="conmon">conmon</div>
+        </div>
+        <div class="arch-row-label">KERNEL PRIMITIVES THE RUNTIME CALLS DIRECTLY</div>
+        <div class="arch-grid">
+          <div class="acard shmcard" data-p="kernel">clone()/unshare() namespaces · cgroupfs writes · mount()/pivot_root() · capset() · seccomp() — chapters 2–8, all of it</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">THE ASYMMETRY WORTH NOTICING</div>
+    <p>Everything above the runtime binary is replaceable without touching the kernel-facing code at all — that's
+    the whole architectural payoff. <span class="eng-docker">Docker</span> could swap containerd for something
+    else tomorrow and runc wouldn't need a single line changed. <span class="eng-podman">Podman</span> was built
+    by a completely different team with zero shared code above the runtime boundary, and it still runs the exact
+    same bundles. The boundary in this diagram — bundle in, four verbs, kernel state out — is the single most
+    load-bearing line in the whole container stack.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The bundle, the state machine, and the two binaries that consume both</h2>
+  <p>Three pieces, in order: <b>(a)</b> what actually lives inside <code>config.json</code>, field by field;
+  <b>(b)</b> the exact state machine <code>create</code>/<code>start</code>/<code>kill</code>/<code>delete</code>
+  drive a container process through, including the synchronization primitive that makes the create/start split
+  meaningful rather than cosmetic; <b>(c)</b> what a resource-limit slider actually turns into on disk.</p>
+
+  <h3>(a) config.json, field by field</h3>
+  <p>A bundle is a directory containing <code>rootfs/</code> (or another path named by <code>root.path</code>)
+  and exactly one <code>config.json</code>. Step through a real, minimal-but-complete one:</p>
+  <div class="widget deck" id="deckConfig">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Anatomy of config.json</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <div class="callout">
+    <div class="co-t">CALLBACK · CHAPTER 7'S 14 CAPABILITIES, IN THE FLESH</div>
+    <p><code>process.capabilities.bounding</code> is not prose anymore — it's a literal JSON array, and it's the
+    exact ~14-capability default list chapter 7 walked through (<code>CAP_CHOWN</code>, <code>CAP_FOWNER</code>,
+    <code>CAP_NET_BIND_SERVICE</code>, <code>CAP_SYS_CHROOT</code>, and so on, notably <i>without</i>
+    <code>CAP_SYS_ADMIN</code>). Both <span class="eng-docker">Docker</span> and <span class="eng-podman">Podman</span>
+    generate config.json with the same default list, because both trace back to the same reference default —
+    <code>runc spec</code>'s template — even though one engine hands the resulting file to runc and the other to
+    crun.</p>
+  </div>
+
+  <h3>(b) The lifecycle: create, start, kill, delete</h3>
+  <p>The OCI runtime spec defines exactly four states a container can report through <code>status</code>:
+  <code>creating</code>, <code>created</code>, <code>running</code>, <code>stopped</code>. The interesting
+  engineering is in the gap between <code>created</code> and <code>running</code> — it exists on purpose, and
+  it's implemented with a real synchronization primitive, not a sleep.</p>
+  <div class="widget deck" id="deckLifecycle">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">create → start → kill → delete, mechanically</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">WHY SPLIT CREATE AND START AT ALL?</div>
+    <p>Because networking has to happen in between. A container's network namespace exists the instant
+    <code>create</code> returns — but the workload hasn't executed a single instruction yet. That gap is exactly
+    when a <span class="term" data-def="Container Network Interface — the plugin API Kubernetes (and, historically, Podman) uses to attach a freshly created network namespace to a bridge, assign an IP, and install routes, all from outside the container.">CNI plugin</span>
+    (chapter 13) wires up the interface, assigns an address, and installs routes — entirely from the host side,
+    entirely before the container's own code could possibly observe or interfere with its own network setup. If
+    <code>create</code> and <code>start</code> were one call, there would be no window in which "the namespace
+    exists but nothing has run inside it yet" — and every orchestrator would need its own racy workaround.</p>
+  </div>
+
+  <h3>(c) From a slider to a cgroup interface file</h3>
+  <p><code>linux.resources</code> is not aspirational text — it is the literal source of the byte strings the
+  runtime writes into the cgroup v2 interface files chapter 5 introduced. Drag these and watch exactly what would
+  land in <code>memory.max</code>, <code>cpu.max</code>, and <code>pids.max</code>:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Resource limits → config.json → cgroup v2 files</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>memory limit</label><input type="range" id="res-mem" min="64" max="4096" value="512" step="64"><span class="val" id="res-mem-val">512 MB</span></div>
+      <div class="slider-row"><label>cpu cores</label><input type="range" id="res-cpu" min="1" max="16" value="4" step="1"><span class="val" id="res-cpu-val">1.00</span></div>
+      <div class="slider-row"><label>pids limit</label><input type="range" id="res-pids" min="16" max="4096" value="1024" step="16"><span class="val" id="res-pids-val">1024</span></div>
+      <div class="codeblock" style="margin:14px 0 0">
+        <div class="cb-head"><span class="lang">json</span><span>linux.resources</span></div>
+        <pre id="res-json"></pre>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="res-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">runc vs crun: the same contract, two honest implementations</h2>
+  <p>Both consume identical bundles and both are exercised by the identical <code>create</code>/<code>start</code>/
+  <code>kill</code>/<code>delete</code> verbs — so every row below is a genuine implementation tradeoff, not a
+  spec difference:</p>
+  <table class="cmp">
+    <tr><th>DIMENSION</th><th>runc</th><th>crun</th></tr>
+    <tr><td>Language</td><td>Go</td><td>C</td></tr>
+    <tr><td>Lineage</td><td>Docker's <code>libcontainer</code>, donated to OCI in 2015</td><td>Written from scratch at Red Hat, first released 2019, targeting a smaller/faster runc alternative</td></tr>
+    <tr><td>Binary size</td><td><span class="pill y">~10 MB static Go binary</span></td><td><span class="pill g">~300–400 KB</span> — roughly an order of magnitude smaller</td></tr>
+    <tr><td>Baseline memory floor</td><td><span class="pill y">~10–20 MB RSS</span> before the container's own process allocates anything — the Go runtime (scheduler, GC) has fixed startup cost</td><td><span class="pill g">low single-digit MB or less</span> — no managed runtime to initialize</td></tr>
+    <tr><td>Cold-start latency</td><td><span class="pill y">baseline</span></td><td><span class="pill g">roughly 2× faster</span> in Red Hat's own published benchmarks; the gap widens as container density rises</td></tr>
+    <tr><td>Default under</td><td><span class="eng-docker">Docker</span>/containerd</td><td><span class="eng-podman">Podman</span>/CRI-O on most Fedora-family distros since ~2020</td></tr>
+    <tr><td>Memory-safety class</td><td><span class="pill g">Go's memory safety</span> (minus the cgo edges runc does use)</td><td><span class="pill b">hand-managed C memory</span> — smaller codebase to audit, but the classic C bug classes (UAF, overflow) are in scope</td></tr>
+    <tr><td>cgroup v2 & rootless parity</td><td>reached full parity somewhat later</td><td>historically <span class="pill g">first to full cgroup v2 and rootless support</span> — a design priority from day one, not a retrofit</td></tr>
+    <tr><td>Maintained by</td><td>OCI / broad multi-vendor Go maintainer group</td><td>primarily Red Hat, tightly coupled to the <code>containers/</code> ecosystem (Podman, Buildah, Skopeo)</td></tr>
+  </table>
+  <p>Read this the way the spec doc for this course insists on: where they're identical, say so plainly — both
+  write the same cgroup v2 interface files, both parse the same <code>config.json</code> schema, both emit the
+  same <code>state</code> JSON shape. Where they differ, the difference has a real engineering cause (a managed
+  runtime's fixed cost vs. hand-rolled C; a design that started rootless-first vs. one that grew rootless support
+  onto an already-rootful codebase) — not marketing.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE & SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">What the language and design choice actually costs, in milliseconds and attack surface</h2>
+  <p>Two separate questions, both real: how fast does each runtime get a container to <code>running</code>, and
+  what does each runtime's own codebase expose if <i>the runtime itself</i> — not the containerized workload —
+  has a bug. The runtime binary runs with the same privilege it's about to hand off (root, or a mapped rootless
+  UID) while it performs <code>clone()</code>, mounts, and cgroup writes — a compromised runtime is a
+  compromised host-facing process, which is exactly why §11's incidents matter.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Cold-start latency vs. containers spawned</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>containers to spawn</label><input type="range" id="perf-n" min="1" max="200" value="20" step="1"><span class="val" id="perf-n-val">20</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-runc">runc</button>
+        <button class="chip on" id="perf-crun">crun</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--docker)">━</span> runc cumulative time</span>
+        <span><span style="color:var(--podman)">━</span> crun cumulative time</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch — a fixed per-process language-runtime cost plus a small per-container
+    marginal cost for each binary — tuned to match the <i>shape</i> publicly reported by Red Hat's crun
+    benchmarks and independent density tests, not a live benchmark run in your browser. The point is the
+    qualitative fact: crun's advantage is a <b>fixed cost</b> paid once per process spawned, so it compounds
+    fastest exactly where it matters most — many short-lived containers (serverless-style workloads, CI
+    runners, high-density bin-packing), which is precisely the profile Podman and CRI-O optimize for.</p>
+  </div>
+  <p>On attack surface: runc's codebase is larger (the Go standard library plus vendored namespace/cgroup
+  packages) but memory-safe outside its cgo boundary; crun's is smaller (easier to audit end-to-end) but written
+  in a language where a single missed bounds check is a memory-corruption bug, not a panic. Neither property has
+  historically dominated — §11's incidents are almost all <i>logic</i> bugs (race conditions, path handling)
+  that could occur in either language, which is the honest conclusion: implementation language changes the
+  <i>kind</i> of bug you should expect, not whether bugs happen.</p>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">When the runtime binary itself is the vulnerability</h2>
+  <h3>CVE-2019-5736 — the runc binary overwrite (full syscall trace in chapter 15)</h3>
+  <p>A malicious container, given the chance to run as PID 1 during <code>runc exec</code>/<code>start</code>,
+  could exploit a race on <code>/proc/self/exe</code> to overwrite the host's own <code>runc</code> binary with
+  attacker-controlled content — turning "I can run a container" into "I can run arbitrary code as root the next
+  time <i>anyone</i> on this host invokes runc." This is the runtime-spec chapter's version of the story: the
+  bug lived in the exact create/start code path §8(b) just walked — the moment between namespace setup and the
+  final <code>execve()</code> of the user's process is precisely where the vulnerable file handle existed.
+  Chapter 15 replays the exact syscall sequence; here, the lesson is architectural: <b>the runtime binary and
+  the untrusted workload briefly share a trust boundary during that exact create→start window</b>, and getting
+  that window's file-descriptor hygiene wrong is catastrophic precisely because the runtime runs privileged.</p>
+  <h3>CVE-2019-16884 — masked/read-only paths bypassed via a crafted mount</h3>
+  <p><code>linux.maskedPaths</code> exists specifically to hide procfs/sysfs files a container shouldn't read
+  even from inside its own PID namespace (<code>/proc/kcore</code>, <code>/proc/keys</code>, and similarly
+  sensitive nodes). This runc advisory showed that a specially crafted mount destination could interact badly
+  with AppArmor/SELinux label application during mount setup, letting a container's process influence a path the
+  masking was supposed to fully own — a reminder that <code>maskedPaths</code>/<code>readonlyPaths</code> are
+  only as strong as the mount-setup code that applies them, not an independent enforcement layer.</p>
+  <h3>CVE-2021-30465 — a symlink TOCTOU in mount-path resolution</h3>
+  <p>runc resolved a mount's destination path, then performed the mount — with a window between the two in
+  which a malicious container process (racing against its own creation) could swap a directory for a symlink
+  pointing at the host filesystem, causing the runtime to bind-mount into a host path instead of the intended
+  container path. The root cause is a class every implementation of the mounts-array handling in §8(a) has to
+  defend against: <b>resolve-then-act path handling is inherently racy against a party who controls the
+  filesystem being resolved</b>. The fix added safe, symlink-aware path resolution (rather than resolve-once,
+  trust-forever) directly into runc's mount-setup code — the same lineage of fix that later informed
+  library-level safe-path APIs across the ecosystem.</p>
+  <div class="callout warn">
+    <div class="co-t">THE PATTERN ACROSS ALL THREE</div>
+    <p>None of these are cryptography failures or capability-list mistakes — they're all races or trust-boundary
+    slips in the narrow window where the runtime, running privileged, is still setting up isolation <i>around</i>
+    a process that already exists and is already attacker-controlled. That window is unavoidable — you cannot
+    isolate a process before it exists — which is exactly why "OCI compliant" (§6) says nothing about how
+    carefully a given implementation guards that window. crun's smaller, newer codebase has a shorter public CVE
+    history than runc's, but that reflects less accumulated scrutiny more than a proven architectural advantage —
+    an honest comparison neither runtime's advocates like to hear.</p>
+  </div>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — these are calibrated to what a Staff-level systems interview (or an OCI spec PR
+  review) actually expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: runc's and crun's create/start paths</h2>
+  <p>Two independently written codebases implementing the same four verbs. Structure first, then the two
+  functions that matter most — the ones that implement the synchronization barrier from §8(b).</p>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">runc/</span> <span class="fnote">— Go, github.com/opencontainers/runc</span></div>
+<div>├── main.go <span class="fnote">— CLI entry; dispatches create/start/kill/delete/state/exec/spec</span></div>
+<div>├── <span class="fhl">● create.go · start.go · run.go</span> <span class="fnote">— thin CLI wrappers around libcontainer.Factory</span></div>
+<div>├── delete.go · kill.go · state.go <span class="fnote">— the other three OCI-mandated verbs</span></div>
+<div>├── <span class="dir">libcontainer/</span></div>
+<div>│   ├── factory_linux.go <span class="fnote">— Factory.Create()/Load(): owns the state dir, /run/runc/&lt;id&gt;</span></div>
+<div>│   ├── <span class="dir">specconv/</span>spec_linux.go <span class="fnote">— config.json (specs.Spec) → internal *configs.Config</span></div>
+<div>│   ├── container_linux.go <span class="fnote">— Container.Start()/Signal()/Destroy(): the four verbs, internally</span></div>
+<div>│   ├── <span class="fhl">● standard_init_linux.go</span> <span class="fnote">— runs INSIDE the new namespaces; waits on exec.fifo, then execve()</span></div>
+<div>│   ├── process_linux.go <span class="fnote">— parent-side bookkeeping, the sync pipe to the init process</span></div>
+<div>│   └── <span class="dir">cgroups/</span>fs2/ · systemd/ <span class="fnote">— cgroup v2 unified + systemd cgroup driver backends</span></div>
+<div></div>
+<div><span class="dir">crun/</span> <span class="fnote">— C, github.com/containers/crun</span></div>
+<div>├── src/crun.c <span class="fnote">— CLI entry; the same five verbs, argv-dispatched</span></div>
+<div>├── <span class="dir">src/libcrun/</span></div>
+<div>│   ├── <span class="fhl">● container.c</span> <span class="fnote">— libcrun_container_create()/run(): clone() + cgroup setup + sync socket</span></div>
+<div>│   ├── linux.c <span class="fnote">— namespace flag translation, mount() calls driven by the mounts[] array</span></div>
+<div>│   ├── cgroup.c <span class="fnote">— cgroup v1/v2 interface-file writers (memory.max, cpu.max, pids.max)</span></div>
+<div>│   ├── status.c <span class="fnote">— reads/writes state.json — the same OCI State JSON shape runc emits</span></div>
+<div>│   └── seccomp.c <span class="fnote">— builds the libseccomp filter from linux.seccomp (chapter 8)</span></div>
+  </div></div>
+
+  <p>runc's create/start split, simplified but structurally faithful to the real dispatch:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>runc — create.go / standard_init_linux.go, the barrier</span></div>
+    <pre><span class="c">// create.go — "runc create": sets everything up, does NOT run the user's command yet</span>
+<span class="k">func</span> <span class="f">createContainer</span>(context *cli.Context, id <span class="k">string</span>, spec *specs.Spec) <span class="k">error</span> {
+    config, _ := specconv.<span class="f">CreateLibcontainerConfig</span>(&amp;specconv.CreateOpts{
+        Spec: spec,           <span class="c">// the parsed config.json</span>
+    })
+    factory, _ := libcontainer.<span class="f">New</span>(<span class="s">"/run/runc"</span>)      <span class="c">// state dir root</span>
+    container, _ := factory.<span class="f">Create</span>(id, config)     <span class="c">// namespaces + cgroup dirs created HERE</span>
+
+    <span class="c">// Start(process, /*isInit=*/true) forks the container's init process into the
+    // new namespaces, then RETURNS as soon as that process is blocked — not
+    // once it's running the real command.</span>
+    <span class="k">return</span> container.<span class="f">Start</span>(spec.Process)
+}
+
+<span class="c">// standard_init_linux.go — this function's goroutine is now living INSIDE the
+// new PID/mount/UTS/IPC/net namespaces. It does every remaining namespace-
+// internal setup (pivot_root, capability drop, seccomp load — chapters 6–8),
+// then blocks:</span>
+<span class="k">func</span> (l *linuxStandardInit) <span class="f">Init</span>() <span class="k">error</span> {
+    <span class="c">/* ... pivot_root, mount the bundle's mounts[], drop capabilities,
+         apply seccomp filter ... */</span>
+
+    fifoFd, _ := unix.<span class="f">Open</span>(execFifoPath, unix.O_RDONLY|unix.O_CLOEXEC, <span class="n">0</span>)
+    <span class="k">var</span> buf [<span class="n">1</span>]<span class="k">byte</span>
+    unix.<span class="f">Read</span>(fifoFd, buf[:])     <span class="c">// BLOCKS here — this IS the "created" state.
+                                //    "runc start" opens this fifo for WRITING,
+                                //    which is the only thing that unblocks this read.</span>
+
+    <span class="k">return</span> unix.<span class="f">Exec</span>(spec.Process.Args[<span class="n">0</span>], spec.Process.Args, spec.Process.Env)  <span class="c">// execve() — NOW it's "running"</span>
+}</pre>
+  </div>
+
+  <p>crun's equivalent shape — a plain sync socket instead of a named fifo, same purpose:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>crun — src/libcrun/container.c, the same barrier in C</span></div>
+    <pre><span class="k">int</span>
+<span class="f">libcrun_container_run</span>(libcrun_container_t *container, <span class="k">int</span> detach, libcrun_error_t *err)
+{
+    <span class="k">int</span> sync_socket[<span class="n">2</span>];
+    <span class="f">socketpair</span>(AF_UNIX, SOCK_STREAM, <span class="n">0</span>, sync_socket);
+
+    pid_t pid = <span class="f">crun_clone</span>(container_init, get_namespace_flags(container), args);
+    <span class="c">/* get_namespace_flags() turns linux.namespaces[] into the actual
+       CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWNS | ... bitmask — chapter 2/3's clone() flags,
+       literally read out of config.json */</span>
+
+    <span class="f">write_cgroup_files</span>(container, pid);     <span class="c">/* memory.max, cpu.max, pids.max — §8(c) */</span>
+
+    <span class="k">if</span> (!detach)
+        <span class="f">wait_for_container_ready</span>(sync_socket[<span class="n">0</span>]);   <span class="c">/* "created" */</span>
+
+    <span class="k">return</span> pid;
+}
+
+<span class="k">static int</span>
+<span class="f">container_init</span>(<span class="k">void</span> *args)
+{
+    <span class="c">/* pivot_root, mount() the mounts[] array, capset(), seccomp load — same
+       kernel-facing work as runc's Init(), different language */</span>
+
+    <span class="f">notify_ready</span>(sync_socket[<span class="n">1</span>]);      <span class="c">/* tell the parent: I'm set up, waiting */</span>
+    <span class="f">wait_for_start_signal</span>(sync_socket[<span class="n">1</span>]);  <span class="c">/* BLOCKS — "crun start" writes the go-ahead byte here */</span>
+
+    <span class="k">return</span> <span class="f">execve</span>(process-&gt;args[<span class="n">0</span>], process-&gt;args, process-&gt;env);  <span class="c">/* "running" */</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY BOTH TEAMS BUILT A BARRIER, INDEPENDENTLY</div>
+    <p><b>1. The state must be observable from outside the process being created.</b> A named fifo (runc) or a
+    socketpair (crun) both give the parent a synchronous, kernel-mediated signal — no polling, no races against
+    "has it execve'd yet." <b>2. The barrier lives on the child side of every namespace boundary.</b> By the time
+    either implementation blocks, pivot_root, capability drop, and seccomp load have already happened — so the
+    blocked process is already fully caged before it ever runs untrusted code, which is exactly the property
+    CVE-2019-5736 (§11) turned out to depend on getting right. <b>3. Splitting create/start cleanly maps to two
+    CLI verbs instead of flags on one command</b>, because the OCI spec mandates them as separate, independently
+    invocable operations — an orchestrator can call <code>create</code> from one code path (provisioning) and
+    <code>start</code> from a completely different one (scheduling), months of API design compressed into two
+    verbs neither team had to negotiate with the other to agree on.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — read them.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — launching a container from the raw spec</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from an empty
+      directory to a running process. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Hand-write a bundle. Run it with runc or crun. No engine involved.</h2>
+  <p>Toggle namespaces and resource limits to edit a live <code>config.json</code>, prepare (or don't) a rootfs,
+  then drive the exact four verbs yourself: <b>create</b>, <b>start</b>, <b>kill</b>, <b>delete</b>. Try it wrong
+  on purpose first — start before create, create with no rootfs, delete a running container — and read the real
+  error shape each runtime returns. Then push memory past the cgroup limit while running and watch the kernel's
+  OOM path (chapter 5) fire on a container you built from nothing.</p>
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">bundle → runtime → lifecycle — live</span><span class="w-sub" id="sim-phase">NO CONTAINER</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="shm" id="sim-bundle">bundle: rootfs/ <span id="sim-bundle-rootfs">(not prepared)</span> + config.json</div>
+          <div class="ptree" style="margin-top:16px">
+            <div class="prow">
+              <div class="pnode gone" id="sim-node">mycontainer<span class="sub" id="sim-node-sub">no container object exists</span></div>
+            </div>
+          </div>
+          <div class="stacks" style="margin-top:18px">
+            <div class="stackcol">
+              <div class="sc-t">CONFIG.JSON (LIVE)</div>
+              <div class="codeblock" style="margin:0">
+                <div class="cb-head"><span class="lang">json</span><span id="sim-cfg-runtime">runc</span></div>
+                <pre id="sim-cfg-pre" style="max-height:260px;overflow-y:auto"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">BUNDLE SETUP</div>
+            <div class="btns">
+              <button class="chip" id="sim-rootfs">rootfs: not ready</button>
+              <button class="chip on" id="sim-runtime">runtime: runc</button>
+            </div>
+            <div class="btns" style="margin-top:6px">
+              <button class="chip on" id="ns-pid">pid</button>
+              <button class="chip on" id="ns-net">network</button>
+              <button class="chip on" id="ns-mnt">mount</button>
+              <button class="chip on" id="ns-uts">uts</button>
+              <button class="chip on" id="ns-ipc">ipc</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">RESOURCES</div>
+            <div class="slider-row" style="margin:4px 0"><label style="min-width:0;flex:1">memory limit</label><span class="val" id="sim-mem-val" style="min-width:60px">256 MB</span></div>
+            <input type="range" id="sim-mem" min="32" max="1024" value="256" step="32" style="width:100%;accent-color:var(--pg)">
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">LIFECYCLE VERBS</div>
+            <div class="btns">
+              <button class="btn good" id="sim-create">create</button>
+              <button class="btn primary" id="sim-start">start</button>
+              <button class="btn warn" id="sim-kill">kill (TERM)</button>
+              <button class="btn danger" id="sim-delete">delete</button>
+            </div>
+            <div class="btns" style="margin-top:6px">
+              <button class="btn" id="sim-state">runtime state</button>
+              <button class="btn danger" id="sim-oom">alloc past memory.max</button>
+              <button class="btn" id="sim-reset">reset lab</button>
+            </div>
+          </div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">STATUS</div>
+            <div style="color:var(--dim)">no container object exists — call create</div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-creates">0</div><div class="cl">creates</div></div>
+            <div class="scounter"><div class="cv" id="cnt-starts">0</div><div class="cl">starts</div></div>
+            <div class="scounter"><div class="cv" id="cnt-ooms" style="color:var(--bad)">0</div><div class="cl">oom kills</div></div>
+          </div>
+          <div style="padding:11px 15px">
+            <div class="meter"><div class="m-l"><span>MEMORY vs memory.max</span><span id="m-mem-v">0 / 256 MB</span></div><div class="m-bar"><div class="m-fill" id="m-mem"></div></div></div>
+            <div class="meter"><div class="m-l"><span>LAST START LATENCY</span><span id="m-lat-v">—</span></div><div class="m-bar"><div class="m-fill" id="m-lat"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Click <b>start</b> before <b>create</b> — read the exact "does not exist" error each runtime
+    returns. <b>2.</b> Click <b>create</b> with rootfs "not ready" — read the mount error. <b>3.</b> Create,
+    start, then click <b>runtime state</b> and compare the JSON to what §5 promised: identical shape regardless
+    of runtime. <b>4.</b> While running, drag memory down and hit <b>alloc past memory.max</b> — watch the
+    kernel OOM-kill PID 1 inside the cgroup, exactly like chapter 5's lab, except this time you wrote the
+    <code>config.json</code> that set the limit. <b>5.</b> Switch the runtime chip mid-experiment and compare
+    the simulated start latency.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 10: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer, then reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 09 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now hand-write a valid <code>config.json</code>,
+    explain precisely what happens in the gap between <code>created</code> and <code>running</code>, and defend
+    why runc and crun being interchangeable underneath Docker and Podman is the entire point of the spec. Chapter
+    10 answers the question this chapter deliberately dodged: that <code>rootfs/</code> directory in every
+    bundle you just built by hand — where does it actually come from? The answer is layers, manifests, and
+    content-addressed blobs, and it's how <code>docker pull</code> turns an image reference into exactly the
+    directory <code>runc create</code> expects to find.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="ctr-08.html" style="text-decoration:none;display:inline-flex;align-items:center">← CTR-08: Seccomp & LSMs</a>
+      <a class="btn" href="ctr-10.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-10: Container Images →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2013", l:"Docker + LXC", d:"<b>Docker launches</b> using LXC userspace tools to drive namespaces and cgroups. There is no independent 'runtime' concept yet — Docker's engine and its isolation layer are one inseparable codebase, and nothing else can drive it." },
+  { yr:"2014", l:"libcontainer", d:"<b>Docker replaces LXC with libcontainer</b>, its own Go library calling clone()/cgroups/capabilities directly, dropping the LXC dependency for portability. It is faster and more controllable — and still 100% Docker-private. No other project can consume it without vendoring Docker's internals." },
+  { yr:"June 2015", l:"OCI founded", d:"<b>Docker, CoreOS, and the Linux Foundation found the Open Container Initiative</b> to head off a format war (Docker's images vs. CoreOS's rkt/appc format). Docker donates libcontainer's code as the seed of a new, independently governed project: <b>runc</b>." },
+  { yr:"2015–2016", l:"runtime-spec drafts", d:"<b>The Runtime Specification is drafted in public</b>, iterating on exactly the questions §1 raised: bundle layout, config.json schema, and the state machine's verb names. runc becomes the reference implementation used to validate the spec text itself — if runc couldn't do it, the spec text got revised." },
+  { yr:"July 2017", l:"runtime-spec 1.0", d:"<b>OCI Runtime Spec reaches 1.0.</b> 'OCI compliant' becomes a testable, versioned claim (the ociVersion field in every config.json) instead of an aspiration. containerd and CRI-O both build directly on runc as their default low-level runtime." },
+  { yr:"2018–2019", l:"crun begins", d:"<b>Giuseppe Scrivano at Red Hat starts crun</b> — not a fork of runc, a clean-room C implementation of the same spec — explicitly targeting smaller binary size and faster cold-start than a Go implementation can achieve, with rootless and cgroup v2 as first-class goals from day one rather than later additions." },
+  { yr:"~2020", l:"Podman defaults to crun", d:"<b>Podman adopts crun as its default</b> low-level runtime on Fedora-family distributions. The switch is invisible to anything above the runtime boundary — every bundle Podman had been generating for runc works unchanged, because both consume the identical config.json schema." },
+  { yr:"2022→", l:"dockershim retired", d:"<b>Kubernetes removes dockershim</b> from kubelet. This is only survivable because kubelet had already been speaking CRI against OCI-compliant runtimes (containerd, CRI-O) for years — the spec this chapter is about is the reason a core piece of Kubernetes' architecture could be deleted without breaking a single cluster that had already moved off direct Docker integration." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+
+/* ============================================================
+   2. DECK: naive bespoke launchers (§3)
+   ============================================================ */
+(function(){
+  const steps = [
+    { stage:`<div class="stacks">
+        <div class="stackcol"><div class="sc-t">ENGINE A'S LAUNCHER</div>
+          <div class="frame hot"><span class="ff">launch()</span><span class="fl">unshare + chroot, PID file at /var/run/enginea/</span></div>
+        </div>
+        <div class="stackcol"><div class="sc-t">ENGINE B'S LAUNCHER (rkt-shaped)</div>
+          <div class="frame"><span class="ff">rkt run</span><span class="fl">its own appc-format directory layout, its own state files</span></div>
+        </div>
+      </div>`,
+      cap:`<b>Two engines, two private contracts.</b> Both correctly build isolated processes — the primitives from chapters 2–7 work the same regardless of who calls them. Neither exposes anything the other, or a third party, can read.` },
+    { stage:`<div class="stacks">
+        <div class="stackcol"><div class="sc-t">KUBERNETES kubelet</div>
+          <div class="frame"><span class="ff">"run this pod"</span><span class="fl">needs to launch a container on WHATEVER engine this node has</span></div>
+        </div>
+      </div>
+      <p style="text-align:center;color:var(--dim);font-family:var(--mono);font-size:11px;margin-top:14px">kubelet has no shared verb to call — it must know which engine it's talking to in advance</p>`,
+      cap:`<b>The orchestrator has no neutral entry point.</b> kubelet in this era hardcodes a Docker-specific code path and a separate rkt-specific code path directly inside its own source tree — not a plugin, a fork in core logic.` },
+    { stage:`<div class="stacks">
+        <div class="stackcol"><div class="sc-t">A THIRD RUNTIME APPEARS</div>
+          <div class="frame dead"><span class="ff">new-fast-runtime</span><span class="fl">technically better. Zero path to adoption without a bespoke kubelet patch AND a bespoke Docker patch.</span></div>
+        </div>
+      </div>`,
+      cap:`<b>Innovation is gated by incumbents.</b> There is no "implement this one interface and you're eligible" door — every new entrant needs bilateral cooperation from every orchestrator that might want it.` },
+    { stage:`<div class="stacks">
+        <div class="stackcol"><div class="sc-t">VERDICT</div>
+          <div class="frame"><span class="ff">isolation: correct</span><span class="fl">chapters 2–7's mechanisms work fine under any of these launchers</span></div>
+          <div class="frame dead"><span class="ff">interop: absent</span><span class="fl">O(N×M) bespoke adapters, no shared verification, no neutral entry point</span></div>
+        </div>
+      </div>`,
+      cap:`Correctness was never the problem. §4 quantifies exactly what the missing contract costs as N and M grow.` }
+  ];
+  stepper("deckNaive", steps);
+})();
+
+/* ============================================================
+   3. DECK: deriving the spec (§5)
+   ============================================================ */
+(function(){
+  const steps = [
+    { stage:`<div class="stacks"><div class="stackcol"><div class="sc-t">REQUIREMENT 1</div>
+        <div class="frame hot"><span class="ff">describe WHAT to run</span><span class="fl">a filesystem the process will see as its root, plus the command/env/user to execute</span></div>
+      </div></div>`,
+      cap:`<b>Start with the minimum a launcher needs to know.</b> Not an image, not a registry reference — just: here is a root filesystem, here is the argv to exec inside it.` },
+    { stage:`<div class="stacks"><div class="stackcol"><div class="sc-t">REQUIREMENT 2</div>
+        <div class="frame hot"><span class="ff">describe WHERE it lives</span><span class="fl">one directory on disk: a rootfs/ subdirectory + one JSON file next to it — the "bundle"</span></div>
+      </div></div>`,
+      cap:`<b>Fix the on-disk layout, not just the content's schema.</b> "Bundle" becomes a load-bearing noun: any tool that can produce this exact directory shape has fully discharged its half of the contract, regardless of how it got there (docker build, buildah, a hand-written shell script).` },
+    { stage:`<div class="stacks"><div class="stackcol"><div class="sc-t">REQUIREMENT 3</div>
+        <div class="frame hot"><span class="ff">fix the verbs</span><span class="fl">create · start · kill · delete — and nothing else is mandatory</span></div>
+      </div></div>`,
+      cap:`<b>Four verbs, deliberately minimal.</b> Not "run" (too coarse — no room for network setup in between), not a rich RPC API (too much surface to keep two independent implementations compatible on). Small enough that a clean-room C reimplementation years later (crun) could target it exactly.` },
+    { stage:`<div class="stacks"><div class="stackcol"><div class="sc-t">REQUIREMENT 4</div>
+        <div class="frame hot"><span class="ff">fix the state names</span><span class="fl">creating → created → running → stopped — a runtime reports one of exactly these four strings</span></div>
+      </div></div>`,
+      cap:`<b>Even the vocabulary for "how's it doing" is standardized.</b> Any tool can run the state verb against any compliant runtime and parse the answer without knowing which binary is on the other end.` },
+    { stage:`<div class="stacks"><div class="stackcol"><div class="sc-t">RESULT</div>
+        <div class="frame hot"><span class="ff">the OCI Runtime Spec</span><span class="fl">bundle format + 4 verbs + 4 state names = the entire contract</span></div>
+      </div></div>
+      <p style="text-align:center;color:var(--dim);font-family:var(--mono);font-size:11px;margin-top:14px">everything else — networking, images, pods, compose — is built ABOVE this line</p>`,
+      cap:`This is deliberately small. §6 shows exactly what that smallness declines to guarantee.` }
+  ];
+  stepper("deckSpec", steps);
+})();
+
+/* ============================================================
+   4. DECK: config.json field by field (§8a)
+   ============================================================ */
+(function(){
+  const box = j => `<div class="codeblock" style="margin:0"><div class="cb-head"><span class="lang">json</span><span>config.json</span></div><pre>${j}</pre></div>`;
+  const steps = [
+    { stage: box(`{
+  <span class="t">"ociVersion"</span>: <span class="s">"1.0.2"</span>
+}`),
+      cap:`<b>The version field, first.</b> Every bundle declares which spec revision it was written against — a runtime that doesn't recognize a version can refuse cleanly instead of guessing at unfamiliar fields.` },
+    { stage: box(`{
+  <span class="t">"root"</span>: { <span class="t">"path"</span>: <span class="s">"rootfs"</span>, <span class="t">"readonly"</span>: <span class="k">false</span> }
+}`),
+      cap:`<b>root.path</b> — relative to the bundle directory by convention. This is the literal directory <code>pivot_root()</code> (chapter 6) makes the new "/" for the container process.` },
+    { stage: box(`{
+  <span class="t">"process"</span>: {
+    <span class="t">"args"</span>: [<span class="s">"/bin/sh"</span>, <span class="s">"-c"</span>, <span class="s">"echo hello from the raw spec"</span>],
+    <span class="t">"env"</span>: [<span class="s">"PATH=/usr/local/sbin:/usr/bin:/bin"</span>],
+    <span class="t">"cwd"</span>: <span class="s">"/"</span>,
+    <span class="t">"user"</span>: { <span class="t">"uid"</span>: <span class="n">0</span>, <span class="t">"gid"</span>: <span class="n">0</span> }
+  }
+}`),
+      cap:`<b>process</b> — exactly what execve() this bundle runs, as whom, in what directory, with what environment. Note <code>uid: 0</code> here means UID 0 <i>inside whatever user namespace mapping applies</i> — chapter 4's entire lesson, expressed as one field.` },
+    { stage: box(`{
+  <span class="t">"linux"</span>: {
+    <span class="t">"namespaces"</span>: [
+      { <span class="t">"type"</span>: <span class="s">"pid"</span> }, { <span class="t">"type"</span>: <span class="s">"network"</span> },
+      { <span class="t">"type"</span>: <span class="s">"ipc"</span> }, { <span class="t">"type"</span>: <span class="s">"uts"</span> },
+      { <span class="t">"type"</span>: <span class="s">"mount"</span> }
+    ]
+  }
+}`),
+      cap:`<b>linux.namespaces</b> — a literal list of the clone() flags from chapters 2–3. Omit an entry (say, "network") and the container shares that namespace with whatever process started it — usually the host. This one field is the entire difference between "isolated" and "not."` },
+    { stage: box(`{
+  <span class="t">"mounts"</span>: [
+    { <span class="t">"destination"</span>: <span class="s">"/proc"</span>, <span class="t">"type"</span>: <span class="s">"proc"</span>, <span class="t">"source"</span>: <span class="s">"proc"</span> },
+    { <span class="t">"destination"</span>: <span class="s">"/dev"</span>, <span class="t">"type"</span>: <span class="s">"tmpfs"</span>, <span class="t">"source"</span>: <span class="s">"tmpfs"</span>,
+      <span class="t">"options"</span>: [<span class="s">"nosuid"</span>,<span class="s">"strictatime"</span>,<span class="s">"mode=755"</span>,<span class="s">"size=65536k"</span>] },
+    { <span class="t">"destination"</span>: <span class="s">"/dev/pts"</span>, <span class="t">"type"</span>: <span class="s">"devpts"</span>, <span class="t">"source"</span>: <span class="s">"devpts"</span> },
+    { <span class="t">"destination"</span>: <span class="s">"/sys"</span>, <span class="t">"type"</span>: <span class="s">"sysfs"</span>, <span class="t">"source"</span>: <span class="s">"sysfs"</span>,
+      <span class="t">"options"</span>: [<span class="s">"nosuid"</span>,<span class="s">"noexec"</span>,<span class="s">"nodev"</span>,<span class="s">"ro"</span>] }
+  ]
+}`),
+      cap:`<b>mounts</b> — every filesystem the runtime layers into the new mount namespace before handing control to your process: a fresh /proc scoped to the PID namespace, a tmpfs /dev, a devpts for pseudo-terminals, a read-only /sys. Rootless runtimes typically bind-mount the host's real /sys here instead of mounting a fresh one, because an unprivileged user namespace can't mount sysfs from scratch.` },
+    { stage: box(`{
+  <span class="t">"linux"</span>: {
+    <span class="t">"resources"</span>: {
+      <span class="t">"memory"</span>: { <span class="t">"limit"</span>: <span class="n">536870912</span> },
+      <span class="t">"cpu"</span>: { <span class="t">"quota"</span>: <span class="n">100000</span>, <span class="t">"period"</span>: <span class="n">100000</span> },
+      <span class="t">"pids"</span>: { <span class="t">"limit"</span>: <span class="n">1024</span> }
+    },
+    <span class="t">"maskedPaths"</span>: [<span class="s">"/proc/kcore"</span>, <span class="s">"/proc/keys"</span>, <span class="s">"/sys/firmware"</span>],
+    <span class="t">"readonlyPaths"</span>: [<span class="s">"/proc/bus"</span>, <span class="s">"/proc/sysrq-trigger"</span>]
+  }
+}`),
+      cap:`<b>linux.resources</b> is the declarative source for chapter 5's cgroup interface files — this exact JSON becomes writes to <code>memory.max</code>, <code>cpu.max</code>, <code>pids.max</code>. <b>maskedPaths</b>/<b>readonlyPaths</b> bind-mount over or remount-ro specific procfs/sysfs nodes that would otherwise leak host kernel state even through a correctly isolated PID namespace.` }
+  ];
+  stepper("deckConfig", steps);
+})();
+
+/* ============================================================
+   5. DECK: lifecycle mechanics (§8b)
+   ============================================================ */
+(function(){
+  const node = (label, sub, cls) => `<div class="pnode ${cls||""}">${label}<span class="sub">${sub}</span></div>`;
+  const steps = [
+    { stage:`<div class="ptree">${node("bundle on disk","rootfs/ + config.json — no process exists yet","gone")}</div>`,
+      cap:`<b>Before create:</b> a directory. Nothing is running, nothing is namespaced, no cgroup exists. This is where the simulator in §15 starts too.` },
+    { stage:`<div class="ptree">
+        ${node("runc create mycontainer","namespaces + cgroup dirs + mounts set up")}
+        <div class="strunk" style="height:14px"></div>
+        ${node("container init process","forked into the new namespaces — BLOCKED reading exec.fifo","sigq")}
+      </div>`,
+      cap:`<b>create</b> does essentially everything: clone() with the right flags (chapter 2/3), write the cgroup interface files (chapter 5), mount the mounts[] array, drop capabilities, load the seccomp filter (chapter 8) — then the resulting process opens a named FIFO for reading and blocks. It has NOT execve'd the user's command.` },
+    { stage:`<div class="ptree">
+        ${node("status: created","runc state mycontainer shows status = created, pid 48213")}
+      </div>
+      <p style="text-align:center;color:var(--dim);font-family:var(--mono);font-size:11px;margin-top:10px">← this is exactly when a CNI plugin wires up the network namespace from the host side</p>`,
+      cap:`<b>created</b> is an observable, stable state — an orchestrator can query it, attach networking to the (already-existing) network namespace, and take as long as it needs, because nothing inside the container is running yet to race against.` },
+    { stage:`<div class="ptree">
+        ${node("runc start mycontainer","opens exec.fifo for WRITING — unblocks the read")}
+        <div class="strunk" style="height:14px"></div>
+        ${node("execve(entrypoint)","status: running","new")}
+      </div>`,
+      cap:`<b>start</b> does almost nothing computationally — it just opens the FIFO, which is the entire signal. The blocked process's read() returns, and it immediately execve()s the real command. This is the cheapest of the four verbs by design.` },
+    { stage:`<div class="ptree">
+        ${node("runc kill mycontainer TERM","signal delivered to the container's PID 1 inside its namespaces","sigq")}
+        <div class="strunk" style="height:14px"></div>
+        ${node("status: stopped","process has exited — cgroup and namespaces still exist on disk","crash")}
+      </div>`,
+      cap:`<b>kill</b> is a plain signal delivery — SIGTERM by default, anything you name. The container's PID 1 decides how to react, exactly like any other process receiving a signal; the runtime does not force an exit.` },
+    { stage:`<div class="ptree">
+        ${node("runc delete mycontainer","cgroup directory removed, /run/runc/<id> state cleaned up","gone")}
+      </div>`,
+      cap:`<b>delete</b> is only valid once <code>stopped</code> — it releases every kernel-side resource the runtime is still holding a reference to (the cgroup directory, the state file), leaving nothing behind but the bundle you started with. The container object itself now needs a fresh <code>create</code> to exist again.` }
+  ];
+  stepper("deckLifecycle", steps);
+})();
+
+/* ============================================================
+   6. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  rootfs:{ n:"rootfs/", f:"bundle directory — root.path in config.json", r:"The container's root filesystem, laid out on disk exactly as the process will see it after pivot_root. Chapter 10 shows how image layers get unpacked into this exact shape.", l:"Exists before create, unaffected by the lifecycle verbs, deleted only when whatever produced it (an engine's storage driver) decides to.", d:"Inert data — 'deleting' a container never touches this unless the caller explicitly cleans it up separately." },
+  configjson:{ n:"config.json", f:"bundle directory, next to rootfs/", r:"The single file this whole chapter is about: process, root, mounts, linux.namespaces/resources/maskedPaths. Versioned via ociVersion.", l:"Read once, at create time. Changing it after create has no effect on the running container — the runtime never re-reads it.", d:"A missing or malformed config.json makes create fail before any namespace is ever touched." },
+  runc:{ n:"runc", f:"github.com/opencontainers/runc — Go", r:"Docker/containerd's default low-level runtime. Implements all four verbs plus exec/pause/list/spec. The direct descendant of Docker's original libcontainer.", l:"One process per invocation of a verb — not a daemon. Exits as soon as create/start/kill/delete/state returns.", d:"A runc bug is a bug in a process that ran briefly, privileged, during container setup — CVE-2019-5736 (§11) lived exactly here." },
+  crun:{ n:"crun", f:"github.com/containers/crun — C", r:"Podman/CRI-O's default low-level runtime on most Fedora-family systems. Implements the identical verb set as a from-scratch, smaller, faster C program.", l:"Same one-shot-per-verb invocation model as runc — no daemon, no persistent process between calls.", d:"Same trust-boundary shape as runc, different bug class (manual memory management vs. Go's managed runtime)." },
+  shim:{ n:"containerd-shim-runc-v2", f:"part of containerd, sits between the daemon and runc", r:"Keeps the container's stdio pipes and exit status alive even if containerd itself restarts, and is what actually invokes runc's verbs on containerd's behalf. Covered in depth in chapter 12.", l:"One shim process per running container, for the container's entire lifetime — unlike runc, which exits between verb calls.", d:"If the shim dies, the container itself is unaffected (it's just a normal process by now) but containerd loses its handle on it until it reattaches." },
+  conmon:{ n:"conmon", f:"github.com/containers/conmon, used by Podman/CRI-O", r:"Podman's equivalent long-lived monitor: one conmon per container, holding stdio and reporting exit status, invoking crun (or runc) directly — no daemon above it required. Chapter 12 compares this to containerd's shim in depth.", l:"Lives for the container's lifetime, same role as the shim, different ownership model (spawned directly by the podman CLI, not by a persistent daemon).", d:"conmon dying orphans the container's stdio handling but, like the shim, doesn't kill the container process itself." },
+  kernel:{ n:"kernel primitives", f:"chapters 2–8, in full", r:"Everything the runtime binary actually calls: clone()/unshare() for namespaces, writes to cgroup v2 interface files, mount()/pivot_root() for the mounts array, capset() for capabilities, and a seccomp-bpf filter load. Nothing in this list is OCI-specific — the spec just standardizes how to describe which of these to invoke.", l:"Kernel state, not a process — exists for as long as the namespaces/cgroup have a living reference.", d:"This is the layer that cannot lie: whatever the kernel actually enforces is the ground truth, regardless of what config.json claimed." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">FAILURE MODE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("configjson");
+
+/* ============================================================
+   7. RESOURCE SLIDERS → cgroup files (§8c)
+   ============================================================ */
+(function(){
+  function render(){
+    const mem = +el("res-mem").value, cores = +el("res-cpu").value, pids = +el("res-pids").value;
+    el("res-mem-val").textContent = mem + " MB";
+    el("res-cpu-val").textContent = cores.toFixed(2);
+    el("res-pids-val").textContent = pids;
+    const bytes = mem*1024*1024;
+    const period = 100000, quota = cores*100000;
+    el("res-json").innerHTML = `{
+  <span class="t">"memory"</span>: { <span class="t">"limit"</span>: <span class="n">${bytes}</span> },
+  <span class="t">"cpu"</span>: { <span class="t">"quota"</span>: <span class="n">${quota}</span>, <span class="t">"period"</span>: <span class="n">${period}</span> },
+  <span class="t">"pids"</span>: { <span class="t">"limit"</span>: <span class="n">${pids}</span> }
+}`;
+    el("res-note").innerHTML = `Whichever runtime reads this writes three cgroup v2 interface files (chapter 5) verbatim from these numbers: <code>memory.max</code> = <b style="color:var(--pg)">${bytes}</b>, <code>cpu.max</code> = <b style="color:var(--pg)">"${quota} ${period}"</b> (≈ <b>${cores.toFixed(2)}</b> cores), <code>pids.max</code> = <b style="color:var(--pg)">${pids}</b>. None of this is engine-specific — Docker and Podman both arrive at the same three file writes through completely different code paths above the runtime.`;
+  }
+  el("res-mem").oninput = render;
+  el("res-cpu").oninput = render;
+  el("res-pids").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. PERF CHART (§10)
+   ============================================================ */
+(function(){
+  let showRunc = true, showCrun = true;
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  const FIXED = { runc: 28, crun: 4 };      // ms, language-runtime fixed cost per process spawn
+  const MARGINAL = { runc: 6, crun: 3.2 };  // ms, per-container marginal cost
+  function cumulative(n, eng){ let t=0, arr=[]; for(let i=1;i<=n;i++){ t += FIXED[eng] + MARGINAL[eng]; arr.push(t); } return arr; }
+  function render(){
+    const n = +el("perf-n").value;
+    el("perf-n-val").textContent = n;
+    el("perf-runc").classList.toggle("on", showRunc);
+    el("perf-crun").classList.toggle("on", showCrun);
+    const W = cv.width, H = cv.height, PAD = 36;
+    ctx.clearRect(0,0,W,H);
+    const runcArr = cumulative(n,"runc"), crunArr = cumulative(n,"crun");
+    const maxY = Math.max(runcArr[runcArr.length-1]||1, crunArr[crunArr.length-1]||1);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [0,.25,.5,.75,1].forEach(f=>{ const x = PAD+f*(W-PAD-16); ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,H-20); ctx.stroke(); ctx.fillText(Math.round(f*n), x-8, H-6); });
+    function curve(arr, color){
+      if (!arr.length) return;
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      arr.forEach((v,i)=>{ const x=PAD+(i/(n-1||1))*(W-PAD-16), y=H-24-(v/maxY)*(H-44); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+    }
+    if (showRunc) curve(runcArr, "#2496ed");
+    if (showCrun) curve(crunArr, "#892ca0");
+    const runcTotal = runcArr[runcArr.length-1]||0, crunTotal = crunArr[crunArr.length-1]||0;
+    el("perf-note").innerHTML = `Spawning <b>${n}</b> containers: runc ≈ <b style="color:var(--docker)">${runcTotal.toFixed(0)} ms</b> total, crun ≈ <b style="color:var(--podman)">${crunTotal.toFixed(0)} ms</b> total — crun finishes in roughly <b>${(runcTotal/Math.max(crunTotal,1)).toFixed(1)}×</b> less wall time in this model, almost entirely because of the ${FIXED.runc}ms-vs-${FIXED.crun}ms fixed cost paid on every single spawn, not the marginal per-container work.`;
+  }
+  el("perf-n").oninput = render;
+  el("perf-runc").onclick = ()=>{ showRunc=!showRunc; render(); };
+  el("perf-crun").onclick = ()=>{ showCrun=!showCrun; render(); };
+  render();
+})();
+
+/* ============================================================
+   9. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"What's the actual difference between `runc create` and `runc start`? Why not one `run` verb?", hint:"what needs to happen to the container's network namespace before the workload runs?",
+    a:"create performs every piece of setup — namespace creation, cgroup writes, mounts, capability drop, seccomp load — and forks the container's init process into those namespaces, but that process blocks reading an exec.fifo instead of running the entrypoint. start simply opens that fifo for writing, which unblocks the read and lets the process execve() the real command. Splitting them creates an observable 'created' state in which the network namespace already exists but nothing has run inside it yet — exactly the window a CNI plugin needs to attach the interface and assign an address from the host side, race-free, before the workload could possibly interfere. A single run verb would eliminate that window entirely." },
+  { lvl:"SENIOR", q:"A config.json has `root.readonly: false` and no readonlyPaths entries. Is /etc inside the container writable?", hint:"root.readonly and readonlyPaths are two independent mechanisms",
+    a:"Yes. root.readonly controls whether the ENTIRE rootfs mount is remounted read-only — with it false, the whole filesystem (including /etc) is writable by default, subject only to normal Unix permissions. readonlyPaths is a completely separate, narrower mechanism that remounts specific individual paths (conventionally proc/sys hardening targets like /proc/sysrq-trigger) read-only regardless of root.readonly's value. The two fields solve different problems: root.readonly is a blanket policy choice (`docker run --read-only`), readonlyPaths is defense-in-depth for specific sensitive kernel-exposed files even when the rest of the filesystem stays writable." },
+  { lvl:"STAFF", q:"Trace exactly what exists between `runc create mycontainer` returning and someone running `runc start mycontainer`.", hint:"a real OS process, blocked on a real syscall",
+    a:"A real Linux process exists: it has been clone()'d into the new PID/mount/UTS/IPC/network namespaces (whichever config.json listed), its cgroup has been created and the resource-limit files already written, its mounts[] array has already been mounted, capabilities have already been dropped to the bounding set, and the seccomp filter is already loaded. It has NOT called execve() on the user's entrypoint. Concretely, it is blocked inside a read() syscall on a named pipe (runc's exec.fifo, crun's sync socket) in the container's state directory — fully caged, fully namespaced, doing nothing, waiting for one specific byte to arrive." },
+  { lvl:"STAFF", q:"Why does crun typically start faster than runc — purely the language, or is there an architectural reason too?", hint:"what does a Go binary have to do before it can even reach main()'s first line of your logic?",
+    a:"Both: language is the larger factor, but it's not just 'C is fast.' A Go binary has to initialize the goroutine scheduler and garbage collector before user code runs at all — fixed overhead paid once per process, and runc is invoked as a brand-new OS process for every single verb call (create is one process, start is another). crun, as a small C program using the syscalls almost directly with no managed runtime to bootstrap, pays close to zero fixed cost per invocation. The architectural amplifier is that both engines invoke the runtime binary freshly per verb rather than keeping a runtime process resident — so whatever a language's startup tax is, it's paid on every create AND every start, which is exactly why the gap in §10's chart compounds with container count rather than staying flat." },
+  { lvl:"STAFF", q:"A bundle's config.json is missing `pid` from linux.namespaces. What can that container's process 1 see and do that it normally couldn't?", hint:"chapter 2's PID namespace lesson, applied",
+    a:"Its 'PID 1' is not actually PID 1 of any namespace — it's just an ordinary process with its real host PID, visible in `ps` on the host and every other namespace that shares the host PID namespace. It can see every other process's PID, can send signals to any process it has permission to signal (which, combined with weak capability/UID restrictions, can mean host processes), and there is no PID-namespace boundary reaping it specially or hiding the rest of the machine's process tree from it. This is precisely the kind of misconfiguration that makes `docker run --pid=host` a deliberate, audited exception rather than a default." },
+  { lvl:"PRINCIPAL", q:"Can a hardware-VM-based runtime like Kata Containers be OCI-runtime-spec compliant? What does your answer reveal about what the spec actually guarantees?", hint:"read the spec's text literally — does it mention namespaces anywhere as a requirement?",
+    a:"Yes, and it is — kata-runtime (and gVisor's runsc, via a different mechanism again) both accept the identical bundle format and implement the identical create/start/kill/delete/state verb set. Kata just implements 'create' by booting a lightweight VM around the workload instead of calling clone(); the container process's isolation boundary is a hypervisor, not a kernel namespace. This reveals that OCI compliance is purely an API/wire-format contract — it says absolutely nothing about the isolation mechanism, the isolation strength, or the attack surface underneath. 'OCI compliant' is not a security claim; treating it as one is the single most common misunderstanding of this spec in the industry." },
+  { lvl:"PRINCIPAL", q:"Podman has no long-lived daemon translating commands into OCI runtime calls the way containerd does for Docker. What has to exist instead, and why doesn't that cost Podman OCI compliance?", hint:"OCI compliance is a property of the runtime binary, not of whatever calls it",
+    a:"Podman embeds the equivalent of containerd's client-side logic directly into its own CLI process plus a lightweight per-container monitor, conmon, which plays the same stdio/exit-status-holding role as containerd's shim — but is spawned directly by the podman command rather than by a persistent daemon. Compliance is unaffected because the OCI runtime spec constrains the runtime binary's interface (crun or runc) and the bundle it consumes — it says nothing about what process tree sits above that binary invoking its verbs. Whether create/start/kill/delete are called by a long-lived daemon's RPC handler or by a short-lived CLI invocation's direct exec() is entirely outside the spec's scope, which is exactly why Podman's fork-exec architecture (chapter 12) and Docker's daemon architecture can both legitimately claim full OCI compliance." }
+]);
+
+const QUIZ = [
+  { q:"What does 'OCI runtime compliant' actually guarantee about a piece of software?",
+    opts:[ "It uses Linux namespaces and cgroups for isolation",
+           "It consumes a bundle (rootfs + config.json) and exposes create/start/kill/delete with the spec's state names",
+           "It can run any image pulled from Docker Hub",
+           "It runs without requiring root privileges" ],
+    a:1,
+    why:"Compliance is purely an interface contract: given a conforming bundle, the binary implements the mandated verbs and reports one of the spec's four status strings. Option A is false — Kata Containers (VM-based) and gVisor's runsc (userspace-kernel-based) are both OCI compliant without relying on host namespaces the way runc/crun do. Option C is image-spec/distribution-spec territory (chapters 10–11), a completely separate specification. Option D describes one specific configuration (rootless), not a spec requirement — most OCI runtimes run rootful by default." },
+  { q:"In the OCI lifecycle, what does the 'created' status mean?",
+    opts:[ "The container's process has already execve'd the user's entrypoint",
+           "Namespaces, cgroups, and mounts are set up and the container's init process exists, blocked before running the user's command",
+           "The bundle directory has been validated on disk, but no process exists yet",
+           "The low-level runtime binary itself has finished installing" ],
+    a:1,
+    why:"created is a real, observable state of a real, already-forked-and-namespaced process — it is not 'about to exist' (option C) and definitely not 'already running' (option A, which is the 'running' status). The process has been fully caged (mounts done, capabilities dropped, seccomp loaded) but is deliberately blocked before execve(), which is exactly the window that allows networking setup to happen safely. Option D confuses the runtime binary's own installation with a specific container's lifecycle, which are unrelated." },
+  { q:"Which of these fields lives under `process`, not `linux`, in config.json?",
+    opts:[ "namespaces", "resources.memory.limit", "args / env / cwd", "maskedPaths" ],
+    a:2,
+    why:"args, env, and cwd describe WHAT to run and are process-level concerns independent of the isolation mechanism — the same process object could in principle be handed to a namespace-based runtime or a VM-based one. namespaces, resources, and maskedPaths are all specifically Linux kernel isolation mechanisms and live under the linux object, which is why a hypothetical non-Linux OCI runtime could ignore that entire object while still needing to honor process." },
+  { q:"Why is `runc start` a separate verb from `runc create` instead of one runtime call doing everything?",
+    opts:[ "Performance — starting is slow, so engines defer it",
+           "To create a window in which an orchestrator can wire up networking (e.g. via CNI) after namespaces exist but before the workload runs",
+           "Security — start requires root while create does not",
+           "Historical accident with no remaining purpose" ],
+    a:1,
+    why:"The split exists specifically to create the 'created but not running' window: the network namespace (and every other namespace) already exists after create, so a CNI plugin or equivalent can attach an interface, assign an address, and install routes from the host side with zero risk of racing against code the container itself might run. Option A has it backwards — start is the CHEAP verb (it just unblocks a blocked process); option C is false, both verbs need equivalent privilege to act on the container's namespaces; and as §8(b) showed, the split is very much still load-bearing today, not vestigial." },
+  { q:"crun typically achieves a faster container start than runc primarily because:",
+    opts:[ "crun skips cgroup setup entirely",
+           "crun is a small C binary with no managed-language runtime to initialize, performing the setup syscalls close to directly",
+           "crun uses an incompatible, proprietary config.json format that's faster to parse",
+           "crun never creates a mount namespace" ],
+    a:1,
+    why:"crun still does every namespace/cgroup/mount/capability/seccomp step runc does — it consumes the identical config.json (option C is false; that would break OCI compliance entirely) and still sets resource limits (option A false) and mount namespaces (option D false). The speed difference is architectural: runc is invoked fresh as a new Go process for every verb call and pays that language runtime's fixed initialization cost (scheduler, GC) every single time, while crun's C binary has essentially none of that fixed cost to pay." },
+  { q:"`linux.maskedPaths` in config.json exists to:",
+    opts:[ "Mark files that must be deleted from the image after the container exits",
+           "Bind-mount something inert (conventionally /dev/null) over specific procfs/sysfs paths so a process can't read sensitive kernel info even from inside its own PID namespace",
+           "Encrypt specific paths inside the container at rest",
+           "Tell the image build process which paths to skip when creating a layer" ],
+    a:1,
+    why:"Some files under /proc and /sys expose host kernel state that a PID/mount namespace alone doesn't hide — /proc/kcore (raw kernel memory), /proc/keys, and similar nodes are visible to a process even though it's fully namespaced, because they're kernel-global rather than per-namespace. maskedPaths tells the runtime to bind-mount something empty over exactly those specific files as an extra, targeted layer of hardening — it has nothing to do with image layers (chapter 10), encryption, or build-time file exclusion." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could write the spec's test suite.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks, then hand-write a bundle yourself in the simulator — the create/start split clicks fast once you've blocked on the fifo yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+(function(){
+  const CORRECT = [
+    "Prepare the bundle: rootfs/ directory + config.json on disk",
+    "runc create mycontainer — namespaces, cgroups, mounts set up; init process forked, blocks on exec.fifo",
+    "runc state mycontainer reports status \"created\"",
+    "Orchestrator wires up networking into the already-existing network namespace",
+    "runc start mycontainer — exec.fifo opened for writing, unblocking the init process",
+    "Container process execve()s the entrypoint; runc state now reports \"running\"",
+    "runc kill mycontainer TERM — signal delivered to the container's PID 1",
+    "runc delete mycontainer — cgroup directory and /run/runc/<id> state cleaned up"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real lifecycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+qaCards("qa-check", [
+  { lvl:"THINK", q:"You've now hand-built a bundle with a rootfs/ directory that you filled in yourself. In practice, nobody hand-builds rootfs/ for real workloads — a `docker pull` or `podman pull` produces it. What do you think has to happen between 'here is an image reference like nginx:1.27' and 'here is a rootfs/ directory runc create can consume'?",
+    a:"Chapter 10's answer: an image reference resolves to a manifest listing an ordered set of content-addressed layer blobs; each layer is a filesystem diff (a tarball of changed files, conventionally including whiteout markers for deletions); the engine downloads and unpacks each layer in order into what becomes the overlayfs lowerdirs (chapter 6), and the final merged view of all of them IS the rootfs/ directory this chapter treated as a given. The bundle format you learned this chapter is the stable target every image-building and image-pulling mechanism ultimately has to produce." },
+  { lvl:"THINK", q:"config.json is written once and read once, at create time. If two builds of 'the same' image produce byte-identical rootfs/ contents but the resulting containers still behave differently, where would you look first, and why does chapter 10 specifically care about this?",
+    a:"Chapter 10's answer: look at the manifest and layer digests, not the unpacked filesystem — content addressing means two byte-identical layers always hash identically, so a divergence points either at a different base image layer, a different build-time instruction order changing which layer owns which file, or non-reproducible build steps (timestamps, package-manager cache state) baked into a layer. This is exactly why the chapter distinguishes a mutable tag like `nginx:latest` from an immutable digest — 'the same image' by tag is not a guarantee, 'the same image' by digest is." },
+  { lvl:"THINK", q:"This chapter's simulator let you swap the runtime chip between runc and crun with zero other changes. Chapter 10 introduces BuildKit (Docker) and Buildah (Podman) as two different ways of producing the layers that become rootfs/. Predict: will swapping the image builder be as clean a swap as swapping the runtime was — why or why not?",
+    a:"Chapter 10's answer: mostly yes, for the same underlying reason — both builders target the OCI Image Spec's manifest and layer format, just as runc and crun both targeted the OCI Runtime Spec's bundle format. The output (a set of content-addressed layers plus a manifest) is the shared, versioned contract; what differs is each builder's internal approach (BuildKit's DAG-based parallel build graph vs. Buildah's more direct, scriptable layer-by-layer construction) — an implementation-detail difference exactly analogous to Go vs. C in this chapter, not a compatibility difference." }
+]);
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-09"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+
+/* ============================================================
+   10. CHROME: readbar, scrollspy, keys
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+/* ============================================================
+   11. SIMULATOR (§15) — hand-write a bundle, run it with runc/crun
+   ============================================================ */
+(function(){
+  const NS_LIST = ["pid","net","mnt","uts","ipc"];
+  const NS_LABEL = { pid:"pid", net:"network", mnt:"mount", uts:"uts", ipc:"ipc" };
+  const S = {
+    runtime: "runc",
+    rootfsReady: false,
+    ns: { pid:true, net:true, mnt:true, uts:true, ipc:true },
+    memMB: 256,
+    status: "none",      // none | creating | created | running | stopped | deleted
+    pid: null,
+    creates:0, starts:0, ooms:0,
+    memUsedMB: 0,
+    lastLatency: null
+  };
+
+  function log(lv, msg){
+    const box = el("sim-log");
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = `[${lv}] ${msg}`;
+    box.appendChild(d);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function j(v){
+    if (typeof v === "string") return `<span class="s">"${v}"</span>`;
+    if (typeof v === "number" || typeof v === "boolean") return `<span class="n">${v}</span>`;
+    return String(v);
+  }
+  function buildConfigHTML(){
+    const nsArr = NS_LIST.filter(k=>S.ns[k]).map(k=>`{ ${jk("type")}: ${j(NS_LABEL[k]==="network"?"network":NS_LABEL[k])} }`);
+    function jk(k){ return `<span class="t">"${k}"</span>`; }
+    return `{
+  ${jk("ociVersion")}: ${j("1.0.2")},
+  ${jk("root")}: { ${jk("path")}: ${j("rootfs")}, ${jk("readonly")}: ${j(false)} },
+  ${jk("process")}: {
+    ${jk("args")}: [${j("/bin/sh")}, ${j("-c")}, ${j("echo hello")}],
+    ${jk("cwd")}: ${j("/")}
+  },
+  ${jk("linux")}: {
+    ${jk("namespaces")}: [${nsArr.join(", ") || "<span class=\"c\">/* none — shares host namespaces */</span>"}],
+    ${jk("resources")}: {
+      ${jk("memory")}: { ${jk("limit")}: ${j(S.memMB*1024*1024)} }
+    }
+  }
+}`;
+  }
+
+  function renderConfig(){
+    el("sim-cfg-runtime").textContent = S.runtime;
+    el("sim-cfg-pre").innerHTML = buildConfigHTML();
+  }
+
+  function renderNode(){
+    const node = el("sim-node"), sub = el("sim-node-sub");
+    node.classList.remove("gone","sigq","new","crash","pm");
+    if (S.status === "none"){ node.classList.add("gone"); sub.textContent = "no container object exists"; }
+    else if (S.status === "creating"){ node.classList.add("sigq"); sub.textContent = "namespaces + cgroup + mounts being set up…"; }
+    else if (S.status === "created"){ node.classList.add("sigq"); sub.textContent = `PID ${S.pid} · blocked on exec.fifo · status: created`; }
+    else if (S.status === "running"){ node.classList.add("new"); sub.textContent = `PID ${S.pid} · status: running`; }
+    else if (S.status === "stopped"){ node.classList.add("crash"); sub.textContent = `PID ${S.pid} exited · status: stopped`; }
+    else if (S.status === "deleted"){ node.classList.add("gone"); sub.textContent = "deleted — cgroup + state cleaned up"; }
+    el("sim-phase").textContent = S.status.toUpperCase();
+    el("sim-bundle-rootfs").textContent = S.rootfsReady ? "(prepared)" : "(not prepared)";
+  }
+
+  function renderInsp(){
+    const insp = el("sim-insp");
+    let body;
+    if (S.status === "none") body = `<div style="color:var(--dim)">no container object exists — call create</div>`;
+    else body = `<div>status: <b style="color:var(--pg)">${S.status}</b>${S.pid?` · pid <span class="i-pid">${S.pid}</span>`:""}<br><span style="color:var(--dim)">runtime: ${S.runtime}</span></div>`;
+    insp.innerHTML = `<div class="i-t">STATUS</div>${body}`;
+  }
+
+  function renderMeters(){
+    const memPct = Math.min(100, Math.round(S.memUsedMB / S.memMB * 100));
+    el("m-mem-v").textContent = `${S.memUsedMB.toFixed(0)} / ${S.memMB} MB`;
+    const mf = el("m-mem"); mf.style.width = memPct+"%"; mf.className = "m-fill " + (memPct>=100?"hot":memPct>70?"warm":"");
+    if (S.lastLatency == null){ el("m-lat-v").textContent = "—"; el("m-lat").style.width="0%"; }
+    else { el("m-lat-v").textContent = S.lastLatency.toFixed(0)+" ms"; el("m-lat").style.width = Math.min(100, S.lastLatency/2)+"%"; }
+    el("cnt-creates").textContent = S.creates;
+    el("cnt-starts").textContent = S.starts;
+    el("cnt-ooms").textContent = S.ooms;
+  }
+
+  function render(){ renderConfig(); renderNode(); renderInsp(); renderMeters(); }
+
+  function errPrefix(){ return S.runtime === "runc" ? "ERRO[0000]" : "crun:"; }
+
+  function doCreate(){
+    if (S.status !== "none" && S.status !== "deleted"){
+      log("FATAL", `${errPrefix()} container with id exists: mycontainer`); return;
+    }
+    if (!S.rootfsReady){
+      log("FATAL", `${errPrefix()} ${S.runtime==="runc" ? 'runc create failed: starting container process caused: error mounting "rootfs" to rootfs: mount source path does not exist' : "open rootfs: no such file or directory"}`);
+      return;
+    }
+    S.status = "creating"; render();
+    log("LOG", `$ ${S.runtime} create mycontainer`);
+    setTimeout(()=>{
+      S.pid = 40000 + Math.floor(Math.random()*9000);
+      S.status = "created";
+      S.creates++;
+      S.memUsedMB = 0;
+      log("OK", `namespaces [${NS_LIST.filter(k=>S.ns[k]).map(k=>NS_LABEL[k]).join(",")||"none"}] created, cgroup written, mounts done`);
+      log("LOG", `container init pid ${S.pid} blocked reading exec.fifo`);
+      log("HINT", `$ ${S.runtime} state mycontainer → {"status":"created","pid":${S.pid}}`);
+      render();
+    }, 300);
+  }
+
+  function doStart(){
+    if (S.status !== "created"){
+      log("FATAL", `${errPrefix()} container ${S.status==="none"||S.status==="deleted" ? "does not exist" : `cannot start a container in the ${S.status} state`}`);
+      return;
+    }
+    const t0 = performance.now();
+    const fixed = S.runtime === "runc" ? 28 : 4;
+    const latency = fixed + 6 + Math.random()*8;
+    log("LOG", `$ ${S.runtime} start mycontainer`);
+    setTimeout(()=>{
+      S.status = "running";
+      S.starts++;
+      S.lastLatency = latency;
+      S.memUsedMB = Math.min(S.memMB*0.3, 40);
+      log("OK", `exec.fifo opened for writing — init process execve()'d the entrypoint`);
+      log("HINT", `$ ${S.runtime} state mycontainer → {"status":"running","pid":${S.pid}}`);
+      render();
+    }, 80);
+  }
+
+  function doKill(){
+    if (S.status !== "running"){
+      log("FATAL", `${errPrefix()} container not running: cannot deliver signal`); return;
+    }
+    log("LOG", `$ ${S.runtime} kill mycontainer TERM`);
+    S.status = "stopped";
+    log("OK", `SIGTERM delivered to PID ${S.pid} inside its namespaces — process exited`);
+    render();
+  }
+
+  function doDelete(){
+    if (S.status !== "stopped" && S.status !== "created"){
+      log("FATAL", `${errPrefix()} container mycontainer is ${S.status==="none"?"nonexistent":S.status}: cannot delete a running container`);
+      return;
+    }
+    log("LOG", `$ ${S.runtime} delete mycontainer`);
+    S.status = "deleted";
+    S.pid = null;
+    S.memUsedMB = 0;
+    log("OK", `cgroup directory and state removed — bundle on disk is untouched`);
+    render();
+  }
+
+  function doState(){
+    if (S.status === "none" || S.status === "deleted"){
+      log("WARN", `${errPrefix()} container does not exist`); return;
+    }
+    log("HINT", `{"ociVersion":"1.0.2","id":"mycontainer","status":"${S.status}","pid":${S.pid},"bundle":"/run/bundles/mycontainer"}`);
+  }
+
+  function doOom(){
+    if (S.status !== "running"){ log("WARN", "container isn't running — nothing to allocate inside"); return; }
+    log("WARN", `workload calling malloc() far past memory.max (${S.memMB} MB)…`);
+    let step = 0;
+    const iv = setInterval(()=>{
+      step++;
+      S.memUsedMB = Math.min(S.memMB*1.15, S.memUsedMB + S.memMB*0.25);
+      render();
+      if (S.memUsedMB >= S.memMB*0.98 || step>6){
+        clearInterval(iv);
+        S.ooms++;
+        S.status = "stopped";
+        log("PANIC", `cgroup OOM: memory.max (${S.memMB} MB) exceeded — kernel invoked the OOM killer inside the cgroup, PID ${S.pid} killed`);
+        render();
+      }
+    }, 220);
+  }
+
+  function bindChip(id, key, group){
+    el(id).onclick = ()=>{
+      S.ns[key] = !S.ns[key];
+      el(id).classList.toggle("on", S.ns[key]);
+      renderConfig();
+    };
+  }
+
+  el("sim-rootfs").onclick = ()=>{
+    S.rootfsReady = !S.rootfsReady;
+    el("sim-rootfs").textContent = "rootfs: " + (S.rootfsReady?"ready":"not ready");
+    el("sim-rootfs").classList.toggle("on", S.rootfsReady);
+    log("LOG", S.rootfsReady ? "rootfs/ prepared on disk (image layers extracted — chapter 10)" : "rootfs/ removed from bundle directory");
+    render();
+  };
+  el("sim-runtime").onclick = ()=>{
+    S.runtime = S.runtime === "runc" ? "crun" : "runc";
+    el("sim-runtime").textContent = "runtime: " + S.runtime;
+    render();
+  };
+  bindChip("ns-pid","pid"); bindChip("ns-net","net"); bindChip("ns-mnt","mnt"); bindChip("ns-uts","uts"); bindChip("ns-ipc","ipc");
+
+  el("sim-mem").oninput = e=>{ S.memMB = +e.target.value; el("sim-mem-val").textContent = S.memMB+" MB"; renderConfig(); renderMeters(); };
+
+  el("sim-create").onclick = doCreate;
+  el("sim-start").onclick = doStart;
+  el("sim-kill").onclick = doKill;
+  el("sim-delete").onclick = doDelete;
+  el("sim-state").onclick = doState;
+  el("sim-oom").onclick = doOom;
+  el("sim-reset").onclick = ()=>{
+    S.status = "none"; S.pid = null; S.rootfsReady = false; S.memUsedMB = 0; S.lastLatency = null;
+    el("sim-rootfs").textContent = "rootfs: not ready"; el("sim-rootfs").classList.remove("on");
+    el("sim-log").innerHTML = "";
+    log("LOG", "lab reset — bundle directory is empty again");
+    render();
+  };
+
+  log("LOG", "bundle directory ready: config.json present, rootfs/ not prepared");
+  log("HINT", "Try: start before create → create with rootfs not ready → create, start, then inspect state → drag memory down and hit 'alloc past memory.max'.");
+  render();
+})();
+</script>
+</body>
+</html>

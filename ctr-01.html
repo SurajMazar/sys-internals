@@ -1,0 +1,1719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-01 · Genesis: From chroot to the OCI Spec — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),#3b82f6);width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- engine chips ---------- */
+  .eng{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;border-radius:6px;
+    padding:1px 8px;font-weight:700}
+  .eng.docker{color:var(--docker);background:rgba(36,150,237,.12);border:1px solid rgba(36,150,237,.35)}
+  .eng.podman{color:var(--podman);background:rgba(137,44,160,.14);border:1px solid rgba(137,44,160,.4)}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* process/tree frames */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:900px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:76px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* memory/segment bars */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* sim process card */
+  .sim-proc{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:14px;padding:16px;
+    font-family:var(--mono);font-size:12px;margin-bottom:14px;transition:all .3s}
+  .sim-proc.jailed{border-color:var(--pg);box-shadow:0 0 22px rgba(45,212,191,.08)}
+  .sim-proc .sp-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border);font-size:11.5px}
+  .sim-proc .sp-row:last-child{border-bottom:none}
+  .sim-proc .sp-k{color:var(--dim)}
+  .sim-proc .sp-v{color:#c6cddb;text-align:right;max-width:64%}
+  .sim-proc .sp-v.ok{color:var(--ok)}
+  .sim-proc .sp-v.bad{color:var(--bad)}
+  .primlist{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .primchip{border:1px solid var(--border-hi);background:var(--bg-2);border-radius:10px;padding:8px 12px;
+    font-family:var(--mono);font-size:11.5px;cursor:pointer;transition:all .15s;color:var(--muted);flex:1;min-width:120px;text-align:center}
+  .primchip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim);box-shadow:0 0 14px rgba(45,212,191,.15)}
+  .primchip .pc-y{display:block;font-size:9px;color:var(--dim);margin-top:2px}
+  .primchip.on .pc-y{color:var(--pg)}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#3b82f6);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 01 / 16</b> · Genesis</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Layer It Up</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Production Examples</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 01</div>
+  <h1>Genesis: From <code style="background:none;border:none;padding:0;color:inherit;font-size:.86em">chroot</code><br><span class="grad">to the OCI Spec</span></h1>
+  <p class="lead">A "container" is not a technology. It is a <b>name we gave, after the fact, to a combination</b> of
+  kernel primitives that were invented decades apart, by different people, solving different problems, that
+  nobody originally intended to be used together. This chapter reconstructs that combination piece by piece —
+  <code>chroot()</code> in 1979, cgroups in 2006, namespaces trickling in across a decade, Docker's 2013
+  packaging of all of it — so that when later chapters open each primitive up, you already know exactly which
+  gap it was invented to close and why the others weren't enough.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Name every primitive a "container" is built from and the year and reason each one shipped.</div>
+    <div class="obj"><b>You will understand</b>Why Docker's 2013 contribution was tooling and distribution, not a new isolation primitive.</div>
+    <div class="obj"><b>You will predict</b>What a process can still see or do with any subset of {chroot, namespaces, cgroups, capabilities} applied.</div>
+    <div class="obj"><b>You will simulate</b>Toggling isolation primitives onto a live process and watching its view of the world change.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">One kernel, many tenants, zero trust between them</h2>
+  <p class="lead">Strip away every buzzword and a "container" is an answer to one very old operating-systems
+  question: <b>how do you run someone else's untrusted program on your machine without giving them your
+  machine?</b> Not a new machine — that's what a hypervisor sells, at the cost of an entire second kernel,
+  second scheduler, second driver stack. The container's promise is narrower and cheaper: keep <i>one</i> kernel,
+  and make N processes running under it believe, as convincingly as the kernel can arrange, that each one has
+  the whole box to itself.</p>
+  <p>Unpacked, "believe it has the whole box" is actually four separate lies the kernel has to tell, and a real
+  isolation technology has to tell all four or it isn't finished:</p>
+  <ul class="plain">
+    <li><b>Filesystem lie.</b> "Your <code>/</code> is the only filesystem." In reality it's a directory somewhere
+      on the host, and every other tenant's files live one <code>..</code> away.</li>
+    <li><b>Process-tree lie.</b> "You are PID 1, and <code>ps</code> shows only your own descendants." In reality
+      there are hundreds of other tenants' PIDs in the same flat kernel PID space.</li>
+    <li><b>Resource lie.</b> "The CPU and RAM are yours." In reality every tenant shares the same physical cores
+      and the same physical memory, and one greedy tenant can starve the rest — the classic <i>noisy neighbor</i>.</li>
+    <li><b>Privilege lie.</b> "Root inside your world is root." In reality, if that's literally true, escaping to
+      the real root outside is one kernel bug away.</li>
+  </ul>
+  <p>What makes this hard is that <b>no single kernel feature tells all four lies</b>. Each one was solved by a
+  different subsystem, invented for a different original purpose, at a different point in Unix history — and a
+  "container" is simply the name the industry settled on, around 2013–2014, for the specific bundle of answers
+  that turned out to compose cleanly. Nothing in this bundle required a new kernel concept invented specifically
+  for containers; every primitive already existed for something else. That is the thesis of this chapter, and
+  by §7 you'll be able to defend it precisely.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT 15 CHAPTERS</div>
+    <p>Every later chapter is a deep dive into <i>one</i> of these four lies: chapters 2–4 cover namespaces (the
+    process-tree, filesystem-visibility, and privilege lies), chapter 5 covers cgroups (the resource lie),
+    chapter 6 covers the filesystem lie's storage layer (overlayfs), and chapters 7–8 cover capabilities and
+    seccomp/LSMs (hardening the privilege lie further). Keep this chapter's four-lies framing in your head —
+    it's the map for the whole course, and it's also exactly how <span class="eng docker">DOCKER</span> and
+    <span class="eng podman">PODMAN</span> diverge: both tell the same four lies using the same kernel primitives,
+    then differ entirely in <i>who tells them</i> — a root daemon, or your own shell.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Forty-six years, four unrelated research threads</h2>
+  <p>The primitives that make up a modern container were not co-designed. They came from four largely
+  unconnected lineages — Bell Labs filesystem hacking, BSD security research, Sun's commercial Unix, and
+  Google's internal datacenter scheduler — and only converged because Linux happened to accumulate all four.
+  Click through the timeline; each stop is a primitive or a piece of tooling this course will return to by name.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the road to the OCI spec</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · CONVERGENT EVOLUTION, NOT A MASTER PLAN</div>
+    <p><code>chroot()</code> (1979) solved a build-isolation problem inside AT&amp;T's own toolchain. FreeBSD
+    jails (2000) and Solaris Zones (2004) were built by commercial Unix vendors chasing multi-tenant hosting
+    revenue — a completely different industry than Linux kernel development at the time. Linux cgroups (2006)
+    came out of Google's need to schedule thousands of internal jobs on shared machines — a scheduling problem,
+    not a security problem. Linux namespaces trickled in as separate patches from separate authors across nearly
+    a decade (mount, 2002; UTS/IPC/PID, 2006; network, 2009; user, 2013) each solving one narrow visibility
+    problem. Nobody at any of these four points was building "Docker." The convergence is the story.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: chroot() alone</h2>
+  <p>Derive it honestly, starting from the oldest tool in the box. Bill Joy added <code>chroot()</code> to Unix
+  in 1979 (it shipped in 7th Edition, 1979, and BSD picked it up in 1982) so that a build could compile inside a
+  directory tree that looked like <code>/</code> without touching the real one. The syscall does exactly one
+  thing: it changes what a process — and every path it resolves afterward — considers to be its filesystem root.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>naive_container.c — the strawman, annotated</span></div>
+    <pre><span class="k">int</span> <span class="f">main</span>(<span class="k">void</span>)
+{
+    <span class="c">/* 1. Point the process root at an extracted "image" directory. */</span>
+    <span class="f">chroot</span>(<span class="s">"/var/lib/naive/rootfs"</span>);      <span class="c">/* root inode changes; nothing else does */</span>
+
+    <span class="c">/* 2. Mandatory: chroot() does NOT change the cwd. Forget this
+     *    line and relative-path lookups can still walk out.        */</span>
+    <span class="f">chdir</span>(<span class="s">"/"</span>);
+
+    <span class="c">/* 3. Hand off to the "containerized" program. */</span>
+    <span class="f">execve</span>(<span class="s">"/bin/sh"</span>, argv, envp);
+                                       <span class="c">/* ← still UID 0 if we started as root,      */</span>
+                                       <span class="c">/*   still sees every PID on the host,        */</span>
+                                       <span class="c">/*   still shares the host's every CPU/RAM    */</span>
+                                       <span class="c">/*   limit, still has every capability root   */</span>
+                                       <span class="c">/*   has, unrestricted.                       */</span>
+}</pre>
+  </div>
+
+  <p>This already solves a real slice of the filesystem lie: <code>ls /</code> inside now shows the image's root,
+  not the host's. That is genuinely useful and it is why <code>chroot</code>-based tools (BSD's
+  <code>jail</code> ancestor <code>chroot(8)</code>, countless build systems, early game servers) stayed in
+  production use for decades. But watch what it does <i>not</i> touch:</p>
+
+  <div class="widget deck" id="deckChroot">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">What chroot() alone actually isolates</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">chroot was never a security boundary — the kernel documentation says so</h2>
+  <p>The manual page for <code>chroot(2)</code> on every modern Linux distribution contains, almost verbatim
+  since the 1990s, a warning that this call "is not intended to be used for any kind of security purpose." Three
+  concrete, reproducible reasons back that up, and each one maps directly onto one of §1's four lies still being
+  unsolved:</p>
+  <ul class="plain">
+    <li><b>The escape is a two-syscall trick, not a bug.</b> A process with <code>CAP_SYS_CHROOT</code> (which
+      root has by default) can call <code>open("/", O_RDONLY)</code> <i>before</i> chrooting to stash a file
+      descriptor on the real root, then after chrooting into a fake root, call <code>fchdir(fd)</code> to jump the
+      current directory back outside the jail, then <code>chroot(".")</code> again — because <code>chroot()</code>
+      changes the root inode but leaves the current working directory exactly where it was if you engineer the
+      order of operations. A handful of lines of C, no CVE required, no kernel vulnerability — this is the syscall
+      working <i>exactly as specified</i>.</li>
+    <li><b>Zero resource isolation.</b> A <code>fork()</code> bomb or a memory-hogging process inside the chroot
+      is a fork bomb or a memory hog on the <i>host</i> — same PID space, same scheduler run queue, same physical
+      RAM. The resource lie is entirely unaddressed; <code>chroot</code> was never trying to solve it.</li>
+    <li><b>Zero process-tree isolation.</b> <code>ps aux</code> inside the chroot still walks <code>/proc</code>
+      and sees every PID on the host, because <code>/proc</code> is a kernel-wide view unless something else
+      (a mount namespace, chapter 2) gives each process its own. A "contained" process can <code>kill()</code>
+      any host PID it has permission to signal.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Quantify the blast radius, not just qualify it: a default Linux host commonly runs with <b>~40 POSIX
+    capabilities</b> available to root (chapter 7 enumerates them), <b>zero</b> memory or CPU ceiling on a bare
+    process, and a PID space shared 1:1 with the host. A <code>chroot</code>-only "container" changes exactly one
+    of those numbers — the filesystem root — and leaves the other three untouched. If your mental model is "4 lies
+    to tell," <code>chroot</code> alone tells <b>0.25 of one lie convincingly</b> and the rest not at all.</p>
+  </div>
+  <p>So the 1979 primitive is necessary but wildly insufficient. Two commercial Unix vendors noticed this within
+  the following two decades and built purpose-made jails; Linux, arriving late to the isolation-as-a-feature
+  party, eventually assembled something structurally similar out of independently-invented parts. §5 walks that
+  assembly.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER: LAYER PRIMITIVES ON TOP</div>
+  <h2 class="sec">FreeBSD jails, Solaris Zones, and Linux's slower, piecewise answer</h2>
+
+  <h3>Candidate A: FreeBSD jail(8), 2000 — chroot, hardened into an actual boundary</h3>
+  <p>Poul-Henning Kamp and Robert Watson designed <code>jail()</code> specifically to close chroot's escape
+  hatches: a jailed process cannot <code>chroot()</code> back out (the syscall is restricted), gets its own
+  bound IP address for network isolation, and has an explicit, enforced ceiling on which superuser operations it
+  can perform at all — jail root is deliberately weaker than real root, checked by the kernel at each privileged
+  call site, not by convention. This was the first widely-deployed system where "container-like isolation" was a
+  designed security feature rather than a filesystem convenience.</p>
+
+  <h3>Candidate B: Solaris Zones, 2004 — full OS-level virtualization, one kernel</h3>
+  <p>Sun went further: each zone gets its own view of process IDs, its own filesystem namespace, its own network
+  stack, and (paired with Solaris Resource Manager) enforced CPU and memory caps — <i>the resource lie is finally
+  addressed</i>, years before Linux had an equivalent. Zones are, structurally, closer to what we'd today call a
+  "container" than anything Linux had before 2008. The catch: Solaris's market share was shrinking exactly as
+  this technology matured, so the ecosystem effect it might have had never fully materialized outside Sun shops.</p>
+
+  <h3>Candidate C: Linux, piece by piece, 2002–2008</h3>
+  <p>Linux took the slow, unglamorous route: instead of one integrated "container" subsystem, distinct kernel
+  patches from distinct authors solved distinct slices of the four-lies problem, on their own schedules, for
+  their own reasons:</p>
+  <ul class="plain">
+    <li><b>Mount namespaces (2002)</b> — Al Viro's work let each process group have its own view of the mount
+      table, a real generalization of what <code>chroot</code> only half-solved.</li>
+    <li><b>cgroups (2006)</b> — started inside Google as "process containers," renamed control groups before
+      merge (Paul Menage, Rohit Seth); the first Linux mechanism to actually cap and account for CPU, memory, and
+      I/O per group of processes — solving the resource lie that <code>chroot</code> never touched.</li>
+    <li><b>UTS, IPC, PID namespaces (2006–2008)</b> — hostname, SysV IPC, and finally process-ID isolation,
+      landing across several kernel releases as separate, independently-reviewed patch sets.</li>
+    <li><b>LXC, 2008</b> — the first tool to <i>combine</i> namespaces + cgroups + chroot-style rootfs switching
+      into one user-facing command. This is the real milestone: not a new kernel primitive, but the first
+      successful <i>composition</i> of existing ones into something usable.</li>
+  </ul>
+
+  <div class="widget deck" id="deckLayered">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Building LXC's isolation out of independent parts</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING REALIZATION</div>
+    <p>By 2008, Linux had every primitive needed to tell all four lies from §1 — it just required a user to
+    manually assemble seven or eight separate syscalls and cgroup filesystem writes, get the ordering right, and
+    remember all of it every time. LXC was the first project to package that assembly as a single command. This
+    is the exact gap Docker will walk into five years later — and note precisely what's left to invent at that
+    point: <b>nothing at the kernel level</b>. The remaining problem is entirely one of packaging, distribution,
+    and ergonomics.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">LXC solved isolation; it left "how do I ship this to someone else" completely unsolved</h2>
+  <p>By 2010, a systems engineer who knew the incantations could build an LXC container that told all four lies
+  competently. That did not make containers popular — LXC adoption outside a narrow band of Linux power users
+  stayed limited for years, for reasons that have nothing to do with isolation quality:</p>
+  <ul class="plain">
+    <li><b>No standard image format.</b> An LXC container was a directory tree plus a hand-written config file.
+      Moving "my container" to a colleague's machine meant tarring a rootfs and hoping paths, UIDs, and library
+      versions lined up. There was no content-addressed layering, no registry, no notion of a reusable base image.</li>
+    <li><b>Configuration was expert-only.</b> Correctly composing namespace flags, cgroup hierarchies, capability
+      drops, and AppArmor profiles by hand was error-prone even for kernel-literate engineers — one missed flag
+      and you had a <code>chroot</code>-only false sense of security again.</li>
+    <li><b>No developer workflow.</b> There was no equivalent of "one file describes how to build this, one
+      command builds it, one command runs it, one command ships it." Each of those steps existed as a pile of
+      separate, unglamorous shell scripts per team.</li>
+    <li><b>No shared ecosystem.</b> Nothing like a public registry of prebuilt, versioned, comparable base
+      systems existed — every shop's LXC templates were bespoke.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THIS IS THE GAP DOCKER ACTUALLY FILLED</div>
+    <p>Docker, launched by dotCloud in <b>March 2013</b>, initially used LXC directly as its execution backend
+    (it switched to its own <code>libcontainer</code>, later extracted as <code>runc</code>, in 2014-2015 —
+    covered in chapter 9). Read Docker's real 2013 contribution precisely, because getting this exactly right is
+    the point of this chapter: Docker did not invent namespaces, cgroups, or chroot-style rootfs switching — all
+    of that existed and worked. Docker invented <b>the Dockerfile</b> (a build recipe), <b>layered, content-addressed
+    images</b> (build once, share layers, diff cheaply), <b>Docker Hub</b> (a public registry), and <b>a three-command
+    workflow</b> — <code>build</code>, <code>push</code>, <code>run</code> — that took container adoption from a
+    niche Linux practice to a default developer expectation within about two years. The isolation story didn't
+    change; the distribution story did, completely.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The stack you actually run today</h2>
+  <p>Docker's rapid rise created an obvious commercial risk: if "container" meant "whatever Docker's proprietary
+  format does," every other vendor (Red Hat, Google, CoreOS, Amazon) was building on someone else's private
+  spec. The industry's answer, June 2015, was the <b>Open Container Initiative (OCI)</b>, a Linux Foundation
+  project that split the problem into three independent, versioned specifications and — critically — Docker
+  donated its container-execution code, extracted as <code>runc</code>, as the OCI's founding reference
+  runtime. Click through the stack below; every layer is something a later chapter opens up in full.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY LAYER</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">DEVELOPER-FACING ENGINES</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="docker">Docker (dockerd daemon)</div>
+          <div class="acard" data-p="podman">Podman (fork-exec, no daemon)</div>
+        </div>
+        <div class="arch-row-label">OCI SPECS (2015→, vendor-neutral contracts)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="image-spec">OCI Image Spec</div>
+          <div class="acard" data-p="runtime-spec">OCI Runtime Spec</div>
+          <div class="acard" data-p="dist-spec">OCI Distribution Spec</div>
+        </div>
+        <div class="arch-row-label">LOW-LEVEL RUNTIMES (consume config.json, exec the kernel calls)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="runc">runc (Go — Docker's default)</div>
+          <div class="acard" data-p="crun">crun (C — Podman's default)</div>
+        </div>
+        <div class="arch-row-label">KERNEL PRIMITIVES (this chapter's real subject — no vendor owns these)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="ns">namespaces</div>
+          <div class="acard" data-p="cg">cgroups v2</div>
+          <div class="acard" data-p="caps">capabilities</div>
+          <div class="acard" data-p="seccomp">seccomp-bpf</div>
+          <div class="acard" data-p="lsm">AppArmor / SELinux</div>
+          <div class="acard" data-p="overlay">OverlayFS</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE ASYMMETRY THAT DEFINES THE REST OF THIS COURSE</div>
+    <p>Both engines sit on the <i>identical</i> kernel-primitive floor and the <i>identical</i> OCI specs — that
+    floor is not where Docker and Podman differ, and this course will say so plainly every time it's true.
+    Where they diverge is the two rows above it: <span class="eng docker">DOCKER</span> talks to a long-running,
+    typically root-owned background daemon (<code>dockerd</code>) that in turn talks to <code>containerd</code>,
+    which execs <code>runc</code>; <span class="eng podman">PODMAN</span> has no daemon at all — the
+    <code>podman</code> command is itself the process that forks and execs <code>crun</code> directly, in your
+    own user session by default. Chapter 12 dissects this split down to the process tree; for now, know that it
+    exists and that it is an architectural choice layered <i>on top of</i> identical primitives, not a
+    different set of primitives.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The actual syscalls, in the actual order</h2>
+  <p>Time to be precise about mechanism. Modern container creation is not <code>chroot()</code> plus config —
+  it is almost entirely one syscall, <code>clone()</code>, called with a bitmask of namespace flags, followed by
+  cgroup filesystem writes and capability-set manipulation. Here is the real sequence a low-level runtime
+  (runc or crun) executes.</p>
+
+  <h3>(a) clone() with namespace flags — one syscall, up to eight isolated views</h3>
+  <p>Unlike <code>fork()</code> (no flags — the child just gets a full copy) or <code>chroot()</code> (touches
+  only the filesystem root), <code>clone(2)</code> takes an ORed bitmask telling the kernel exactly which
+  namespaces to create fresh for the new process, versus which to inherit from the parent. Step through what
+  each flag actually buys, in the order a real runtime typically requests them:</p>
+
+  <div class="widget deck" id="deckClone">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">clone(2) flag by flag</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="co-t">THE REAL SIGNATURE</div>
+    <p><code>long clone(int (*fn)(void *), void *stack, int flags, void *arg, ...);</code> — the flags argument
+    for a full container is typically <code>CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID |
+    CLONE_NEWNET | CLONE_NEWUSER | CLONE_NEWCGROUP | SIGCHLD</code>. Since Linux 5.3 (Christian Brauner's
+    work), the same effect is reachable more safely and atomically via <code>clone3()</code> with a
+    <code>struct clone_args</code>, avoiding some historical argument-ordering foot-guns of the original
+    <code>clone()</code>. Both runc and crun support both call shapes depending on kernel version.</p>
+  </div>
+
+  <h3>(b) cgroup limits — writing files, not calling syscalls</h3>
+  <p>Unlike namespaces, cgroups v2 (chapter 5's full subject) are configured through a virtual filesystem, not
+  a syscall: the runtime <code>mkdir</code>s a directory under <code>/sys/fs/cgroup/</code>, then writes plain
+  text into interface files. Drag the sliders below to see the exact bytes a runtime writes for a given limit —
+  this is real cgroup v2 interface-file syntax, not a placeholder:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">cgroup v2 interface files — live from your sliders</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>memory.max</label><input type="range" id="mem-slider" min="0" max="9" value="4" step="1"><span class="val" id="mem-val">512 MB</span></div>
+      <div class="slider-row"><label>cpu.max quota %</label><input type="range" id="cpu-slider" min="5" max="100" value="50" step="5"><span class="val" id="cpu-val">50%</span></div>
+      <div class="codeblock" style="margin:14px 0 0">
+        <div class="cb-head"><span class="lang">shell</span><span>what the runtime actually writes</span></div>
+        <pre id="cg-write" style="padding:15px 17px;font-family:var(--mono);font-size:12.4px;line-height:1.7;color:#cdd6e4"></pre>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="cg-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) The bundle — what a runtime actually consumes</h3>
+  <p>Neither <code>clone()</code> flags nor cgroup writes are invoked directly by a human. Both Docker and
+  Podman assemble a filesystem <i>bundle</i> — an extracted root filesystem plus a JSON description of the
+  above — and hand it to a low-level runtime that reads real, on-disk state:</p>
+  <ul class="plain">
+    <li><code>/proc/&lt;pid&gt;/ns/{pid,mnt,net,uts,ipc,user,cgroup}</code> — after creation, each namespace a
+      process belongs to is a symlink here; two processes in the same namespace show the identical inode number,
+      which is exactly how tools like <code>lsns</code> group processes into namespaces.</li>
+    <li><code>/proc/&lt;pid&gt;/uid_map</code> — populated by <code>newuidmap</code>/directly by a privileged
+      writer once, immutable after; chapter 4 dedicates itself to this file.</li>
+    <li><code>/sys/fs/cgroup/&lt;path&gt;/{memory.max,cpu.max,pids.max,io.max}</code> — the interface files
+      from (b), readable and writable as plain text at any time by anything with permission.</li>
+  </ul>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THIS DECOMPOSITION MATTERS</div>
+    <p>Because none of clone flags, cgroup files, or <code>/proc</code> entries are Docker- or Podman-specific,
+    <b>you can build and run a fully isolated process using nothing but these three mechanisms and no container
+    engine at all</b> — chapter 9 has you do exactly that, by hand, with raw <code>runc</code>. Keeping this
+    fact sharp in your head is the single best defense against "container" magical thinking: there is no
+    additional kernel object called a container. There is a process with an unusual set of flags.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Six systems, one problem, six different prices paid</h2>
+  <p>Line up every isolation approach this chapter covered, including where Docker and Podman's own designs
+  diverge, and the pattern is consistent: nobody escapes the isolation/complexity/portability triangle, they
+  just choose which corner to sacrifice.</p>
+  <table class="cmp">
+    <tr><th>SYSTEM</th><th>ISOLATES</th><th>WHAT IT BOUGHT</th><th>WHAT IT LEFT UNSOLVED / COST</th></tr>
+    <tr><td>chroot (1979)</td><td>Filesystem root only</td>
+      <td><span class="pill g">trivial, universal, still used inside every container today</span></td>
+      <td><span class="pill b">not a security boundary</span> <span class="pill b">no resource/process isolation</span></td></tr>
+    <tr><td>FreeBSD jail (2000)</td><td>FS + network address + privilege ceiling</td>
+      <td><span class="pill g">actual security boundary, first of its kind</span></td>
+      <td><span class="pill y">no CPU/memory accounting built in</span> <span class="pill b">BSD-only ecosystem</span></td></tr>
+    <tr><td>Solaris Zones (2004)</td><td>FS + PID + network + resource caps</td>
+      <td><span class="pill g">closest historical analog to a modern container</span></td>
+      <td><span class="pill b">tied to a shrinking commercial Unix</span></td></tr>
+    <tr><td>Linux namespaces + cgroups (2002–2013)</td><td>FS + PID + net + IPC + UTS + user + resources, as separable opt-in pieces</td>
+      <td><span class="pill g">composable, each piece independently useful</span> <span class="pill g">the eventual industry standard</span></td>
+      <td><span class="pill b">no packaging story until LXC</span> <span class="pill y">correct composition is nontrivial</span></td></tr>
+    <tr><td>LXC (2008)</td><td>Same primitives, one CLI</td>
+      <td><span class="pill g">first usable combination</span></td>
+      <td><span class="pill b">no image format, registry, or build workflow</span></td></tr>
+    <tr><td>Docker (2013)</td><td>Same primitives (via <code>runc</code> since ~2015)</td>
+      <td><span class="pill g">Dockerfile, layered images, Hub, three-command workflow</span></td>
+      <td><span class="pill y">root-owned daemon as a default single point of trust</span></td></tr>
+    <tr><td>Podman (2018)</td><td>Same primitives, same OCI specs as Docker</td>
+      <td><span class="pill g">daemonless, rootless-by-default, drop-in Docker CLI compatibility</span></td>
+      <td><span class="pill y">smaller historical ecosystem/tooling footprint than Docker's head start</span></td></tr>
+  </table>
+  <p>Read the last two rows carefully, because they're easy to conflate: Docker vs Podman is <b>not</b> another
+  entry in "which isolation primitives did you choose" — both rows use the identical Linux namespace/cgroup/OCI
+  floor. The difference is entirely architectural (daemon vs fork-exec, rootful-by-default vs rootless-by-default)
+  and entirely chapter 12's subject. This chapter's table exists to make sure you never again describe Podman as
+  "a lighter isolation model" — it isn't; it is the same isolation model with a different process shape wrapped
+  around it.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE / SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">Startup latency and attack surface, ordered by isolation depth</h2>
+  <p>Two numbers matter most when comparing isolation technologies: <b>how long until the workload's first
+  instruction runs</b>, and <b>how much kernel surface is reachable from inside</b>. They trade off in a
+  predictable direction — more isolation mechanisms to set up costs more milliseconds, but the security payoff
+  is not linear, and understanding the curve is what separates "add more flags" from informed hardening.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Startup latency vs isolation depth</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>cold image cache</label><input type="range" id="perf-cold" min="0" max="1" value="0" step="1"><span class="val" id="perf-cold-val">warm</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="perf-seccomp">seccomp default profile</button>
+        <button class="chip on" id="perf-userns">user namespace (rootless)</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> startup latency (ms)</span>
+        <span><span style="color:var(--bad)">━</span> reachable syscalls (relative)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <p>Read the bars, not just the trend: a bare host process boots in effectively 0 extra ms and can reach
+  essentially the full ~450-syscall Linux surface. A full Docker/Podman-shaped container (all namespaces +
+  cgroup + default seccomp profile, which blocks roughly 44 of those syscalls including <code>keyctl</code>,
+  raw <code>mount</code>, and dangerous <code>clone</code> flags — chapter 8's exact list) adds tens of
+  milliseconds of setup and closes off a fixed, well-known slice of surface. A full VM (not this course's
+  subject, but the honest comparison point) adds hundreds of milliseconds to boot a second kernel, in exchange
+  for a *hardware*-level trust boundary that a container, running one shared kernel, structurally cannot offer.</p>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The chart is an analytic sketch tuned to match commonly published shapes (runc container start ≈ tens of
+    ms, a comparable microVM boot ≈ hundreds of ms). Rootless containers (user namespace + no privileged daemon)
+    add a small, measurable UID/GID-mapping tax at startup — <code>newuidmap</code>/<code>newgidmap</code> are
+    separate, briefly-forked helper binaries — which is one reason a rootless Podman container can start a few
+    milliseconds slower than an equivalent rootful Docker container, in exchange for the daemon and root
+    ownership disappearing entirely from the trust picture. Chapter 10 gives you the methodology to measure this
+    yourself instead of trusting a marketing slide.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Three moments where "just chroot it" got someone paged</h2>
+
+  <h3>Incident 1: the chroot-escape talks that never stop recurring (ongoing since the 1990s)</h3>
+  <p>Variations of the <code>fchdir()</code>-based chroot escape from §4 have been rediscovered and published
+  as "new" findings for over two decades — precisely because the underlying behavior is not a bug, it's the
+  documented contract of <code>chroot(2)</code>. Any tool built after ~2010 that advertises security by chroot
+  alone (some early PaaS sandboxes, some FTP daemons' "jailed" modes) has had a public writeup demonstrating an
+  escape. The root cause is always the same one line in the man page nobody read: chroot changes the root
+  inode, not the security model.</p>
+
+  <h3>Incident 2: the 2014 "Shocker" exploit and Docker's early hardening response</h3>
+  <p>In mid-2014, researcher Sebastian Eggert (and, separately, other public writeups the same year) demonstrated
+  that a default Docker container of that era — which at the time ran with a very permissive capability set and
+  no seccomp filtering by default — could access the host's <code>/dev</code> device nodes with sufficient
+  capabilities to read raw block devices and escape container boundaries entirely. It wasn't a kernel
+  vulnerability; it was Docker shipping isolation primitives without turning on enough of them by default. The
+  direct consequence, landing across Docker 1.10–1.12 (2016), was a much more conservative default capability
+  drop-list and a default seccomp profile blocking ~44 syscalls — the profile chapter 8 has you build by hand.
+  This is the moment "secure by default" became a stated Docker design goal rather than an assumption.</p>
+
+  <h3>Incident 3: the cgroups v1 "no internal processes" confusion and silent resource-limit misses</h3>
+  <p>Under cgroups v1's multi-hierarchy design (superseded by the unified v2 hierarchy this course uses
+  throughout — chapter 5), it was possible to attach a process to a cgroup that also had child cgroups with
+  their own limits, in a way where the parent's own memory accounting silently undercounted work happening in a
+  child hierarchy a monitoring tool wasn't watching. Teams running early container platforms on cgroups v1
+  reported containers that blew past intended memory ceilings during exactly this kind of hierarchy
+  misconfiguration, with the OOM killer's behavior appearing "random" until the actual hierarchy was
+  audited. cgroups v2's single unified tree and "no internal processes" rule (chapter 5) were designed
+  specifically to make this class of mistake structurally impossible rather than merely documented against.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend "a container is just a process" at a whiteboard?</h2>
+  <p>Think before you reveal — each answer is calibrated to the level a Staff/Principal systems interview (or a
+  skeptical colleague) would actually push you on.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: an OCI bundle and runc's entry point</h2>
+  <p>What "OCI compliant" cashes out to, on disk. Files marked <span style="color:var(--warn)">●</span> are what
+  chapter 9 will have you write and run by hand, with no engine involved at all.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">my-oci-bundle/</span></div>
+<div>├── <span class="fhl">● config.json</span> <span class="fnote">— OCI Runtime Spec: namespaces, cgroup paths, capabilities, mounts, argv[0]</span></div>
+<div>└── <span class="dir">rootfs/</span> <span class="fnote">— an extracted OCI image's flattened layers — this IS the chroot target</span></div>
+<div>&nbsp;</div>
+<div><span class="dir">runc source shape (github.com/opencontainers/runc)</span></div>
+<div>├── <span class="dir">libcontainer/</span></div>
+<div>│   ├── <span class="fhl">● factory_linux.go</span> <span class="fnote">— builds a Container from config.json</span></div>
+<div>│   ├── <span class="fhl">● process_linux.go</span> <span class="fnote">— constructs the clone()/clone3() flag set from spec.Linux.Namespaces</span></div>
+<div>│   ├── <span class="dir">cgroups/</span>fs2/ <span class="fnote">— cgroup v2 interface-file writers: memory.go, cpu.go, pids.go</span></div>
+<div>│   └── <span class="dir">specconv/</span>spec_linux.go <span class="fnote">— translates OCI JSON into kernel-facing structs</span></div>
+<div>├── <span class="dir">libcontainer/nsenter/</span>nsenter.go <span class="fnote">— cgo entry point: the actual clone()/unshare() call happens here, before the Go runtime is fully alive</span></div>
+<div>└── <span class="dir">signals/</span>signals.go <span class="fnote">— forwards signals from runc to the container's PID 1, mirroring the postmaster pattern from other courses</span></div>
+  </div></div>
+
+  <p>A minimal, real (trimmed) <code>config.json</code> — the actual contract every OCI runtime, whether
+  <code>runc</code> or <code>crun</code>, must be able to consume identically:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">json</span><span>config.json — the OCI Runtime Spec bundle descriptor</span></div>
+    <pre><span class="t">{</span>
+  <span class="s">"ociVersion"</span>: <span class="s">"1.0.2"</span>,
+  <span class="s">"process"</span>: <span class="t">{</span>
+    <span class="s">"terminal"</span>: <span class="k">true</span>,
+    <span class="s">"user"</span>: <span class="t">{</span> <span class="s">"uid"</span>: <span class="n">0</span>, <span class="s">"gid"</span>: <span class="n">0</span> <span class="t">}</span>,
+    <span class="s">"args"</span>: [<span class="s">"/bin/sh"</span>],
+    <span class="s">"cwd"</span>: <span class="s">"/"</span>,
+    <span class="s">"capabilities"</span>: <span class="t">{</span> <span class="s">"bounding"</span>: [<span class="s">"CAP_NET_BIND_SERVICE"</span>, <span class="s">"CAP_CHOWN"</span>] <span class="t">}</span>
+  <span class="t">}</span>,
+  <span class="s">"root"</span>: <span class="t">{</span> <span class="s">"path"</span>: <span class="s">"rootfs"</span>, <span class="s">"readonly"</span>: <span class="k">false</span> <span class="t">}</span>,
+  <span class="s">"linux"</span>: <span class="t">{</span>
+    <span class="s">"namespaces"</span>: [
+      <span class="t">{</span> <span class="s">"type"</span>: <span class="s">"pid"</span> <span class="t">}</span>, <span class="t">{</span> <span class="s">"type"</span>: <span class="s">"network"</span> <span class="t">}</span>,
+      <span class="t">{</span> <span class="s">"type"</span>: <span class="s">"ipc"</span> <span class="t">}</span>,  <span class="t">{</span> <span class="s">"type"</span>: <span class="s">"uts"</span> <span class="t">}</span>,
+      <span class="t">{</span> <span class="s">"type"</span>: <span class="s">"mount"</span> <span class="t">}</span>
+    ],
+    <span class="s">"resources"</span>: <span class="t">{</span>
+      <span class="s">"memory"</span>: <span class="t">{</span> <span class="s">"limit"</span>: <span class="n">536870912</span> <span class="t">}</span>,
+      <span class="s">"cpu"</span>:    <span class="t">{</span> <span class="s">"quota"</span>: <span class="n">50000</span>, <span class="s">"period"</span>: <span class="n">100000</span> <span class="t">}</span>
+    <span class="t">}</span>
+  <span class="t">}</span>
+<span class="t">}</span></pre>
+  </div>
+
+  <p>And the lifecycle every OCI-compliant low-level runtime — runc, crun, or anything else — must implement
+  identically, regardless of which higher-level engine drives it:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">shell</span><span>the OCI runtime lifecycle, called directly — no Docker, no Podman</span></div>
+    <pre><span class="c"># create: sets up namespaces/cgroups/mounts, does NOT start the user process yet</span>
+runc create --bundle ./my-oci-bundle mycontainer
+
+<span class="c"># start: execs process.args inside the already-prepared environment</span>
+runc start mycontainer
+
+<span class="c"># state: query the container's current lifecycle state (creating|created|running|stopped)</span>
+runc state mycontainer
+
+<span class="c"># kill / delete: send a signal, then tear down cgroup + namespace bookkeeping</span>
+runc kill mycontainer SIGTERM
+runc delete mycontainer</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE SPEC SPLITS "CREATE" FROM "START" — A DESIGN CHOICE WORTH STEALING</div>
+    <p>Separating <code>create</code> (build the sandbox) from <code>start</code> (run the payload) exists so a
+    higher-level engine — Docker's <code>containerd-shim</code>, Podman's <code>conmon</code> — can attach
+    monitoring, set up stdio streaming, and register the container's state <i>before</i> the user's actual
+    command executes, closing a race window where a fast-exiting process could finish before anything was
+    watching it. Both Docker and Podman's supervisor processes (chapter 12) depend on this exact two-phase
+    lifecycle; it's an OCI Runtime Spec requirement, not an implementation detail either engine invented.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the timeline and the mechanism in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — the primitives, in the order they arrived</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click these in chronological order, oldest first. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Isolation timeline: toggle a primitive, watch the lies become true</h2>
+  <p>One process, live. Toggle <code>chroot</code>, the PID namespace, cgroups, and capability dropping on and
+  off, independently, and watch exactly what the process can still see and do change in real time — an
+  inspector panel and a simulated shell session both react to your toggles. This is the flagship exercise for
+  this chapter: by the time every toggle is on, you have — by hand — reconstructed the four lies from §1.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Primitive toggle board — one process, four lies</span><span class="w-sub" id="sim-phase">1 PRIMITIVE ACTIVE</span></div>
+    <div class="w-body">
+      <div class="primlist" id="prim-toggles"></div>
+      <div class="sim-wrap" style="min-height:0;display:block">
+        <div class="sim-proc" id="sim-proc"></div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Turn on only <code>chroot</code> — read the inspector's filesystem row change, then notice the
+    process-tree and resource rows stay wide open. <b>2.</b> Add the PID namespace — watch <code>ps</code>'s
+    visible count collapse to 1. <b>3.</b> Add cgroups — watch the memory ceiling appear and a simulated
+    allocation past it get OOM-killed. <b>4.</b> Add capability dropping — watch <code>mount()</code> and
+    <code>setuid()</code> start failing with the exact errno a real kernel would return. <b>5.</b> Turn
+    everything on, then try the "attempt fchdir() escape" button from §4 — confirm it now fails, and read why in
+    the log.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 2: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head (or out loud — it's better), <i>then</i>
+  reveal. If any reveal surprises you, re-run the relevant simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 01 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now name every primitive a container is assembled
+    from, the year and original purpose of each one, and precisely which of Docker's 2013 contributions were new
+    (packaging, distribution) versus which were forty-year-old kernel mechanisms (isolation itself). Chapter 2
+    opens the first and most load-bearing primitive in full: namespaces — starting with the actual syscalls,
+    <code>clone()</code>, <code>unshare()</code>, and <code>setns()</code>, and the notorious "PID 1 problem"
+    every container image author eventually meets.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="ctr-02.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-02: Namespaces I →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* generic qaCards renderer */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1979", l:"chroot()", d:"<b>Bill Joy adds chroot() to Unix</b> (7th Edition), so a build could compile against an alternate root without disturbing the real filesystem. It changes exactly one thing — what a process considers '/' — and nothing else. Every later isolation technology in this timeline starts by assuming chroot's filesystem trick and then adding the pieces it left out." },
+  { yr:"1982", l:"BSD adopts it", d:"<b>4.2BSD ships chroot(8)</b>, and it becomes a standard Unix administration tool — mostly for anonymous FTP roots and package building — with the security caveats from §4 already informally understood by experienced admins, decades before they were formally documented as 'not a security boundary.'" },
+  { yr:"2000", l:"FreeBSD jail()", d:"<b>Poul-Henning Kamp & Robert Watson ship jail(2)/jail(8).</b> The first system to treat 'stronger than chroot' as an explicit design goal: no re-chrooting out, a bound network address, and a genuinely restricted privilege ceiling enforced by the kernel at each sensitive call, not left to admin discipline." },
+  { yr:"2004", l:"Solaris Zones", d:"<b>Sun ships Zones</b> in Solaris 10 — separate process-ID views, separate filesystem namespace, separate network stack, and (via the Solaris Resource Manager) enforced CPU/memory caps per zone. Structurally the closest historical ancestor to a modern container, arriving nearly a decade before Linux caught up on all four axes simultaneously." },
+  { yr:"2002", l:"Linux mount ns", d:"<b>Al Viro lands mount namespaces</b> in Linux 2.4.19 — the first Linux namespace type, letting a process group see its own private view of the mount table. This is Linux's first real step past chroot's filesystem-only trick, six years before those steps get bundled into anything resembling a container." },
+  { yr:"2006", l:"cgroups begin", d:"<b>Google engineers Paul Menage and Rohit Seth</b> merge 'process containers' into the mainline kernel (2.6.24, released 2008), promptly renamed 'control groups' to avoid clashing with the word 'container.' Built to solve Google's internal datacenter scheduling problem — accounting and limiting CPU/memory/IO per group of processes — not security. This is the first Linux mechanism to address the resource lie from §1 at all." },
+  { yr:"2006–08", l:"UTS/IPC/PID ns", d:"<b>UTS, IPC, and PID namespaces land</b> across several kernel releases, largely the work of Eric Biederman and collaborators. PID namespaces in particular are the mechanism that finally lets a process become 'PID 1' of its own isolated tree — the feature that makes `ps` inside a container show only its own processes." },
+  { yr:"2008", l:"LXC", d:"<b>LXC (LinuX Containers) ships</b>, the first tool to combine namespaces + cgroups + a chroot-style rootfs switch into one user-facing command. Not a new kernel primitive — the first successful <i>composition</i> of five years of independently-built parts. This is the direct technical ancestor Docker will build its first version on top of." },
+  { yr:"2009", l:"network ns", d:"<b>Network namespaces merge</b> (2.6.29), the last major namespace type needed for a container to have its own private network stack — loopback-only until something (a veth pair, chapter 3) wires it to the world." },
+  { yr:"2013", l:"Docker + user ns", d:"<b>Docker ships (March 2013)</b>, initially built on LXC, contributing not new isolation but a Dockerfile build format, layered content-addressed images, and Docker Hub as a public registry — the packaging and distribution layer LXC never had. The same year, <b>user namespaces</b> complete their long merge into mainline (3.8), the primitive chapter 4 dedicates itself to and the one that eventually enables rootless containers entirely." },
+  { yr:"2015", l:"OCI founded, runc", d:"<b>The Open Container Initiative forms</b> (Linux Foundation, June 2015) after Docker donates its container-execution engine, extracted as <code>runc</code>, as the founding reference implementation of a new, vendor-neutral OCI Runtime Spec — followed shortly by the OCI Image Spec and Distribution Spec. From this point on, 'container' stops being a Docker-specific word." },
+  { yr:"2018→", l:"Podman", d:"<b>Red Hat ships Podman 1.0</b>, built from day one on the same OCI specs and the same kernel primitives as Docker, but daemonless (fork-exec, using <code>crun</code> by default) and rootless-by-default — an architectural answer, not an isolation-primitive one, to concerns about a root-owned daemon as a single point of trust. Chapter 12 covers this split in full." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===0 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[0].d;
+
+/* ============================================================
+   2. DECK: chroot alone (§3)
+   ============================================================ */
+(function(){
+  const steps = [
+    { stage:`<div class="sim-proc jailed">
+        <div class="sp-row"><span class="sp-k">filesystem root</span><span class="sp-v ok">/var/lib/naive/rootfs (isolated ✓)</span></div>
+        <div class="sp-row"><span class="sp-k">process tree (ps)</span><span class="sp-v bad">sees ALL host PIDs — unchanged</span></div>
+        <div class="sp-row"><span class="sp-k">CPU / memory ceiling</span><span class="sp-v bad">none — unchanged</span></div>
+        <div class="sp-row"><span class="sp-k">capabilities</span><span class="sp-v bad">full root set if started as root — unchanged</span></div>
+      </div>`,
+      cap:`<b>What one syscall bought.</b> The filesystem lie is now told convincingly — <code>ls /</code> shows only the image contents. That's genuinely one full row of §1's table fixed, for free, in a syscall from 1979.` },
+    { stage:`<div class="sim-proc jailed">
+        <div class="sp-row"><span class="sp-k">step 1</span><span class="sp-v">open("/", O_RDONLY) → fd 9   <span style="color:var(--dim)">// stash a handle to the real root BEFORE chrooting</span></span></div>
+        <div class="sp-row"><span class="sp-k">step 2</span><span class="sp-v">chroot("/var/lib/naive/rootfs")</span></div>
+        <div class="sp-row"><span class="sp-k">step 3</span><span class="sp-v">fchdir(9)   <span style="color:var(--dim)">// cwd silently jumps back to the real root</span></span></div>
+        <div class="sp-row"><span class="sp-k">step 4</span><span class="sp-v bad">chroot(".")   // root inode reset to the REAL root — escaped</span></div>
+      </div>`,
+      cap:`<b>The escape, in four syscalls.</b> This requires no kernel bug and no CVE — <code>chroot()</code> changes the root inode and explicitly leaves the current working directory untouched. Any process with <code>CAP_SYS_CHROOT</code> (root, by default) can run this. Nothing else in this deck's process state changed at all — because nothing else was ever protected.` },
+    { stage:`<div class="sim-proc">
+        <div class="sp-row"><span class="sp-k">§1 lie</span><span class="sp-k">told convincingly?</span></div>
+        <div class="sp-row"><span class="sp-k">filesystem</span><span class="sp-v" style="color:var(--warn)">partially — until the escape above</span></div>
+        <div class="sp-row"><span class="sp-k">process-tree</span><span class="sp-v bad">no</span></div>
+        <div class="sp-row"><span class="sp-k">resources</span><span class="sp-v bad">no</span></div>
+        <div class="sp-row"><span class="sp-k">privilege</span><span class="sp-v bad">no</span></div>
+      </div>`,
+      cap:`<b>Scorecard.</b> One primitive, one-quarter of one lie, and even that quarter is escapable by design. This is exactly why the kernel's own manual page for <code>chroot(2)</code> disclaims it as a security mechanism — it never was one, and it was never trying to be. §5 starts stacking the primitives that actually close these gaps.` }
+  ];
+  stepper("deckChroot", steps);
+})();
+
+/* ============================================================
+   3. DECK: layering LXC's primitives (§5)
+   ============================================================ */
+(function(){
+  const rows = (fs,pt,res,priv)=>`<div class="sim-proc">
+      <div class="sp-row"><span class="sp-k">filesystem (chroot-style)</span><span class="sp-v ${fs[1]}">${fs[0]}</span></div>
+      <div class="sp-row"><span class="sp-k">process-tree (PID ns)</span><span class="sp-v ${pt[1]}">${pt[0]}</span></div>
+      <div class="sp-row"><span class="sp-k">resources (cgroups)</span><span class="sp-v ${res[1]}">${res[0]}</span></div>
+      <div class="sp-row"><span class="sp-k">privilege (capabilities)</span><span class="sp-v ${priv[1]}">${priv[0]}</span></div>
+    </div>`;
+  const steps = [
+    { stage: rows(["isolated (pivot_root, ch.6)","ok"], ["sees ALL host PIDs","bad"], ["none","bad"], ["full root","bad"]),
+      cap:`<b>Baseline: bare chroot.</b> Same starting line as §3-4. Three of four rows still red.` },
+    { stage: rows(["isolated","ok"], ["own tree, own PID 1 (CLONE_NEWPID)","ok"], ["none","bad"], ["full root","bad"]),
+      cap:`<b>Add a PID namespace.</b> <code>clone(..., CLONE_NEWPID, ...)</code> gives the new process a fresh PID space where it is PID 1 and cannot see, signal, or even know about host PIDs. The process-tree lie is now told convincingly — this single flag is why <code>ps</code> inside a container shows a short, clean list.` },
+    { stage: rows(["isolated","ok"], ["own tree, own PID 1","ok"], ["memory.max, cpu.max enforced by kernel","ok"], ["full root","bad"]),
+      cap:`<b>Add a cgroup.</b> Writing to <code>/sys/fs/cgroup/&lt;name&gt;/memory.max</code> and <code>cpu.max</code> (§8 shows the exact bytes) hands enforcement to the kernel's own accounting — a runaway process inside now gets OOM-killed at a real ceiling instead of starving the whole host. Resource lie: solved.` },
+    { stage: rows(["isolated","ok"], ["own tree, own PID 1","ok"], ["memory.max, cpu.max enforced","ok"], ["bounding set reduced to ~14 caps","ok"]),
+      cap:`<b>Drop capabilities.</b> Trim root's ~40-capability bounding set down to a minimal working set (chapter 7's table) — <code>CAP_SYS_ADMIN</code>, <code>CAP_SYS_MODULE</code>, and friends gone. All four rows are now green using nothing but primitives that existed in isolation since at least 2008. This is, structurally, what LXC assembled into one command — and structurally, what every OCI runtime still does today.` }
+  ];
+  stepper("deckLayered", steps);
+})();
+
+/* ============================================================
+   4. DECK: clone() flags (§8a)
+   ============================================================ */
+(function(){
+  const flagRow = (flag, desc, on)=>`<div class="sim-proc">
+      <div class="sp-row"><span class="sp-k">flag</span><span class="sp-v" style="color:var(--pg);font-weight:700">${flag}</span></div>
+      <div class="sp-row"><span class="sp-k">isolates</span><span class="sp-v">${desc}</span></div>
+      <div class="sp-row"><span class="sp-k">merged</span><span class="sp-v">${on}</span></div>
+    </div>`;
+  const steps = [
+    { stage: flagRow("CLONE_NEWNS","mount table — the process gets a private copy-on-write view of mounts, letting <code>pivot_root</code> (ch.6) swap in an image's filesystem without touching the host's","Linux 2.4.19 (2002)"),
+      cap:`<b>First flag requested, by convention.</b> Despite the confusing name (<code>NS</code> for the ORIGINAL namespace type — mount — before "namespace" became the general term), this is usually set up first because later steps assume a private mount table to attach the new root onto.` },
+    { stage: flagRow("CLONE_NEWUTS","hostname and NIS domain name — `hostname` and `uname -n` inside report a value private to this process group","Linux 2.6.19 (2006)"),
+      cap:`<b>Smallest, oldest of the "new" namespaces.</b> A single struct's worth of isolated state — a good reminder that not every namespace is doing heavyweight work; some just prevent leaking one string.` },
+    { stage: flagRow("CLONE_NEWIPC","System V IPC objects & POSIX message queues — no shared memory segments, semaphores, or queues visible across the boundary","Linux 2.6.19 (2006)"),
+      cap:`<b>Closes an old, easily-forgotten leak.</b> Without this, two "isolated" containers on the same host could still rendezvous via a shared SysV shm segment — the exact mechanism PostgreSQL's own process model uses internally, notably, for a completely different purpose.` },
+    { stage: flagRow("CLONE_NEWPID","process IDs — this process becomes PID 1 of a brand-new, otherwise empty PID space; it cannot see or signal anything outside it","Linux 2.6.24 (2008)"),
+      cap:`<b>The one that fixes ps.</b> Also the source of the notorious "PID 1 problem" — chapter 2's subject — because PID 1 has special kernel semantics (default signal handlers are ignored, orphaned children reparent to it) that most container images' entrypoints were never written to handle.` },
+    { stage: flagRow("CLONE_NEWNET","the entire network stack — interfaces (besides a fresh loopback), routing table, iptables rules, sockets","Linux 2.6.29 (2009)"),
+      cap:`<b>Starts empty on purpose.</b> A fresh network namespace has only <code>lo</code>, down. Chapter 3 wires it to the world with a veth pair — reachability isn't automatic, it's plumbed.` },
+    { stage: flagRow("CLONE_NEWUSER","UID/GID mapping — the process can be UID 0 inside while mapping to an unprivileged UID outside, via /proc/pid/uid_map","Linux 3.8 (2013)"),
+      cap:`<b>The rootless-container enabler.</b> This is the only namespace an unprivileged user can create without any prior capability — which is exactly why it's the foundation Podman's rootless-by-default model (and rootless Docker) builds on. Chapter 4 is entirely this flag.` },
+    { stage: flagRow("CLONE_NEWCGROUP","the process's view of its own position in the cgroup hierarchy — /proc/self/cgroup shows a virtualized root","Linux 4.6 (2016)"),
+      cap:`<b>Newest of the eight, and easy to skip.</b> Without it, a process can see the full cgroup path on the host, leaking topology information. With it, the process's own cgroup appears to be the root of its own tree.` }
+  ];
+  stepper("deckClone", steps);
+})();
+
+/* ============================================================
+   5. cgroup slider widget (§8b)
+   ============================================================ */
+(function(){
+  const memSteps = [0,64,128,256,512,1024,2048,4096,8192,16384]; // MB
+  function render(){
+    const mi = +el("mem-slider").value, ci = +el("cpu-slider").value;
+    const memMB = memSteps[mi];
+    el("mem-val").textContent = memMB + " MB";
+    el("cpu-val").textContent = ci + "%";
+    const memBytes = memMB * 1024 * 1024;
+    const quota = Math.round(ci * 1000); // period fixed at 100000us -> quota scaled
+    el("cg-write").innerHTML =
+`<span class="c"># memory controller — hard ceiling; kernel OOM-kills on breach</span>
+<span class="f">echo</span> <span class="s">${memBytes}</span> &gt; /sys/fs/cgroup/mycontainer/memory.max
+
+<span class="c"># cpu controller — quota/period pair. "$MAX μs of CPU per 100000 μs window"</span>
+<span class="f">echo</span> <span class="s">"${quota} 100000"</span> &gt; /sys/fs/cgroup/mycontainer/cpu.max
+
+<span class="c"># both are read back as plain text — 'cat' the same files to verify at runtime</span>
+<span class="f">cat</span> /sys/fs/cgroup/mycontainer/memory.current`;
+    el("cg-note").textContent = memMB===0
+      ? "memory.max = 0 is a real, valid (if extreme) value — the group can hold no resident pages at all; first allocation OOM-kills immediately. Docker/Podman never default here; shown to make the ceiling's mechanism obvious."
+      : `${ci}% of one period means roughly ${(ci/100).toFixed(2)} CPU-core's worth of wall-clock execution per 100 ms window — the exact math chapter 5's cpu.max section derives in full.`;
+  }
+  el("mem-slider").oninput = render;
+  el("cpu-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   6. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  docker: { name:"Docker (dockerd)", file:"github.com/moby/moby — daemon/, containerd → runc", body:
+    `A long-running, typically root-owned daemon accepts CLI/API requests, holds all container state in one
+    process, and delegates actual execution to <code>containerd</code>, which in turn execs <code>runc</code>
+    per-container. One daemon restart historically meant re-attaching to (not killing) running containers —
+    a design that has evolved specifically to avoid that failure mode. Chapter 12 is entirely this architecture.` },
+  podman: { name:"Podman", file:"github.com/containers/podman — no daemon; libpod + conmon → crun", body:
+    `The <code>podman</code> binary itself forks and execs <code>crun</code> (default) directly, supervised by
+    a small per-container <code>conmon</code> process — no long-lived privileged daemon exists at all. Rootless
+    by default: it typically runs as your own UID, using a user namespace (chapter 4) to make root-inside look
+    real without ever holding real root outside.` },
+  "image-spec": { name:"OCI Image Spec", file:"opencontainers/image-spec", body:
+    `Defines a manifest referencing a config JSON blob and an ordered list of content-addressed filesystem-layer
+    blobs. Both Docker and Podman produce and consume byte-identical images under this spec — an image built by
+    one engine runs unmodified under the other. Chapter 10's full subject.` },
+  "runtime-spec": { name:"OCI Runtime Spec", file:"opencontainers/runtime-spec", body:
+    `Defines the filesystem bundle (rootfs + <code>config.json</code>) and the create/start/kill/delete
+    lifecycle any compliant low-level runtime must expose — the exact contract §13's code walkthrough shows in
+    full. This is what makes runc and crun interchangeable from the engine's point of view.` },
+  "dist-spec": { name:"OCI Distribution Spec", file:"opencontainers/distribution-spec", body:
+    `Defines the HTTP API a registry must implement — blob upload by digest, manifest PUT/GET, chunked
+    resumable uploads. Docker Hub, Quay, GHCR, and every private registry implement this one contract, which is
+    why <code>docker push</code> and <code>podman push</code> both work against all of them. Chapter 11's subject.` },
+  runc: { name:"runc", file:"opencontainers/runc — Go, cgroups-heavy startup", body:
+    `Docker's original container-execution code, extracted and donated in 2015 to found the OCI Runtime Spec's
+    reference implementation. Written in Go; historically slightly heavier at startup than crun due to Go
+    runtime initialization and a more elaborate cgroups setup path. Docker's default low-level runtime today.` },
+  crun: { name:"crun", file:"containers/crun — C, minimal startup footprint", body:
+    `Red Hat's from-scratch OCI runtime written in C specifically to minimize memory footprint and startup
+    latency versus runc — commonly cited at roughly half runc's memory use and measurably faster cold starts.
+    Podman's default low-level runtime; also usable by Docker via the <code>--runtime</code> flag, since both
+    consume the identical OCI Runtime Spec bundle.` },
+  ns: { name:"namespaces", file:"kernel: kernel/nsproxy.c, kernel/pid_namespace.c, …", body:
+    `Eight kernel-native views (mount, UTS, IPC, PID, network, user, cgroup, and time — the last added in Linux
+    5.6, not yet load-bearing for either engine) that a process can be given fresh or inherit. Chapters 2–4's
+    subject, in full.` },
+  cg: { name:"cgroups v2", file:"kernel: kernel/cgroup/ — unified hierarchy since 4.5", body:
+    `The single unified control-group tree and its per-controller interface files
+    (<code>memory.max</code>, <code>cpu.max</code>, <code>pids.max</code>, <code>io.max</code>). A kernel
+    contract, not an engine feature — both Docker and Podman write the identical files. Chapter 5's subject.` },
+  caps: { name:"capabilities", file:"kernel: security/commoncap.c — ~40 distinct bits since 2.2", body:
+    `Root's monolithic power split into roughly 40 independently grantable/droppable bits across five sets
+    (permitted, effective, inheritable, bounding, ambient). Both engines start from a conservative default
+    drop-list, not the full set. Chapter 7's subject.` },
+  seccomp: { name:"seccomp-bpf", file:"kernel: kernel/seccomp.c — BPF program evaluated before every syscall", body:
+    `A kernel-evaluated allow/denylist over the raw syscall table, checked before the syscall runs. Both
+    engines ship a default profile blocking the same broad shape of dangerous calls
+    (<code>keyctl</code>, raw <code>mount</code>, dangerous <code>clone</code> flags). Chapter 8's subject.` },
+  lsm: { name:"AppArmor / SELinux", file:"kernel: security/apparmor/, security/selinux/ — LSM hooks", body:
+    `Mandatory access control layered on top of everything else. Docker defaults to AppArmor's profile
+    mechanism; Podman (Red Hat lineage) defaults to SELinux labeling. Same LSM framework underneath, different
+    default policy language and defaults. Chapter 8's subject.` },
+  overlay: { name:"OverlayFS", file:"kernel: fs/overlayfs/ — merged in Linux 3.18 (2014)", body:
+    `A union filesystem stacking read-only lowerdirs (image layers) under one writable upperdir, with
+    copy-up-on-write semantics. Both engines' default storage driver since roughly 2016 (Docker's
+    <code>overlay2</code>, Podman's <code>containers/storage</code> default). Chapter 6's subject.` },
+  shmem: { name:"shared memory segment", file:"", body:"" }
+};
+(function(){
+  const cards = document.querySelectorAll("#s7 .acard");
+  const detail = el("arch-detail");
+  function show(key){
+    const a = ARCH[key];
+    cards.forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+    detail.innerHTML = `<div class="ad-name">${a.name}</div><div class="ad-file">${a.file}</div><div>${a.body}</div>`;
+  }
+  cards.forEach(c=> c.onclick = ()=> show(c.dataset.p));
+  show("docker");
+})();
+
+/* ============================================================
+   7. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  const canvas = el("perf-chart");
+  const ctx = canvas.getContext("2d");
+  const state = { cold:false, seccomp:true, userns:true };
+  el("perf-cold").oninput = e=>{ state.cold = +e.target.value===1; el("perf-cold-val").textContent = state.cold?"cold":"warm"; draw(); };
+  el("perf-seccomp").onclick = ()=>{ state.seccomp=!state.seccomp; el("perf-seccomp").classList.toggle("on", state.seccomp); draw(); };
+  el("perf-userns").onclick = ()=>{ state.userns=!state.userns; el("perf-userns").classList.toggle("on", state.userns); draw(); };
+  const CATS = ["bare\nprocess","chroot\nonly","namespaces\n+ cgroups","full OCI\ncontainer","microVM\n(reference)"];
+  function latency(){
+    let base = [0, 2, 14, 26, 220];
+    if (state.seccomp) base[3] += 4;
+    if (state.userns) base[3] += 6;
+    if (state.cold) base = base.map((v,i)=> i===0? v : v*2.3);
+    return base;
+  }
+  function surface(){
+    // relative reachable-syscall surface, 100 = full ~450 syscalls
+    let s = [100, 100, 92, state.seccomp ? 66 : 92, 40];
+    return s;
+  }
+  function draw(){
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0,0,W,H);
+    const lat = latency(), surf = surface();
+    const maxLat = Math.max(...lat) * 1.15;
+    const padL=46, padR=20, padT=18, padB=44;
+    const plotW = W-padL-padR, plotH = H-padT-padB;
+    const bw = plotW/CATS.length;
+    // gridlines
+    ctx.strokeStyle = "#1c2330"; ctx.lineWidth=1;
+    for(let i=0;i<=4;i++){
+      const y = padT + plotH*i/4;
+      ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    }
+    CATS.forEach((c,i)=>{
+      const x0 = padL + i*bw + bw*0.18, bwi = bw*0.28;
+      const hLat = (lat[i]/maxLat)*plotH;
+      const hSurf = (surf[i]/100)*plotH;
+      // latency bar (teal)
+      ctx.fillStyle = "#2dd4bf";
+      ctx.fillRect(x0, padT+plotH-hLat, bwi, hLat);
+      // surface bar (red)
+      ctx.fillStyle = "#f25c54";
+      ctx.fillRect(x0+bwi+6, padT+plotH-hSurf, bwi, hSurf);
+      // label
+      ctx.fillStyle = "#8b94a7"; ctx.font = "10px monospace"; ctx.textAlign="center";
+      c.split("\n").forEach((ln,li)=> ctx.fillText(ln, padL + i*bw + bw/2, H-padB+16+li*11));
+      // value labels
+      ctx.fillStyle = "#cdd6e4"; ctx.font="10px monospace";
+      ctx.fillText(Math.round(lat[i])+"ms", x0+bwi/2, padT+plotH-hLat-6);
+      ctx.fillText(Math.round(surf[i])+"%", x0+bwi+6+bwi/2, padT+plotH-hSurf-6);
+    });
+    ctx.textAlign="left";
+    el("perf-note").textContent = state.cold
+      ? "Cold cache: every category's setup roughly 2x+ due to image/layer pull and page-cache misses (bare process unaffected — it has no image)."
+      : "Warm cache. Toggle seccomp/user-namespace off to see the exact ms and surface-% each one costs or buys.";
+  }
+  draw();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Someone says 'Docker uses lightweight VMs.' Correct this precisely — what actually is and isn't shared with the host?", hint:"what does 'lightweight' quietly assume away?",
+    a:"A container shares the host kernel completely — there is exactly one kernel, one scheduler, one set of loaded drivers. What isolates a container is a specific combination of namespaces (private views of PIDs, mounts, network, etc.), cgroups (resource ceilings), capabilities (a reduced privilege set), and often seccomp/LSM policy (a reduced syscall/access surface) — all enforced by that one shared kernel. A VM instead runs a second, complete kernel on virtualized (or paravirtualized) hardware, giving a much stronger boundary (a full hardware/hypervisor trust line) at the cost of that second kernel's memory and boot time. 'Lightweight VM' erases the single most consequential fact about a container: if the shared kernel has a bug, every container on the host is exposed, which is never true for a VM's kernel." },
+  { lvl:"SENIOR", q:"Which kernel primitive did Docker itself invent in 2013?", hint:"trick question",
+    a:"None. Namespaces (2002–2013 across multiple types), cgroups (2006), and chroot-style rootfs switching (1979) all predate Docker and were already usable together via LXC, which Docker's first releases used directly as their execution backend. Docker's actual 2013 contribution was the Dockerfile build format, layered content-addressed images, and Docker Hub as a public registry — a distribution and developer-workflow layer on top of isolation primitives that already existed and already worked." },
+  { lvl:"SENIOR", q:"Why is `chroot(2)`'s own man page explicit that it is not a security mechanism, and what's the two-syscall proof?", hint:"what does chroot leave untouched?",
+    a:"chroot() changes only the root inode a process resolves absolute paths against; it does not change or restrict the current working directory. A process holding a file descriptor to the real root opened before chrooting (or one obtained via /proc) can fchdir() to it after chrooting, then chroot(\".\") again to reset its root to the real filesystem — escaping entirely, using only CAP_SYS_CHROOT (which root has by default), no kernel bug involved. It's documented behavior, not an exploit." },
+  { lvl:"STAFF", q:"Explain precisely what LXC (2008) added that namespaces + cgroups (already merged by then) did not provide on their own.", hint:"what's missing between 'the kernel can do X' and 'a user can easily get X'",
+    a:"By 2008 Linux had every namespace type except network and user namespaces, plus cgroups, all separately mergeable and usable — but only via manual clone() flag composition and hand-written cgroupfs writes, in the correct order, remembered every time. LXC was the first project to package that entire sequence as one CLI tool (lxc-create, lxc-start) with a config-file abstraction over the raw flags. It added zero new kernel primitives; it added the first usable composition of existing ones — precisely the gap analysis this chapter's §5–6 walks through." },
+  { lvl:"STAFF", q:"A teammate claims 'Podman is more secure than Docker because it doesn't use namespaces the same way.' Is that claim well-formed? Fix it.", hint:"which layer actually differs?",
+    a:"The claim conflates two separate layers. Both Docker and Podman consume the identical Linux namespace, cgroup, capability, and OCI-spec floor — neither engine uses namespaces 'differently' at the kernel level. What differs is architecture above that floor: Podman has no long-lived daemon (each podman command is its own fork-exec, supervised per-container by conmon) and defaults to rootless (running as your own UID via a user namespace), whereas Docker defaults to a root-owned daemon (dockerd) mediating every container. The security delta, if any, comes from removing a root-owned, always-listening daemon as a single point of trust and attack surface — not from a different isolation model. State it that way or the claim is simply wrong." },
+  { lvl:"STAFF", q:"Why did the OCI split into three separate specs (Image, Runtime, Distribution) instead of one 'container spec'?", hint:"who needs to interoperate with whom, independently?",
+    a:"Each spec governs a different interoperability boundary with a different set of implementers: the Image Spec lets any build tool (Docker build, Buildah, Bazel rules_docker) produce artifacts any runtime can consume; the Runtime Spec lets any high-level engine (Docker, Podman, CRI-O, containerd) drive any low-level runtime (runc, crun, gVisor, Kata) without caring which one; the Distribution Spec lets any registry implementation (Docker Hub, GHCR, Harbor, ECR) serve any client. Bundling these into one monolithic spec would force every implementer to adopt all three concerns even if they only build one piece — e.g., a registry operator has zero interest in runtime lifecycle semantics. The split lets runc and crun compete purely on runtime quality while being wire-compatible with every image and registry." },
+  { lvl:"PRINCIPAL", q:"Argue both sides: was assembling a container out of pre-existing, independently-designed primitives (Linux's path) the right call versus building one integrated subsystem (Solaris Zones' path)? Which wins in the long run and why?", hint:"think about evolvability vs. day-one coherence",
+    a:"Zones' integrated design gave Solaris a coherent, fully-isolated (including resource caps) container years before Linux matched all four properties simultaneously — a real day-one advantage. But Linux's piecewise approach meant each primitive could evolve, get security-audited, and gain adopters independently of the others: cgroups v1 could be replaced by v2's unified hierarchy without touching namespace code; user namespaces could ship in 2013 without waiting on network namespaces; seccomp-bpf and LSM hooks could be bolted on a decade later without any 'container subsystem' rewrite. That independent evolvability is precisely why an ecosystem of alternative low-level runtimes (runc, crun, gVisor's user-space kernel, Kata's lightweight VMs) can all consume the identical OCI Runtime Spec today — a modularity Zones' more monolithic implementation didn't offer to the same degree. In the long run the piecewise approach won by default: Solaris's market position shrank while Linux's primitive-by-primitive assembly became the industry's actual standard, but it's worth being honest that this was substantially due to Linux's market dominance, not proof that composability always beats integration." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"What did Docker's original 2013 release actually contribute that didn't already exist?",
+    opts:[ "The mount, PID, and network namespace types",
+           "cgroups-based CPU and memory limiting",
+           "The Dockerfile build format, layered images, and a public registry (Docker Hub)",
+           "chroot()-style filesystem-root switching" ],
+    a:2,
+    why:"Namespaces (2002–2013 across types), cgroups (2006), and chroot (1979) all predate Docker and were already composed by LXC, which Docker's earliest releases used directly. Docker's real contribution was the build/ship/run developer workflow and its supporting image format and registry — packaging and distribution, not new isolation primitives. Options A, B, and D are each a specific kernel mechanism invented by someone else, years earlier." },
+  { q:"Why can a process escape a bare chroot() jail using only fchdir(), with no kernel vulnerability involved?",
+    opts:[ "chroot() is deprecated and unenforced on modern kernels",
+           "chroot() changes the root inode but does not touch or restrict the current working directory",
+           "fchdir() has a well-known unpatched buffer overflow",
+           "chroot() requires re-authentication that fchdir() bypasses" ],
+    a:1,
+    why:"A process that opened a file descriptor to the real root before chrooting can fchdir() to it afterward, since chroot() never restricts what fchdir() can target — then chroot(\".\") resets the root to the real filesystem. This is documented, intended syscall behavior — the man page itself says chroot() isn't a security mechanism. Options A, C, and D describe things that aren't true of any current or historical Linux kernel." },
+  { q:"Which of these first added Linux resource accounting/limiting (CPU, memory) per group of processes?",
+    opts:[ "chroot (1979)", "Mount namespaces (2002)", "cgroups (2006, merged 2008)", "User namespaces (2013)" ],
+    a:2,
+    why:"cgroups, started inside Google as 'process containers' and merged as control groups, were the first Linux mechanism to cap and account resources per process group — solving the 'resource lie' from §1 that none of the filesystem- or visibility-oriented namespaces ever touched. Mount namespaces (2002) only isolate the view of mounted filesystems; user namespaces (2013) isolate UID/GID mapping, not resources; chroot only isolates the filesystem root." },
+  { q:"What was LXC's (2008) real innovation, precisely?",
+    opts:[ "A brand-new kernel scheduler for containerized processes",
+           "The first tool to compose existing namespaces + cgroups + rootfs switching into one usable command",
+           "The first implementation of network namespaces",
+           "A replacement for the ext4 filesystem optimized for containers" ],
+    a:1,
+    why:"By 2008 the individual primitives (several namespace types, cgroups, chroot-style rootfs switching) already existed as separate, independently mergeable kernel features. LXC's contribution was composition and usability — one CLI hiding the manual clone()-flag and cgroupfs-write choreography — not a new kernel subsystem, scheduler, or filesystem." },
+  { q:"The OCI split its specification into three parts. Which pairing is correct?",
+    opts:[ "Image Spec = registry HTTP API; Distribution Spec = layer format",
+           "Runtime Spec = bundle + lifecycle contract for low-level runtimes; Distribution Spec = registry HTTP API",
+           "Image Spec = clone() flag set; Runtime Spec = manifest format",
+           "There is only one OCI spec covering all of container behavior" ],
+    a:1,
+    why:"The Runtime Spec defines the on-disk bundle (rootfs + config.json) and the create/start/kill/delete lifecycle any compliant low-level runtime (runc, crun) must implement. The Distribution Spec defines the registry-side HTTP API (blob upload by digest, manifest PUT/GET). The Image Spec (not paired correctly in options A or C) defines the manifest/config/layer format independent of both. There are three specs, each with a distinct interoperability boundary — not one monolithic spec, and not the swapped pairings in A or C." },
+  { q:"A default OCI container (namespaces + cgroups + default seccomp + default capability drops) reduces reachable syscalls from roughly how much?",
+    opts:[ "No change — seccomp only affects network syscalls",
+           "From the full ~450-syscall surface down by roughly 40-50 blocked calls under the default profile",
+           "Down to exactly 1 syscall (execve only)",
+           "Syscall filtering only applies to rootless containers, never rootful ones" ],
+    a:1,
+    why:"Both Docker's and Podman's default seccomp profiles block a specific, well-known list of roughly 44 syscalls (raw mount, keyctl, dangerous clone flags, and others detailed in chapter 8) out of Linux's roughly 450-syscall surface — a meaningful but partial reduction, not total lockdown (option C) and not something limited to network calls (option A) or to rootless mode only (option D — seccomp applies regardless of user namespace use)." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could write the OCI's history section yourself.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5's deck and the simulator in §15 — the primitive-by-primitive story clicks fast once you toggle it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "chroot() ships in Unix (1979)",
+    "FreeBSD jail() ships (2000)",
+    "Solaris Zones ships (2004)",
+    "Linux mount namespaces merge (2002) — listed here by kernel-availability lineage",
+    "Linux cgroups merge (2006/2008)",
+    "Linux PID namespaces merge (2008)",
+    "LXC ships, first usable combination (2008)",
+    "Linux user namespaces complete + Docker ships (2013)",
+    "OCI founded, runc donated (2015)",
+    "Podman 1.0 ships (2018)"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real timeline</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 2 will show that PID namespaces make a process 'PID 1' of its own tree, and that PID 1 has special kernel signal-handling semantics. Predict: what could go wrong if a container's entrypoint is an ordinary script never designed to run as PID 1?",
+    a:"The kernel gives PID 1 special treatment: default signal dispositions (like SIGTERM's default 'terminate' action) are IGNORED for PID 1 unless the process explicitly installs its own handler, and PID 1 is responsible for reaping any orphaned child processes that get reparented to it. An ordinary shell script or app never written with this in mind will likely never terminate cleanly on SIGTERM (docker/podman stop will time out and escalate to SIGKILL) and may accumulate zombie processes it never reaps. This is exactly the 'PID 1 problem' chapter 2 solves, usually via a tiny init process like tini." },
+  { lvl:"THINK", q:"This chapter showed user namespaces (2013) let a process be UID 0 inside while mapping to an unprivileged UID outside. Predict: what single file makes this mapping happen, and what do you think it means for a rootless container to 'not have real root at all,' even briefly?",
+    a:"The mapping lives in /proc/<pid>/uid_map (and gid_map), a write-once file that maps a range of in-namespace UIDs to a range of real host UIDs. Because a rootless container never has a real UID-0 process anywhere on the host, an attacker who somehow breaks out of every other isolation layer still lands as an ordinary unprivileged host user — not root — which is the core security argument for rootless-by-default engines like Podman. Chapter 4 has you build and inspect this mapping directly." },
+  { lvl:"THINK", q:"Design exercise: given everything in this chapter, sketch — in one paragraph, no code — how you'd build the smallest possible 'container' using only clone() flags and cgroup writes, with no image format and no CLI tool at all. What's the minimum viable set?",
+    a:"At minimum: call clone() (or unshare() on an already-running process) with CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC to get an isolated process tree, hostname, and IPC space; inside the child, chroot() (or pivot_root, chapter 6) into an extracted rootfs directory and chdir('/'); before or after, mkdir a cgroup directory under /sys/fs/cgroup and write memory.max/cpu.max, then write the new PID into cgroup.procs to join it. That's the entire mechanism — no Dockerfile, no image format, no registry, no daemon. Chapter 9 has you do precisely this by hand with raw runc, and chapter 16 (the capstone) has you do it with even less than runc." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15) — primitive toggle board
+   ============================================================ */
+(function(){
+  const PRIMS = [
+    { id:"chroot", label:"chroot", yr:"1979" },
+    { id:"pidns",  label:"PID namespace", yr:"2008" },
+    { id:"cgroup", label:"cgroup limit", yr:"2006" },
+    { id:"caps",   label:"cap drop", yr:"~2016 default" }
+  ];
+  const S = { chroot:false, pidns:false, cgroup:false, caps:false, memUsed:40 };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  const toggles = el("prim-toggles");
+  PRIMS.forEach(p=>{
+    const c = document.createElement("div");
+    c.className = "primchip";
+    c.dataset.id = p.id;
+    c.innerHTML = `${p.label}<span class="pc-y">${p.yr}</span>`;
+    c.onclick = ()=>{
+      S[p.id] = !S[p.id];
+      c.classList.toggle("on", S[p.id]);
+      log("LOG", `toggled ${p.label}: ${S[p.id] ? "ON" : "off"}`);
+      if (p.id==="cgroup" && S[p.id]) log("LOG", "wrote memory.max=134217728 (128MB) to the process's cgroup");
+      if (p.id==="caps" && S[p.id]) log("LOG", "bounding set trimmed: CAP_SYS_ADMIN, CAP_SYS_MODULE, CAP_SYS_CHROOT removed");
+      render();
+    };
+    toggles.appendChild(c);
+  });
+
+  const activeCount = ()=> PRIMS.filter(p=>S[p.id]).length;
+
+  function attemptEscape(){
+    if (S.chroot && S.caps){
+      log("FATAL", "fchdir(9): EPERM (Operation not permitted) — CAP_SYS_CHROOT was dropped from the bounding set");
+      log("OK", "escape blocked — chroot() alone was never enough, and capability dropping is exactly why");
+    } else if (S.chroot){
+      log("WARN", "open(\"/\",O_RDONLY)=9 → chroot(\"/rootfs\") → fchdir(9) → chroot(\".\")  — root inode reset to real host root");
+      log("FATAL", "escaped: process root is now the REAL filesystem root");
+    } else {
+      log("LOG", "no chroot active — there's no jail to escape from in the first place");
+    }
+    render();
+  }
+
+  function attemptAlloc(){
+    if (S.cgroup){
+      S.memUsed += 60;
+      if (S.memUsed > 128){
+        log("FATAL", "Memory cgroup out of memory: Killed process (simulated) — allocation pushed past memory.max=128MB");
+        S.memUsed = 40;
+      } else {
+        log("LOG", `allocated 60MB (cgroup usage now ~${S.memUsed}MB / 128MB ceiling)`);
+      }
+    } else {
+      S.memUsed += 60;
+      log("WARN", `allocated 60MB, NO ceiling enforced (host-wide usage now ~${S.memUsed}MB) — a real host would keep climbing toward global OOM`);
+    }
+    render();
+  }
+
+  function attemptMount(){
+    if (S.caps) log("FATAL", "mount(\"/dev/sda1\",...): EPERM — CAP_SYS_ADMIN required, and it was dropped");
+    else log("WARN", "mount(\"/dev/sda1\",...): succeeded — full CAP_SYS_ADMIN still held, this process could remount host devices");
+    render();
+  }
+
+  function attemptPs(){
+    if (S.pidns) log("OK", "ps aux inside: 1 process (PID 1, this one) — own isolated PID namespace");
+    else log("WARN", `ps aux inside: sees all ${137 + Math.floor(Math.random()*40)} host processes — no PID namespace active`);
+  }
+
+  function render(){
+    el("sim-phase").textContent = `${activeCount()} / 4 PRIMITIVES ACTIVE`;
+    const box = el("sim-proc");
+    box.className = "sim-proc" + (activeCount()===4 ? " jailed" : "");
+    box.innerHTML = `
+      <div class="sp-row"><span class="sp-k">filesystem root</span><span class="sp-v ${S.chroot?'ok':'bad'}">${S.chroot ? "/var/lib/rootfs (isolated)" : "/ — same as host"}</span></div>
+      <div class="sp-row"><span class="sp-k">ps aux, inside</span><span class="sp-v ${S.pidns?'ok':'bad'}">${S.pidns ? "1 process (PID 1, itself)" : "sees every host PID"}</span></div>
+      <div class="sp-row"><span class="sp-k">memory ceiling</span><span class="sp-v ${S.cgroup?'ok':'bad'}">${S.cgroup ? "128 MB, kernel-enforced" : "none — can exhaust host RAM"}</span></div>
+      <div class="sp-row"><span class="sp-k">capabilities</span><span class="sp-v ${S.caps?'ok':'bad'}">${S.caps ? "~14 caps (CAP_SYS_ADMIN etc. dropped)" : "full ~40-cap root set"}</span></div>
+      <div class="sp-row"><span class="sp-k">simulated memory used</span><span class="sp-v">${S.memUsed} MB${S.cgroup ? " / 128 MB" : " (no ceiling)"}</span></div>
+      <div class="sim-ctl" style="padding:12px 0 0;border:none">
+        <div class="btns">
+          <button class="btn" id="a-ps">run ps aux</button>
+          <button class="btn warn" id="a-alloc">allocate 60MB</button>
+          <button class="btn danger" id="a-mount">attempt mount()</button>
+          <button class="btn danger" id="a-escape">attempt fchdir() escape</button>
+        </div>
+      </div>`;
+    el("a-ps").onclick = attemptPs;
+    el("a-alloc").onclick = attemptAlloc;
+    el("a-mount").onclick = attemptMount;
+    el("a-escape").onclick = attemptEscape;
+  }
+
+  log("OK", "one bare process, zero primitives active — every kernel door is open");
+  log("HINT", "Toggle chroot, then try 'attempt fchdir() escape' — then add cap drop and try again.");
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-01"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#2dd4bf"><a class="cn-btn disabled"><span>←</span><span><span class="cn-lbl">START</span><span class="cn-ttl">First chapter</span></span></a><div class="cn-mid"><a class="cn-home" href="course-containers.html">☰ Container Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="ctr-01.html" selected>CH 01 · Genesis: From chroot to the OCI Spec</option><option value="ctr-02.html">CH 02 · Namespaces I: PID, UTS, Mount &amp; IPC</option><option value="ctr-03.html">CH 03 · Namespaces II: Network Namespaces &amp; veth</option><option value="ctr-04.html">CH 04 · User Namespaces: Rootless Containers</option><option value="ctr-05.html">CH 05 · cgroups v2: The Unified Resource Hierarchy</option><option value="ctr-06.html">CH 06 · The Root Filesystem: pivot_root &amp; OverlayFS</option><option value="ctr-07.html">CH 07 · Capabilities: Splitting Root Into 40 Pieces</option><option value="ctr-08.html">CH 08 · Seccomp &amp; LSMs: Filtering the Syscall Surface</option><option value="ctr-09.html">CH 09 · The OCI Runtime Spec: runc, crun &amp; config.json</option><option value="ctr-10.html">CH 10 · Container Images: Layers, Manifests &amp; Content Addressing</option><option value="ctr-11.html">CH 11 · Registries: The Distribution Spec, Push/Pull &amp; Auth</option><option value="ctr-12.html">CH 12 · Architecture Showdown: Docker's Daemon vs Podman's Fork-Exec Model</option><option value="ctr-13.html">CH 13 · Networking: Bridges, CNI &amp; libnetwork</option><option value="ctr-14.html">CH 14 · Pods &amp; systemd: Podman's Pod Model and Quadlets</option><option value="ctr-15.html">CH 15 · Production Incidents: Real Container Escapes &amp; CVEs</option><option value="ctr-16.html">CH 16 · Capstone: Build a Container Runtime From Scratch</option></select><span class="cn-prog">01 / 16</span></div><a class="cn-btn" href="ctr-02.html"><span><span class="cn-lbl">NEXT · CH 02</span><span class="cn-ttl">Namespaces I: PID, UTS, Mount &amp; IPC</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

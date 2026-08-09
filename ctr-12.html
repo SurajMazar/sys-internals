@@ -1,0 +1,1701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-12 · Architecture Showdown: Docker's Daemon vs Podman's Fork-Exec Model — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+  .eng-docker{color:var(--docker);font-weight:600}
+  .eng-podman{color:var(--podman);font-weight:600}
+  .chipd{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(36,150,237,.4);color:var(--docker);background:rgba(36,150,237,.08)}
+  .chipp{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(137,44,160,.4);color:var(--podman);background:rgba(137,44,160,.08)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .evobox{border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:190px}
+  .evobox .evo-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px}
+  .evocell{border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px}
+  .evorow{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:760px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:80px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:96px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .acard.dk{border-color:rgba(36,150,237,.35)}
+  .acard.pd{border-color:rgba(137,44,160,.35)}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11px}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  .pstree-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:640px){.pstree-cols{grid-template-columns:1fr}}
+  .pstree-hd{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;font-weight:700}
+  .pstree{background:#05070b;border:1px solid var(--border);border-radius:10px;padding:10px 11px;
+    font-family:var(--mono);font-size:10.6px;line-height:1.85;white-space:pre;overflow-x:auto;min-height:180px}
+  .pstree .hdr{color:var(--dim)}
+  .pstree .initrow{color:#6b7688}
+  .pstree .dkrow{color:var(--docker)}
+  .pstree .pdrow{color:var(--podman)}
+  .pstree .ctr{color:var(--ok)}
+  .pstree .orphan{color:var(--warn)}
+  .pstree .dead{color:var(--bad)}
+
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:200px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#38bdf8);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 12 / 16</b> · ARCHITECTURE SHOWDOWN</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Security</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 12</div>
+  <h1>Architecture Showdown:<br><span class="grad">Daemon vs Fork-Exec</span></h1>
+  <p class="lead">Every earlier chapter treated "the container process" as a fact already in existence and asked
+  what isolates it. This chapter asks the question underneath all of that: <b>which process on the host is
+  responsible for that container's lifecycle</b> — creating it, remembering it exists, capturing its exit code,
+  restarting it if policy says to, answering an API call about it from a different terminal minutes later? Docker
+  answers with a long-lived root daemon; Podman answers by never running one at all. This is the single deepest
+  Docker-vs-Podman comparison in the course, because almost everything else the two engines disagree about —
+  rootless defaults, pod semantics, systemd integration, even networking — is downstream of this one architectural
+  fork.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Draw the real process chain from a client command to a running
+    container for both engines, with every intermediate binary named.</div>
+    <div class="obj"><b>You will understand</b>Exactly what a long-lived root daemon buys (one API surface,
+    create-then-disconnect) and what it costs (a root-owned single point of failure) — precisely, not by slogan.</div>
+    <div class="obj"><b>You will predict</b>What happens to a running container, and to its restart policy, when
+    <code>dockerd</code> dies mid-flight — and why those two answers differ.</div>
+    <div class="obj"><b>You will simulate</b>A real <code>ps --forest</code> for both engines side by side, killing
+    each layer one at a time to see exactly what survives.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Who is actually running your container, and what happens when they die?</h2>
+  <p class="lead">Namespaces answer "what can this process see." Cgroups answer "how much can it consume."
+  Capabilities and seccomp answer "what privileged operations can it invoke." All four chapters quietly assumed
+  the container process was already running, already tracked, already something you could query. Something has
+  to make that true — and that something is not a kernel feature at all. It is a userspace design decision, made
+  independently by Docker and by Podman, and the two answers could hardly be more different.</p>
+  <p>Strip away branding and ask what any container engine's supervision layer must actually provide, given
+  nothing but the OCI runtime primitives from chapter 9 (<code>runc create</code> / <code>start</code> /
+  <code>kill</code> / <code>delete</code>, and nothing else):</p>
+  <ul class="plain">
+    <li><b>Durable identity.</b> A name or ID you can query <i>after</i> the command that created the container
+      has finished and exited — "is <code>web-1</code> still running" has to work from a shell that didn't create it.</li>
+    <li><b>stdio capture that outlives the client.</b> Whoever launched the container will typically disconnect —
+      close the terminal, lose the SSH session, exit after <code>-d</code>. The container's stdout/stderr must keep
+      being drained and logged by <i>someone</i>, or the container's own writes start failing (§4 makes this precise).</li>
+    <li><b>Exit-status capture.</b> When the container's init process eventually exits, something must call
+      <code>wait()</code> on it and durably record the code — <code>docker inspect</code>/<code>podman inspect</code>
+      answering "why did it stop" hours later depends on this.</li>
+    <li><b>A reachable management surface.</b> Something must expose "list/create/stop/exec" independent of exactly
+      which shell happened to run the original launch command — locally at minimum, often remotely too.</li>
+    <li><b>Optional: continuous supervision.</b> <code>--restart=always</code> means <i>something</i> is watching
+      for the container to exit unexpectedly and deciding whether to bring it back.</li>
+  </ul>
+  <p>Docker's answer is architecturally simple to state: run one privileged process, continuously, for as long as
+  the machine is up, and let it own every one of those five responsibilities in one place. Podman's answer is the
+  opposite: run <i>nothing</i> continuously except a tiny process per running container; let every
+  <code>podman</code> invocation be an ordinary, short-lived CLI process that reads and writes shared state on disk
+  and then exits. Both engines land on the same low-level runtime (runc or crun, chapter 9), the same OCI bundle
+  format, the same namespaces and cgroups — this chapter is about the layer <i>above</i> all of that, where they
+  diverge completely.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE REST OF THE COURSE</div>
+    <p>The daemon-vs-fork-exec decision is not cosmetic — it is the load-bearing wall behind chapter 13's
+    networking comparison (who holds the IP-allocation table in memory?), chapter 14's pod/systemd model (why
+    Podman's answer to "keep this running" is <i>systemd</i>, not a container-specific watcher), and the incident
+    patterns in chapter 15 (an always-on root socket is a specific, nameable attack surface that a daemonless
+    engine at rest simply does not present). Get this chapter's mechanism right and the rest of the course's
+    Docker/Podman comparisons stop looking like arbitrary trivia and start looking like consequences.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From one monolithic binary to two competing philosophies</h2>
+  <p>Neither architecture arrived fully formed. Docker's daemon started as a single Go binary doing everything;
+  it was pried apart into layers over several years, mostly under pressure from the OCI standardization effort it
+  itself helped start. Podman's daemonless model was a deliberate, later reaction — built by people who had spent
+  years operating dockerd in production and wanted rootless-by-default and systemd-native operation badly enough
+  to rebuild the client side from scratch. Click through the fork in the road.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — two architectures, one ancestor</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · CONMON'S ORIGIN STORY</div>
+    <p>Podman did not invent its per-container monitor process from scratch. <code>conmon</code> was built for
+    <b>CRI-O</b>, Kubernetes' own from-scratch, no-Docker-dependency container runtime, which needed exactly the
+    same thing Podman would later need: a tiny, dependency-free C program that could hold a container's stdio open
+    and record its exit status without itself being a heavyweight daemon. Podman adopted <code>conmon</code>
+    directly. The two projects share it to this day — it is genuinely one component, not a parallel reimplementation,
+    which is part of why Podman's daemonless model reached production maturity faster than a ground-up rewrite
+    would have.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: a nine-line shell script</h2>
+  <p>Derive the architecture honestly, the way the course always does. Chapter 9 already gave you a
+  fully-functional OCI bundle and a runtime that can create and start it. So: what is the simplest possible
+  "container engine" you could build with nothing but <code>runc</code> and a shell?</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">sh</span><span>naive-engine.sh — the strawman</span></div>
+    <pre><span class="c">#!/bin/sh</span>
+<span class="c"># "docker run" in nine lines. No daemon, no client/server split, no logs.</span>
+<span class="k">set</span> -e
+id=$(uuidgen)
+mkdir -p /run/naive/$id
+oci-bundle-gen --image <span class="s">"$1"</span> --out /run/naive/$id   <span class="c"># writes config.json + rootfs</span>
+runc create <span class="s">"$id"</span> -b /run/naive/$id
+runc start <span class="s">"$id"</span>
+<span class="f">echo</span> <span class="s">"$id"</span>
+<span class="c"># ...that's the whole engine.</span></pre>
+  </div>
+
+  <p>For a single, synchronous, foreground run on the machine you're sitting at, this script is not a joke — it
+  works. <code>oci-bundle-gen</code> did the same layer-flattening and <code>config.json</code> generation chapters
+  9–10 described; <code>runc create</code>/<code>start</code> do exactly what chapter 9 showed. Every namespace,
+  cgroup limit, and capability drop from chapters 2–8 fires correctly. Watch it start breaking the moment real
+  usage patterns show up.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The nine-line engine under realistic use</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Two failures, quantified: the broken pipe and the amnesiac host</h2>
+  <p>The naive script's failures are not vague "it doesn't scale" hand-waving — they are two specific, nameable
+  mechanisms, and both real engines were built around solving exactly these two things.</p>
+  <ul class="plain">
+    <li><b>Failure 1 — EPIPE.</b> The container's stdout/stderr are pipes whose read end is held by whatever
+      process launched it. Close your terminal (or let the invoking shell exit) without something else holding
+      that pipe open, and the very next <code>write()</code> the container's process makes to that fd fails with
+      <code>EPIPE</code> (errno 32). Unless the application explicitly ignores <code>SIGPIPE</code>, the kernel's
+      default disposition for that signal is <b>terminate the process</b>. "My container mysteriously died the
+      instant I closed my SSH session" is not a mystery — it is this mechanism, exactly. Both engines solve it the
+      same way: insert a small process, forked <i>before</i> the client can disappear, whose entire job is to hold
+      the read end of that pipe open forever and drain it to a log file.</li>
+    <li><b>Failure 2 — the amnesiac host.</b> Ask a second terminal "is that container still running?" and the
+      naive script has no answer — there is no persistent record separating "a container this script created" from
+      any other process. Worse: once a process exits, its exit status is available via <code>wait()</code>/
+      <code>waitpid()</code> exactly once, to its parent, and <i>only</i> if something calls it before the kernel
+      needs the process-table slot back. If nothing does, the process becomes a zombie — a
+      <code>task_struct</code> using kernel memory but executing nothing — until <i>some</i> ancestor reaps it. If
+      the true parent already exited, that duty silently falls to whatever adopted the orphan (PID 1, or a
+      designated <span class="term" data-def="A process that calls prctl(PR_SET_CHILD_SUBREAPER, 1) — Linux 3.4+ — so that orphaned descendants reparent to it instead of escaping to PID 1.">subreaper</span>,
+      §8 shows exactly which process that is for each engine) — and by the time anyone asks, nobody remembers
+      which image, ports, or command produced that exit code.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE ONE IDEA BOTH ENGINES CONVERGE ON</div>
+    <p>Fix both failures with a single addition: a small process, forked before the client can vanish, that (a)
+    never exits until the container does, (b) holds the container's stdio pipes open and drains them to durable
+    storage, and (c) calls <code>wait()</code> on the container process and records its exit status somewhere a
+    later command can read. <b>Docker and Podman agree completely that this piece must exist.</b> The entire
+    architectural disagreement this chapter is about is what sits <i>above</i> it: does reaching that piece also
+    require going through one big, continuously-running, privileged daemon — or not?</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTIONS, EXAMINED</div>
+  <h2 class="sec">One big daemon, then split, then deleted entirely</h2>
+  <p>Step through the actual sequence both engines' architectures went through — Docker stopped partway; Podman
+  kept going.</p>
+
+  <div class="widget deck" id="deckEvolve">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">From monolith to daemonless</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE ACTUAL DISAGREEMENT, STATED PRECISELY</div>
+    <p>Both engines keep a tiny, per-container, always-detached supervisor process (<code>containerd-shim-runc-v2</code>
+    for Docker, <code>conmon</code> for Podman) — that piece from §4 is non-negotiable and identical in spirit.
+    The disagreement is entirely about whether there is <i>also</i> a persistent central brain sitting above it,
+    holding state in memory and exposing an always-on API: Docker says yes (<code>dockerd</code>, plus
+    <code>containerd</code> underneath it); Podman says no — the "brain" logic runs once per invocation, inside the
+    ordinary <code>podman</code> CLI process, and throws its process away the moment the command returns.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The daemon's bill, and the fork-exec model's bill</h2>
+  <p>Neither design is free. Read this section slowly — it contains the single most commonly misunderstood
+  operational fact in either engine's architecture.</p>
+  <p>Docker's split genuinely solved the headline problem: since Docker 1.12 (2016) you can
+  <code>systemctl restart docker</code> — kill and relaunch <code>dockerd</code>, even upgrade its binary — and
+  every running container survives untouched. That works because <code>containerd-shim-runc-v2</code> completely
+  detaches from <code>dockerd</code>'s (and <code>containerd</code>'s) process tree the moment it is launched —
+  double-fork, <code>setsid()</code>, reparent to PID 1 — exactly as §8 shows in the real syscalls. On restart,
+  <code>dockerd</code> simply reconnects to <code>containerd</code>, and <code>containerd</code> reattaches to each
+  shim's still-open control socket to rediscover what is running. Container uptime is decoupled from daemon uptime,
+  by design.</p>
+  <p>But "the container keeps running" is a narrower claim than "the daemon is not a single point of failure," and
+  the gap between those two claims is exactly where production incidents happen. <b>Docker's automatic restart
+  policy is not implemented inside <code>containerd</code> or the shim — it lives in <code>dockerd</code> itself</b>,
+  in the component the Moby source tree calls the <i>restart manager</i>. <code>dockerd</code>'s
+  <code>libcontainerd</code> client subscribes to a stream of task-exit events that <code>containerd</code> emits
+  over gRPC; when a monitored container's task exits, <code>dockerd</code>'s restart manager — not
+  <code>containerd</code>, not the shim — evaluates the policy, computes a backoff, and issues a new
+  <code>CreateTask</code> call. That subscription and its decision loop exist <i>only while <code>dockerd</code> is
+  running</i>.</p>
+  <div class="callout bad">
+    <div class="co-t">SO: IF <span class="eng-docker">DOCKERD</span> DIES, DOES <code>--restart=always</code> STILL WORK?</div>
+    <p><b>Split answer, and the split is the whole point.</b> A container that is <i>already running</i> when
+    <code>dockerd</code> dies keeps running — the shim owns it, not the daemon. But if that same container's
+    process then <i>crashes</i> while <code>dockerd</code> is still down, <b>nothing restarts it</b>: the
+    restart-policy decision loop lives in the daemon that isn't there. The container sits stopped until
+    <code>dockerd</code> comes back up, reconnects to <code>containerd</code>, and reconciles state — at which
+    point it will restart containers it discovers stopped that should be running. There is a real window, exactly
+    as long as the outage, during which "self-healing" quietly does not happen. This is the precise mechanism
+    behind a genuinely common on-call surprise: an upgrade or crash of <code>dockerd</code> itself coincides with
+    an application crash, and the on-call engineer discovers the restart policy "didn't work" — it worked exactly
+    as designed; the daemon that implements it was simply not running at the moment it mattered.</p>
+  </div>
+  <p>Podman's fork-exec model pays a structurally similar bill from the opposite direction. Because there is no
+  daemon, there is also no always-on process anywhere watching a standalone container for restart-worthy exits.
+  Podman does support <code>--restart</code> on <code>podman run</code>, but for a container not wrapped in a
+  systemd unit that support is necessarily <i>reconciliation-based</i>, not event-driven: Podman ships a
+  <code>podman-restart.service</code> systemd unit that, at boot, runs <code>podman start</code> against containers
+  whose stored policy says they should be running — i.e. restart-on-crash for a bare <code>podman run
+  --restart=always</code> container is honored at the <i>next boot</i>, not the next second. Podman's own guidance
+  for continuous, live supervision is not "build a better watcher" — it is "stop trying to reinvent one": generate
+  a systemd unit for the container (<code>podman generate systemd</code>, or natively via a Quadlet
+  <code>.container</code> file — chapter 14) and let <code>Restart=always</code> in that unit be enforced by
+  systemd, PID 1, the one process on the box even less likely to be down than <code>dockerd</code>. Same underlying
+  question — who watches for crashes — answered by "make the daemon you already trust do it," rather than
+  "run a container-specific one."</p>
+  <p>There is a second, quieter cost to deleting the central brain: state that used to be a fast in-memory
+  structure inside <code>dockerd</code> — the bridge network's IP-allocation table, the name→ID index, event
+  subscriptions — has to live on disk instead, read fresh under file locks by every independent
+  <code>podman</code> invocation, because no long-lived process holds it in RAM. For a handful of containers this
+  is invisible; chapter 13 shows it becomes a real, measurable design pressure at scale, and is one reason Podman's
+  networking stack moved to netavark+aardvark-dns specifically to cut that per-invocation cost.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">Two process constellations, one shared handoff contract</h2>
+  <p>Click any component below. Notice the shape: Docker's chain has two persistent daemons sitting above a
+  per-container supervisor; Podman's chain has none — only the per-container supervisor, forked directly by an
+  ephemeral CLI process that is already gone. Both chains converge on the exact same OCI bundle handoff
+  (<code>config.json</code> + rootfs, chapter 9) before handing off to their respective low-level runtime.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">CLIENT (EPHEMERAL, BOTH ENGINES)</div>
+        <div class="arch-grid">
+          <div class="acard dk" data-p="dockercli">docker CLI</div>
+          <div class="acard pd" data-p="podmancli">podman CLI</div>
+        </div>
+        <div class="arch-row-label">PERSISTENT ROOT DAEMONS — <span class="eng-docker">DOCKER ONLY</span></div>
+        <div class="arch-grid">
+          <div class="acard dk" data-p="dockerd">dockerd</div>
+          <div class="acard dk" data-p="containerd">containerd</div>
+        </div>
+        <div class="arch-row-label">PER-CONTAINER SUPERVISOR (ALWAYS DETACHED, BOTH ENGINES)</div>
+        <div class="arch-grid">
+          <div class="acard dk" data-p="shim">containerd-shim-runc-v2</div>
+          <div class="acard pd" data-p="conmon">conmon</div>
+        </div>
+        <div class="arch-row-label">LOW-LEVEL RUNTIME — ONE-SHOT, EXITS AFTER HANDOFF</div>
+        <div class="arch-grid">
+          <div class="acard dk" data-p="runc">runc</div>
+          <div class="acard pd" data-p="crun">crun</div>
+        </div>
+        <div class="arch-row-label">SHARED HANDOFF CONTRACT</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="bundle">OCI bundle — config.json + rootfs (chapter 9) — both chains write it, both runtimes read it identically</div></div>
+        <div class="arch-row-label">THE CONTAINER ITSELF</div>
+        <div class="arch-grid"><div class="acard" data-p="ctrproc">container init process</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE DETAIL THAT MAKES ALL OF §6 TRUE</div>
+    <p>Both <code>containerd-shim-runc-v2</code> and <code>conmon</code> call
+    <code>prctl(PR_SET_CHILD_SUBREAPER, 1)</code> near startup — a Linux 3.4+ flag that says "orphaned descendants
+    of mine should reparent to <i>me</i>, not skip past me to PID 1." That single syscall is what lets
+    <code>runc</code>/<code>crun</code> exit immediately after handing off the container's init process without
+    that process becoming an untracked orphan: it reparents straight to the shim or to <code>conmon</code>, which
+    is precisely why <code>docker logs</code>/<code>podman logs</code> and <code>docker inspect</code>/<code>podman
+    inspect</code> keep working long after the low-level runtime binary that created the container is gone. §8 walks
+    the exact call sequence.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The real call chains, socket by socket</h2>
+  <p>Now the mechanism at the level you'd need to debug it: the actual sockets, the actual process launches, and
+  the actual syscall that keeps a container's process from becoming an orphan.</p>
+
+  <h3>(a) <code>docker run -d nginx</code>, hop by hop</h3>
+  <div class="widget deck" id="deckDocker">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Docker's chain: client → dockerd → containerd → shim → runc</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) <code>podman run -d nginx</code>, hop by hop</h3>
+  <div class="widget deck" id="deckPodman">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Podman's chain: CLI fork/exec → conmon → crun</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Notice the hop count: Docker's chain crosses a Unix-socket REST call (<code>/var/run/docker.sock</code>) and a
+  gRPC/ttrpc call (<code>/run/containerd/containerd.sock</code>) before a process is even forked; Podman's chain is
+  a single <code>fork()</code>+<code>exec()</code> from the CLI process itself, because the "decide what to do"
+  logic (image resolution, bundle generation, storage/network glue) runs as a Go library <i>inside</i> the
+  <code>podman</code> binary rather than being requested from a separate daemon over a socket.</p>
+
+  <h3>(c) The dockerd-outage window, made concrete</h3>
+  <p>§6's restart-policy nuance is a timing argument — drag the sliders to see exactly which outcomes are possible.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Does <code>--restart=always</code> fire during a dockerd outage?</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>dockerd outage length</label><input type="range" id="outage-slider" min="0" max="60" value="20" step="1"><span class="val" id="outage-val">20 s</span></div>
+      <div class="slider-row"><label>container crashes at (t=)</label><input type="range" id="outage-crash" min="0" max="60" value="10" step="1"><span class="val" id="outage-crash-val">10 s</span></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:6px" id="outage-note"></p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="co-t">SOCKETS AND PATHS TO REMEMBER</div>
+    <p><code>dockerd</code> listens on <code>unix:///var/run/docker.sock</code> (REST/HTTP); it talks to
+    <code>containerd</code> over <code>/run/containerd/containerd.sock</code> (gRPC). Each running task gets its
+    own <code>containerd-shim-runc-v2</code> control socket under <code>/run/containerd/s/&lt;hash&gt;</code> — an
+    <span class="term" data-def="A Linux-specific socket namespace with no filesystem path, identified by a leading NUL byte, that is visible across network-namespace boundaries in ways filesystem sockets are not.">abstract Unix socket</span>,
+    which §11 shows is precisely the surface CVE-2020-15257 attacked. <code>conmon</code> takes a
+    <code>--exit-dir</code> flag telling it where to durably write the container's final exit code once it
+    reaps it, alongside a per-container log file it maintains itself — Podman's equivalent of what
+    <code>containerd</code>'s task-exit event stream gives Docker.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Ten dimensions, honestly scored</h2>
+  <table class="cmp">
+    <tr><th>DIMENSION</th><th class="eng-docker">DOCKER</th><th class="eng-podman">PODMAN</th></tr>
+    <tr><td>Process model</td><td>Persistent root <code>dockerd</code> + <code>containerd</code>, plus one shim per running container</td><td>No persistent central process; one <code>conmon</code> per running container, forked directly by an ephemeral CLI</td></tr>
+    <tr><td>Default privilege</td><td>Root daemon by default (rootless mode exists, historically secondary)</td><td>Rootless by default — zero daemon, zero root process required for the common case</td></tr>
+    <tr><td>Client-disconnect resilience</td><td><span class="pill g">survives</span> — shim detaches from dockerd/containerd at launch</td><td><span class="pill g">survives</span> — conmon detaches from the CLI at launch</td></tr>
+    <tr><td><code>--restart=always</code> enforcement</td><td><span class="pill y">live, event-driven</span> inside dockerd — inert while dockerd is down (§6)</td><td><span class="pill y">reconciled at boot</span> via podman-restart.service; live supervision recommended via systemd/Quadlets (ch.14) instead</td></tr>
+    <tr><td>Remote API availability</td><td>Always-on while docker.service runs</td><td>On-demand via <code>podman.socket</code> socket activation — spins up, idles out</td></tr>
+    <tr><td>State storage</td><td>In-memory in dockerd + on-disk metadata under <code>/var/lib/docker</code></td><td>Flat files/BoltDB under <code>containers/storage</code>, read fresh under file locks per invocation</td></tr>
+    <tr><td>Idle attack surface (zero containers)</td><td><span class="pill b">two resident root daemons</span></td><td><span class="pill g">zero resident root processes</span> in rootless mode</td></tr>
+    <tr><td>Cross-invocation concurrency</td><td>Serialized inside one daemon process</td><td>File locks (BoltDB/lock files) — independent CLI invocations can race</td></tr>
+    <tr><td>Systemd integration</td><td><code>docker.service</code> manages the daemon; containers are not native units</td><td>Native — <code>podman generate systemd</code> / Quadlets give containers first-class unit files</td></tr>
+    <tr><td>Kubernetes CRI path</td><td>Needs <code>cri-dockerd</code> shim since kubelet dropped dockershim (1.24)</td><td>Not typically the CRI runtime itself — but shares <code>conmon</code> lineage with CRI-O</td></tr>
+  </table>
+  <p>And where they are identical, say so plainly: both chains terminate in an OCI-compliant low-level runtime
+  consuming the exact same <code>config.json</code>/rootfs bundle (chapter 9); both default to overlayfs
+  (chapter 6); both enforce the same default seccomp profile shape (chapter 8). The daemon question is a real,
+  consequential fork — it is not evidence that the two engines disagree about container isolation itself, which
+  they mostly don't.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE / SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">Fewer hops, smaller idle footprint — and where that matters</h2>
+  <p>Docker's chain crosses two IPC boundaries (a Unix-socket REST call, then a gRPC/ttrpc call) and spawns a shim
+  process before <code>runc</code> even runs; Podman's chain is a direct <code>fork()</code>/<code>exec()</code>
+  from the CLI. For a single interactive <code>run</code>, image pull and rootfs setup dominate total latency and
+  the hop-count difference is close to invisible. It stops being invisible once you are launching hundreds or
+  thousands of short-lived containers back to back — CI runners, serverless-style cold starts, batch fan-out —
+  where the fixed per-launch overhead of each IPC boundary is paid every single time.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Cold-start latency vs. IPC hop count</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>IPC latency per hop</label><input type="range" id="lat-hop" min="0" max="15" value="4" step="0.5"><span class="val" id="lat-hop-val">4.0 ms</span></div>
+      <div class="slider-row"><label>containers launched back-to-back</label><input type="range" id="lat-n" min="1" max="500" value="50" step="1"><span class="val" id="lat-n-val">50</span></div>
+      <div class="toggle-row"><button class="chip" id="lat-warm">warm daemon cache (image already resolved)</button></div>
+      <div class="chartbox"><canvas id="lat-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--docker)">━</span> Docker cumulative launch time</span>
+        <span><span style="color:var(--podman)">━</span> Podman cumulative launch time</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="lat-note"></p>
+    </div>
+  </div>
+  <p>Security surface is a similar story, measured differently: with <code>dockerd</code> and <code>containerd</code>
+  both running as always-on root processes, the union of their exposed sockets, loaded plugins, and years of
+  accumulated CVE surface (§11) is present <i>whether or not any container is currently running</i>. A rootless
+  Podman host with zero running containers has, by construction, no equivalent root-owned listener anywhere —
+  there is nothing to scan for on that box until you run something. Neither engine is immune to kernel-level
+  container-escape risk once a container <i>is</i> running (that risk lives in namespaces/capabilities/runc-crun,
+  covered generally in chapter 15) — this section is specifically about the always-present, daemon-shaped surface,
+  which is where the two architectures genuinely diverge.</p>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Three incidents this architecture, specifically, produced</h2>
+
+  <h3>CVE-2020-15257: the shim's own socket became the attack surface</h3>
+  <p><code>containerd-shim-runc-v2</code> exposes a control socket so <code>containerd</code> can reattach to it
+  after a restart (exactly the mechanism that makes §6's "containers survive dockerd restarts" true). That socket
+  was implemented as an <b>abstract Unix socket</b> — a Linux-specific socket namespace with no filesystem path.
+  Abstract sockets are visible across network-namespace boundaries in a way filesystem-path sockets are not: a
+  container configured with <code>--net=host</code> (or one that otherwise shares the host's network namespace)
+  could see and connect to the shim's abstract socket <i>as if it were the host</i>, and speak the shim's own API
+  to it — effectively asking the process supervising your own container to do things on your behalf, as root, from
+  inside the thing it was supposed to be containing. Root cause: an abstraction that was namespace-scoped for
+  everything else (mount, PID, UTS) leaked across the one namespace (network) that abstract sockets don't respect.
+  Fix: moving away from abstract sockets for this API and hardening host-network-sharing defaults. It is a
+  vulnerability class that exists <i>because</i> of the daemon/shim split's own IPC surface — Podman's
+  <code>conmon</code>, communicating over its own local files/pipes rather than an inter-daemon reattachment
+  socket, was not exposed to this specific class.</p>
+
+  <h3>The exposed docker.sock/2375: root, no authentication, on the open internet</h3>
+  <p>Because <code>dockerd</code>'s API is root-equivalent by construction (anyone who can create a container can
+  mount the host filesystem into it), exposing that API without authentication is one of the most consistently
+  exploited container misconfigurations on record. Docker's remote API, bound to TCP port 2375 without TLS, or a
+  <code>docker.sock</code> accidentally mounted into an untrusted container, has been mass-scanned and hijacked by
+  automated cryptomining campaigns for years (security vendors have repeatedly documented botnets — Doki among
+  them — that specifically fingerprint and exploit exposed Docker APIs within minutes of exposure). The mechanism
+  is not subtle: <code>docker -H tcp://target:2375 run -v /:/host -it alpine chroot /host</code> is root on the
+  target host, no exploit required, because the daemon <i>is</i> the root-equivalent single point of trust this
+  chapter has been describing all along. A daemonless, rootless Podman deployment has no equivalent single socket
+  whose mere reachability equals root.</p>
+
+  <h3>The restart-policy blind spot during a dockerd upgrade</h3>
+  <p>§6's mechanism is not hypothetical — it is a documented, recurring operational pattern: a rolling
+  <code>dockerd</code> upgrade or an unrelated daemon crash coincides with an application-level crash inside a
+  <code>--restart=always</code> container, and the container does not come back until the daemon does. Because the
+  container's own process legitimately exited (its crash, not the daemon's fault), and because
+  <code>containerd</code> itself often stays up and reports the exit correctly at the task level, the failure looks
+  from the outside like "the restart policy silently didn't fire" rather than "the daemon that evaluates restart
+  policy was unavailable for four minutes" — which is the actual root cause every time this pattern has been
+  reported against Moby's restart-manager issue history. The fix operators converge on is the one §6 already named:
+  don't rely on a single centralized restart brain for anything you cannot tolerate losing during a daemon
+  restart — either enable <code>live-restore</code> and treat daemon upgrades as rarer/shorter, or move
+  supervision to something that isn't coupled to the container engine's own uptime at all (an external orchestrator,
+  or — Podman's answer — systemd).</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend either architecture at a whiteboard?</h2>
+  <p>Think before revealing — these are calibrated to what a Staff/Principal panel actually probes for.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real components</h2>
+  <p>Four source trees implement everything in this chapter. Files marked
+  <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">moby/moby (dockerd)</span></div>
+<div>├── <span class="fhl">● daemon/restart_policy.go</span> <span class="fnote">— ShouldRestart(): the exact decision this chapter's §6 nuance depends on</span></div>
+<div>├── <span class="fhl">● libcontainerd/client_daemon.go</span> <span class="fnote">— dockerd's containerd client; subscribes to task-exit events</span></div>
+<div>├── <span class="dir">api/server/</span>router/container/ <span class="fnote">— the REST API surface on /var/run/docker.sock</span></div>
+<div><span class="dir">containerd/containerd</span></div>
+<div>├── <span class="fhl">● runtime/v2/shim.go</span> <span class="fnote">— shim launch: double-fork, setsid, prctl(PR_SET_CHILD_SUBREAPER)</span></div>
+<div>├── <span class="dir">cmd/</span>containerd-shim-runc-v2/ <span class="fnote">— the shim binary's main(), ttrpc task service</span></div>
+<div><span class="dir">containers/podman (libpod)</span></div>
+<div>├── <span class="fhl">● libpod/oci_conmon_linux.go</span> <span class="fnote">— CreateContainer(): builds and execs the conmon command line</span></div>
+<div>├── <span class="dir">libpod/</span>container_api.go <span class="fnote">— podman run/start/stop as library calls, not RPCs</span></div>
+<div><span class="dir">containers/conmon (C)</span></div>
+<div>└── <span class="fhl">● src/conmon.c</span> <span class="fnote">— setsid(), prctl(subreaper), fork+exec crun, epoll log loop, exit-file write</span></div>
+  </div></div>
+
+  <p>First, Docker's restart manager — the code path that is inert while <code>dockerd</code> is down:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>daemon/restart_policy.go — simplified but faithful in shape</span></div>
+    <pre><span class="k">func</span> (rm *<span class="t">RestartManager</span>) <span class="f">ShouldRestart</span>(exitCode <span class="k">uint32</span>, hasBeenManuallyStopped <span class="k">bool</span>, execDuration time.Duration) (<span class="k">bool</span>, chan <span class="k">error</span>, <span class="k">error</span>) {
+    <span class="c">// Only reachable because dockerd's libcontainerd client is, right now,</span>
+    <span class="c">// subscribed to containerd's task-exit event stream. If dockerd is down,</span>
+    <span class="c">// this function never runs at all -- not "runs and decides no", never runs.</span>
+    <span class="k">if</span> hasBeenManuallyStopped {
+        <span class="k">return</span> <span class="k">false</span>, <span class="n">nil</span>, <span class="n">nil</span>
+    }
+    <span class="k">switch</span> rm.policy.Name {
+    <span class="k">case</span> <span class="s">"always"</span>:
+        <span class="k">return</span> <span class="k">true</span>, rm.backoff(), <span class="n">nil</span>
+    <span class="k">case</span> <span class="s">"on-failure"</span>:
+        <span class="k">return</span> exitCode != <span class="n">0</span>, rm.backoff(), <span class="n">nil</span>
+    <span class="k">default</span>:
+        <span class="k">return</span> <span class="k">false</span>, <span class="n">nil</span>, <span class="n">nil</span>
+    }
+}</pre>
+  </div>
+
+  <p>Second, the shim's launch sequence — the detachment that makes daemon restarts survivable:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>runtime/v2/shim.go — spawning a detached shim</span></div>
+    <pre><span class="k">func</span> <span class="f">spawnShim</span>(bundle <span class="k">string</span>, id <span class="k">string</span>) (*os.Process, <span class="k">error</span>) {
+    cmd := exec.Command(<span class="s">"containerd-shim-runc-v2"</span>, <span class="s">"-namespace"</span>, <span class="s">"moby"</span>, <span class="s">"-id"</span>, id,
+        <span class="s">"-address"</span>, <span class="s">"/run/containerd/containerd.sock"</span>)
+    <span class="c">// SysProcAttr.Setsid detaches the shim into its own session --</span>
+    <span class="c">// it will NOT die when containerd's process group does.</span>
+    cmd.SysProcAttr = &amp;syscall.SysProcAttr{Setsid: <span class="k">true</span>}
+    <span class="k">if</span> err := cmd.Start(); err != <span class="n">nil</span> {
+        <span class="k">return</span> <span class="n">nil</span>, err
+    }
+    <span class="c">// The shim's own first act, inside its new process: mark itself a</span>
+    <span class="c">// subreaper so runc's container-init handoff reparents HERE, not to PID 1.</span>
+    <span class="c">// (equivalent of: prctl(PR_SET_CHILD_SUBREAPER, 1))</span>
+    <span class="k">return</span> cmd.Process, <span class="n">nil</span>
+}</pre>
+  </div>
+
+  <p>Third, <code>conmon</code>'s own launch sequence, in the shape of the real C source:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>conmon.c — the detach-and-supervise sequence</span></div>
+    <pre><span class="k">int</span> <span class="f">main</span>(<span class="k">int</span> argc, <span class="k">char</span> *argv[])
+{
+    <span class="f">parse_conmon_args</span>(argc, argv);           <span class="c">/* -c id -u id -r crun -b bundle --exit-dir ... */</span>
+
+    <span class="c">/* Detach fully from whatever exec'd us (podman's CLI process). */</span>
+    <span class="f">setsid</span>();
+    <span class="f">prctl</span>(PR_SET_CHILD_SUBREAPER, <span class="n">1</span>);   <span class="c">/* orphans reparent to conmon, not PID 1 */</span>
+
+    <span class="k">int</span> pty_fd = <span class="f">open_container_terminal</span>();   <span class="c">/* holds stdio open past client exit */</span>
+
+    pid_t child = <span class="f">fork</span>();
+    <span class="k">if</span> (child == <span class="n">0</span>) {
+        <span class="f">dup2</span>(pty_fd, STDOUT_FILENO);
+        <span class="f">execlp</span>(opt_runtime_path, <span class="s">"crun"</span>, <span class="s">"create"</span>, opt_container_id,
+               <span class="s">"-b"</span>, opt_bundle_path, <span class="n">NULL</span>);
+        <span class="f">_exit</span>(<span class="n">127</span>);            <span class="c">/* execlp only returns on failure */</span>
+    }
+
+    <span class="f">conmon_main_loop</span>(child, pty_fd);   <span class="c">/* epoll: drain stdio -> log file,
+                                        * wait() for the container's real exit,
+                                        * write the code to --exit-dir          */</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY</div>
+    <p>Every choice above is the same choice, applied twice. Docker's engineers, needing a persistent per-container
+    watcher without recoupling it to <code>dockerd</code>'s own restart cycle, gave the shim its own session and a
+    subreaper flag. Podman's engineers, needing the identical property without a daemon to delegate to at all,
+    gave <code>conmon</code> — a plain ~1000-line C program with no daemon framework underneath it — the exact same
+    two calls: <code>setsid()</code> and <code>prctl(PR_SET_CHILD_SUBREAPER, 1)</code>. The detachment primitive is
+    universal Linux process-management plumbing, not a container-specific invention; both engines simply apply it
+    at a different point in their respective chains.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the two architectures in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — they encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — podman run -d nginx</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">ps --forest, side by side, same container</h2>
+  <p>Run the identical <code>nginx</code> container under both engines and read the real <code>ps --forest</code>
+  output each one produces. Then start killing individual layers: <b>kill dockerd</b> and watch the container keep
+  running with no daemon anywhere in its ancestry; <b>kill the shim</b> or <b>kill conmon</b> and watch the
+  container get orphaned to PID 1, alive but no longer supervised; toggle <b>--restart=always</b> and crash the
+  app to see §6's nuance fire for real; send an API request to watch <code>podman.socket</code> spin up a
+  temporary service process and idle back out.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Docker vs Podman — live process trees</span><span class="w-sub" id="sim-status">READY</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="pstree-cols">
+            <div>
+              <div class="pstree-hd eng-docker">DOCKER — ps --forest</div>
+              <pre class="pstree" id="ps-docker"></pre>
+            </div>
+            <div>
+              <div class="pstree-hd eng-podman">PODMAN — ps --forest</div>
+              <pre class="pstree" id="ps-podman"></pre>
+            </div>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">WORKLOAD</div>
+            <div class="btns"><button class="btn primary" id="sc-run">▶ run nginx (both)</button></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t"><span class="eng-docker">DOCKER</span> FAILURES</div>
+            <div class="btns">
+              <button class="btn" id="sc-kill-dockerd">kill dockerd</button>
+              <button class="btn" id="sc-kill-containerd">kill containerd</button>
+              <button class="btn danger" id="sc-kill-shim">kill shim</button>
+              <button class="btn warn" id="sc-crash-d">crash app (docker)</button>
+              <button class="btn" id="sc-restart-d">--restart=always: OFF</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t"><span class="eng-podman">PODMAN</span> FAILURES</div>
+            <div class="btns">
+              <button class="btn danger" id="sc-kill-conmon">kill conmon</button>
+              <button class="btn warn" id="sc-crash-p">crash app (podman)</button>
+              <button class="btn" id="sc-restart-p">--restart=always: OFF</button>
+              <button class="btn" id="sc-reboot-p">simulate reboot</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">PODMAN.SOCKET API DEMO</div>
+            <div class="btns"><button class="btn good" id="sc-api">send API request</button></div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-docker-procs">0</div><div class="cl">docker daemon procs</div></div>
+            <div class="scounter"><div class="cv" id="cnt-podman-procs">0</div><div class="cl">podman resident procs</div></div>
+            <div class="scounter"><div class="cv" id="cnt-events">0</div><div class="cl">engine events</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Run the container, then kill dockerd — read the ps tree: the shim and the container never moved.
+    <b>2.</b> Turn on <code>--restart=always</code> for both, then crash each app while its supervisor layer is
+    healthy — both come back. <b>3.</b> Now kill dockerd <i>first</i>, then crash the docker-side app — nothing
+    restarts it until you bring dockerd back, exactly as §6 predicts. <b>4.</b> Kill conmon on the podman side —
+    the container reparents to PID 1, still alive, no longer inspectable. <b>5.</b> Send an API request and watch
+    a whole extra process appear and disappear for Podman's socket-activated API, while the container's own tree
+    never changes shape.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 13: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer, then reveal. If a reveal surprises you, go re-run the relevant
+  simulator experiment above.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 12 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now draw both engines' full process chains from
+    memory, explain precisely what a root daemon buys and what it costs, and predict exactly which restart
+    scenarios survive a <code>dockerd</code> outage and which don't. Chapter 13 takes the daemon-vs-daemonless
+    split into networking: Docker's libnetwork/CNM bridge and driver model, built on the always-resident state
+    <code>dockerd</code> can hold in memory, versus Podman's netavark+aardvark-dns rewrite, built specifically to
+    make IP allocation and DNS work without a daemon to hold the bookkeeping — and why rootless containers on
+    either engine need <code>slirp4netns</code>/pasta instead of a real bridge at all.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="ctr-13.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-13: Networking →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2013", l:"Docker launches", d:"<b>dotCloud releases Docker.</b> A single monolithic <code>docker</code> daemon binary wraps LXC for namespace/cgroup setup, plus an image format and a client CLI. There is no OCI, no containerd, no runc — one process does everything." },
+  { yr:"2014", l:"libcontainer", d:"<b>Docker 0.9 drops LXC</b> as its execution driver in favor of <code>libcontainer</code>, its own Go library implementing namespaces/cgroups directly. Still one daemon process; the low-level runtime logic is now Docker's own code rather than a shelled-out LXC binary." },
+  { yr:"2015", l:"OCI founded", d:"<b>The Open Container Initiative launches</b> at DockerCon, with Docker donating <code>libcontainer</code>'s runtime core — renamed <b>runc</b> — as the seed of the OCI Runtime Spec. First time the thing that actually creates a container is spun out as an independent, vendor-neutral component (chapter 9)." },
+  { yr:"2016", l:"containerd split", d:"<b>Docker 1.11 restructures dockerd internally</b> to talk to <code>containerd</code> and <code>runc</code> as separate processes instead of doing container creation in-process. This is the change that later makes 'restart dockerd without killing containers' possible — though most users don't notice at the time." },
+  { yr:"2017", l:"containerd → CNCF", d:"<b>containerd is donated to the CNCF</b> and becomes an independent graduated project. Kubernetes later adopts it directly as a CRI runtime, bypassing dockerd's API entirely — proof that the daemon Kubernetes actually needed was the lower supervision layer, not Docker's REST surface." },
+  { yr:"2018", l:"Podman begins", d:"<b>Red Hat's container-tools team starts \"libpod\"/Podman</b>, purpose-built for rootless operation and systemd-native integration. It adopts <code>conmon</code> — already built for CRI-O — as its per-container monitor rather than inventing a new one." },
+  { yr:"2019", l:"Podman 1.0; RHEL drops docker", d:"<b>Podman 1.0 ships</b>, and RHEL 8 releases the same year <i>without</i> a <code>docker</code> package at all — Podman, Buildah, and Skopeo become the default tooling. A major vendor bets production infrastructure on the daemonless model." },
+  { yr:"2020", l:"CVE-2020-15257", d:"<b>The containerd-shim abstract-socket vulnerability</b> is disclosed (§11): the shim's own reattachment API, reachable from a container sharing the host network namespace, becomes a root-equivalent attack path — a vulnerability class specific to the daemon/shim IPC surface." },
+  { yr:"2022", l:"dockershim removed", d:"<b>Kubernetes 1.24 drops direct dockershim support</b> from kubelet, requiring a CRI-compliant runtime (containerd or CRI-O) instead. Confirms, at ecosystem scale, that what orchestrators need is the supervision layer — not dockerd's client-facing API." },
+  { yr:"2023", l:"Quadlets", d:"<b>Podman 4.4 introduces Quadlets</b> — declarative, systemd-native <code>.container</code> unit files generated by <code>podman-system-generator</code>. Doubles down on the chapter's core answer to 'who supervises this long-term': let systemd, the one daemon already guaranteed to be on the box, do it (chapter 14)." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+
+/* ============================================================
+   2. DECK: naive engine (§3) — canvas pipe/queue sim
+   ============================================================ */
+(function(){
+  const steps = [
+    { stage:`<canvas id="nv-c" width="740" height="220" style="width:100%"></canvas>`,
+      cap:`<b>Foreground, synchronous, one user.</b> You run <code>naive-engine.sh nginx</code> in a terminal you keep open. <code>runc create</code>+<code>start</code> work exactly as chapter 9 described; your terminal itself is holding stdout open, so output prints fine. Nothing here is wrong yet.`,
+      onshow:()=>drawNaive(0) },
+    { stage:`<canvas id="nv-c" width="740" height="220" style="width:100%"></canvas>`,
+      cap:`<b>You background it and close the terminal.</b> The shell that owned the container's stdout pipe is gone. The very next line nginx writes to that now-dead pipe raises <b>EPIPE</b> (errno 32) — and since nginx doesn't mask SIGPIPE for that fd, the kernel's default disposition (terminate) kills it. Nothing "crashed" in the sense you'd debug; a pipe with no reader is fatal by design.`,
+      onshow:()=>drawNaive(1) },
+    { stage:`<canvas id="nv-c" width="740" height="220" style="width:100%"></canvas>`,
+      cap:`<b>A second terminal asks "is it running?"</b> There is no listing command, no registry of what naive-engine.sh has created — only whatever you remember about the UUID you generated. Even if the container were still alive, this terminal has no way to attach to its output or query its exit status.`,
+      onshow:()=>drawNaive(2) },
+    { stage:`<canvas id="nv-c" width="740" height="220" style="width:100%"></canvas>`,
+      cap:`<b>Verdict.</b> Isolation: perfect — every namespace/cgroup/capability mechanism from chapters 2–8 fired correctly. Operability: zero. The naive script is missing exactly one thing: a small process, forked before the client can vanish, that holds stdio open and remembers what happened. §4 makes that failure precise; §5 builds the missing piece.`,
+      onshow:()=>drawNaive(3) }
+  ];
+  stepper("deckNaive", steps);
+  function drawNaive(stage){
+    const c = document.getElementById("nv-c"); if(!c) return;
+    const ctx = c.getContext("2d"), W=c.width, H=c.height;
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle="#2a3446"; ctx.lineWidth=1.5; ctx.font="11px monospace"; ctx.fillStyle="#8b94a7";
+    // terminal box
+    ctx.strokeRect(20,30,220,120); ctx.fillText("terminal (client)", 30, 22);
+    // pipe
+    ctx.beginPath(); ctx.moveTo(240,90); ctx.lineTo(420,90); ctx.strokeStyle = stage>=1 ? "#f25c54" : "#2dd4bf"; ctx.stroke();
+    ctx.fillStyle = stage>=1 ? "#f25c54" : "#2dd4bf"; ctx.fillText(stage>=1 ? "pipe: reader gone" : "stdout pipe: open", 250, 80);
+    // container box
+    ctx.strokeStyle="#2a3446"; ctx.strokeRect(420,30,260,120);
+    ctx.fillStyle = stage>=1 ? "#f25c54" : "#4ade80";
+    ctx.fillText(stage>=1 ? "nginx: write() -> EPIPE -> SIGPIPE -> dead" : "nginx: running, writing logs", 432, 90);
+    ctx.fillStyle="#8b94a7"; ctx.fillText("container (runc-created)", 430, 22);
+    if (stage>=2){
+      ctx.strokeStyle="#ff9f43"; ctx.strokeRect(20,170,220,40);
+      ctx.fillStyle="#ff9f43"; ctx.fillText("second terminal: \"is it running?\" -> no answer", 26, 194);
+    }
+    if (stage>=3){
+      ctx.fillStyle="#5b6475"; ctx.fillText("missing piece: a small process that outlives the client and remembers everything", 20, 210);
+    }
+  }
+})();
+
+/* ============================================================
+   3. DECK: evolution (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner) => `<div class="evobox"><div class="evo-t">${t}</div>${inner}</div>`;
+  const cell = (t,c="#8b94a7",bg="transparent") => `<div class="evocell" style="color:${c};background:${bg}">${t}</div>`;
+  stepper("deckEvolve", [
+    { stage: `<div class="evorow">${box("2013 &mdash; ONE MONOLITHIC DAEMON", cell("dockerd: API + images + network + container fork/monitor, all one process","#2496ed","rgba(36,150,237,.08)"))}</div>`,
+      cap:`<b>Candidate A: one big daemon owns everything.</b> This buys real things immediately: one thing to start at boot, one place holding all state in memory (fast lookups), and a remote API for free — it's already a server. The cost is fate-sharing: a bug anywhere in that process (an image-build hang, a network-plugin crash) can take every running container's supervision down with it.` },
+    { stage: `<div class="evorow">${box("2016+ &mdash; DOCKER SPLITS THE BRAIN FROM THE SUPERVISOR", cell("dockerd (API + policy)","#2496ed","rgba(36,150,237,.08)") + cell("containerd (task lifecycle, gRPC)","#2496ed","rgba(36,150,237,.08)") + cell("containerd-shim-runc-v2 -- one per running container, ALWAYS DETACHED","#4ade80","rgba(74,222,128,.06)"))}</div>`,
+      cap:`<b>Docker's actual answer.</b> Pull the per-container supervisor out as its own always-detached process. Now a dockerd bug, restart, or upgrade cannot touch a container already running — but the brain (API, policy, image/network bookkeeping) is still one continuously-running privileged process.` },
+    { stage: `<div class="evorow">${box("PODMAN &mdash; DELETE THE BRAIN'S OWN PROCESS", cell("podman CLI -- runs the SAME brain logic as a library call, then EXITS","#892ca0","rgba(137,44,160,.08)") + cell("conmon -- one per running container, ALWAYS DETACHED","#4ade80","rgba(74,222,128,.06)"))}</div>`,
+      cap:`<b>Podman's answer: go one step further.</b> Keep the identical per-container supervisor (conmon plays the same role as the shim) but delete the persistent brain entirely — the image/network/bookkeeping logic that dockerd keeps running forever instead runs once, inside the ordinary CLI process, and throws its process away the moment the command returns.` },
+    { stage: `<div class="evorow">${box("WHAT SURVIVES IN BOTH", cell("per-container supervisor: detached at launch, holds stdio, records exit status","#4ade80","rgba(74,222,128,.06)")) + box("WHAT ONLY DOCKER KEEPS", cell("a persistent, always-on, privileged brain process","#2496ed","rgba(36,150,237,.08)"))}</div>`,
+      cap:`<b>The line, drawn once.</b> Neither engine disputes that a detached per-container supervisor must exist — that's settled from §4. The entire remaining disagreement is whether there is also a persistent central brain above it. §6 prices both answers.` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  dockercli:{ n:"docker CLI", f:"cmd/docker (moby/moby)", r:"Parses the command, builds an HTTP request, POSTs it to dockerd over the local Unix socket (or a remote TCP+TLS endpoint). Does no container logic itself.", l:"One process per invocation; exits as soon as the HTTP response is received (or immediately after streaming starts, for -d).", d:"Its death after a detached run has zero effect — dockerd and everything below it are unrelated processes." },
+  podmancli:{ n:"podman CLI", f:"cmd/podman (containers/podman)", r:"Parses the command and calls straight into the libpod Go library IN-PROCESS -- resolves the image, builds the OCI bundle, decides storage/network glue -- then forks+execs conmon directly. No socket, no separate daemon process is involved for a local run.", l:"One process per invocation; exits immediately after conmon reports the container ID back over its sync pipe.", d:"Its death has zero effect on the container -- conmon detached (setsid) before the CLI could disappear." },
+  dockerd:{ n:"dockerd", f:"daemon/ (moby/moby)", r:"The persistent root daemon: owns the REST API, the image store, network driver state (CNM/libnetwork, chapter 13), and -- critically -- the restart-policy decision loop (§6). Talks to containerd as a gRPC client via libcontainerd.", l:"Started by docker.service at boot; runs continuously until stopped or crashed.", d:"Running containers are UNAFFECTED (shim already detached). New docker commands fail with 'Cannot connect to the Docker daemon'. Restart-policy decisions stop firing until it's back (§6's core nuance)." },
+  containerd:{ n:"containerd", f:"github.com/containerd/containerd", r:"CNCF-graduated container supervisor daemon: manages tasks (running containers) via a gRPC API, delegates actual process creation to per-task shims, and is dockerd's backend as well as Kubernetes' CRI runtime directly.", l:"Started independently of dockerd (its own systemd unit); dockerd depends on it but it can outlive or be restarted separately from dockerd.", d:"Running containers survive (shims are detached, chapter's central claim). containerd itself reconnects to existing shims on restart to rebuild its task list." },
+  shim:{ n:"containerd-shim-runc-v2", f:"runtime/v2/ (containerd)", r:"The per-container supervisor. Forked by containerd, immediately calls setsid()+prctl(PR_SET_CHILD_SUBREAPER) to fully detach (§8), then execs runc create/start and becomes the direct parent of the container's init process once runc exits.", l:"One per running container/task. Lives exactly as long as the container does (or until orphaned by a hard kill).", d:"If killed directly: the container process reparents to the next living subreaper (often PID 1) -- it keeps running but is now unsupervised: no more log capture, no exit-status recording, effectively invisible to 'docker ps'." },
+  conmon:{ n:"conmon", f:"containers/conmon (C, shared with CRI-O)", r:"Podman's exact structural equivalent of the shim: forked directly by the podman CLI, detaches via setsid()+prctl(subreaper), execs crun create/start, holds the container's pty/pipes open, and writes the final exit code to --exit-dir.", l:"One per running container. Lives exactly as long as the container does.", d:"If killed directly: the container reparents to PID 1, keeps running, but loses its log pipe and exit-status recording -- structurally identical consequence to killing the shim." },
+  runc:{ n:"runc", f:"opencontainers/runc", r:"The default OCI low-level runtime for Docker (chapter 9): consumes config.json, creates namespaces/cgroups, execve()s the container's entrypoint, then exits -- its job is done the moment the container process is running.", l:"One-shot per create/start call; does not persist.", d:"Nothing to kill -- it has already exited by the time a container is 'running'. A runc bug (CVE-2019-5736, chapter 15) is a create-time risk, not a supervision-time one." },
+  crun:{ n:"crun", f:"containers/crun (C)", r:"Podman's default OCI low-level runtime (chapter 9), functionally equivalent to runc but written in C for faster startup -- same create/start/kill/delete lifecycle against the same config.json.", l:"One-shot per create/start call.", d:"Nothing to kill -- already exited by the time the container is running." },
+  bundle:{ n:"OCI bundle (config.json + rootfs)", f:"chapters 6, 9, 10", r:"The one artifact both chains agree on completely: a filesystem bundle plus a config.json describing namespaces, cgroups, capabilities, and mounts. Docker's dockerd/containerd path and Podman's libpod path each generate this independently, but an identical bundle run directly through runc or crun produces an identical container.", l:"Generated fresh per container create; not itself a process.", d:"N/A -- it's a directory of files, not a process. This is the layer where the two engines are NOT architecturally different." },
+  ctrproc:{ n:"container init process", f:"whatever the image's entrypoint is", r:"The actual workload. Everything above this row exists purely to create it, keep it alive, capture its output, and eventually notice it exited.", l:"Born via execve() inside the namespaces/cgroup runc or crun set up; ends when the entrypoint exits or is killed.", d:"Its own death is the normal case this whole chapter's machinery exists to detect and (optionally) react to." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON DEATH</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("bundle");
+
+/* ============================================================
+   5. DECK: docker call chain (§8a)
+   ============================================================ */
+(function(){
+  const F = (fn, file, mode="") => ({fn, file, mode});
+  function stacks(frames, title){
+    let h = `<div class="stacks"><div class="stackcol"><div class="sc-t">${title}</div>`;
+    frames.forEach(f=> h += `<div class="frame ${f.mode}"><span class="ff">${f.fn}</span><span class="fl">${f.file}</span></div>`);
+    return h + `</div></div>`;
+  }
+  stepper("deckDocker", [
+    { stage: stacks([F("docker run -d nginx","cmd/docker","hot")], "CLIENT"),
+      cap:`<b>The client.</b> The <code>docker</code> binary parses arguments and serializes a container-create request -- it contains zero container logic itself.` },
+    { stage: stacks([F("POST /containers/create","engine/client"), F("HTTP over unix:///var/run/docker.sock","hot")], "CLIENT → DAEMON"),
+      cap:`<b>REST over a Unix socket.</b> The request crosses the first IPC boundary: an HTTP call to dockerd's local socket (or a remote TCP+TLS endpoint if configured). This is hop #1.` },
+    { stage: stacks([F("daemon.ContainerCreate()","daemon/create.go","hot"), F("libcontainerd.Client.Create()","libcontainerd/client_daemon.go","hot")], "DOCKERD"),
+      cap:`<b>dockerd builds the bundle.</b> It resolves the image, applies network/volume config (chapter 13), writes config.json (chapter 9), and calls into its containerd client.` },
+    { stage: stacks([F("containerd.CreateTask() (gRPC)","hot"), F("over /run/containerd/containerd.sock","hot")], "DOCKERD → CONTAINERD"),
+      cap:`<b>gRPC over a second Unix socket.</b> Hop #2. dockerd is now just one of containerd's clients -- Kubernetes' containerd-CRI path uses this exact same API directly, skipping dockerd entirely.` },
+    { stage: stacks([F("containerd spawns shim","runtime/v2/shim.go","hot"), F("containerd-shim-runc-v2 -namespace moby -id <ctr>","hot")], "CONTAINERD"),
+      cap:`<b>The shim is born and immediately detaches.</b> setsid() + prctl(PR_SET_CHILD_SUBREAPER) (§8c) sever it from containerd's process tree right away -- from this instant, containerd or dockerd dying cannot touch it.` },
+    { stage: stacks([F("shim execs: runc create <ctr> -b <bundle>","hot"), F("runc create: namespaces + cgroup, parks at exec barrier","hot")], "SHIM → RUNC"),
+      cap:`<b>runc does the one-shot work</b> from chapter 9: namespaces, cgroup, mounts -- then waits at a barrier for "start".` },
+    { stage: stacks([F("shim execs: runc start <ctr>","hot"), F("container process: execve(nginx)","hot"), F("runc exits -- job done","dead")], "CONTAINER RUNNING"),
+      cap:`<b>Start, then runc disappears.</b> The container's init process reparents to the shim (subreaper). Total hops from client to running process: two IPC round-trips plus one process spawn -- the shim is now the only thing standing between the container and PID 1.` }
+  ]);
+})();
+
+/* ============================================================
+   6. DECK: podman call chain (§8b)
+   ============================================================ */
+(function(){
+  const F = (fn, file, mode="") => ({fn, file, mode});
+  function stacks(frames, title){
+    let h = `<div class="stacks"><div class="stackcol"><div class="sc-t">${title}</div>`;
+    frames.forEach(f=> h += `<div class="frame ${f.mode}"><span class="ff">${f.fn}</span><span class="fl">${f.file}</span></div>`);
+    return h + `</div></div>`;
+  }
+  stepper("deckPodman", [
+    { stage: stacks([F("podman run -d nginx","cmd/podman","hot")], "CLIENT (IN-PROCESS)"),
+      cap:`<b>The client IS the brain.</b> Unlike docker, this same process now resolves the image and computes bundle/storage/network state itself, as Go library calls (libpod) -- no socket, no second process, yet.` },
+    { stage: stacks([F("libpod.CreateContainer()","libpod/container_api.go","hot"), F("writes config.json + rootfs","hot")], "PODMAN CLI"),
+      cap:`<b>Bundle generation, in-process.</b> Identical artifact to Docker's (chapter 9's OCI bundle) -- produced without leaving this one process.` },
+    { stage: stacks([F("oci_conmon_linux.go: build conmon command line","hot"), F("fork()+exec(): conmon --api-version 1 -c <id> -u <id> -r crun -b <bundle> --exit-dir ...","hot")], "PODMAN CLI → CONMON"),
+      cap:`<b>One fork, no socket.</b> This is the entire IPC surface between client and supervisor: a direct process spawn. Hop count vs. Docker's two gRPC/REST round-trips: zero.` },
+    { stage: stacks([F("conmon: setsid()","hot"), F("conmon: prctl(PR_SET_CHILD_SUBREAPER, 1)","hot")], "CONMON DETACHES"),
+      cap:`<b>Detachment, immediately.</b> Exactly the same two calls the shim makes (§8a step 5) -- conmon is now independent of the podman CLI process that spawned it, before that CLI process has even returned.` },
+    { stage: stacks([F("conmon forks, execs: crun create <ctr> -b <bundle>","hot"), F("crun create: namespaces + cgroup, parks at exec barrier","hot")], "CONMON → CRUN"),
+      cap:`<b>crun does the identical one-shot work</b> runc does in Docker's chain -- same config.json, same OCI Runtime Spec (chapter 9), different C implementation.` },
+    { stage: stacks([F("conmon: crun start <ctr>","hot"), F("container process: execve(nginx)","hot"), F("crun exits -- job done","dead"), F("conmon writes container ID back to podman CLI's sync pipe","hot")], "CONTAINER RUNNING"),
+      cap:`<b>Start, then crun disappears, then the CLI exits too.</b> The container's init process reparents to conmon (subreaper). Once the CLI has the container ID, it exits -- nothing from the "client" side of this chain still exists.` }
+  ]);
+})();
+
+/* ============================================================
+   7. OUTAGE-WINDOW WIDGET (§8c)
+   ============================================================ */
+(function(){
+  function render(){
+    const outage = +el("outage-slider").value;
+    const crash = +el("outage-crash").value;
+    el("outage-val").textContent = outage + " s";
+    el("outage-crash-val").textContent = crash + " s";
+    let note;
+    if (crash > outage){
+      note = `dockerd's outage ends at t=${outage}s, the app crashes later at t=${crash}s -- <b style="color:var(--ok)">dockerd is back up and restarts it immediately</b>, exactly as if there had been no outage at all.`;
+    } else {
+      const gap = outage - crash;
+      note = `The app crashes at t=${crash}s while dockerd is still down (outage ends at t=${outage}s) -- <b style="color:var(--bad)">no restart fires</b>. The container sits stopped for the remaining <b>${gap}s</b> until dockerd comes back, reconnects to containerd, and reconciles state. This is §6's mechanism, not a bug: the restart-policy decision loop is dockerd-resident and dockerd is not running.`;
+    }
+    el("outage-note").innerHTML = note + ` Podman's standalone <code>--restart</code> has no live window to miss in the first place -- it never promised second-by-second supervision; it restarts at next boot (podman-restart.service) or continuously only if wrapped in a systemd unit (chapter 14), whose own uptime this scenario doesn't touch.`;
+  }
+  el("outage-slider").oninput = render;
+  el("outage-crash").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. LATENCY CHART (§10)
+   ============================================================ */
+(function(){
+  let warm = false;
+  const cv = el("lat-chart"), ctx = cv.getContext("2d");
+  function render(){
+    const hop = +el("lat-hop").value, n = +el("lat-n").value;
+    el("lat-hop-val").textContent = hop.toFixed(1) + " ms";
+    el("lat-n-val").textContent = n;
+    el("lat-warm").classList.toggle("on", warm);
+    const dockerHops = 2, podmanHops = 0;
+    const baseCreate = warm ? 18 : 40; // ms, namespace/cgroup/rootfs setup shared by both
+    const dockerPer = baseCreate + dockerHops*hop + 6; // +6ms shim spawn
+    const podmanPer = baseCreate + podmanHops*hop;
+    const W = cv.width, H = cv.height, PAD=40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let i=1;i<=n;i++) xs.push(i);
+    const maxY = (Math.max(dockerPer,podmanPer)*n) * 1.05;
+    ctx.strokeStyle="#1c2330"; ctx.fillStyle="#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [0.25,0.5,0.75,1].forEach(f=>{ const x=PAD+f*(W-PAD-16); ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,H-20); ctx.stroke(); ctx.fillText(Math.round(f*n), x-10, H-6); });
+    function curve(per,color){
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      xs.forEach((k,i)=>{ const x = PAD+(k/n)*(W-PAD-16), y = H-24-((k*per)/maxY)*(H-44); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+    }
+    curve(dockerPer, "#2496ed");
+    curve(podmanPer, "#892ca0");
+    const total = k=>k*dockerPer, totalP = k=>k*podmanPer;
+    el("lat-note").innerHTML = `At <b>${n}</b> containers with <b>${hop.toFixed(1)} ms</b>/hop: Docker's chain (2 extra IPC hops + shim spawn) totals roughly <b style="color:var(--docker)">${Math.round(total(n))} ms</b>; Podman's direct fork/exec totals roughly <b style="color:var(--podman)">${Math.round(totalP(n))} ms</b> -- a gap of about <b>${Math.round(total(n)-totalP(n))} ms</b> across the whole run, ${warm?"with image resolution already warm on both sides.":"including cold image-resolution overhead shared by both engines."} For a single interactive run this difference is imperceptible; for CI fan-out or serverless-style cold starts run back-to-back, it compounds linearly with n.`;
+  }
+  el("lat-hop").oninput = render;
+  el("lat-n").oninput = render;
+  el("lat-warm").onclick = ()=>{ warm=!warm; render(); };
+  render();
+})();
+
+/* ============================================================
+   9. INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"If dockerd crashes while a container with --restart=always is running, what happens immediately, and what happens if that container's process then crashes before dockerd is back?", hint:"separate 'container survives' from 'policy is enforced'",
+    a:"Immediately: nothing happens to the container -- containerd-shim-runc-v2 already detached from dockerd at launch (setsid + subreaper), so it keeps running with dockerd down. If the container's own process then crashes while dockerd is still down, no restart fires: the restart-policy decision lives in dockerd's restart manager, which subscribes to containerd's task-exit events -- and that subscription and decision loop only exist while dockerd is alive. The container sits stopped until dockerd restarts, reconnects to containerd, and reconciles state, at which point it restarts eligible stopped containers it finds." },
+  { lvl:"SENIOR", q:"Podman is described as 'daemonless,' yet conmon is a background process that outlives the podman CLI. Is that a contradiction? Defend your answer.", hint:"what specifically does 'daemon' mean here?",
+    a:"Not a contradiction if you define daemon precisely: a persistent, centralized process that serves many operations and holds shared state across them. conmon is per-container, does exactly one job (supervise this one container), and holds no state relevant to any other container or to Podman's own API/bookkeeping -- it's structurally identical to Docker's own containerd-shim-runc-v2, which nobody calls 'the daemon' either. 'Daemonless' refers specifically to the absence of the centralized brain (dockerd's equivalent) that would otherwise own the API, image store, and cross-container bookkeeping in one long-lived privileged process." },
+  { lvl:"STAFF", q:"Explain, mechanism by mechanism, why killing containerd does not stop a running Docker container, but killing containerd-shim-runc-v2 for that same container does change something.", hint:"what does each process actually hold onto?",
+    a:"containerd holds no direct handle on the container process itself -- it only holds a client connection to the shim's control socket, used to send it commands and receive events. Kill containerd and that connection just breaks; the shim (already a detached, subreaper-marked process with the container as its actual child) is completely unaffected and keeps supervising it. Kill the shim itself, though, and the container process -- its direct child -- gets orphaned: it reparents to the next living subreaper (typically PID 1), keeps running, but loses its supervisor: no more log capture via that pipe, no more exit-status recording, and containerd/dockerd's records about it go stale (a restarted containerd would not automatically rediscover an orphaned, shim-less task)." },
+  { lvl:"STAFF", q:"Design question: you must add a remote management API to Podman without reintroducing dockerd's failure mode. Sketch it.", hint:"what did podman.socket already solve?",
+    a:"This already exists as podman.socket: a systemd socket unit listens on the API's Unix socket at boot, but the actual API server process (podman system service) is NOT started until the first connection arrives -- systemd socket activation hands it the already-listening file descriptor. After a configurable idle period with no requests, the service exits again. The key property: the API server's own uptime is decoupled from whether anyone is using it, and its absence when idle costs zero resident processes -- unlike dockerd, which is either fully up (paying its idle attack-surface and memory cost, chapter 10) or fully down (breaking every client) with no in-between. The tradeoff you must accept: the very first request after an idle period pays the cost of spawning that service, and any 'live event stream' semantics (like docker events) only work while it happens to be active." },
+  { lvl:"STAFF", q:"A host has zero containers running. Compare exactly what a port scan or a local unprivileged user would find on a Docker host vs. a rootless Podman host.", hint:"what's literally listening, and as whom?",
+    a:"Docker host: dockerd is resident as root, its Unix socket exists at /var/run/docker.sock (and possibly a TCP listener if remote access is configured), and containerd is also resident as root with its own socket -- both are enumerable and, if misconfigured (§11's docker.sock/2375 incident), a direct root-equivalent path in. Rootless Podman host with nothing running: there is no resident container-related process at all, root or otherwise -- podman.socket (if enabled) is a systemd-owned listening socket with no service behind it yet, and connecting to it merely triggers activation of a service that itself runs as the invoking unprivileged user, not root. The attack surface at idle is not just smaller, it's categorically different: nothing there is already root." },
+  { lvl:"PRINCIPAL", q:"Steelman keeping dockerd's centralized-brain model, then steelman Podman's fork-exec model. Which would you choose for a fleet of 100,000 single-tenant VMs each running one long-lived container?", hint:"who benefits from shared in-memory state at that scale, and who pays for its idle cost?",
+    a:"Steelman dockerd: centralizing image/network/event state in one long-lived process makes cross-container operations (bridge IP allocation, event streaming, docker ps latency) fast and simple, and a single, well-understood API surface is operationally easier to monitor and secure at scale with known tooling. Steelman Podman: at 100,000 single-tenant VMs each running essentially one container, there is no cross-container bookkeeping to centralize -- the daemon's main value proposition (shared in-memory state across many containers) doesn't apply, while its costs (a permanently resident root process per VM, one more thing to patch/restart/monitor across 100,000 hosts, a root-equivalent socket per VM) apply in full. For this specific fleet shape, the daemonless model wins cleanly: you're paying for centralization you don't need. The calculus reverses for a single beefy host running hundreds of containers, where dockerd's in-memory bookkeeping starts paying for itself -- which is exactly why 'it depends on shape, not vibes' is the correct answer, and why chapter 13 revisits this same tradeoff for networking specifically." },
+  { lvl:"PRINCIPAL", q:"Your monitoring shows a spike of containers stuck in 'Created' or reparented-to-PID-1 with no logs, correlated with dockerd restarts during a rolling upgrade window. Diagnose and fix.", hint:"what does a shim do if it's killed alongside dockerd rather than left alone?",
+    a:"A correctly performed dockerd upgrade should NOT touch the shim at all -- that's the entire point of the split (§6/§8). 'Stuck with no logs' correlated with restarts strongly suggests the upgrade tooling is killing containerd (or the whole docker.service cgroup, including detached shims) rather than just dockerd, or that live-restore is not enabled so a full daemon+containerd bounce is happening instead of the intended dockerd-only restart. Diagnosis: check whether containerd's own service unit was restarted/killed in the same window, and whether dockerd's live-restore setting is on. Fix: ensure the upgrade path restarts only dockerd (not containerd), enable live-restore explicitly so an accidental broader restart still reconnects to existing shims, and treat 'containers survive daemon restarts' as a property that depends on which processes the ops tooling actually touches -- not an automatic guarantee of the architecture regardless of how you restart it." }
+]);
+
+/* ============================================================
+   10. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"dockerd crashes. A container with no restart policy set is currently running. What happens to it?",
+    opts:[ "It is killed immediately -- its parent process just died",
+           "It keeps running untouched -- containerd-shim-runc-v2 already detached from dockerd's process tree at launch",
+           "It pauses until dockerd restarts, then resumes",
+           "It restarts automatically regardless of policy, because containerd takes over" ],
+    a:1,
+    why:"containerd-shim-runc-v2 calls setsid() and marks itself a subreaper immediately on launch specifically so it is never a child of dockerd's (or containerd's) process tree in a way that ties its survival to theirs. The container's own process is a child of the shim, not of dockerd, so dockerd's death is simply irrelevant to it. Options A and C invent dependencies that don't exist; D confuses 'survives' with 'gets restart-policy treatment' -- no policy was set, and even with one, containerd itself doesn't evaluate restart policy (dockerd does, §6)." },
+  { q:"Which component is responsible for evaluating Docker's --restart=always policy when a container's process exits?",
+    opts:[ "containerd-shim-runc-v2, since it's the one that actually reaped the exit", "containerd, via its task-exit event stream", "dockerd's restart manager, which subscribes to containerd's task-exit events", "runc, as part of its delete lifecycle step" ],
+    a:2,
+    why:"The decision logic lives in dockerd (daemon/restart_policy.go in Moby), which subscribes to containerd's task-exit event stream via its libcontainerd client and decides whether to issue a new CreateTask call. containerd emits the event but doesn't decide policy; the shim just reports the exit upward; runc has already exited long before this point (chapter 9). This is exactly why the policy is inert while dockerd specifically is down, even if containerd is up." },
+  { q:"What does conmon do immediately after being forked by the podman CLI, and why?",
+    opts:[ "It re-execs the podman binary to become a second CLI instance", "It calls setsid() and prctl(PR_SET_CHILD_SUBREAPER, 1) to fully detach and become the reparent target for the container process", "It opens a gRPC connection back to a Podman daemon", "It waits for a SIGUSR1 from the CLI before doing anything" ],
+    a:1,
+    why:"setsid() detaches conmon into its own session so the exiting podman CLI process can't take it down with it, and prctl(PR_SET_CHILD_SUBREAPER,1) ensures that when crun exits after handing off the container's init process, that process reparents to conmon rather than escaping to PID 1. There is no Podman daemon to connect to (B's premise is false for the wrong reason if you pick it for that reason), and no SIGUSR1 handshake in this design." },
+  { q:"Why does killing containerd-shim-runc-v2 directly (not dockerd, not containerd) meaningfully change a running container's state, even though the container process itself doesn't get killed?",
+    opts:[ "It doesn't change anything -- the container is fully unaffected", "The container process reparents to the next living subreaper (often PID 1), losing its log pipe and exit-status recording -- effectively unsupervised though still running", "The kernel automatically kills every process in the shim's cgroup", "containerd immediately spawns a byte-for-byte replacement shim with no observable change" ],
+    a:1,
+    why:"The shim is the container process's direct parent and the thing holding its stdio pipes and waiting to record its exit. Kill the shim and the container is orphaned -- it reparents to whichever ancestor is marked subreaper (commonly none is above it once the shim is gone, so it lands on PID 1), keeps running, but nobody is capturing its logs or its eventual exit code, and containerd's own records about that task go stale. This is structurally identical to what happens if you kill conmon on the Podman side." },
+  { q:"A rootless Podman host has zero containers running. What root-owned, container-related process is listening anywhere on that host?",
+    opts:[ "conmon, waiting for the next container", "podman.service, always resident to serve the API", "None -- there is no resident container-related process at all in the common case", "dockerd-compatible shim, kept warm for fast starts" ],
+    a:2,
+    why:"That's the entire point of the daemonless, rootless model: with nothing running, there is nothing resident. conmon only exists per running container (option A is wrong -- it isn't pre-spawned speculatively). podman.socket, if enabled, is a systemd-owned LISTENING socket with no service process behind it until first use (option B describes the always-on state this design specifically avoids). There's no shim concept in Podman at all (D is a Docker component, not Podman's)." },
+  { q:"Docker's chain crosses how many separate IPC boundaries (socket-based calls) between the client process and the point where a process is first forked toward the container?",
+    opts:[ "Zero -- docker forks directly like podman", "One -- straight from the client to containerd", "Two -- client-to-dockerd over the REST socket, then dockerd-to-containerd over gRPC", "Three -- an additional hop through a separate image-resolution daemon" ],
+    a:2,
+    why:"docker (client) -> HTTP over /var/run/docker.sock -> dockerd -> gRPC over /run/containerd/containerd.sock -> containerd, which THEN forks the shim. That's two IPC boundaries before any process is spawned. Podman's equivalent hop count is zero: the CLI process itself forks conmon directly, no socket involved for a local run. There is no separate image-resolution daemon in either engine's default path." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could whiteboard both chains right now.":correct>=4?"solid; skim the explanations you missed.":"re-run §8's decks and the outage-window slider — the mechanism clicks fast once you trace it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "podman CLI parses the command and resolves the image locally",
+    "libpod builds the OCI bundle: config.json + rootfs (in-process, no socket)",
+    "podman CLI forks and execs conmon directly",
+    "conmon calls setsid() to detach from the podman CLI's session",
+    "conmon calls prctl(PR_SET_CHILD_SUBREAPER, 1)",
+    "conmon forks and execs crun create",
+    "crun creates namespaces + cgroup, parks at the exec barrier",
+    "conmon signals crun start; the container execve()s its entrypoint; crun exits"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real call path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"dockerd can hold the bridge network's IP-allocation table in memory because it's always running. Podman has no equivalent long-lived process. Predict: how would you build correct, race-free IP allocation across many independent podman invocations, and what would you call the component that does it?",
+    a:"Since no process can hold the allocation table in RAM across invocations, it has to live on disk, mutated under a lock so two simultaneous podman run calls can't hand out the same IP -- exactly the pressure §6 named. Chapter 13 shows Podman's actual answer: netavark, a purpose-built networking backend (replacing the older CNI-plugin-per-call model) that manages this state on disk correctly under concurrent access, paired with aardvark-dns for container name resolution -- both designed from the start to not assume a resident daemon is available to coordinate them." },
+  { lvl:"THINK", q:"Docker's docker0 bridge is created once by dockerd at daemon startup and just exists thereafter. If Podman has no daemon to run at boot, what has to trigger bridge creation for a rootful Podman container, and what does a rootless one do instead since it may not even have permission to create a bridge?",
+    a:"For rootful Podman, bridge creation is triggered lazily -- by the first podman run that actually needs the bridge, or ahead of time via a systemd unit if you want it present before any container runs, rather than by a boot-time daemon initialization step. For rootless Podman, an unprivileged user typically cannot create a host bridge interface at all, which is why rootless containers use slirp4netns or the newer pasta instead: a userspace network stack that connects the container's network namespace to the host without needing privileged interface creation. Chapter 13 covers exactly this split and why it exists." },
+  { lvl:"THINK", q:"This chapter showed both engines' per-container supervisors becoming subreapers so orphaned processes reparent to them instead of PID 1. Podman's pod model (chapter 14) puts multiple containers in one shared network namespace. Predict: does that pod share ONE conmon across all its containers, or does each container still get its own?",
+    a:"Each container in a Podman pod still gets its own dedicated conmon -- the pod shares namespaces (network, IPC, UTS) between containers, not process supervision. Chapter 14 will show a small 'infra' container per pod (holding the shared namespaces open even if every real container in the pod restarts) plus one conmon per real container, which is the more surprising and more informative answer than 'one big supervisor for the pod' -- it keeps the per-container failure isolation this chapter established, while chapter 13's namespace-sharing operates at a completely different layer." }
+]);
+
+/* ============================================================
+   11. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const D = { dockerd:true, containerd:true, shim:false, container:false, restart:false };
+  const P = { conmon:false, container:false, api:false, restart:false, apiTimer:null };
+  const FIXED = { init:1, dockerd:1842, containerd:1919 };
+  let nextPid = 4400;
+  let ctrIdD = null, ctrIdP = null;
+  let events = 0;
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function hexid(){ return Array.from({length:12},()=>"0123456789abcdef"[Math.floor(Math.random()*16)]).join(""); }
+
+  function runBoth(){
+    ctrIdD = hexid(); ctrIdP = hexid();
+    D.shim = true; D.container = true;
+    P.conmon = true; P.container = true;
+    log("LOG", `docker run -d nginx  ->  container ${ctrIdD.slice(0,12)}`);
+    log("LOG", `containerd-shim-runc-v2 spawned (PID ${nextPid}), detached via setsid()+subreaper`);
+    log("LOG", `podman run -d nginx  ->  container ${ctrIdP.slice(0,12)}`);
+    log("LOG", `conmon spawned, detached via setsid()+subreaper -- podman CLI has already exited`);
+    events++;
+    render();
+  }
+  function killDockerd(){
+    D.dockerd = !D.dockerd;
+    log(D.dockerd ? "OK" : "WARN", D.dockerd ? "dockerd restarted -- reconnecting to containerd, reconciling task list" : "kill -9 " + FIXED.dockerd + "  # dockerd");
+    if (!D.dockerd) log("FATAL", "docker ps: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
+    events++; render();
+  }
+  function killContainerd(){
+    D.containerd = !D.containerd;
+    log(D.containerd ? "OK" : "WARN", D.containerd ? "containerd restarted -- reattaching to existing shim sockets" : "kill -9 " + FIXED.containerd + "  # containerd");
+    events++; render();
+  }
+  function killShim(){
+    if (!D.shim){ log("WARN","no shim running -- start a container first"); return; }
+    D.shim = false;
+    log("WARN","kill -9 <shim>  # containerd-shim-runc-v2");
+    if (D.container) log("WARN", "nginx (PID unchanged) reparented to PID 1 -- still running, but unsupervised: no log capture, no exit-status recording, stale in dockerd's records");
+    events++; render();
+  }
+  function crashDocker(){
+    if (!D.container){ log("WARN","no docker-side container running"); return; }
+    if (D.dockerd && D.restart){
+      log("WARN","nginx (docker) crashed -- exit code 1");
+      log("OK","dockerd restart manager: policy=always, exit was unexpected -> CreateTask() again");
+      ctrIdD = hexid();
+      log("LOG", `new shim + container spawned -> ${ctrIdD.slice(0,12)}`);
+    } else if (!D.dockerd && D.restart){
+      D.container = false; D.shim = false;
+      log("WARN","nginx (docker) crashed -- exit code 1");
+      log("FATAL","dockerd is unreachable: restart-policy decision loop is dockerd-resident and dockerd is down. Container stays STOPPED until dockerd restarts and reconciles.");
+    } else {
+      D.container = false; D.shim = false;
+      log("WARN","nginx (docker) crashed -- exit code 1 (no restart policy set, container exits)");
+    }
+    events++; render();
+  }
+  function killConmon(){
+    if (!P.conmon){ log("WARN","no conmon running -- start a container first"); return; }
+    P.conmon = false;
+    log("WARN","kill -9 <conmon>");
+    if (P.container) log("WARN", "nginx (podman) reparented to PID 1 -- still running, but unsupervised: no log capture, no exit-status recording");
+    events++; render();
+  }
+  function crashPodman(){
+    if (!P.container){ log("WARN","no podman-side container running"); return; }
+    P.container = false; P.conmon = false;
+    log("WARN","nginx (podman) crashed -- exit code 1, conmon reaps it and exits after writing the exit file");
+    if (P.restart) log("HINT", "restart=always is set, but Podman has no live daemon watching standalone containers -- it will only be revived by podman-restart.service at next boot, or immediately if this were a systemd Quadlet unit (chapter 14).");
+    events++; render();
+  }
+  function rebootPodman(){
+    log("LOG", "simulated reboot: systemd starts podman-restart.service");
+    if (P.restart && !P.container){
+      P.conmon = true; P.container = true;
+      ctrIdP = hexid();
+      log("OK", `podman-restart.service: podman start --filter restart-policy=always -> ${ctrIdP.slice(0,12)} revived`);
+    } else {
+      log("LOG", "no stopped restart-policy containers to revive");
+    }
+    events++; render();
+  }
+  function apiRequest(){
+    if (P.api){ log("LOG","podman.socket: request served by already-active podman.service; idle timer reset"); return; }
+    P.api = true;
+    log("OK", "systemd: podman.socket accepted a connection -> activating podman.service (API server)");
+    events++; render();
+    clearTimeout(P.apiTimer);
+    P.apiTimer = setTimeout(()=>{ P.api = false; log("LOG","podman.service: idle timeout reached -> exiting"); render(); }, 4000);
+  }
+
+  function psTreeDocker(){
+    const rows = [`  PID  PPID USER     COMMAND`, `    1     0 root     /sbin/init`];
+    if (D.dockerd) rows.push(`<span class="dkrow"> ${FIXED.dockerd}     1 root     dockerd --containerd=/run/containerd/containerd.sock</span>`);
+    if (D.containerd) rows.push(`<span class="dkrow"> ${FIXED.containerd}     1 root     containerd</span>`);
+    if (D.shim){
+      const shimPid = 4417;
+      rows.push(`<span class="dkrow"> ${shimPid}     1 root     containerd-shim-runc-v2 -namespace moby -id ${ctrIdD?ctrIdD.slice(0,12):"........"}</span>`);
+      if (D.container){
+        rows.push(`<span class="ctr"> ${shimPid+15}  ${shimPid} root      \\_ nginx: master process nginx -g daemon off;</span>`);
+        rows.push(`<span class="ctr"> ${shimPid+26}  ${shimPid+15} nginx         \\_ nginx: worker process</span>`);
+      }
+    } else if (D.container){
+      rows.push(`<span class="orphan"> 4432     1 root     nginx: master process nginx -g daemon off;   [ORPHANED -- shim gone]</span>`);
+      rows.push(`<span class="orphan"> 4458  4432 nginx         \\_ nginx: worker process</span>`);
+    }
+    return rows.join("\n");
+  }
+  function psTreePodman(){
+    const rows = [`  PID  PPID USER     COMMAND`, `    1     0 root     /sbin/init`];
+    if (P.conmon){
+      const conmonPid = 5203;
+      rows.push(`<span class="pdrow"> ${conmonPid}     1 root     conmon --api-version 1 -c ${ctrIdP?ctrIdP.slice(0,12):"........"} -u ... -r /usr/bin/crun</span>`);
+      if (P.container){
+        rows.push(`<span class="ctr"> ${conmonPid+16}  ${conmonPid} root      \\_ nginx: master process nginx -g daemon off;</span>`);
+        rows.push(`<span class="ctr"> ${conmonPid+27}  ${conmonPid+16} nginx         \\_ nginx: worker process</span>`);
+      }
+    } else if (P.container){
+      rows.push(`<span class="orphan"> 5219     1 root     nginx: master process nginx -g daemon off;   [ORPHANED -- conmon gone]</span>`);
+      rows.push(`<span class="orphan"> 5240  5219 nginx         \\_ nginx: worker process</span>`);
+    }
+    if (P.api) rows.push(`<span class="pdrow"> 5310     1 user     podman system service --time=10  [socket-activated]</span>`);
+    if (!P.conmon && !P.container && !P.api) rows.push(`<span class="initrow">                 (no podman-related processes -- nothing to see until you run something)</span>`);
+    return rows.join("\n");
+  }
+
+  function render(){
+    el("ps-docker").innerHTML = psTreeDocker();
+    el("ps-podman").innerHTML = psTreePodman();
+    const dCount = (D.dockerd?1:0)+(D.containerd?1:0)+(D.shim?1:0);
+    const pCount = (P.conmon?1:0)+(P.api?1:0);
+    el("cnt-docker-procs").textContent = dCount;
+    el("cnt-podman-procs").textContent = pCount;
+    el("cnt-events").textContent = events;
+    el("sim-status").textContent = (D.container||P.container) ? "CONTAINERS RUNNING" : "READY";
+    el("sc-kill-dockerd").textContent = D.dockerd ? "kill dockerd" : "start dockerd";
+    el("sc-kill-containerd").textContent = D.containerd ? "kill containerd" : "start containerd";
+    el("sc-restart-d").textContent = "--restart=always: " + (D.restart?"ON":"OFF");
+    el("sc-restart-d").classList.toggle("on", D.restart);
+    el("sc-restart-p").textContent = "--restart=always: " + (P.restart?"ON":"OFF");
+    el("sc-restart-p").classList.toggle("on", P.restart);
+  }
+
+  el("sc-run").onclick = runBoth;
+  el("sc-kill-dockerd").onclick = killDockerd;
+  el("sc-kill-containerd").onclick = killContainerd;
+  el("sc-kill-shim").onclick = killShim;
+  el("sc-crash-d").onclick = crashDocker;
+  el("sc-restart-d").onclick = ()=>{ D.restart = !D.restart; log("LOG", "docker: --restart policy set to " + (D.restart?"always":"none")); render(); };
+  el("sc-kill-conmon").onclick = killConmon;
+  el("sc-crash-p").onclick = crashPodman;
+  el("sc-restart-p").onclick = ()=>{ P.restart = !P.restart; log("LOG", "podman: --restart policy set to " + (P.restart?"always":"none")); render(); };
+  el("sc-reboot-p").onclick = rebootPodman;
+  el("sc-api").onclick = apiRequest;
+
+  log("OK","two engines, one container -- ps --forest ready");
+  log("HINT","Try: run -> kill dockerd -> confirm the container is untouched -> turn on --restart=always -> kill dockerd -> crash app -> nothing restarts.");
+  render();
+})();
+
+/* ============================================================
+   12. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-12"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#2dd4bf"><a class="cn-btn" href="ctr-11.html"><span>←</span><span><span class="cn-lbl">PREV · CH 11</span><span class="cn-ttl">Registries: The Distribution Spec, Push/Pull & Auth</span></span></a><div class="cn-mid"><a class="cn-home" href="course-containers.html">☰ Container Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="ctr-01.html">CH 01 · Genesis: From chroot to the OCI Spec</option><option value="ctr-02.html">CH 02 · Namespaces I: PID, UTS, Mount &amp; IPC</option><option value="ctr-03.html">CH 03 · Namespaces II: Network Namespaces &amp; veth</option><option value="ctr-04.html">CH 04 · User Namespaces: Rootless Containers</option><option value="ctr-05.html">CH 05 · cgroups v2: The Unified Resource Hierarchy</option><option value="ctr-06.html">CH 06 · The Root Filesystem: pivot_root &amp; OverlayFS</option><option value="ctr-07.html">CH 07 · Capabilities: Splitting Root Into 40 Pieces</option><option value="ctr-08.html">CH 08 · Seccomp &amp; LSMs: Filtering the Syscall Surface</option><option value="ctr-09.html">CH 09 · The OCI Runtime Spec: runc, crun &amp; config.json</option><option value="ctr-10.html">CH 10 · Container Images: Layers, Manifests &amp; Content Addressing</option><option value="ctr-11.html">CH 11 · Registries: The Distribution Spec, Push/Pull &amp; Auth</option><option value="ctr-12.html" selected>CH 12 · Architecture Showdown: Docker's Daemon vs Podman's Fork-Exec Model</option><option value="ctr-13.html">CH 13 · Networking: Bridges, CNI &amp; libnetwork</option><option value="ctr-14.html">CH 14 · Pods &amp; systemd: Podman's Pod Model and Quadlets</option><option value="ctr-15.html">CH 15 · Production Incidents: Real Container Escapes &amp; CVEs</option><option value="ctr-16.html">CH 16 · Capstone: Build a Container Runtime From Scratch</option></select><span class="cn-prog">12 / 16</span></div><a class="cn-btn" href="ctr-13.html"><span><span class="cn-lbl">NEXT · CH 13</span><span class="cn-ttl">Networking: Bridges, CNI &amp; libnetwork</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

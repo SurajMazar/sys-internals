@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-15 · Production Incidents: Real Container Escapes & CVEs — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),#3b82f6);width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- engine chips ---------- */
+  .eng{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;border-radius:6px;
+    padding:1px 8px;font-weight:700}
+  .eng.dk{color:var(--docker);background:rgba(36,150,237,.12);border:1px solid rgba(36,150,237,.35)}
+  .eng.pd{color:var(--podman);background:rgba(137,44,160,.14);border:1px solid rgba(137,44,160,.4)}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* process/tree frames */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s;text-align:center}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:900px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:76px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* meter bars */
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:220px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#3b82f6);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 15 / 16</b> · Production Incidents</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better: Defense in Depth</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Security</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 15</div>
+  <h1>Production Incidents:<br><span class="grad">Real Escapes & CVEs</span></h1>
+  <p class="lead">Chapters 2 through 14 built the wall — namespaces, cgroups, capabilities, seccomp, LSMs, a
+  daemon or a fork-exec model behind it. This chapter is where the wall met reality: the exact syscalls a
+  named CVE walked through to get from an untrusted container process to host root, a credential breach that
+  had nothing to do with the kernel at all, and an honest accounting of what <span class="eng dk">Docker</span>'s
+  and <span class="eng pd">Podman</span>'s different architectures actually bought — and didn't — when each
+  incident hit.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Trace CVE-2019-5736's exact race condition, syscall by syscall, from a poisoned symlink to a corrupted host binary.</div>
+    <div class="obj"><b>You will understand</b>Why "we don't run as root inside the container" does not address any of this chapter's incidents.</div>
+    <div class="obj"><b>You will predict</b>Which of Docker's or Podman's architectural choices contains a given failure — and which ones neither engine can contain at all.</div>
+    <div class="obj"><b>You will simulate</b>The runc file-descriptor race live, and watch the identical scenario fail differently against a patched runtime.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">A shared kernel means every escape is one bug away, not one hypervisor away</h2>
+  <p class="lead">A virtual machine's isolation boundary is enforced by hardware-assisted virtualization: the
+  guest kernel never runs the host's own privileged instructions, and a guest-to-host escape means defeating an
+  entirely separate execution domain — the hypervisor. A container has no such domain. Every namespace, cgroup,
+  capability set, and seccomp filter from chapters 2 through 8 is a restriction <i>applied to an ordinary Linux
+  process running on the exact same kernel as everything else on the box</i>. That kernel is shared, unmodified,
+  and — as of this chapter — demonstrably not infallible.</p>
+  <p>This reframes what "container escape" means mechanically. It is not "defeat the isolation layer" in the
+  abstract; it is one of exactly three concrete things going wrong:</p>
+  <ul class="plain">
+    <li><b>A bug in the privileged code that builds the container.</b> Something has to call <code>clone()</code>,
+      write the cgroup interface files, drop capabilities, and load the seccomp filter — and it has to do all of
+      that <i>before</i> the container's process exists to be restricted. That something (runc, crun) runs as
+      real host root, however briefly, with one foot in the container's namespaces and one foot on the host
+      filesystem. A bug there is a bug in the wall's construction crew, not the wall.</li>
+    <li><b>A gap in a kernel subsystem's namespace-awareness.</b> Namespaces and cgroups were retrofitted onto a
+      kernel that predates both by decades (chapter 1). Some interface files were designed for a single global
+      hierarchy and only later had namespace boundaries drawn around them — and until every corner of that
+      retrofit is airtight, a namespaced process can occasionally reach a lever that was never meant to be
+      reachable from inside.</li>
+    <li><b>An operational or credential compromise with nothing to do with the kernel at all.</b> The account
+      database behind a registry, the token a CI pipeline uses to push images, the socket a daemon listens on —
+      all of these are part of "container security" in the sense that operators say the phrase, and none of them
+      are namespaces, cgroups, or capabilities.</li>
+  </ul>
+  <p>This chapter examines one real, named incident from each category, at the level of detail you would need to
+  have caught it, and closes with the question every one of them eventually raises: what did <span class="eng dk">Docker</span>'s
+  daemon architecture and <span class="eng pd">Podman</span>'s daemonless one actually change about the outcome —
+  and, just as importantly, what did neither of them change at all?</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS CHAPTER EXISTS</div>
+    <p>Chapters 1–14 taught you the mechanism assuming it works correctly. Real production systems have to
+    assume it sometimes doesn't — not because the design is bad, but because "isolate untrusted code on a shared
+    kernel" is one of the hardest correctness problems in systems software, and the industry's track record on it
+    is a list of specific, fixable bugs rather than a single solved problem. Knowing that list, and exactly why
+    each one worked, is what separates configuring a container platform from operating one.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">2016–2022: the six years that hardened the container runtime</h2>
+  <p>The incidents in this chapter did not happen in isolation from each other — each one changed what the next
+  operator was expected to already know. Click through the timeline; several entries are direct cause-and-effect
+  of the one before it.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from default seccomp to nsdelegate</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · A YOUNG PODMAN WATCHED THE BIGGEST ONE HAPPEN LIVE</div>
+    <p>Podman's first stable release was barely a month old when CVE-2019-5736 went public. At the time it, like
+    Docker, defaulted to runc — so it was every bit as exposed, and shipped its own patched runc just as urgently.
+    Podman's later move to crun as its default low-level runtime happened afterward, for startup-latency reasons
+    (chapter 9), not as a security response to this CVE. That ordering matters: it is the difference between
+    "Podman was immune" (false) and "Podman's current default happens to postdate this specific bug and uses a
+    different exec architecture" (true, and a much narrower claim — §9 draws the line precisely).</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">The naive trust model: "we didn't add capabilities, so we're covered"</h2>
+  <p>Derive the failure honestly by first stating the belief that chapters 2–14 make entirely reasonable to hold.
+  A team ships this, confident it reflects everything the course has taught so far:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Dockerfile + shell</span><span>the naive trust model, annotated</span></div>
+    <pre><span class="c"># Non-root user inside the container. No --privileged. No --cap-add.</span>
+<span class="c"># Default seccomp profile, default AppArmor/SELinux profile. Nothing exotic.</span>
+<span class="k">FROM</span> ubuntu:22.04
+<span class="k">RUN</span> useradd -m appuser
+<span class="k">USER</span> appuser
+<span class="k">CMD</span> [<span class="s">"./service"</span>]</pre>
+  </div>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">shell</span><span>the reasoning that ships with it</span></div>
+    <pre><span class="c">$</span> docker run --rm -p 8080:8080 myimage
+<span class="c"># "Even if an attacker gets remote code execution in ./service, they land as</span>
+<span class="c">#  an unprivileged UID, inside every namespace from chapter 2, under the</span>
+<span class="c">#  default seccomp profile from chapter 8. Container escape is a theoretical</span>
+<span class="c">#  concern for someone else's threat model — we didn't do anything reckless."</span></pre>
+  </div>
+  <p>Every clause in that comment is true, and none of the incidents in this chapter is stopped by it. That is
+  the point worth sitting with before §4 quantifies exactly why: this configuration hardens <i>the container's
+  own process</i>, and every one of §11's incidents happens somewhere else — in the privileged process that built
+  the container, in a kernel interface file that predates namespace-awareness, or in a database that has never
+  run a single line of the application's code.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The naive model protects the wrong process, and the math doesn't forgive that</h2>
+  <p>Three quantified reasons the naive trust model above provides none of the protection it feels like it
+  should:</p>
+  <ul class="plain">
+    <li><b>The privileged builder is outside the container's own hardening entirely.</b> <code>docker exec</code>
+      and <code>docker run</code> both hand off to runc (or crun) running as real host root, in a brief window
+      where it operates on the container's namespaces from the outside. The container's seccomp profile, its
+      dropped capabilities, its non-root <code>USER</code> — none of that constrains runc itself, because runc is
+      not the process those settings were ever applied to. A bug in runc's own exec path is invisible to every
+      hardening flag in the Dockerfile above.</li>
+    <li><b>Blast radius is flat while attempt count scales with fleet size.</b> A bug that corrupts the shared,
+      on-disk low-level runtime binary (§8, §11) does not care which of a host's containers triggered it. With
+      <var>N</var> containers on a host and even a conservative <var>p</var> = 2% chance that any given tenant can
+      trigger a privileged exec (a CI job, a debug shell, an operator running <code>docker exec</code>), the
+      expected number of exploit attempts scales linearly with <var>N</var> — while the payoff of a single success
+      is constant: full host root, for every future invocation of that runtime, regardless of which container
+      triggered the corruption. Hardening one more container's Dockerfile does not change either side of that
+      equation.</li>
+    <li><b>Some incidents never touch a container's own configuration at all.</b> The 190,000 accounts exposed in
+      the 2019 Docker Hub breach (§11) were compromised through a database access at Docker's registry
+      infrastructure — no seccomp profile, capability set, or namespace on any customer's host was involved on
+      either side of that breach. "We hardened our containers" is simply not a claim that intersects with this
+      incident category at all.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE CATEGORY ERROR</div>
+    <p>The naive model conflates two different security domains: "is my application's process constrained" and
+    "do I trust every privileged process that ever touches my container, plus every account system in the supply
+    chain that delivered its image." Chapters 2–8 answer the first question thoroughly. This chapter is entirely
+    about the second — and no amount of additional rigor on the first question moves the needle on it.</p>
+  </div>
+</section>
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION</div>
+  <h2 class="sec">Defense in depth: layers that close different doors</h2>
+  <p>The correction is not "harden the container more" — it is recognizing that each of chapters 2–14 already
+  built an independent control, and that stacking independent controls is what actually helps, because each one
+  closes a <i>different</i> door. Step through the stack the way a security-conscious rollout actually applies it,
+  and note which of this chapter's incidents each layer would have stopped.</p>
+
+  <div class="widget deck" id="deckDefense">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Building the stack, layer by layer</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE PATTERN TO NOTICE</div>
+    <p>Every layer above stops a specific, nameable class of failure and is silent on every other class. That is
+    not a weakness of any individual layer — it is why "defense in depth" is a real technical strategy and not a
+    slogan: §11's incidents are stopped by different layers, and no single layer in this stack would have stopped
+    all of them.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">Defense in depth has residual risk, and it has an operational bill</h2>
+  <p>Stacking independent controls narrows the failure space; it does not close it, and closing most of it costs
+  real engineering time that competes with shipping velocity.</p>
+  <ul class="plain">
+    <li><b>Zero-days remain zero-days.</b> No configuration flag defends against a bug nobody has found yet in
+      runc's, crun's, or the kernel's own privileged code. Hardening reduces which categories of <i>misuse</i> are
+      possible; it cannot reduce the existence of implementation bugs in code that, by construction, has to run
+      with elevated privilege at some point.</li>
+    <li><b>Patch lag is measured in months, not days.</b> Upgrading a fleet's low-level container runtime means
+      coordinating maintenance windows, testing against every workload, and rolling every node — and real
+      organizations take a long time to finish that rollout after a CVE ships. Drag the slider below: it is an
+      illustrative model of unpatched-fleet decay after disclosure, not a measurement of any specific CVE, but the
+      <i>shape</i> — a fast initial drop from urgent, security-conscious operators followed by a long tail of
+      hosts that never get prioritized until the next audit — matches what internet-wide scans after major runtime
+      CVEs have repeatedly found.</li>
+    <li><b>Capability-dropping breaks real workloads.</b> Teams that drop capabilities aggressively regularly hit
+      an application that quietly needed <code>CAP_NET_BIND_SERVICE</code> for a low port or
+      <code>CAP_CHOWN</code> for a volume operation — and the fastest unblock is often to widen the capability
+      set back, silently re-opening exactly the class of door §5 just closed.</li>
+    <li><b>Rootless has genuine functional limits (chapter 4).</b> Some workloads need capabilities that only make
+      sense against the real host UID namespace. Teams that hit those limits sometimes move back to rootful
+      deployments for functionality reasons, undoing part of the structural mitigation §7 and §9 credit rootless
+      containers with.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Patch-adoption decay — a model, not a measurement</span><span class="w-sub">DRAG</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>weeks since disclosure</label><input type="range" id="patchlag-slider" min="0" max="52" value="4" step="1"><span class="val" id="patchlag-val">4 wks</span></div>
+      <div class="meter"><div class="m-l"><span>hosts still running the vulnerable runtime</span><span id="patchlag-pct">—</span></div><div class="m-bar"><div class="m-fill warm" id="patchlag-fill"></div></div></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="patchlag-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The defense-in-depth stack, layer by layer, with Docker and Podman's posture at each</h2>
+  <p>Click any layer to see exactly what it stops, which of this chapter's incidents it would or would not have
+  mitigated, and whether <span class="eng dk">Docker</span> and <span class="eng pd">Podman</span> differ on it at
+  all. Most of the surprises are in which layers <i>don't</i> differ.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Defense-in-depth explorer</span><span class="w-sub">CLICK ANY LAYER</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">IDENTITY & PRIVILEGE SCOPE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="userns">user namespace / rootless</div>
+          <div class="acard" data-p="caps">capability dropping</div>
+        </div>
+        <div class="arch-row-label">KERNEL-ENFORCED FILTERS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="seccomp">seccomp-bpf</div>
+          <div class="acard" data-p="lsm">AppArmor / SELinux</div>
+          <div class="acard" data-p="cgroupdeleg">cgroup v2 + nsdelegate</div>
+        </div>
+        <div class="arch-row-label">OPERATIONAL DISCIPLINE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="patchedrt">patched runc / crun</div>
+          <div class="acard" data-p="nodaemon">no persistent root daemon</div>
+          <div class="acard" data-p="registry">registry & supply-chain hygiene</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The exact mechanism: two CVEs, at the syscall and file level</h2>
+  <p>Now the machinery itself — first the race that made CVE-2019-5736 the most consequential runtime CVE in the
+  ecosystem's history, then the kernel interface files CVE-2022-0492 walked through. Both are described at the
+  level you would need to patch either one yourself.</p>
+
+  <h3>(a) CVE-2019-5736: the <code>/proc/self/exe</code> race, syscall by syscall</h3>
+  <p>The setup: <code>docker exec</code> (or a container restart) drives runc to enter the container's namespaces
+  as real host root and execute a target binary inside it. The attack replaces that target with a symlink to
+  <code>/proc/self/exe</code> before this happens. Step through what runc actually does, and where the window
+  opens.</p>
+
+  <div class="widget deck" id="deckRace">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The race, step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Drag the slider below — it models the attacker's side of the race as a spin-loop retrying the
+  <code>openat()</code>+<code>write()</code> attempt against <code>/proc/&lt;runc-pid&gt;/fd/&lt;n&gt;</code>.
+  Each iteration has a small independent chance of landing inside the window; more iterations compound toward
+  near-certainty, which is exactly why this CVE was rated reliably exploitable rather than a lucky-timing curiosity.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Race-window success probability</span><span class="w-sub">DRAG</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>attacker retry iterations</label><input type="range" id="race-timing-slider" min="1" max="60" value="12" step="1"><span class="val" id="race-timing-val">12</span></div>
+      <div class="meter"><div class="m-l"><span>P(at least one write lands in the window)</span><span id="race-prob-val">—</span></div><div class="m-bar"><div class="m-fill" id="race-prob-fill"></div></div></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="race-timing-note"></p>
+    </div>
+  </div>
+
+  <h3>(b) CVE-2022-0492: <code>release_agent</code> as an unnamespaced global hook</h3>
+  <p>cgroups v1 (chapter 5 covered v2's unified hierarchy; v1's older multi-hierarchy design predates it) exposes
+  a single, per-hierarchy <code>release_agent</code> file at the hierarchy's root — a path the kernel executes,
+  with full host privilege and <b>no namespace confinement whatsoever</b>, whenever a cgroup configured with
+  <code>notify_on_release=1</code> transitions to zero processes. That execution happens via the kernel's usermode
+  helper machinery, in the initial namespaces, regardless of which namespace's cgroup triggered it — because
+  <code>release_agent</code> predates cgroup namespaces entirely.</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">shell</span><span>the mechanism, reconstructed from the publicly documented shape</span></div>
+    <pre><span class="c"># container has CAP_SYS_ADMIN and cgroup v1 is in use, unmitigated</span>
+mkdir /tmp/cgrp &amp;&amp; mount -t cgroup -o memory cgroup /tmp/cgrp
+mkdir /tmp/cgrp/x
+<span class="k">echo</span> 1 &gt; /tmp/cgrp/x/notify_on_release
+
+<span class="c"># resolve this container's own rootfs as seen from the HOST</span>
+host_path=$(sed -n <span class="s">'s/.*\perdir=\([^,]*\).*/\1/p'</span> /etc/mtab)
+<span class="k">echo</span> <span class="s">"$host_path/payload"</span> &gt; /tmp/cgrp/release_agent
+
+<span class="k">echo</span> <span class="s">'#!/bin/sh'</span> &gt; /payload
+<span class="k">echo</span> <span class="s">"ps aux > $host_path/output"</span> &gt;&gt; /payload
+chmod a+x /payload
+
+<span class="c"># emptying the cgroup fires the notify_on_release event → kernel runs</span>
+<span class="c"># release_agent AS HOST ROOT, OUTSIDE any container namespace</span>
+sh -c <span class="s">"echo \$\$ > /tmp/cgrp/x/cgroup.procs"</span></pre>
+  </div>
+  <p>Every path in that reconstruction is a real cgroup v1 interface file: <code>notify_on_release</code>,
+  <code>release_agent</code>, and <code>cgroup.procs</code> all exist on-disk under any mounted v1 hierarchy,
+  exactly where the kernel documentation says they do. The privilege escalation is not a bug in any of those
+  files' individual semantics — each behaves exactly as documented. It is a namespace-awareness gap: nothing
+  stops a process with <code>CAP_SYS_ADMIN</code> <i>inside its own user namespace</i> from writing to a
+  hierarchy-global file whose <i>execution</i> is defined to happen with zero namespace confinement at all.</p>
+  <table class="cmp">
+    <tr><th>REAL PATH / SYSCALL</th><th>ROLE IN THIS SECTION'S TWO CVEs</th></tr>
+    <tr><td>/proc/self/exe</td><td>Self-referencing symlink; resolves to whichever process reads it — the attack's poisoned target exploits this ambiguity during runc's exec setup.</td></tr>
+    <tr><td>/proc/&lt;pid&gt;/fd/&lt;n&gt;</td><td>Lets any process with ptrace-equivalent access open another process's already-open file descriptors by number — the exact path the race uses to reach runc's open fd on its own binary.</td></tr>
+    <tr><td>memfd_create() + fcntl(F_ADD_SEALS)</td><td>runc's fix: copies itself into a sealed, anonymous, non-path-addressable memory-backed file before the sensitive exec window, then re-execs from that via fexecve().</td></tr>
+    <tr><td>/sys/fs/cgroup/&lt;subsys&gt;/release_agent</td><td>cgroup v1's global, per-hierarchy command hook — writable by anything with CAP_SYS_ADMIN over that hierarchy, executed with zero namespace confinement.</td></tr>
+    <tr><td>notify_on_release, cgroup.procs</td><td>The trigger: setting the flag and then emptying a cgroup's process list fires the population-to-zero event that invokes release_agent.</td></tr>
+  </table>
+</section>
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Same incident list, engine by engine — honestly</h2>
+  <p>This is the table this whole chapter has been building toward. Read it as five independent questions, not
+  one aggregate score — the honest answer to "which engine is more secure" is "it depends which of these five
+  rows you're asking about," and the table below is exactly that dependency, made explicit.</p>
+  <table class="cmp">
+    <tr><th>INCIDENT CLASS</th><th><span class="eng dk">DOCKER</span></th><th><span class="eng pd">PODMAN</span></th><th>WHY</th></tr>
+    <tr><td>runc exec-time race (CVE-2019-5736 class)</td>
+      <td><span class="pill b">exposed until patched</span> — always used runc</td>
+      <td><span class="pill y">exposed if configured to use runc</span>; crun's different, later architecture wasn't vulnerable to this specific race</td>
+      <td>A shared-low-level-runtime risk. Neither engine's daemon architecture is involved — runc runs beneath both.</td></tr>
+    <tr><td>namespaced fd leak / ptrace (CVE-2016-9962 class)</td>
+      <td><span class="pill b">exposed</span> — predates this CVE's disclosure</td>
+      <td><span class="pill g">not yet founded</span> — Podman's first release was two years later</td>
+      <td>Pure timing, not an architectural choice by either project.</td></tr>
+    <tr><td>cgroup v1 release_agent (CVE-2022-0492 class)</td>
+      <td><span class="pill b">exposed</span> if rootful + CAP_SYS_ADMIN + cgroup v1 host</td>
+      <td><span class="pill g">structurally narrowed</span> by rootless-by-default: a remapped UID cannot reach the host's real release_agent file even claiming CAP_SYS_ADMIN inside its own namespace</td>
+      <td>User-namespace UID remap denies the actual host-filesystem write — independent of any patch, and independent of which engine issues the container.</td></tr>
+    <tr><td>compromised or exposed daemon API / docker.sock mount</td>
+      <td><span class="pill b">single root daemon</span> is one target for total host compromise; a mounted socket is instant root</td>
+      <td><span class="pill g">no persistent root daemon by default</span>; podman.socket is opt-in and can itself run rootless</td>
+      <td>Architecture, not a CVE — this incident category doesn't exist in Podman's default shape at all.</td></tr>
+    <tr><td>registry / account breach (2019 Docker Hub)</td>
+      <td><span class="pill b">Docker Inc. operated the breached service</span></td>
+      <td><span class="pill y">not directly exposed</span> — no Podman-operated registry — but users who pull from Docker Hub inherit the same downstream image-trust exposure regardless of engine</td>
+      <td>Entirely orthogonal to engine choice; it's a registry-operator incident, not a runtime one.</td></tr>
+  </table>
+  <p>Read down the "why" column and a pattern falls out: the two rows where Podman's posture is <i>genuinely</i>
+  better (the daemon row and, structurally, the cgroup row) are exactly the two rows where the difference comes
+  from architecture Podman chose — daemonless, rootless-by-default. The two rows where it isn't better are the two
+  where both engines depend on the identical shared component (runc/crun) or an entirely external service. Podman
+  did not make container escapes rarer in general; it removed two specific categories of exposure and left the
+  rest exactly where they were.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE / SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">Attack surface as a countable quantity, not a vibe</h2>
+  <p>"Attack surface" sounds qualitative until you count the actual privileged components an attacker must reach
+  through to get from a container process to host root, under each deployment mode. Toggle the metric below —
+  component count is a structural fact about each architecture; startup latency is included because rootless and
+  daemonless modes are not free, and pretending otherwise undersells why teams sometimes choose the less-hardened
+  option anyway.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Privileged component count vs. startup latency, by deployment mode</span><span class="w-sub" id="sec-chart-sub">COMPONENT COUNT</span></div>
+    <div class="w-body">
+      <div class="toggle-row">
+        <button class="chip on" id="sec-metric-surface">privileged components in the escape path</button>
+        <button class="chip" id="sec-metric-latency">relative container-start latency</button>
+      </div>
+      <div class="chartbox"><canvas id="sec-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend" id="sec-chart-legend"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="sec-chart-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>Component counts reflect the documented architecture of each mode (chapters 9 and 12): Docker rootful
+    always routes through dockerd → containerd → containerd-shim → runc; Podman's fork-exec model routes through
+    conmon → crun (or runc) directly, per invocation, with no resident daemon in the default case. Latency bars
+    are directional, consistent with crun's documented C-vs-Go-runtime startup advantage over runc (chapter 9) —
+    not a benchmark run for this page.</p>
+  </div>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Five incidents, five root causes</h2>
+
+  <h3>CVE-2019-5736 — the runc file-descriptor race</h3>
+  <p>Disclosed publicly on February 11, 2019 by researchers Adam Iwaniuk and Borys Popławski, this remains the
+  most consequential container-runtime CVE to date, affecting every engine and orchestrator built on an
+  unpatched runc — Docker below 18.09.2, containerd, cri-o, Apache Mesos' Mesos containerizer, and LXC 3.1.0,
+  which shared enough of the same exec pattern to be vulnerable too. §8(a)'s stepper deck is the exact mechanism:
+  a malicious container's exec target is replaced with a symlink to <code>/proc/self/exe</code>; when runc, as
+  host root, enters the container's namespaces to run <code>docker exec</code>, it briefly holds a reference to
+  its own on-disk binary; a race through <code>/proc/&lt;runc-pid&gt;/fd/&lt;n&gt;</code> overwrites that binary
+  on the host filesystem, corrupting it for every future invocation by anyone. The response was industry-wide and
+  fast: runc 1.0.0-rc6 shipped the memfd-based fix within days of disclosure, and every major cloud provider and
+  orchestrator vendor pushed emergency patches inside the same week — a coordination speed that itself reflects
+  how severe the ecosystem judged this one to be.</p>
+
+  <h3>CVE-2016-9962 — the namespaced fd leak into ptrace</h3>
+  <p>Disclosed by Aleksa Sarai in February 2017 (the CVE number was reserved the year before), this bug lived in
+  runc's <code>nsenter</code> step — the C-level shim that enters a container's existing namespaces before Go's
+  runtime, which cannot safely fork after starting multiple threads, takes back over. A file descriptor opened
+  during that setup was not marked close-on-exec and survived into the container's own process, and because that
+  descriptor referenced the host's procfs, a process inside the container could use it to <code>ptrace(2)</code> a
+  process running <i>outside</i> its own PID namespace — a direct, if narrow, violation of the isolation PID
+  namespaces exist to provide. The fix was close-on-exec hygiene across every file descriptor libcontainer's
+  nsenter code touched before jumping into the container's namespace view, and it predates Podman's existence by
+  roughly two years — a useful reminder that "which engine" is sometimes simply not a question a given CVE's
+  timeline has an answer for yet.</p>
+
+  <h3>CVE-2022-0492 — cgroups v1's release_agent escalation</h3>
+  <p>Disclosed by researchers at Palo Alto Networks' Unit 42 in early 2022, this is the incident that made "which
+  cgroup version does your fleet actually run" a security question rather than a purely operational one. §8(b)
+  walks the mechanism: a container with <code>CAP_SYS_ADMIN</code> on a host still using the legacy cgroups v1
+  hierarchy can write to that hierarchy's <code>release_agent</code> file and trigger the kernel to execute it
+  with full host privilege, entirely outside any namespace confinement. The immediate mitigation guidance was
+  blunt and remains correct: don't grant containers <code>CAP_SYS_ADMIN</code> unless the workload genuinely
+  requires it, and move hosts to the cgroup v2 unified hierarchy, which removed the global release_agent surface
+  by design. Rootless containers were separately, structurally narrowed against this one — not because anyone
+  patched anything for them, but because a remapped, unprivileged host UID simply cannot write the host's real
+  release_agent file regardless of what capabilities the process believes it holds inside its own namespace.</p>
+
+  <h3>The 2019 Docker Hub credential breach</h3>
+  <p>Announced by Docker on April 26, 2019, this incident had nothing to do with runc, containerd, or any
+  namespace — it was unauthorized access to a database backing Docker Hub, exposing usernames and hashed
+  passwords for a subset of approximately 190,000 accounts, along with GitHub and Bitbucket access tokens used to
+  trigger autobuilds. Docker's response was a forced password reset for affected accounts and a request that
+  every user with autobuild integrations re-authorize their GitHub/Bitbucket connections, since a leaked
+  autobuild token is a supply-chain risk that reaches further than the account it was issued to — it could be
+  used to trigger builds that push attacker-influenced images into repositories other people already trust and
+  pull from. It belongs in this chapter for exactly the reason §1 predicted it would: it is a "production
+  container incident" by any operator's definition, and it is entirely outside the runtime-security domain every
+  other incident in this chapter lives in.</p>
+
+  <h3>What Podman's daemonless model did and didn't change</h3>
+  <p>Internet-wide scanning research over the past decade has repeatedly found exposed Docker daemon APIs —
+  <code>dockerd</code> sockets reachable without authentication — actively targeted by automated cryptojacking
+  campaigns within minutes of being found; a compromised or misconfigured daemon is a single, high-value, always
+  listening target, and <code>docker.sock</code> mounted into a container is one of the most common real-world
+  container-escape misconfigurations reported by cloud security vendors, distinct from any of the four CVEs
+  above. That specific incident shape structurally does not exist in Podman's default fork-exec model, because
+  there is no persistent root daemon process to find. What did not change: Podman hosts running vulnerable runc
+  or crun were, and remain, exactly as exposed to a low-level-runtime CVE as any Docker host running the same
+  binary — the daemon's absence removed one attack surface, not the shared one underneath it.</p>
+</section>
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this incident list at a whiteboard?</h2>
+  <p>Think before you reveal — these are the level of follow-up a Staff or Principal security review would
+  actually ask after you mention any of these CVEs by name.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the fix: runc's exec path, before and after</h2>
+  <p>Where the CVE-2019-5736 fix actually lives, simplified from runc's real source shape but faithful to the
+  structure and naming that shipped in 1.0.0-rc6 and after.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">runc/</span></div>
+<div>├── <span class="dir">libcontainer/</span></div>
+<div>│   ├── <span class="fhl">● init_linux.go</span> <span class="fnote">— container init: the code that, historically, resolved and exec'd the target binary by path</span></div>
+<div>│   ├── <span class="fhl">● standard_init_linux.go</span> <span class="fnote">— where the memfd self-re-exec fix was added, ahead of the sensitive exec window</span></div>
+<div>│   ├── process_linux.go <span class="fnote">— process creation, pipe setup between runc and the container init</span></div>
+<div>│   ├── <span class="dir">nsenter/</span>nsenter.c <span class="fnote">— the C shim entering existing namespaces before Go's runtime starts threads (CVE-2016-9962 lived here)</span></div>
+<div>│   └── <span class="dir">cgroups/</span></div>
+<div>│       ├── <span class="dir">fs/</span> <span class="fnote">— cgroup v1 handlers; release_agent-adjacent interface files (CVE-2022-0492's territory)</span></div>
+<div>│       └── <span class="dir">fs2/</span> <span class="fnote">— cgroup v2 unified handlers; no release_agent surface by design</span></div>
+<div>├── main_unix.go <span class="fnote">— CLI entrypoint; dispatches `runc exec`</span></div>
+<div>└── exec.go <span class="fnote">— `runc exec` command implementation</span></div>
+  </div></div>
+
+  <p>First, the vulnerable shape — simplified to the part that matters. runc resolves and opens the exec target
+  by <i>path</i>, inside the container's mount namespace, immediately before invoking it:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go (simplified, pre-fix shape)</span><span>libcontainer/standard_init_linux.go</span></div>
+    <pre><span class="k">func</span> <span class="f">runExec</span>(target <span class="k">string</span>, args []<span class="k">string</span>) <span class="k">error</span> {
+    <span class="c">// target here has already been resolved inside the container's mount</span>
+    <span class="c">// namespace — if the attacker replaced it with a symlink to</span>
+    <span class="c">// /proc/self/exe, this now refers to runc's OWN on-disk binary.</span>
+    fd, err := unix.<span class="f">Open</span>(target, unix.O_PATH, <span class="n">0</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+
+    <span class="c">// ── VULNERABLE WINDOW ──────────────────────────────────────</span>
+    <span class="c">// runc now holds an open reference to its own host binary. A</span>
+    <span class="c">// concurrent process inside the container can reach this same</span>
+    <span class="c">// file via /proc/&lt;runc-pid&gt;/fd/&lt;n&gt; and open it O_WRONLY —</span>
+    <span class="c">// a path the kernel's ETXTBSY protection does not cover, because</span>
+    <span class="c">// it guards execve()-time opens, not a second fd on the same inode.</span>
+    <span class="k">return</span> unix.<span class="f">Fexecve</span>(fd, args, os.Environ())
+}</pre>
+  </div>
+
+  <p>The fix does not try to close the race by timing — it removes the on-disk path from the sensitive window
+  entirely, by re-executing runc itself from a sealed, anonymous, memory-backed file that no path can ever
+  reference:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go (simplified, fixed shape)</span><span>libcontainer — memfd self-re-exec, added ahead of exec setup</span></div>
+    <pre><span class="k">func</span> <span class="f">reexecSelfViaSealedMemfd</span>() <span class="k">error</span> {
+    self, err := os.<span class="f">Open</span>(<span class="s">"/proc/self/exe"</span>) <span class="c">// this read happens ONCE, at startup</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }        <span class="c">// — before any container namespace is entered</span>
+
+    memfd, err := unix.<span class="f">MemfdCreate</span>(<span class="s">"runc_cloned"</span>, unix.MFD_ALLOW_SEALING)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+    io.<span class="f">Copy</span>(os.NewFile(<span class="k">uintptr</span>(memfd), <span class="s">""</span>), self)
+
+    <span class="c">// Seal it: no further writes, no shrink, no grow — ever, from anyone,</span>
+    <span class="c">// including a process that later gains a reference to this fd.</span>
+    unix.<span class="f">FcntlInt</span>(<span class="k">uintptr</span>(memfd), unix.F_ADD_SEALS,
+        unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_WRITE|unix.F_SEAL_SEAL)
+
+    <span class="c">// Re-exec runc itself from the sealed memfd, not from its on-disk path.</span>
+    <span class="c">// Every subsequent exec-setup step now runs from a descriptor that has</span>
+    <span class="c">// no path an attacker's symlink trick could ever resolve to, and that</span>
+    <span class="c">// rejects writes with EPERM even if a race still hands out a new fd.</span>
+    <span class="k">return</span> unix.<span class="f">Fexecve</span>(memfd, os.Args, os.Environ())
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY — THE PRINCIPLE TO STEAL</div>
+    <p>The fix's real lesson generalizes past this one CVE: <b>prefer a descriptor you fully control over a path
+    you have to re-resolve.</b> A path can be raced, symlinked, or bind-mounted out from under you between
+    resolution and use; a sealed, anonymous memfd has no path at all, and its seals make even a successfully
+    raced file descriptor useless for tampering. The same instinct shows up elsewhere in the kernel's own later
+    hardening — <code>openat2()</code>'s <code>RESOLVE_NO_SYMLINKS</code>, and FreeBSD's Capsicum capability
+    model — all converging on the same idea: don't trust a name you have to look up twice.</p>
+  </div>
+</section>
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the mechanism in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — the CVE-2019-5736 exploit, start to finish</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from the attacker's
+      first move to the fix that closed the window. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Escape replay: patched vs. unpatched, live</h2>
+  <p>Pick a scenario, configure it, and trigger the sequence. The <b>runc race</b> scenario is this chapter's
+  flagship: toggle <b>UNPATCHED</b> vs <b>PATCHED</b> and watch the identical attacker behavior produce a
+  corrupted host binary in one case and a clean <code>EPERM</code> in the other. The <b>release_agent</b>
+  scenario lets you toggle the three conditions CVE-2022-0492 actually required, one at a time, and see exactly
+  which one has to hold for the escalation to succeed.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Escape replay</span><span class="w-sub" id="esc-phase">READY</span></div>
+    <div class="w-body">
+      <div class="toggle-row" style="padding:13px 15px 0">
+        <button class="chip on" id="esc-scn-race">SCENARIO: runc /proc/self/exe race</button>
+        <button class="chip" id="esc-scn-cgroup">SCENARIO: cgroup v1 release_agent</button>
+      </div>
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div id="esc-stage-race">
+            <div class="ptree">
+              <div class="prow">
+                <div class="pnode" id="esc-node-runcbin-wrap"><div class="shm fresh" id="esc-node-runcbin">/usr/sbin/runc<span class="sub">host disk — CLEAN</span></div></div>
+              </div>
+              <div class="prow">
+                <div class="pnode pm" id="esc-node-runcproc">runc process<span class="sub">host root, entering container ns</span></div>
+              </div>
+              <div class="prow">
+                <div class="pnode" id="esc-node-ctrproc">attacker process<span class="sub">inside container, races the write</span></div>
+              </div>
+              <div class="prow">
+                <div class="pnode" id="esc-node-victim">next `docker exec` (unrelated container)<span class="sub">not yet run</span></div>
+              </div>
+            </div>
+          </div>
+          <div id="esc-stage-cgroup" style="display:none">
+            <div class="ptree">
+              <div class="prow">
+                <div class="pnode" id="esc-cg-node-container">container process<span class="sub">writes release_agent, empties cgroup</span></div>
+              </div>
+              <div class="prow">
+                <div class="pnode" id="esc-cg-node-cgroupfile"><div class="shm fresh" id="esc-cg-file">release_agent<span class="sub">/sys/fs/cgroup/…/release_agent</span></div></div>
+              </div>
+              <div class="prow">
+                <div class="pnode pm" id="esc-cg-node-host">host kernel (initial namespace)<span class="sub">not yet triggered</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="slog" id="esc-log"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl" id="esc-ctl-race">
+            <div class="ctl-t">RUNC RACE CONTROLS</div>
+            <div class="btns">
+              <button class="chip" id="esc-patch-toggle">RUNC: UNPATCHED</button>
+            </div>
+            <div class="slider-row" style="margin:10px 0 4px"><label style="min-width:0;flex:1">retry iterations</label><span class="val" id="esc-race-speed-val" style="min-width:24px">12</span></div>
+            <input type="range" id="esc-race-speed" min="1" max="60" value="12" style="width:100%;accent-color:var(--pg)">
+            <div class="btns" style="margin-top:10px">
+              <button class="btn primary" id="esc-run-exec">docker exec (trigger)</button>
+              <button class="btn danger" id="esc-run-second">run another, unrelated exec</button>
+            </div>
+          </div>
+          <div class="sim-ctl" id="esc-ctl-cgroup" style="display:none">
+            <div class="ctl-t">RELEASE_AGENT CONTROLS</div>
+            <div class="btns">
+              <button class="chip" id="esc-cg-version">CGROUP: v1 (legacy)</button>
+              <button class="chip" id="esc-cg-cap">CAP_SYS_ADMIN: present</button>
+              <button class="chip" id="esc-cg-userns">USERNS: rootful</button>
+            </div>
+            <div class="btns" style="margin-top:10px">
+              <button class="btn primary" id="esc-cg-trigger">trigger population event</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="esc-cnt-attempts">0</div><div class="cl">attempts</div></div>
+            <div class="scounter"><div class="cv" id="esc-cnt-compromised" style="color:var(--bad)">0</div><div class="cl">compromised</div></div>
+            <div class="scounter"><div class="cv" id="esc-cnt-blocked" style="color:var(--ok)">0</div><div class="cl">blocked</div></div>
+          </div>
+          <div style="padding:11px 15px">
+            <button class="btn" id="esc-reset" style="width:100%">↺ reset scenario</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Race scenario, UNPATCHED, low iterations vs. high iterations — watch the probability of
+    corruption rise, then run a second, unrelated exec and see it inherit the compromise. <b>2.</b> Flip to
+    PATCHED with the same settings — identical attacker behavior, <code>EPERM</code> every time, host binary
+    stays clean. <b>3.</b> cgroup scenario — leave all three conditions at their vulnerable defaults and trigger
+    it, then flip <i>only</i> USERNS to rootless and trigger again: same capability claim inside the container,
+    completely different outcome, because the host filesystem check happens outside the namespace entirely.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 16: three questions, no options</h2>
+  <p>Chapter 16 has you build a minimal OCI-ish runtime from raw <code>unshare()</code>/<code>clone()</code>,
+  manual cgroup v2 writes, and <code>pivot_root</code> — the exact privileged-code territory this chapter's worst
+  incident lived in. These have no multiple choice. Formulate a full answer, <i>then</i> reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 15 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now trace CVE-2019-5736's race to the exact
+    syscalls, explain why cgroup v1's release_agent escapes namespace confinement, and state precisely which of
+    Docker's or Podman's architectural choices contain which failure. Chapter 16 is the capstone: you will write
+    the privileged code this chapter has spent sixteen sections warning you about, and make the same design
+    choices runc's authors made — deliberately, this time.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="ctr-16.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-16: Capstone — Build a Runtime From Scratch →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2016", l:"default seccomp", d:"<b>Docker 1.10 ships a default seccomp-bpf profile</b> (chapter 8), blocking roughly 44 of the ~300+ syscalls reachable on x86_64 by default. It is real hardening and it is also the baseline every incident in this chapter had to work <i>around</i> or <i>beneath</i> — none of the four CVEs here are stopped by a syscall filter applied to the container's own process." },
+  { yr:"2017", l:"CVE-2016-9962", d:"<b>Aleksa Sarai discloses a runc file-descriptor leak</b> in the nsenter C shim: a descriptor referencing the host's procfs survives, unmarked close-on-exec, into the container's own process, letting it ptrace(2) a process outside its PID namespace. Fixed by systematic CLOEXEC hygiene across libcontainer's namespace-entry code." },
+  { yr:"Jan 2019", l:"Podman 1.0", d:"<b>Podman's first stable release</b> — daemonless, fork-exec, defaulting to runc like Docker did at the time. Its architectural bet (chapter 12) hadn't been tested against a major runtime CVE yet. One was about to land." },
+  { yr:"Feb 2019", l:"CVE-2019-5736", d:"<b>The /proc/self/exe race goes public</b> — a malicious container can corrupt the host's on-disk runc binary via a file-descriptor race during exec setup, compromising every future invocation as host root. runc 1.0.0-rc6 ships the memfd-based fix within days; every major engine and orchestrator patches within the week." },
+  { yr:"Apr 2019", l:"Docker Hub breach", d:"<b>Docker discloses unauthorized database access</b> exposing usernames and hashed passwords for roughly 190,000 accounts, plus GitHub/Bitbucket autobuild tokens. Zero namespaces, zero cgroups, zero relation to any runtime CVE — a pure registry/account-layer incident." },
+  { yr:"Nov 2019", l:"crun ships", d:"<b>Red Hat releases crun</b>, a from-scratch C implementation of the OCI runtime spec, built primarily for startup-latency reasons (chapter 9) rather than as a direct response to CVE-2019-5736 — though its different exec architecture, built after that CVE's disclosure, was not found vulnerable to that specific race." },
+  { yr:"Mar 2022", l:"CVE-2022-0492", d:"<b>Unit 42 discloses the cgroups v1 release_agent escalation</b>: a container with CAP_SYS_ADMIN on a legacy cgroup v1 host can trigger the kernel to execute an attacker-controlled release_agent script with full host privilege, outside any namespace. Rootless containers were structurally narrower against this from the start." },
+  { yr:"2022→", l:"cgroup v2 becomes default", d:"<b>Major distributions (RHEL 9, Ubuntu 22.04 and later) ship cgroup v2's unified hierarchy by default</b>, which has no equivalent global release_agent surface, closing off CVE-2022-0492's exact mechanism for any host that has migrated — independent of which container engine runs on top of it." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: defense in depth (§5)
+   ============================================================ */
+stepper("deckDefense", [
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode new">rootless / user namespace remap</div></div></div>`,
+    cap:`<b>Layer 1: run rootless.</b> The container's root maps to an unprivileged host UID (chapter 4). This is the layer that structurally narrows CVE-2022-0492: a remapped UID has no write access to the host's <i>real</i> cgroup filesystem, regardless of what capabilities the process believes it holds inside its own namespace.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode new">rootless</div><div class="pnode new">--cap-drop=ALL</div></div></div>`,
+    cap:`<b>Layer 2: drop every capability you don't name explicitly.</b> A container that never holds CAP_SYS_ADMIN in the first place cannot trigger CVE-2022-0492's escalation path at all, on any cgroup version, with or without rootless — this layer closes the same door a second, independent way.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode new">rootless</div><div class="pnode new">cap-drop</div><div class="pnode new">seccomp default</div></div></div>`,
+    cap:`<b>Layer 3: the default seccomp-bpf profile.</b> Blocks a broad class of namespace- and kernel-abuse syscalls for the container's own process. Worth being precise about what it does <i>not</i> do: it never applied to CVE-2019-5736 at all, because that race lived inside runc's own privileged process, which the container's seccomp filter was never attached to.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode new">rootless</div><div class="pnode new">cap-drop</div><div class="pnode new">seccomp</div><div class="pnode new">SELinux/AppArmor</div></div></div>`,
+    cap:`<b>Layer 4: an LSM.</b> Mandatory access control on top of discretionary capability checks — Podman's SELinux-first defaults label every container's files distinctly (chapter 8), meaningfully containing some hypothetical escapes even after a namespace or capability bug, though neither CVE in this chapter was primarily stopped at this layer.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode new">…4 layers…</div><div class="pnode pm">patched runc/crun</div></div></div>`,
+    cap:`<b>Layer 5: patch the low-level runtime promptly.</b> This is the <i>only</i> layer that actually closes CVE-2019-5736 and CVE-2016-9962 — no configuration flag substitutes for a version bump here. It is also the layer §6 shows real fleets are slowest to complete.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode new">…5 layers…</div><div class="pnode pm">no docker.sock in containers</div></div></div>`,
+    cap:`<b>Layer 6: never mount the control socket into a container.</b> Not a CVE fix — a config discipline that closes the single most common real-world misconfiguration-driven escape pattern reported by cloud security vendors, distinct from every named CVE in §11.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode pm">6 independent layers, stacked</div></div></div>`,
+    cap:`<b>Synthesis.</b> No single layer above stops every incident in §11 — that is not a flaw, it's the whole point of defense in depth. §7's explorer maps each layer to exactly which incidents it does and doesn't touch, and to whether Docker and Podman differ on it at all.` }
+]);
+
+/* ============================================================
+   3. PATCH-LAG SLIDER (§6)
+   ============================================================ */
+(function(){
+  const slider = el("patchlag-slider"), val = el("patchlag-val"), pct = el("patchlag-pct"),
+        fill = el("patchlag-fill"), note = el("patchlag-note");
+  function draw(w){
+    val.textContent = w + " wks";
+    // illustrative decay: fast initial drop, long unpatched tail
+    const pctVal = 8 + 90*Math.exp(-w/6);
+    pct.textContent = pctVal.toFixed(0) + "%";
+    fill.style.width = Math.min(100,pctVal) + "%";
+    fill.className = "m-fill" + (pctVal>50?" hot":pctVal>20?" warm":"");
+    note.textContent = w < 4
+      ? "Immediately after disclosure, security-conscious operators move fast — this is the visible, reported part of a patch cycle."
+      : w < 20
+      ? "Past the first month, the curve flattens: remaining hosts are the ones without a fast rollout path — legacy fleets, vendored appliances, anything nobody owns clearly."
+      : "Internet-wide scans after major runtime CVEs have repeatedly found a long tail of unpatched hosts many months out — this model's shape, not its exact percentage, is the point.";
+  }
+  slider.oninput = e=> draw(+e.target.value);
+  draw(+slider.value);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  userns:{ n:"user namespace / rootless", f:"chapter 4 — UID/GID mapping via /proc/pid/uid_map", r:"Remaps the container's root to an unprivileged host UID. Structurally narrows CVE-2022-0492: the remapped UID cannot write the host's real release_agent file regardless of in-namespace capability claims.", l:"Applied at container creation; lasts the container's whole lifetime.", d:"<span class=\"eng dk\">Docker</span>: rootless mode available since 20.10, opt-in, rootful remains the default. <span class=\"eng pd\">Podman</span>: rootless by default since inception — this door is closed for most Podman users without any extra step." },
+  caps:{ n:"capability dropping", f:"chapter 7 — the ~40-capability split of root", r:"Removing CAP_SYS_ADMIN from a container's capability set closes CVE-2022-0492's escalation path outright, at the config layer, independent of rootful/rootless or cgroup version.", l:"Set at container creation via --cap-drop/--cap-add; static for the container's life.", d:"Both engines implement the identical OCI-spec concept (chapter 7) with the same flags and the same default drop list. No meaningful difference — this is a config-discipline question, not an engine choice." },
+  seccomp:{ n:"seccomp-bpf", f:"chapter 8 — default profile blocking ~44 syscalls", r:"Blocks a broad class of namespace- and kernel-abuse syscalls for the container's own process. Did NOT stop CVE-2019-5736 — that race executed inside runc's privileged process, which the container's filter is never attached to.", l:"Loaded once, at container start; immutable for the container's life without a restart.", d:"Both engines ship the same default profile shape (chapter 8). No meaningful difference." },
+  lsm:{ n:"AppArmor / SELinux", f:"chapter 8 — mandatory access control layered on capability checks", r:"An independent, mandatory second check beyond capabilities. Neither of this chapter's headline CVEs was primarily stopped here, but it is exactly the kind of second lock that would contain some hypothetical future escapes even after a namespace or capability bug.", l:"Loaded at container start; enforced by the kernel for the container's life.", d:"<span class=\"eng dk\">Docker</span> is AppArmor-first by default (Debian/Ubuntu lineage); <span class=\"eng pd\">Podman</span> is SELinux-first (Red Hat lineage) — chapter 8's comparison, unchanged here." },
+  cgroupdeleg:{ n:"cgroup v2 + nsdelegate", f:"chapter 5 — the unified hierarchy", r:"Directly removes CVE-2022-0492's exact mechanism: cgroup v2 has no equivalent global, unnamespaced release_agent surface by design.", l:"A host/kernel configuration choice, made once, outside any single container's lifecycle.", d:"Neither engine controls this — both simply consume whichever cgroup version the host and kernel provide. A rare case where the fix lives entirely below both engines." },
+  patchedrt:{ n:"patched runc / crun", f:"the actual fix for CVE-2019-5736 and CVE-2016-9962", r:"A version number, not a config flag. This is the ONLY layer here that closes those two CVEs — no amount of namespace, capability, or seccomp hardening substitutes for it.", l:"Applied whenever the low-level runtime binary is upgraded; affects every container using it immediately.", d:"<span class=\"eng dk\">Docker</span> vendors runc through containerd. <span class=\"eng pd\">Podman</span> vendors runc or crun directly. Identical operational burden either way: upgrade the low-level runtime." },
+  nodaemon:{ n:"no persistent root daemon", f:"chapter 12 — Podman's fork-exec model", r:"Addresses NONE of the four CVEs above — all live below the daemon layer, in the runtime or the kernel. It removes a fifth, distinct incident category instead: a compromised or exposed root daemon API, or a docker.sock mounted into a container, both instant total-host-compromise patterns.", l:"An architectural property of the whole engine, not a per-container setting.", d:"<span class=\"eng dk\">Docker</span>: dockerd is a long-lived root process — one target, always listening. <span class=\"eng pd\">Podman</span>: no resident daemon by default; this incident shape doesn't exist unless podman.socket is explicitly enabled." },
+  registry:{ n:"registry & supply-chain hygiene", f:"chapter 11 — distribution spec, tokens, cosign", r:"The 2019 Docker Hub breach's lesson: rotate credentials and autobuild tokens, verify image provenance regardless of engine. Entirely orthogonal to Docker vs. Podman — it concerns the registry/account layer, not the runtime.", l:"An ongoing operational practice, not a one-time setting.", d:"Neither engine operates the registry you pull from by default; both are equally exposed to a compromised upstream registry's fallout." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">WHAT IT STOPS</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">DOCKER VS PODMAN</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("userns");
+
+/* ============================================================
+   5. DECK: the /proc/self/exe race (§8a)
+   ============================================================ */
+stepper("deckRace", [
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode">container process (attacker, root inside ns)</div></div></div>`,
+    cap:`<b>Setup.</b> An attacker with root inside a container replaces the container's exec target — say, /bin/bash — with a symlink to /proc/self/exe, then waits.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode">container process (waiting)</div></div><div class="prow"><div class="pnode pm">operator runs docker exec -it victim bash</div></div></div>`,
+    cap:`<b>Trigger.</b> An operator (or CI job, or a restart) runs docker exec. This invokes runc, running as real HOST ROOT, to enter the container's namespaces and set up the exec.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode pm hot">runc resolves target via /proc/self/exe</div></div></div>`,
+    cap:`<b>The ambiguity fires.</b> Resolving the symlinked target inside the container's mount namespace, runc ends up opening what /proc/self/exe resolves to for the CALLING process — which, at this instant, is runc's own on-disk binary on the host.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode pm hot">runc holds fd → own binary</div></div><div class="prow"><div class="pnode">attacker races openat(/proc/&lt;pid&gt;/fd/&lt;n&gt;, O_WRONLY)</div></div></div>`,
+    cap:`<b>The race.</b> runc now holds an open reference to its own ELF binary on the host disk. The attacker's own process, running concurrently, races to open that exact file via /proc/&lt;runc-pid&gt;/fd/&lt;n&gt; with O_WRONLY.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="shm corrupt">host runc binary — WRITE IN PROGRESS</div></div></div>`,
+    cap:`<b>Why ETXTBSY doesn't save it.</b> Linux normally refuses to open a currently-executing binary for writing — but that protection guards path-based opens at execve() time, not a second, independently-opened file descriptor onto the same inode. The write succeeds.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="shm corrupt">host runc binary — CORRUPTED</div></div><div class="prow"><div class="pnode pm">original exec completes normally</div></div></div>`,
+    cap:`<b>Nothing looks wrong.</b> runc finishes the original exec and exits as if nothing happened — the operator's terminal shows a normal docker exec session. The host's on-disk runc binary is now corrupted with attacker bytes.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="pnode crash">next runc invocation, ANY container</div></div></div>`,
+    cap:`<b>Detonation.</b> The next time anyone — a different, fully trusted container's exec, a cron job, a CI pipeline — invokes runc on that host, the corrupted binary executes with full host root privilege. One race against one container compromises the entire host.` },
+  { stage:`<div class="ptree"><div class="prow"><div class="shm fresh">sealed memfd, no path, F_SEAL_WRITE</div></div></div>`,
+    cap:`<b>The fix.</b> runc now copies itself into an anonymous, sealed memfd at startup and re-execs via fexecve() from that descriptor instead of its on-disk path. Even a successfully raced fd is now a sealed memfd — any write attempt returns EPERM, and there is no path left for the symlink trick to target in the first place.` }
+]);
+
+/* ============================================================
+   6. RACE-TIMING SLIDER (§8a)
+   ============================================================ */
+(function(){
+  const slider = el("race-timing-slider"), val = el("race-timing-val"),
+        pv = el("race-prob-val"), fill = el("race-prob-fill"), note = el("race-timing-note");
+  const P_PER_ITER = 0.14;
+  function draw(n){
+    val.textContent = n;
+    const prob = 1 - Math.pow(1-P_PER_ITER, n);
+    pv.textContent = (prob*100).toFixed(1) + "%";
+    fill.style.width = (prob*100).toFixed(1) + "%";
+    fill.className = "m-fill" + (prob>0.85?" hot":prob>0.4?" warm":"");
+    note.textContent = n < 5
+      ? "A handful of iterations already gives a non-trivial chance — this is why the real CVE was rated reliably exploitable, not a lucky-timing curiosity."
+      : n < 30
+      ? "Past a modest retry count the probability is already compounding toward near-certainty — an attacker script does not need to be clever, just patient for a fraction of a second."
+      : "At high retry counts success is effectively guaranteed within the exec window — which is exactly why this CVE needed a structural fix (§8's memfd technique) rather than a timing-based mitigation.";
+  }
+  slider.oninput = e=> draw(+e.target.value);
+  draw(+slider.value);
+})();
+
+/* ============================================================
+   7. SECURITY/PERF CHART (§10)
+   ============================================================ */
+(function(){
+  const canvas = el("sec-chart"), ctx = canvas.getContext("2d");
+  const MODES = [
+    { n:"Docker rootful (runc)", surface:4, lat:100 },
+    { n:"Docker rootless (runc)", surface:3, lat:108 },
+    { n:"Podman rootful (crun)", surface:2, lat:55 },
+    { n:"Podman rootless (crun, default)", surface:2, lat:60 }
+  ];
+  let metric = "surface";
+  function draw(){
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0,0,W,H);
+    const padL = 190, padR = 30, padT = 24, padB = 16;
+    const barH = (H - padT - padB) / MODES.length - 10;
+    const maxV = Math.max(...MODES.map(m=>m[metric])) * 1.15;
+    MODES.forEach((m,i)=>{
+      const y = padT + i*(barH+10);
+      const w = (m[metric]/maxV) * (W - padL - padR);
+      ctx.fillStyle = metric==="surface" ? (m.n.indexOf("Podman")>=0 ? "#2dd4bf" : "#f25c54") : (m.n.indexOf("crun")>=0 ? "#2dd4bf" : "#ff9f43");
+      ctx.fillRect(padL, y, w, barH);
+      ctx.fillStyle = "#8b94a7"; ctx.font = "11px monospace"; ctx.textAlign = "right";
+      ctx.fillText(m.n, padL-10, y+barH*0.65);
+      ctx.fillStyle = "#e8ecf4"; ctx.textAlign = "left";
+      ctx.fillText(metric==="surface" ? m.surface+" components" : m.lat+"%", padL+w+8, y+barH*0.65);
+    });
+  }
+  function setMetric(m){
+    metric = m;
+    el("sec-metric-surface").classList.toggle("on", m==="surface");
+    el("sec-metric-latency").classList.toggle("on", m==="latency");
+    el("sec-chart-sub").textContent = m==="surface" ? "COMPONENT COUNT" : "RELATIVE LATENCY";
+    el("sec-chart-legend").innerHTML = m==="surface"
+      ? `<span><span style="color:#f25c54">■</span> daemon-mediated path (Docker)</span><span><span style="color:#2dd4bf">■</span> daemonless path (Podman)</span>`
+      : `<span><span style="color:#ff9f43">■</span> runc-based</span><span><span style="color:#2dd4bf">■</span> crun-based</span>`;
+    el("sec-chart-note").textContent = m==="surface"
+      ? "Component count = the number of distinct privileged processes standing between a container process and host root. Docker's daemon architecture (chapter 12) always adds dockerd and containerd to the chain; Podman's fork-exec model does not."
+      : "Startup latency is relative to Podman rootful = 55 (arbitrary units), reflecting crun's documented C-vs-Go-runtime startup advantage over runc (chapter 9) and the small fixed overhead of Docker's client→daemon round trip.";
+    draw();
+  }
+  el("sec-metric-surface").onclick = ()=> setMetric("surface");
+  el("sec-metric-latency").onclick = ()=> setMetric("latency");
+  setMetric("surface");
+})();
+
+/* ============================================================
+   8. QA: INTERVIEW (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Walk through exactly how CVE-2019-5736 gets from a poisoned symlink to host root, mechanism by mechanism.", hint:"whose binary does /proc/self/exe refer to at the moment of the race?",
+    a:"The container's exec target is replaced with a symlink to /proc/self/exe. When docker exec drives runc — running as real host root — to enter the container's namespaces and resolve that target, the self-reference resolves to runc's OWN on-disk binary, because runc is the process doing the resolving at that instant. runc opens that path and holds an fd to it while continuing its setup. A concurrent attacker process inside the container races to open the SAME host file via /proc/&lt;runc-pid&gt;/fd/&lt;n&gt; with O_WRONLY and overwrites it — a path Linux's ETXTBSY protection doesn't cover, since it guards execve()-time opens, not a second fd on the same inode. runc finishes its original exec looking completely normal; the host's on-disk runc binary is now corrupted, and the next invocation of runc by anyone runs as host root." },
+  { lvl:"SENIOR", q:"Why doesn't the container's seccomp profile block CVE-2019-5736's exploitation?", hint:"which process is being filtered — the container's, or runc's own?",
+    a:"seccomp filters are attached to the container's own process(es), not to runc, which is a separate, unfiltered host process performing privileged setup work from outside the container. The race happens entirely within runc's execution — opening its own binary, holding the fd — before the seccomp-filtered target process even exists. There is no syscall the container's own process needs to make to pull this off; the vulnerable code path runs in a process the container's hardening was never applied to." },
+  { lvl:"STAFF", q:"A team argues that running rootless Podman makes CVE-2022-0492 irrelevant to their fleet. Are they right?", hint:"what if they still grant CAP_SYS_ADMIN, or still run rootful in some clusters?",
+    a:"Only conditionally. Rootless narrows this specific escalation because a remapped, unprivileged host UID cannot write the host's real release_agent file even if the process claims CAP_SYS_ADMIN inside its own user namespace — that's a genuine structural mitigation. But it depends on every relevant deployment actually running rootless: a rootful Podman container with CAP_SYS_ADMIN explicitly granted (privileged mode, or an explicit --cap-add) on a cgroup v1 host is exactly as exposed as an equivalent Docker container, because the mitigation is about the UID mapping, not about which engine issued the container. \"We use Podman\" and \"we run rootless with minimal capabilities\" are different claims, and only the second one is the one that matters here." },
+  { lvl:"STAFF", q:"Compare the blast radius of a hypothetical dockerd zero-day against a runc zero-day like CVE-2019-5736.", hint:"one gives a live foothold; the other gives a landmine — which is which?",
+    a:"Both can reach every container on a host, but the failure shapes differ. A dockerd zero-day compromises a single, persistent, long-lived process that already has a live control plane over every container on the host — an attacker gets an immediate, ongoing foothold the moment they land it. A runc-level bug like CVE-2019-5736 instead corrupts a shared, on-disk artifact that only detonates on the NEXT invocation — it's a landmine, not a foothold: the attack succeeds silently, and the actual compromise is deferred until some unrelated, routine operation (a cron job, another team's docker exec) triggers it. Both are total-host-compromise events; one is immediately visible in hindsight as \"the daemon acted maliciously,\" the other looks like a completely ordinary operation until you check what actually ran." },
+  { lvl:"STAFF", q:"Design a monitoring signal that would have caught CVE-2019-5736 exploitation attempts before the patch existed.", hint:"the attack has to touch the filesystem in a way ordinary operation never does",
+    a:"File-integrity monitoring on the runc binary's own path, watching for an mtime or content-hash change that didn't originate from a package-manager update — a corrupted binary is, definitionally, an unscheduled write to a security-critical system file. Complementary signal: an eBPF or auditd rule flagging any write() targeting a path under /proc/*/fd/* that resolves to an executable in a known system binary directory (/usr/sbin, /usr/bin) — that access pattern has essentially no legitimate use case outside exactly this kind of attack. Neither signal requires knowing the CVE in advance; both are general-purpose \"a system binary changed unexpectedly\" and \"something is reaching into another process's open file descriptors\" detections." },
+  { lvl:"PRINCIPAL", q:"You inherit a fleet where 30% of hosts still run pre-patch runc six months after CVE-2019-5736's disclosure. Design the fastest safe rollout to 100%.", hint:"does patching runc require touching application code at all?",
+    a:"Recognize first that a runc version bump is normally a drop-in binary replacement with no application-code implications — it's a lower-risk change than a typical deployment, which changes the calculus entirely. Don't wait for the next scheduled base-image bake: patch out-of-band, immediately, for the highest-risk subset first — any multi-tenant host or any host where docker exec / shell access is routinely exposed to less-trusted users or CI jobs. Use the orchestrator's existing rolling-update primitives (cordon/drain, one node at a time) to reach the rest with zero-downtime, canarying a small percentage first to catch any environment-specific surprise before fleet-wide rollout. The risk here is asymmetric — an unpatched host is a landmine, not a slow leak — so the rollout should be paced by risk tier, not by the next convenient release train." },
+  { lvl:"PRINCIPAL", q:"Podman's daemonless model removes one incident category from this chapter outright. Name one security decision you'd make identically on a Podman fleet as on a Docker fleet, and one you'd deliberately make differently.", hint:"which of this chapter's controls live below the daemon layer, and which live at the daemon layer itself?",
+    a:"Identically: capability dropping, seccomp profile validation, image-provenance verification (cosign, chapter 11), and prompt runc/crun patching — all of these live below or entirely orthogonal to the daemon layer, so Podman's architecture gives you zero discount on any of them. Differently: you would deprioritize \"audit the exposed daemon API / lock down docker.sock\" work almost entirely for a rootless Podman fleet, since that whole incident category doesn't exist in the default architecture — and redirect that saved effort toward subuid/subgid range hygiene and user-namespace configuration audits (chapter 4), which is where Podman's actual, non-default security-relevant surface area lives instead." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"What made CVE-2019-5736's race exploitable regardless of the container's own privileges or capabilities?",
+    opts:[ "The container ran as root inside its own user namespace", "runc, a HOST-ROOT process, briefly held an open reference to its own on-disk binary while operating inside the container's mount namespace during exec setup", "Docker's default seccomp profile was disabled", "The container had been granted CAP_SYS_ADMIN" ],
+    a:1,
+    why:"The vulnerable code path executes entirely inside runc's own privileged process — a process the container's own hardening (non-root user, dropped capabilities, seccomp profile) was never applied to. The container's own privilege level is irrelevant because the actual privileged actor in this race is runc itself, briefly bridging the container's mount namespace and the host filesystem. Neither the container's UID, its capability set, nor its seccomp profile constrains runc." },
+  { q:"Why did the container's seccomp profile not block CVE-2019-5736's exploitation?",
+    opts:[ "seccomp filters apply to the container's own process, not to the separate, unfiltered host-root runc process performing exec setup", "seccomp did not exist until after 2019", "The default profile explicitly allowlists the exact syscalls this attack needs", "seccomp only filters network-related syscalls" ],
+    a:0,
+    why:"seccomp-bpf filters are loaded into and enforced against a specific process's syscall table — the container's own process, in this case. runc is an entirely separate process, running with real host privilege from outside the container, and no seccomp filter was ever attached to it. The attack's actual syscalls (openat, write against a /proc/pid/fd path) happen in runc's context and the attacker's own container-side process, neither of which needs to defeat a filter that was never protecting the resource being attacked." },
+  { q:"In the CVE-2022-0492 exploit chain, what specifically causes the attacker's script to execute with full, unconfined host root privilege?",
+    opts:[ "The container had /dev mounted with device access", "The kernel invokes a cgroup's configured release_agent via a usermode-helper call that runs in the initial namespaces, outside any container's confinement, regardless of which cgroup triggered the event", "The container was started with --privileged, which disables all containment", "crun executes release_agent inside a sandboxed helper process" ],
+    a:1,
+    why:"release_agent execution is defined by the kernel to run in the initial (global) namespace context via the usermode-helper mechanism — this predates cgroup namespaces and was never redesigned to respect them. It doesn't matter which namespaced cgroup triggered the notify_on_release event; the script the kernel runs in response executes fully unconfined. This is a kernel design gap in namespace-retrofitting, not a runtime-specific sandboxing failure." },
+  { q:"Why does rootless Podman structurally narrow exposure to CVE-2022-0492, even with no code patch applied?",
+    opts:[ "Rootless containers can never be granted CAP_SYS_ADMIN by the kernel under any circumstance", "The container's remapped, unprivileged host UID has no write access to the host's real cgroup release_agent file, even if the process believes it holds CAP_SYS_ADMIN inside its own user namespace", "Podman disables cgroups entirely when running rootless", "Rootless mode always uses cgroup v2, which is immune to this CVE by version number alone" ],
+    a:1,
+    why:"CAP_SYS_ADMIN claimed inside a user namespace is scoped to resources that namespace owns — it does not translate into real write access to the HOST's actual cgroup filesystem, which is owned by the true root UID. The remapped UID simply lacks the underlying file permission, independent of any capability claim inside the container. Option D is a tempting half-truth: many rootless setups do run on cgroup v2 hosts, but that's incidental to the deployment, not a guarantee, and the direct mechanism is the UID/ownership mismatch, not the cgroup version." },
+  { q:"What was actually exposed in the April 2019 Docker Hub breach?",
+    opts:[ "The Docker Engine's proprietary source code", "Usernames and hashed passwords for a subset of roughly 190,000 accounts, plus GitHub/Bitbucket tokens used for autobuilds", "The contents of every private container image hosted on Docker Hub", "TLS private keys for docker.io's domain" ],
+    a:1,
+    why:"Docker's own disclosure described unauthorized access to a database exposing usernames, hashed passwords for a subset of about 190,000 accounts, and GitHub/Bitbucket access tokens tied to autobuild integrations — not source code, not private image contents, and not TLS infrastructure. The autobuild-token exposure is the detail worth remembering: a leaked token could trigger builds pushing attacker-influenced images into repositories other people already trust." },
+  { q:"What is Podman's daemonless architecture's actual security contribution relative to this chapter's four CVEs?",
+    opts:[ "It automatically patches CVE-2019-5736 and CVE-2016-9962 for any Podman host", "It makes CVE-2022-0492 impossible under every possible Podman configuration", "None of the four CVEs directly — all of them live in the shared runc/crun runtime or the kernel, below the daemon layer; the daemonless model instead removes a fifth, separate incident category: a compromisable, persistent root daemon or API", "It replaces runc and crun with a Podman-exclusive runtime immune to container-escape bugs" ],
+    a:2,
+    why:"Every CVE examined in this chapter lives either in the low-level runtime (runc/crun) or in a kernel interface — both layers sit BELOW the daemon-vs-daemonless distinction, and Podman still uses the same runc or crun that Docker does. What the daemonless model actually removes is a different, fifth incident shape entirely: a single, persistent, always-listening root process (or an exposed control socket) as one high-value target for total host compromise. That's a real, structural win — it just isn't a fix for any of the four numbered CVEs." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could write the incident postmortem yourself.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks and the simulator's experiments — the mechanisms click fast once you trigger them yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Attacker (root inside a malicious container) replaces the exec target with a symlink to /proc/self/exe",
+    "An operator or automated process runs `docker exec` (or restarts the container), invoking host-root runc",
+    "runc, resolving the target inside the container's mount namespace, ends up referencing its own on-disk binary via /proc/self/exe",
+    "The attacker's process races to open that same host file via /proc/<runc-pid>/fd/<n> with O_WRONLY",
+    "The write succeeds — ETXTBSY doesn't cover this fd-based path — and the host's on-disk runc binary is overwritten",
+    "runc finishes the original exec normally; nothing looks wrong to the operator",
+    "The next invocation of runc anywhere on the host executes the corrupted binary as host root",
+    "Fixed runc re-execs itself from a sealed, anonymous memfd instead of its on-disk path, closing the window"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real exploit-to-fix sequence</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+</script>
+</body>
+</html>

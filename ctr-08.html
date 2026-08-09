@@ -1,0 +1,1561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-08 · Seccomp & LSMs: Filtering the Syscall Surface — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+  .eng-docker{color:var(--docker);font-weight:600}
+  .eng-podman{color:var(--podman);font-weight:600}
+  .chipd{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(36,150,237,.4);color:var(--docker);background:rgba(36,150,237,.08)}
+  .chipp{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(137,44,160,.4);color:var(--podman);background:rgba(137,44,160,.08)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .bitrow{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:10px 0}
+  .bitcell{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:8px;padding:6px 9px;
+    font-family:var(--mono);font-size:10.5px;color:var(--dim);transition:all .25s;text-align:center;min-width:76px}
+  .bitcell.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim);box-shadow:0 0 12px rgba(45,212,191,.15)}
+  .bitcell.gone{opacity:.25;text-decoration:line-through}
+  .bitcell.danger{border-color:rgba(242,92,84,.4)}
+  .bitcell.danger.on{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.1);box-shadow:0 0 12px rgba(242,92,84,.15)}
+  .bitcell.blocked{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.08)}
+  .bitcell.lsm{border-color:var(--purple);color:var(--purple);background:rgba(167,139,250,.08)}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+  .cmdgrid{display:flex;flex-wrap:wrap;gap:6px}
+  .cmdbtn{border:1px solid var(--border-hi);background:var(--panel-2);color:#c6cddb;border-radius:8px;
+    padding:6px 10px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s}
+  .cmdbtn:hover{border-color:var(--pg);color:var(--pg)}
+  .cmdbtn.needs{color:var(--dim)}
+
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:210px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#38bdf8);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 08 / 16</b> · SECCOMP & LSMS</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Filtering Syscalls</a>
+  <a href="#s6"><span class="n">06</span>Why Seccomp Alone Fails</a>
+  <a href="#s7"><span class="n">07</span>The Layered Stack</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Attack Surface</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 08</div>
+  <h1>Seccomp & LSMs:<br><span class="grad">Filtering the Syscall Surface</span></h1>
+  <p class="lead">Chapter 7 split root into forty bits and dropped twenty-six of them by default. This chapter asks
+  the question that split doesn't answer: of the roughly 450 syscalls a Linux process can attempt, exactly which
+  ones is a container even allowed to <i>try</i>, independent of which capabilities or file permissions it holds —
+  and who else, besides the kernel's own permission checks, gets a vote on whether a given operation proceeds?
+  The answers are seccomp-bpf, a kernel-enforced allow/deny filter evaluated before a syscall's own logic ever
+  runs, and two mandatory access control systems — AppArmor and SELinux — layered on top of everything DAC and
+  capabilities already decided.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Read a process's <code>Seccomp:</code> field in <code>/proc/pid/status</code> and its LSM label in <code>/proc/pid/attr/current</code>, and explain exactly what each governs.</div>
+    <div class="obj"><b>You will understand</b>Why a syscall can return <code>EPERM</code> for three structurally different reasons — DAC, a missing capability, or a seccomp filter — before a single line of the syscall's own code runs.</div>
+    <div class="obj"><b>You will predict</b>Which layer blocks a given container command: <code>mount</code>, <code>keyctl</code>, and <code>ptrace</code> each fail for a different reason, and you'll be able to say which before testing it.</div>
+    <div class="obj"><b>You will simulate</b>Loading Docker's and Podman's default seccomp profile against a bank of real syscalls, and toggling AppArmor/SELinux enforcement to see mandatory access control deny what discretionary checks would allow.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Capabilities answer "is this bit set?" — not "should this syscall exist here at all?"</h2>
+  <p class="lead">Give a container process Docker's or Podman's default fourteen capabilities and drop the rest, per
+  chapter 7, and you have solved a real problem: that process can no longer <code>mount()</code> a filesystem,
+  load a kernel module, or reboot the host, because the kernel's <code>capable()</code> check for each of those
+  operations returns false. But capabilities are a permission system layered onto <i>specific</i> privileged
+  operations that some kernel developer, at some point, remembered to gate behind a capability check. Not every
+  syscall works that way. A large fraction of the roughly 450 entries in the Linux syscall table require <b>no
+  capability at all</b> — they are ordinary, unprivileged operations available to any UID, exactly like
+  <code>read()</code> or <code>write()</code> — and a handful of them are exactly the kind of thing you would not
+  want an arbitrary container image to be able to invoke against a shared kernel.</p>
+  <p><code>keyctl()</code> is the cleanest example, and it recurs through this chapter because it makes the point
+  so precisely: managing entries in the kernel's in-memory key-management facility requires <i>zero</i>
+  capabilities under the normal Unix permission model. A process calling <code>keyctl(KEYCTL_JOIN_SESSION_KEYRING,
+  ...)</code> is doing something completely ordinary from DAC's point of view — no file is being opened, no owner
+  check applies, no capability bit is consulted, because the operation was never designed with "should an
+  untrusted container be allowed to do this" in mind. Chapter 7's whole toolkit — the five capability sets, the
+  bounding-set ratchet, the default fourteen — is structurally incapable of saying no to <code>keyctl()</code>,
+  because <code>keyctl()</code> was never wired into that toolkit in the first place.</p>
+  <ul class="plain">
+    <li><b>Capabilities only gate what someone remembered to gate.</b> Dozens of syscalls carry no capability check whatsoever, and the kernel's syscall surface grows every release.</li>
+    <li><b>A container's threat model is different from a login shell's.</b> A shell run by a trusted human doesn't need syscall-level filtering; a container running an arbitrary, possibly-compromised image from a registry is exactly the process you'd like to constrain to "the syscalls this specific workload actually uses," not "everything DAC and capabilities happen to allow."</li>
+    <li><b>Even a fully DAC/capability-legal action can still be a bad idea to allow.</b> A capability check answers "is this process privileged enough," never "does this specific policy want to permit this specific operation, on this specific host, for this specific workload" — that is a mandatory-access-control question, not a discretionary one, and it is a second, independent gap capabilities cannot close.</li>
+    <li><b>The boundary has to be enforceable before the operation's own logic runs</b>, cheaply, for every syscall a process might attempt — not just the ones somebody anticipated needing a permission check.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">WHERE THIS SITS IN THE STACK</div>
+    <p>This is the third and fourth of four privilege-reduction layers a container engine stacks on a root-equivalent
+    UID: <b>namespaces</b> (chapters 2–4) bound what the process can <i>see</i>; <b>capabilities</b> (chapter 7)
+    bound which privileged <i>operations</i> UID 0 may still perform; <b>seccomp-bpf</b> (this chapter, first half)
+    bounds which raw <i>syscalls</i> the process may even attempt, independent of capability or DAC outcome; and
+    <b>AppArmor/SELinux</b> (this chapter, second half) add <i>mandatory access control</i> — policy-driven checks
+    that run in addition to, and can only further restrict, whatever discretionary access control (DAC: file
+    owner/mode bits) and capabilities already decided. Four orthogonal layers, and — foreshadowing chapter 9 — all
+    four are expressed identically in the OCI Runtime Spec's <code>config.json</code>, which is where runc and
+    crun read them from before a container's first instruction ever runs.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Two lineages that predate containers by a decade, merging into one stack</h2>
+  <p>Neither seccomp nor either mandatory-access-control system was built for containers — both lineages are
+  fifteen-to-twenty years older, built for different threat models, and containers simply became their most
+  visible consumer once Docker wired them in by default. Click through the events that produced today's stack.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — two lineages converge</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · SECCOMP'S NAME IS LITERAL</div>
+    <p>"seccomp" is short for <b>sec</b>ure <b>comp</b>uting mode, and Andrea Arcangeli's original 2005 patch was
+    built for a specific, narrow purpose: letting a machine donate idle CPU cycles to distributed-computing
+    projects (in the mold of SETI@home) without trusting the donated binary at all. The original mode — later
+    named <code>SECCOMP_MODE_STRICT</code> — permitted exactly four syscalls: <code>read()</code>,
+    <code>write()</code> on already-open file descriptors, <code>_exit()</code>, and <code>rt_sigreturn()</code>.
+    Nothing else, ever. That is unusably strict for a container running a real application, which is precisely why
+    2012's seccomp-bpf (<code>SECCOMP_MODE_FILTER</code>) exists — but the lineage explains seccomp's whole design
+    philosophy: start from nothing, add back only what's proven necessary, and make the kernel — not the
+    application — the enforcement point.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: trust DAC and capabilities to be enough</h2>
+  <p>Derive it honestly. Chapters 2 through 7 already built a serious defense: private namespaces, resource
+  limits, and a capability set cut from ~40 bits to 14. The naive next step is to declare victory — ship a
+  container runtime that applies exactly those controls and lets every syscall through unfiltered, trusting that
+  "no capability, no privileged operation" already covers the threat model. This is precisely what
+  <code>--security-opt seccomp=unconfined</code> gives you today, and it is worth understanding as a real,
+  named configuration rather than a strawman nobody runs.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">shell</span><span>the naive baseline — namespaces + cgroups + capabilities, no syscall filter</span></div>
+    <pre><span class="c"># everything from chapters 2-7, and nothing from this one</span>
+docker run --rm \
+  --cap-drop=ALL --cap-add=NET_BIND_SERVICE \  <span class="c"># chapter 7: down to 1 capability</span>
+  --security-opt seccomp=unconfined \          <span class="c"># <- every syscall reaches the kernel unfiltered</span>
+  --security-opt apparmor=unconfined \         <span class="c"># <- no MAC profile either</span>
+  nginx:latest
+
+<span class="c"># the process can attempt ANY of the ~450 syscalls; only DAC + the
+# 1 remaining capability stand between it and the kernel's own logic</span></pre>
+  </div>
+
+  <p>This gets something real right: a process with one capability and tight namespaces genuinely cannot do most
+  of what a legacy privilege-escalation exploit needs. For a fully trusted image, on a fully trusted host, running
+  a workload you wrote yourself, "just use capabilities well" is not an unreasonable starting position — it is,
+  after all, exactly where chapters 2 through 7 leave you. The naive model breaks down the moment you ask it to
+  defend against a syscall that capabilities were never designed to gate.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The gap is not hypothetical — it has a name and a CVE</h2>
+  <p>Quantify the exposure precisely. Of the roughly <b>450</b> syscalls a modern x86_64 kernel exposes, Docker's
+  default seccomp profile (<code>moby/moby/profiles/seccomp/default.json</code>) explicitly names on the order of
+  <b>40–50</b> of them for denial or conditional restriction — <code>mount</code>, <code>umount2</code>,
+  unprivileged <code>pivot_root</code>, <code>keyctl</code>, <code>add_key</code>, <code>request_key</code>,
+  <code>ptrace</code>, <code>reboot</code>, <code>swapon</code>/<code>swapoff</code>,
+  <code>open_by_handle_at</code>, <code>init_module</code>/<code>delete_module</code>/<code>finit_module</code>,
+  <code>perf_event_open</code>, <code>quotactl</code>, <code>acct</code>, <code>bpf</code>, and certain
+  <code>clone</code>/<code>unshare</code> invocations carrying <code>CLONE_NEWUSER</code>, among others. Podman's
+  equivalent, sourced from the shared <code>containers/common</code> library, names the same syscalls for the same
+  reasons — the two engines converged independently on almost the identical list because the underlying kernel
+  attack surface is the same regardless of which engine is asking.</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Run the naive configuration from §3 and every one of those ~45 syscalls is reachable by any process holding
+    even a single capability or none at all — <code>keyctl</code> and <code>add_key</code> need <b>zero</b>
+    capabilities under DAC, full stop. <b>CVE-2016-0728</b> — a use-after-free in the kernel keyring's session-join
+    path, reachable purely through <code>keyctl()</code> by an ordinary unprivileged user — is the concrete proof
+    that this gap is not theoretical: a container with the tightest possible capability set and the naive
+    <code>seccomp=unconfined</code> configuration was exactly as exposed to it as a process running with full root,
+    because capabilities were never in the code path that mattered. §11 returns to this incident with the full
+    root-cause detail.</p>
+  </div>
+  <p>Two more failure modes compound the gap, and neither is about a missing deny rule: <b>(1)</b> some
+  syscalls are legal under DAC and every capability check, yet still represent a policy decision a specific
+  environment wants to forbid — "no process in this container should ever open <code>/etc/shadow</code>, even one
+  running as a UID that technically owns it" is not expressible in DAC or capabilities at all, because DAC's whole
+  design principle is that the resource's owner decides, and capabilities only ever ask "is this UID privileged
+  enough," never "does policy permit this specific access." <b>(2)</b> a capability check happens deep inside a
+  syscall's own implementation, after real kernel work may already have started — filtering needs to happen
+  earlier, at the syscall's very entry, for operations that should never be attempted in the first place. Both
+  point to the same conclusion: the naive model needs two more layers, not a bigger capability list.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION, DERIVED</div>
+  <h2 class="sec">Filter the syscall itself, at the kernel's front door</h2>
+  <p>The fix for the first gap is to intercept every syscall <i>before</i> the kernel dispatches to its
+  implementation, evaluate a policy against the syscall number and its raw arguments, and return a decision the
+  kernel enforces unconditionally — independent of what capability or DAC check the syscall's own body might have
+  performed. That is exactly what <b>seccomp-bpf</b> (<code>SECCOMP_MODE_FILTER</code>, Linux 3.5, 2012) is: a
+  small BPF program, attached to a process via <code>prctl(PR_SET_SECCOMP, ...)</code> or the newer
+  <code>seccomp(2)</code> syscall, that the kernel runs against a <code>struct seccomp_data</code> — syscall
+  number, target architecture, and the six raw argument words — on <i>every single syscall</i> that process or its
+  descendants attempt. Step through how a single check site (<code>suser()</code>, then <code>capable()</code>)
+  became a filter the kernel consults before either of those.</p>
+
+  <div class="widget deck" id="deckFilter">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">From "no filter" to seccomp-bpf</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Applied to containers: Docker (via libseccomp, feeding runc) and Podman (via crun's own BPF generator,
+  reading the same profile shape from <code>containers/common</code>) both attach a filter to every container's
+  init process before it <code>execve()</code>s the entrypoint. The filter's default action for anything not on
+  its allow-list is <code>SECCOMP_RET_ERRNO</code> carrying <code>EPERM</code> — so a blocked syscall doesn't
+  crash the process or look mysterious, it returns exactly the same errno a permission failure would, at the
+  syscall's very first instruction, before <code>mount()</code>'s or <code>keyctl()</code>'s own logic — including
+  whatever capability check it might otherwise have run — ever executes.</p>
+
+  <div class="callout ok">
+    <div class="co-t">THE PART CAPABILITIES COULD NEVER DO</div>
+    <p>Because the filter tests the raw syscall number, it can deny <code>keyctl()</code> and <code>add_key()</code>
+    outright — no capability check to fail, because none is ever consulted; the BPF program returns
+    <code>SECCOMP_RET_ERRNO(EPERM)</code> before the kernel's keyring code runs at all. This is the exact
+    mechanism that closes §4's gap, and it is why every serious container engine ships a default seccomp profile
+    even after capabilities are already tightened to 14.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY SECCOMP ALONE STILL FAILS</div>
+  <h2 class="sec">A filter that can only see numbers, not meaning</h2>
+  <p>Seccomp-bpf closes the "syscall nobody gated" gap completely, but it has a structural blind spot baked into
+  its own definition: the BPF program only ever sees <code>struct seccomp_data</code> — the syscall number, the
+  architecture, and six <b>raw integer argument words</b>. When an argument is a pointer — a filename, a path, a
+  buffer — seccomp sees the pointer's numeric value, never what it points to. Step through why that makes an
+  entire class of policy unenforceable at the seccomp layer, no matter how the filter is written.</p>
+
+  <div class="widget deck" id="deckBlind">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Why seccomp can't filter "don't mount /etc/shadow"</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Three more costs compound the blind spot:</p>
+  <ul class="plain">
+    <li><b>Coverage is a moving target.</b> <code>fsopen()</code>, <code>fsconfig()</code>, <code>fsmount()</code>,
+      and <code>move_mount()</code> — the "new mount API" landed in Linux 5.2 (2019) — do most of what the legacy
+      <code>mount()</code> syscall does, through entirely different syscall numbers. A profile written before 2019
+      that carefully denies <code>mount</code> says nothing about them; §11's CVE-2022-0185 incident is exactly
+      this gap, exploited in the wild years after the legacy syscall was already covered.</li>
+    <li><b>A syscall-number filter can't express "who" or "which resource," only "which operation."</b> Seccomp can
+      say "no process may call <code>ptrace()</code>," but it cannot say "this container's processes may
+      <code>ptrace()</code> each other but not a sibling container's processes" — that is a question about
+      <i>identity and resource labeling</i>, categorically outside what a per-syscall-number BPF program can
+      evaluate.</li>
+    <li><b>It is entirely off by default in the naive configuration from §3</b>, and one misconfigured
+      <code>--security-opt seccomp=unconfined</code> in a compose file or Kubernetes pod spec silently removes the
+      entire layer with no other symptom until something exploits exactly the gap it was covering.</li>
+  </ul>
+  <p>Every one of these needs a check that understands <i>labels, paths, and relationships between processes and
+  resources</i> — not just syscall numbers. That is precisely what mandatory access control adds, and precisely
+  why AppArmor and SELinux exist as a fourth, independent layer rather than a bigger seccomp profile.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The full stack: DAC, capabilities, seccomp, and MAC</h2>
+  <p>A syscall a container process attempts today passes through four independent gates, each answering a
+  question the others structurally cannot. Click any layer to see exactly what it checks, where it lives in the
+  kernel, and what it is blind to.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Layer explorer</span><span class="w-sub">CLICK ANY LAYER</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">1 · DISCRETIONARY ACCESS CONTROL — OWNER DECIDES</div>
+        <div class="arch-grid"><div class="acard" data-p="dac">DAC — file mode / owner</div></div>
+        <div class="arch-row-label">2 · CAPABILITIES — WHICH PRIVILEGED OPS (CH. 7)</div>
+        <div class="arch-grid"><div class="acard" data-p="cap">capabilities — capable()</div></div>
+        <div class="arch-row-label">3 · SECCOMP-BPF — WHICH RAW SYSCALLS</div>
+        <div class="arch-grid"><div class="acard" data-p="seccomp">seccomp-bpf filter</div></div>
+        <div class="arch-row-label">4 · MANDATORY ACCESS CONTROL — POLICY DECIDES, EVEN OVER ROOT</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="apparmor">AppArmor — path-based</div>
+          <div class="acard" data-p="selinux">SELinux — label-based</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">THE ORDER THESE ACTUALLY RUN IN</div>
+    <p>It is tempting to read the four layers top-to-bottom as the order the kernel checks them — it is almost the
+    reverse. Seccomp's BPF program runs first, in the syscall entry path (<code>arch/x86/entry/common.c</code> on
+    x86_64), <i>before the syscall's own implementation — and therefore before any DAC or capability check inside
+    it — ever executes</i>. If seccomp allows the syscall through, the syscall's own body runs its usual DAC
+    checks, then any <code>capable()</code> calls it needs, and <i>then</i>, interleaved with those, the LSM hook
+    chain — <code>security_file_open()</code>, <code>security_sb_mount()</code>, and dozens of others — runs
+    AppArmor's or SELinux's policy check. §8 walks this exact sequence with a live example.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The exact path a syscall takes, and how to build the filter yourself</h2>
+  <p>Three pieces: <b>(a)</b> the full request path for one real syscall, step by step, <b>(b)</b> a live filter
+  builder you can drive with sliders, <b>(c)</b> the real syscalls and files involved.</p>
+
+  <h3>(a) One mount() call, four gates</h3>
+  <p>Step through <code>mount("/dev/sdb1", "/data", "ext4", 0, NULL)</code> attempted from inside a container
+  running Docker's default profile — capabilities dropped to the default 14 (no <code>CAP_SYS_ADMIN</code>),
+  default seccomp profile attached, AppArmor's <code>docker-default</code> profile enforcing.</p>
+
+  <div class="widget deck" id="deckPath">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">mount() vs. the full stack</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) Build a filter — pick a base profile, watch the allow-list change</h3>
+  <p>Docker's and Podman's default profiles are not a single flat list — a handful of entries are conditional on
+  the container's own capability set (a syscall like the tracing family is only added to the effective allow-list
+  if the container was actually granted the capability that would make it meaningful) and on the BPF program's own
+  argument comparisons (the <code>clone</code>/<code>unshare</code> rule for <code>CLONE_NEWUSER</code> is a real
+  per-argument check, not a blanket allow or deny). Drag the strictness slider and toggle MAC enforcement to see
+  how the resulting decision changes for a representative syscall bank.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Filter builder</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>seccomp profile</label><input type="range" id="sec-slider" min="0" max="2" value="1" step="1"><span class="val" id="sec-val">default</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="sec-lsm">MAC: apparmor (enforcing)</button>
+      </div>
+      <div class="bitrow" id="sec-list"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="sec-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) The real syscalls and files</h3>
+  <table class="cmp">
+    <tr><th>CALL / FILE</th><th>DIRECTION</th><th>PURPOSE</th></tr>
+    <tr><td>seccomp(2) / prctl(PR_SET_SECCOMP)</td><td>write (once, at container init)</td><td>Attach a BPF program to the calling thread (and, with <code>SECCOMP_FILTER_FLAG_TSYNC</code>, every thread in the process) as a new, additional filter — filters stack; they are never replaced.</td></tr>
+    <tr><td>/proc/pid/status → Seccomp:</td><td>read</td><td>0 = disabled, 1 = strict mode, 2 = filter mode. <code>Seccomp_filters:</code> reports how many BPF programs are currently attached.</td></tr>
+    <tr><td>/proc/pid/attr/current</td><td>read</td><td>The running process's current LSM label — for AppArmor, the profile name and mode (e.g. <code>docker-default (enforce)</code>); for SELinux, the full context (<code>user:role:type:level</code>, e.g. <code>system_u:system_r:container_t:s0:c123,c456</code>).</td></tr>
+    <tr><td>setxattr("security.selinux", …) / apparmor_parser</td><td>write</td><td>How a file gets its SELinux label (an inode extended attribute) or how an AppArmor profile gets loaded into the kernel (<code>/sys/kernel/security/apparmor/profiles</code> lists what's active).</td></tr>
+  </table>
+
+  <div class="callout warn">
+    <div class="co-t">OPERATIONAL GOTCHA WORTH KNOWING</div>
+    <p>Seccomp filters are a one-way ratchet, exactly like chapter 7's capability bounding set: <code>seccomp(2)</code>
+    can only ever <i>add</i> a filter, and the syscall's actual verdict for any process with multiple attached
+    filters is the <b>most restrictive</b> result among all of them (kill dominates trap dominates errno dominates
+    log dominates allow). A process can never loosen a filter another layer already installed — which is exactly
+    why a container engine can safely attach its default profile and trust that nothing the containerized process
+    does can widen it afterward.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Four gates, four different jobs</h2>
+  <table class="cmp">
+    <tr><th>LAYER</th><th>WHAT IT BUYS</th><th>WHAT IT COSTS / MISSES</th></tr>
+    <tr><td>DAC only</td>
+      <td><span class="pill g">zero configuration, universal Unix semantics</span></td>
+      <td><span class="pill b">root bypasses it entirely</span> <span class="pill b">owner-controlled, not policy-controlled</span></td></tr>
+    <tr><td>+ capabilities (ch. 7)</td>
+      <td><span class="pill g">splits root into 40 gated operations</span></td>
+      <td><span class="pill y">only covers syscalls someone remembered to gate — keyctl, add_key untouched</span></td></tr>
+    <tr><td>+ seccomp-bpf</td>
+      <td><span class="pill g">blocks the raw syscall itself, no capability check needed</span> <span class="pill g">near-zero runtime cost</span></td>
+      <td><span class="pill b">blind to pointer contents (paths, labels)</span> <span class="pill y">coverage must keep pace with new syscalls</span></td></tr>
+    <tr><td>+ AppArmor / SELinux (MAC)</td>
+      <td><span class="pill g">policy-driven, path- or label-aware, binds even root</span></td>
+      <td><span class="pill y">separate policy language to author and audit</span> <span class="pill y">SELinux requires a labeled filesystem</span></td></tr>
+  </table>
+  <p>Read the table as strictly additive, not competing: each layer catches exactly what the one above it cannot
+  express. A hardened container stacks all four, and — as with chapter 7's capability layers — the honest claim is
+  that <b>the syscall coverage and profile shape are close to identical between Docker and Podman</b>; the
+  divergence is entirely in the mandatory-access-control layer and in how the filter itself gets built.</p>
+
+  <h3>Docker vs Podman: seccomp and MAC specifically</h3>
+  <table class="cmp">
+    <tr><th>ASPECT</th><th class="eng-docker">DOCKER</th><th class="eng-podman">PODMAN</th></tr>
+    <tr><td>Default seccomp profile</td><td><code>moby/moby/profiles/seccomp/default.json</code>, compiled to BPF via <b>libseccomp</b></td><td>Sourced from <code>containers/common/pkg/seccomp</code> — <b>the same shape</b> of default-deny list, independently converged, then compiled by <b>crun's own BPF generator</b> rather than libseccomp</td></tr>
+    <tr><td>BPF generation path</td><td>Depends on libseccomp (a C library wrapping cBPF assembly) — one more shared library in the trusted base</td><td>crun deliberately avoids the libseccomp dependency, generating the BPF program directly — a smaller binary and one fewer runtime dependency, consistent with crun's general design goal of a minimal footprint versus runc</td></tr>
+    <tr><td>Default MAC layer</td><td class="eng-docker">AppArmor-first — ships and loads a bundled <code>docker-default</code> profile automatically on AppArmor-enabled hosts (Ubuntu, Debian)</td><td class="eng-podman">SELinux-first — runs confined under <code>container_t</code> with a unique MCS category pair per container by default on SELinux-enabled hosts (Fedora, RHEL, CentOS)</td></tr>
+    <tr><td>Why that split exists</td><td>Docker Inc.'s primary development and reference distribution has historically been Ubuntu, which ships AppArmor enabled by default and does not ship SELinux</td><td>Podman originates from Red Hat, whose distributions (Fedora, RHEL) ship SELinux enforcing by default and do not ship AppArmor</td></tr>
+    <tr><td>Portability</td><td>Runs unconfined by MAC on non-AppArmor hosts (e.g. Fedora) unless explicitly configured otherwise</td><td>Runs unconfined by MAC on non-SELinux hosts (e.g. Ubuntu) unless explicitly configured otherwise — <b>neither engine's MAC default travels with the container image</b>; it is a host-level property</td></tr>
+  </table>
+  <p>The honest takeaway mirrors chapter 7's: at the seccomp layer, Docker and Podman are separately-implemented
+  but nearly identical in outcome — both express the result as an OCI-shaped <code>linux.seccomp</code> object
+  (chapter 9) before runc or crun ever runs it. At the MAC layer, the difference is not a matter of one engine
+  being more secure than the other; it is a direct consequence of which Linux distribution each engine's default
+  install target ships with which LSM enabled by default.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE & ATTACK SURFACE</div>
+  <h2 class="sec">Near-free filtering, and what strictness actually buys you</h2>
+  <p>A cBPF seccomp program is JIT-compiled by the kernel on attach and runs on every syscall entry as a tight,
+  bounded loop of comparisons — commonly cited overhead is in the range of tens to a couple hundred nanoseconds
+  per syscall for a profile with dozens of rules, which is immaterial next to the cost of the syscall itself for
+  anything that touches the filesystem or network. LSM hook evaluation (AppArmor's path matching, SELinux's
+  security-server policy lookup, itself backed by an access-vector cache) costs more per check than a seccomp
+  bitmask test, but both are dwarfed by the I/O the syscall is usually doing anyway. The number worth optimizing
+  is not latency — it's <i>how much of the kernel's surface remains reachable</i>.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Reachable syscalls & MAC-mediated operations by configuration</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>syscalls allowed back</label><input type="range" id="as-slider" min="0" max="45" value="0" step="1"><span class="val" id="as-slider-val">0</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="as-base">baseline: Docker/Podman default (~405 allowed)</button>
+        <button class="chip" id="as-priv">unconfined (all ~450 + no MAC)</button>
+        <button class="chip" id="as-lsm">MAC: enforcing</button>
+      </div>
+      <div class="chartbox"><canvas id="as-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> syscalls reachable</span>
+        <span><span style="color:var(--bad)">━</span> estimated exploitable kernel surface (weighted)</span>
+        <span><span style="color:var(--purple)">┆</span> MAC-mediated ops still blocked</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="as-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>"Exploitable kernel surface" is an illustrative weighting (rarely-used, historically CVE-dense syscalls —
+    the mount family, the keyring family, tracing — are weighted heavily; ordinary I/O syscalls are weighted
+    near zero) meant to convey the shape argued in §4 and §11: most of the ~450 syscalls contribute almost nothing
+    to real-world container escapes, and a small, specific subset accounts for nearly every documented incident.
+    The MAC line is a separate, independent floor — it does not move with the seccomp slider, because it is
+    enforced by an entirely different mechanism.</p>
+  </div>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Three times the specific layer in this chapter was the whole story</h2>
+
+  <h3>Incident 1: CVE-2016-0728 — the keyring refcount overflow</h3>
+  <p>A use-after-free in the kernel's key-management facility, reachable entirely through
+  <code>keyctl(KEYCTL_JOIN_SESSION_KEYRING, ...)</code> called in a loop until an internal reference count
+  overflowed — a syscall requiring, as §1 established, <b>zero capabilities</b> under the normal permission model.
+  A container running with capabilities dropped to Docker's default 14 (or even fewer) was exactly as exposed as
+  one running as full root, because the vulnerable code path was never gated by anything chapter 7 covers. The
+  reason this incident is a footnote rather than a routine container-escape headline is precisely this chapter's
+  default profile: both Docker's and Podman's default seccomp lists deny <code>keyctl</code> and
+  <code>add_key</code> outright, so any container running under the default profile — not <code>unconfined</code> —
+  was never able to reach the vulnerable code at all. It is the single clearest real-world demonstration that
+  seccomp closes a gap capabilities structurally cannot.</p>
+
+  <h3>Incident 2: CVE-2022-0185 — the new mount API outran an old profile</h3>
+  <p>A heap buffer overflow in <code>legacy_parse_param()</code>, part of the kernel's newer filesystem-context
+  API (<code>fsopen()</code>/<code>fsconfig()</code>/<code>fsmount()</code>, landed in Linux 5.2, 2019),
+  exploitable by a process holding <code>CAP_SYS_ADMIN</code> — which an unprivileged user can obtain for free
+  inside its own user namespace via <code>unshare(CLONE_NEWUSER)</code> (chapter 4), no host privilege required.
+  This is §6's "coverage must keep pace" cost made concrete: seccomp profiles written with the legacy
+  <code>mount()</code> syscall in mind said nothing about <code>fsconfig()</code>, a different syscall number
+  entirely, so the mount-family deny rule that had protected containers for years quietly stopped covering the
+  new attack surface the moment the kernel grew a second way to mount a filesystem. Root cause distilled: a
+  syscall-number allow-list is only as good as its last update, and this incident is why current seccomp default
+  profiles explicitly restrict the <code>fsopen</code>/<code>fsconfig</code>/<code>fsmount</code>/<code>move_mount</code>
+  family alongside the legacy calls.</p>
+
+  <h3>Incident 3: CVE-2019-16884 — an AppArmor and SELinux bypass in the same bug</h3>
+  <p>A flaw in how <code>runc exec</code> re-attached to a running container allowed a malicious container — one
+  that had replaced its own <code>/proc</code> mount in a specific way — to cause a later <code>runc exec</code>
+  invocation to apply its LSM label incorrectly, letting the exec'd process escape both AppArmor's and SELinux's
+  confinement simultaneously. The root cause was not a weakness specific to either policy language; it was a gap
+  in <i>when</i> runc applied the label relative to when the target process's namespace context was resolved —
+  proof that MAC's guarantee is only as strong as the runtime code that wires the label onto the right process at
+  the right moment, and that "which LSM" matters less here than "did the runtime get the sequencing right." Both
+  runc and the affected LSM configurations were patched by fixing the label-application ordering, not by changing
+  either AppArmor's or SELinux's policy model.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the default profile at a whiteboard?</h2>
+  <p>Think before revealing — each answer targets the depth a Staff-level container security conversation expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: seccomp.c, an AppArmor profile, and an SELinux policy fragment</h2>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">linux/</span></div>
+<div>├── <span class="dir">kernel/</span></div>
+<div>│   └── <span class="fhl">● seccomp.c</span> <span class="fnote">— __secure_computing(): the entry-path hook every syscall passes through first</span></div>
+<div>├── <span class="dir">security/apparmor/</span></div>
+<div>│   └── <span class="fhl">● lsm.c</span> <span class="fnote">— apparmor_bprm_committing_creds(): attaches a profile label at execve()</span></div>
+<div>├── <span class="dir">security/selinux/</span></div>
+<div>│   └── <span class="fhl">● hooks.c</span> <span class="fnote">— selinux_bprm_committing_creds(), selinux_mount(): the LSM hooks MAC rides on</span></div>
+<div><span class="dir">moby/moby/profiles/seccomp/</span>default.json <span class="fnote">— the JSON default.json compiled to BPF via libseccomp</span></div>
+<div><span class="dir">containers/common/pkg/seccomp/</span>default_linux.go <span class="fnote">— Podman/CRI-O's equivalent profile source</span></div>
+<div><span class="dir">crun/src/libcrun/</span></div>
+<div>└── <span class="fhl">● seccomp.c</span> <span class="fnote">— crun's own BPF assembler, no libseccomp dependency</span></div>
+  </div></div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>a minimal seccomp-bpf filter, hand-written (no libseccomp)</span></div>
+    <pre><span class="c">/* Deny mount(2) with EPERM; allow everything else. Real struct
+ * shapes from linux/seccomp.h and linux/filter.h. */</span>
+<span class="k">struct</span> sock_filter filter[] = {
+    <span class="c">/* load the syscall number into the BPF accumulator */</span>
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, <span class="f">offsetof</span>(<span class="k">struct</span> seccomp_data, nr)),
+    <span class="c">/* if it's __NR_mount, jump to the deny instruction */</span>
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_mount, <span class="n">0</span>, <span class="n">1</span>),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM &amp; SECCOMP_RET_DATA)),
+    <span class="c">/* fallthrough: allow */</span>
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+};
+<span class="k">struct</span> sock_fprog prog = { .len = <span class="f">ARRAY_SIZE</span>(filter), .filter = filter };
+
+<span class="f">prctl</span>(PR_SET_NO_NEW_PRIVS, <span class="n">1</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>);   <span class="c">/* required before an unprivileged filter */</span>
+<span class="f">prctl</span>(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &amp;prog);</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">JSON</span><span>OCI runtime spec — config.json's linux.seccomp (real shape)</span></div>
+    <pre>{
+  <span class="t">"linux"</span>: {
+    <span class="t">"seccomp"</span>: {
+      <span class="t">"defaultAction"</span>: <span class="s">"SCMP_ACT_ERRNO"</span>,
+      <span class="t">"architectures"</span>: [<span class="s">"SCMP_ARCH_X86_64"</span>],
+      <span class="t">"syscalls"</span>: [
+        { <span class="t">"names"</span>: [<span class="s">"read"</span>,<span class="s">"write"</span>,<span class="s">"openat"</span>,<span class="s">"close"</span>, <span class="c">"/* ~300 more */"</span>], <span class="t">"action"</span>: <span class="s">"SCMP_ACT_ALLOW"</span> },
+        { <span class="t">"names"</span>: [<span class="s">"clone"</span>], <span class="t">"action"</span>: <span class="s">"SCMP_ACT_ALLOW"</span>,
+          <span class="t">"args"</span>: [{ <span class="t">"index"</span>: <span class="n">0</span>, <span class="t">"value"</span>: <span class="n">2114060288</span>, <span class="t">"op"</span>: <span class="s">"SCMP_CMP_MASKED_EQ"</span> }] },
+        { <span class="t">"names"</span>: [<span class="s">"mount"</span>,<span class="s">"umount2"</span>,<span class="s">"pivot_root"</span>,<span class="s">"keyctl"</span>,<span class="s">"add_key"</span>,
+                    <span class="s">"reboot"</span>,<span class="s">"swapon"</span>,<span class="s">"swapoff"</span>,<span class="s">"open_by_handle_at"</span>],
+          <span class="t">"action"</span>: <span class="s">"SCMP_ACT_ERRNO"</span>, <span class="t">"errnoRet"</span>: <span class="n">1</span> }
+      ]
+    },
+    <span class="t">"seLinuxLabel"</span>: <span class="s">"system_u:system_r:container_t:s0:c123,c456"</span>,
+    <span class="t">"apparmorProfile"</span>: <span class="s">"docker-default"</span>
+  }
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">AppArmor</span><span>docker-default.profile (excerpt, real rule shapes)</span></div>
+    <pre><span class="k">profile</span> docker-default <span class="k">flags</span>=(attach_disconnected,mediate_deleted) {
+  <span class="c">#include &lt;abstractions/base&gt;</span>
+  <span class="k">network</span>,
+  <span class="k">capability</span>,
+  <span class="k">file</span>,
+  <span class="k">umount</span>,
+
+  <span class="c">/* explicit denies survive even if DAC/capabilities would allow */</span>
+  <span class="k">deny</span> /proc/sysrq-trigger <span class="k">rwklx</span>,
+  <span class="k">deny</span> /proc/kcore <span class="k">rwklx</span>,
+  <span class="k">deny</span> mount,
+  <span class="k">deny</span> <span class="k">ptrace</span> (read, trace),  <span class="c">/* only self-profile ptrace allowed */</span>
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">SELinux</span><span>container-selinux policy (excerpt, real construct shapes)</span></div>
+    <pre><span class="k">type</span> container_t;
+<span class="k">type</span> container_file_t;
+<span class="f">domain_type</span>(container_t)
+<span class="f">files_type</span>(container_file_t)
+
+<span class="c">/* container_t may read/write container_file_t — but ONLY within
+ * its own MCS category pair, e.g. s0:c123,c456; a sibling
+ * container labeled s0:c789,c321 is denied even though both
+ * types match and DAC file permissions would allow it. */</span>
+<span class="f">allow</span> container_t container_file_t:file { read write open getattr };</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Seccomp's default-deny shape.</b> The profile's <code>defaultAction</code> is <code>SCMP_ACT_ERRNO</code>,
+    not <code>SCMP_ACT_ALLOW</code> — an allow-list of ~300+ ordinary syscalls, not a deny-list of ~45 dangerous
+    ones. A deny-list is only as safe as its last update (exactly §11's CVE-2022-0185 lesson); an allow-list fails
+    safe against syscalls nobody has thought about yet. <b>2. AppArmor's explicit denies, even under a broad
+    <code>file</code> rule.</b> The profile above grants broad file access, then explicitly re-denies
+    <code>/proc/sysrq-trigger</code> and friends — defense in depth against the broad grant, written by people who
+    assumed the broad rule would eventually be too permissive somewhere. <b>3. SELinux's MCS categories as
+    automatic per-instance isolation.</b> Every container gets a fresh, unique category pair with no operator
+    configuration required — multi-tenant isolation as a side effect of how the labels are allocated, not a policy
+    someone has to remember to write per container.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — read them, they encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — one mount() call, four gates</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the checks in the order the kernel actually performs them for a container's <code>mount()</code> call. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The syscall firewall</h2>
+  <p>A live process with a configurable seccomp profile and MAC layer. Load Docker/Podman's default profile,
+  attempt real syscalls one at a time, and read the exact errno each produces — and which of the four layers from
+  §7 actually produced it. Switch to <code>unconfined</code> to see the same syscalls succeed (or fail for a
+  completely different reason), and toggle AppArmor/SELinux enforcement to see mandatory access control deny what
+  DAC and capabilities alone would allow.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">syscall firewall — PID 9142</span><span class="w-sub" id="sim-phase">PROFILE: default · MAC: apparmor (enforcing)</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="sim-ctl" style="border:none;padding-top:0">
+            <div class="ctl-t">CURRENTLY BLOCKED BY SECCOMP (ERRNO EPERM)</div>
+            <div class="bitrow" id="sim-blocklist"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">ATTEMPT A SYSCALL</div>
+            <div class="cmdgrid" id="sim-cmds"></div>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">SECCOMP PROFILE</div>
+            <div class="btns">
+              <button class="btn danger" id="sc-unconfined">unconfined</button>
+              <button class="btn" id="sc-default">Docker/Podman default</button>
+              <button class="btn good" id="sc-hardened">hardened (+ block ptrace family)</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">MANDATORY ACCESS CONTROL</div>
+            <div class="btns">
+              <button class="btn" id="sc-lsm">cycle: apparmor → selinux → none</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-tried">0</div><div class="cl">attempts</div></div>
+            <div class="scounter"><div class="cv" id="cnt-seccomp" style="color:var(--bad)">0</div><div class="cl">seccomp EPERM</div></div>
+            <div class="scounter"><div class="cv" id="cnt-lsm" style="color:var(--purple)">0</div><div class="cl">MAC denied</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Load the default profile and try every syscall — note which fail at seccomp versus which fail
+    later, at the capability check, once seccomp lets them through. <b>2.</b> Switch to <code>unconfined</code> and
+    retry <code>keyctl</code> — it now succeeds, because nothing was ever gating it but seccomp. <b>3.</b> Retry
+    <code>mount</code> under <code>unconfined</code> — it still fails, but for a different reason: the capability
+    check inside <code>mount()</code> itself, since the default 14 capabilities never included
+    <code>CAP_SYS_ADMIN</code>. <b>4.</b> Cycle MAC to <code>none</code> and try the AppArmor- and SELinux-specific
+    probes — they succeed only when the matching LSM is off, proving MAC is enforced independently of both DAC and
+    seccomp. <b>5.</b> Load <code>hardened</code> and confirm the ptrace family now fails at the seccomp layer
+    instead of the capability layer — same visible EPERM, earlier and cheaper gate.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 9: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer, then reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 08 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now read a process's seccomp and LSM state from
+    <code>/proc</code>, explain why capabilities and seccomp catch different classes of syscall, and say precisely
+    why AppArmor and SELinux exist as a fourth layer even after the first three are correctly configured. Every
+    layer from chapters 2 through 8 — namespaces, cgroups, capabilities, seccomp, MAC labels — is, in the end,
+    just fields in one file: chapter 9 opens <code>config.json</code>, the OCI Runtime Spec's bundle format, and
+    shows how <b>runc</b> and <b>crun</b> — the low-level runtimes underneath Docker and Podman respectively —
+    consume exactly that file to actually create a container, with no engine in the loop at all.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <a class="btn" href="ctr-07.html" style="text-decoration:none;display:inline-flex;align-items:center">← CH 07: Capabilities</a>
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">☰ Back to hub</a>
+      <a class="btn primary" href="ctr-09.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-09: The OCI Runtime Spec →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2003", l:"SELinux mainlined", d:"<b>SELinux merges into Linux 2.6.0.</b> Originally an NSA research project built on the Flask security architecture (from the Fluke research OS), it introduces label-based mandatory access control to mainstream Linux — type enforcement plus roles and a security context wholly independent of DAC's owner/mode model." },
+  { yr:"2005", l:"seccomp mode 1", d:"<b>Andrea Arcangeli's original seccomp lands</b> (<code>SECCOMP_MODE_STRICT</code>): a process may call only read(), write() on already-open descriptors, _exit(), and rt_sigreturn(). Built for donating idle CPU to untrusted distributed-computing jobs — usably strict only for the narrowest workloads." },
+  { yr:"2010", l:"AppArmor mainlined", d:"<b>AppArmor merges into Linux 2.6.36</b> after years as an out-of-tree Novell/SUSE (originally Immunix) project. Its central design bet: profiles are written against filesystem <i>paths</i>, not abstract security labels, trading some rigor for being dramatically easier for an operator to read and write." },
+  { yr:"2012", l:"seccomp-bpf", d:"<b>SECCOMP_MODE_FILTER lands in Linux 3.5</b>, authored by Will Drewry at Google. Motivated by Chrome/Chromium OS's need for a real sandbox policy language, not four hardcoded syscalls — a BPF program can now express arbitrary allow/deny/errno logic over the syscall number and its raw arguments." },
+  { yr:"2014", l:"seccomp(2) syscall", d:"<b>Linux 3.17 adds the seccomp(2) syscall</b> as a purpose-built alternative to overloading prctl(), with flags like SECCOMP_FILTER_FLAG_TSYNC to synchronize a filter across every thread in a multi-threaded process atomically — a gap prctl()-based attachment couldn't safely close." },
+  { yr:"2016", l:"Docker's default seccomp profile", d:"<b>Docker 1.10 ships a default seccomp profile</b> (moby/moby's default.json) applied to every container automatically, denying roughly 40-50 named syscalls by default — mount, keyctl, ptrace, reboot, and more — compiled to BPF via libseccomp before the container's entrypoint ever execve()s." },
+  { yr:"2018", l:"Podman + containers/common", d:"<b>Podman's early releases adopt a nearly identical default seccomp profile</b> sourced from the shared containers/common Go module — the same dependency CRI-O and Buildah use — but compiled to BPF by crun's own generator rather than libseccomp, and layered under SELinux enforcement by default on its Red Hat-family host distributions." },
+  { yr:"2019", l:"the new mount API", d:"<b>fsopen()/fsconfig()/fsmount()/move_mount() land in Linux 5.2</b>, a modernized replacement for the decades-old mount() syscall's cramped argument list. Existing seccomp profiles written against legacy mount() say nothing about these new syscall numbers — the exact gap CVE-2022-0185 (§11) would later exploit." },
+  { yr:"2021", l:"MCS categories standard practice", d:"<b>Automatic per-container SELinux MCS category assignment becomes routine practice</b> across Podman, CRI-O, and Kubernetes' SELinux-aware runtimes — every container gets a fresh, unique category pair (e.g. s0:c123,c456) with zero operator configuration, providing multi-tenant isolation as a structural side effect of label allocation rather than a policy someone has to remember to write." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===5 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[5].d;
+
+/* ============================================================
+   2. DECK: no filter -> seccomp-bpf (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:220px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (a,b)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${a}${b}</div>`;
+  stepper("deckFilter", [
+    { stage: box("NO FILTER — §3's naive config", cell("keyctl() → reaches kernel keyring code directly") + cell("mount() → reaches capable(CAP_SYS_ADMIN) check") + cell("read()/write() → reach kernel directly") + cell("...all ~450 syscalls, unfiltered", "#f25c54", "rgba(242,92,84,.08)")),
+      cap:`<b>Where we start.</b> Every syscall a process attempts reaches the kernel's dispatch table and runs whatever DAC/capability logic that specific syscall's implementation happens to contain — for syscalls with no such logic, like keyctl(), there is nothing to stop it at all.` },
+    { stage: wrap(box("ATTACH A BPF PROGRAM", cell("prctl(PR_SET_SECCOMP, ...)","#60a5fa") + cell("or seccomp(2) with SECCOMP_SET_MODE_FILTER","#60a5fa")), box("THE KERNEL RUNS IT FIRST", cell("struct seccomp_data { nr, arch, args[6] }","#2dd4bf") + cell("evaluated in the syscall entry path, before dispatch","#2dd4bf"))),
+      cap:`<b>The interception point.</b> A cBPF program is attached once, at container init, and the kernel now runs it against every syscall number and its raw arguments <i>before</i> the syscall's own implementation — including any DAC or capability check inside it — ever executes.` },
+    { stage: box("THE PROGRAM RETURNS ONE OF SEVERAL ACTIONS", cell("SECCOMP_RET_ALLOW — proceed normally","#4ade80") + cell("SECCOMP_RET_ERRNO — fail immediately with a chosen errno","#f25c54") + cell("SECCOMP_RET_KILL_PROCESS — terminate on the spot","#f25c54") + cell("SECCOMP_RET_LOG / TRACE — observe without blocking","#ffcb6b")),
+      cap:`<b>capable()-style, but earlier and syscall-number-based.</b> Where capabilities gate specific privileged operations from inside their own code, seccomp gates the syscall dispatch itself — the same enforcement philosophy (kernel-checked, not application-trusted), moved to an earlier, more general point in the path.` },
+    { stage: wrap(box("KEYCTL — NEVER CAPABILITY-GATED", cell("seccomp: DENY (EPERM)","#f25c54","rgba(242,92,84,.08)") + cell("→ kernel keyring code never runs","#8b94a7")), box("MOUNT — ALSO CAPABILITY-GATED", cell("seccomp: DENY (EPERM) under default profile","#f25c54","rgba(242,92,84,.08)") + cell("would ALSO fail capable(CAP_SYS_ADMIN) if seccomp allowed it","#8b94a7"))),
+      cap:`<b>The payoff.</b> keyctl() now fails for the first time ever under a default container profile — closing §4's gap completely — while mount() gets a second, independent reason to fail, which matters the moment either layer is misconfigured alone.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: why seccomp is blind to paths (§6)
+   ============================================================ */
+(function(){
+  const row = (t,c="#8b94a7",bg="transparent") => `<div style="border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin:5px 0;font-family:var(--mono);font-size:11px;color:${c};background:${bg}">${t}</div>`;
+  stepper("deckBlind", [
+    { stage: row(`mount("/dev/sdb1", "/etc/passwd_mount", "ext4", 0, NULL)`,"#8b94a7"),
+      cap:`<b>The call.</b> A process invokes mount() with two pointer arguments — a source device path and a target mount point — plus a filesystem-type string. Imagine wanting a policy: "never allow mounting anything onto a path under /etc."` },
+    { stage: row("struct seccomp_data { nr: 165 /* __NR_mount */, args[0]: 0x7ffd3a1b20, args[1]: 0x7ffd3a1b40, ... }","#60a5fa"),
+      cap:`<b>What the BPF program actually receives.</b> args[0] and args[1] are raw 64-bit pointer <i>values</i> — memory addresses in the calling process's address space — not the strings they point to. The seccomp filter runs in kernel context with no safe, general way to dereference a userspace pointer and compare its contents.` },
+    { stage: row("BPF can compare: 0x7ffd3a1b40 == <a specific address>? Almost never true twice.","#f25c54","rgba(242,92,84,.08)"),
+      cap:`<b>Why "block mounting onto /etc" can't be written as a seccomp rule.</b> The pointer's numeric value differs on every invocation (stack/heap addresses are not stable), so no fixed comparison in the BPF program can mean "this path". Filtering by path content is categorically outside what a syscall-number-and-raw-argument filter can express.` },
+    { stage: row("LSM hook: security_sb_mount(dev_name, path, type, flags) — receives the RESOLVED path struct, post-copy_from_user()","#2dd4bf"),
+      cap:`<b>Where path-aware filtering actually happens.</b> By the time the LSM hook chain runs — deep inside mount()'s own implementation, after the kernel has safely copied and resolved the path from userspace — AppArmor and SELinux both receive real path or label information and can enforce exactly the policy seccomp structurally cannot. This is the load-bearing reason MAC exists as a fourth, independent layer rather than "a more detailed seccomp profile."` }
+  ]);
+})();
+
+/* ============================================================
+   4. LAYER EXPLORER (§7)
+   ============================================================ */
+const LAYERS = {
+  dac:{ n:"DAC — discretionary access control", f:"fs/namei.c: generic_permission(), inode_permission()", r:"The original Unix model: a file's owner sets its mode bits (read/write/execute for owner/group/other), and the kernel checks the calling process's UID/GID against them. 'Discretionary' means the resource's owner decides who else gets access — there is no central policy.", l:"Checked on essentially every filesystem operation, as early as path resolution.", d:"Blind to everything except ownership and mode bits — a process running as the file's owner (or as root, which bypasses DAC checks entirely) always passes. It cannot express 'this process may read this file but not that one, even though both are world-readable.'" },
+  cap:{ n:"capabilities (chapter 7)", f:"kernel/capability.c: capable(), ns_capable()", r:"Splits root's monolithic privilege into ~40 independently-grantable bits, each guarding a specific privileged operation (mount, reboot, raw sockets, and more). A process's effective capability set, not its UID, decides whether a given privileged operation proceeds.", l:"Checked inside the specific syscall implementations that were deliberately wired to call capable() — a minority of the full syscall table.", d:"Only covers syscalls someone remembered to gate. keyctl(), add_key(), and dozens of ordinary syscalls have no capability check at all — chapter 8's entire motivation." },
+  seccomp:{ n:"seccomp-bpf", f:"kernel/seccomp.c: __secure_computing()", r:"A BPF program, attached per-process, evaluated against the syscall number and its six raw argument words on every syscall attempt — before that syscall's own implementation, DAC checks, or capability checks run at all.", l:"Runs first, in the syscall entry path, for every syscall the process or its descendants ever attempt once attached; filters stack and can only get more restrictive.", d:"Blind to pointer contents — cannot inspect a path string, a buffer, or any dereferenced argument, only the raw numbers. Coverage is a static list that must be updated as the kernel adds new syscalls (fsopen/fsconfig, §11)." },
+  apparmor:{ n:"AppArmor", f:"security/apparmor/lsm.c, mount.c, file.c", r:"Path-based mandatory access control: a profile lists filesystem paths, network rules, and capabilities a labeled process may use, with explicit deny rules that survive even a broader allow rule above them. Loaded via apparmor_parser into /sys/kernel/security/apparmor.", l:"A profile attaches to a process at execve() (or is inherited); evaluated via LSM hooks alongside DAC/capability checks deep inside each mediated operation.", d:"Reasons about paths, which means it can be confused by remounts, bind mounts, or symlink tricks that make the 'same' file reachable via a path the profile didn't anticipate — the structural risk path-based policy always carries versus label-based policy." },
+  selinux:{ n:"SELinux", f:"security/selinux/hooks.c, avc.c", r:"Label-based mandatory access control: every process and every resource carries a security context (user:role:type:level); policy rules like 'allow container_t container_file_t:file { read write }' bind to the label, not the path, and MCS category numbers (s0:c123,c456) give every container instance automatic mutual isolation.", l:"The label travels with the inode (an extended attribute) or the process (part of its credentials), independent of which path currently reaches it — evaluated via the same LSM hook chain as AppArmor, backed by an access-vector cache for speed.", d:"Requires a labeled filesystem (relabeling an unlabeled tree, `restorecon`, is a real operational cost) and a policy language steep enough that most operators consume vendor-shipped policy (container-selinux) rather than writing their own." }
+};
+const layerDetail = el("arch-detail");
+function showLayer(key){
+  const a = LAYERS[key];
+  layerDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">WHAT IT CHECKS</div>${a.r}<div class="ad-sec">WHEN IT RUNS</div>${a.l}<div class="ad-sec">WHAT IT'S BLIND TO</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showLayer(c.dataset.p));
+showLayer("seccomp");
+
+/* ============================================================
+   5. DECK: mount() vs the full stack (§8a)
+   ============================================================ */
+(function(){
+  const row = (t,c="#8b94a7",bg="transparent") => `<div style="border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin:5px 0;font-family:var(--mono);font-size:11px;color:${c};background:${bg}">${t}</div>`;
+  const col = (title, inner) => `<div style="flex:1;min-width:230px"><div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px;text-align:center">${title}</div>${inner}</div>`;
+  const wrap = (...cols)=>`<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">${cols.join("")}</div>`;
+  stepper("deckPath", [
+    { stage: row(`Container process calls: mount("/dev/sdb1", "/data", "ext4", 0, NULL)`,"#8b94a7"),
+      cap:`<b>The call.</b> Default 14 capabilities (no CAP_SYS_ADMIN), Docker's default seccomp profile attached, AppArmor's docker-default profile enforcing.` },
+    { stage: wrap(col("GATE 1 — SECCOMP (entry path)", row("__secure_computing() runs the attached BPF program","#60a5fa") + row("nr == __NR_mount → matches a DENY rule","#f25c54","rgba(242,92,84,.08)") + row("returns SECCOMP_RET_ERRNO(EPERM)","#f25c54","rgba(242,92,84,.08)"))),
+      cap:`<b>Stop here — under the default profile.</b> mount() is one of the syscalls Docker's and Podman's default profiles deny by name. The syscall never reaches its own implementation; capable() and the LSM hook chain are never even invoked. Result: EPERM, attributable entirely to the seccomp layer.` },
+    { stage: wrap(col("IF SECCOMP HAD ALLOWED IT (e.g. unconfined)", row("mount() implementation begins executing","#8b94a7") + row("GATE 2 — capable(CAP_SYS_ADMIN)","#60a5fa") + row("default 14 capabilities do NOT include it","#f25c54","rgba(242,92,84,.08)") + row("returns -EPERM from inside mount()'s own code","#f25c54","rgba(242,92,84,.08)"))),
+      cap:`<b>The second, independent gate.</b> Same visible errno, completely different code path: this EPERM comes from chapter 7's capability check, deep inside the syscall's own logic — not from seccomp at all. This is exactly why the simulator in §15 logs <i>which layer</i> produced a given denial.` },
+    { stage: wrap(col("IF THE PROCESS SOMEHOW HELD CAP_SYS_ADMIN", row("GATE 3 — LSM hook chain","#a78bfa") + row("security_sb_mount(dev_name, path, type, flags)","#a78bfa") + row("AppArmor: `deny mount,` rule in docker-default matches","#f25c54","rgba(242,92,84,.08)") + row("returns -EPERM from the LSM hook, before the actual mount syscall body performs the mount","#f25c54","rgba(242,92,84,.08)"))),
+      cap:`<b>The third, independent gate.</b> Even a container improbably granted CAP_SYS_ADMIN back is still stopped, this time by mandatory access control — a policy decision that binds regardless of what DAC and capabilities already allowed. Four gates, four different reasons any one of them alone would be enough to stop this specific call — and four different reasons a misconfiguration in any single one still leaves the other three standing.` }
+  ]);
+})();
+
+/* ============================================================
+   6. FILTER BUILDER (§8b)
+   ============================================================ */
+(function(){
+  const SEC_NAMES = ["read","write","openat","connect","clone","mount","umount2","pivot_root","keyctl","add_key","ptrace","reboot","swapon","init_module","perf_event_open"];
+  const DEFAULT_DENY = new Set(["mount","umount2","pivot_root","keyctl","add_key","reboot","swapon","init_module","perf_event_open"]);
+  const HARDENED_EXTRA_DENY = new Set(["ptrace"]);
+  const PROFILES = ["unconfined","default","hardened"];
+  function render(){
+    const idx = +el("sec-slider").value;
+    const profile = PROFILES[idx];
+    el("sec-val").textContent = profile;
+    const lsmOn = el("sec-lsm").classList.contains("on");
+    el("sec-lsm").textContent = "MAC: apparmor (" + (lsmOn?"enforcing":"disabled") + ")";
+    el("sec-list").innerHTML = SEC_NAMES.map(n=>{
+      let denied = false, cls = "";
+      if (profile !== "unconfined" && DEFAULT_DENY.has(n)) denied = true;
+      if (profile === "hardened" && HARDENED_EXTRA_DENY.has(n)) denied = true;
+      if (denied) cls = "blocked";
+      return `<div class="bitcell ${cls}">${n}${denied?" ✕":""}</div>`;
+    }).join("");
+    const blockedCount = SEC_NAMES.filter(n=>{
+      if (profile === "unconfined") return false;
+      if (DEFAULT_DENY.has(n)) return true;
+      if (profile === "hardened" && HARDENED_EXTRA_DENY.has(n)) return true;
+      return false;
+    }).length;
+    el("sec-note").innerHTML = profile === "unconfined"
+      ? `<b style="color:var(--bad)">No seccomp filter attached.</b> Every syscall reaches its own implementation; DAC and capabilities (chapter 7) are the only remaining discretionary gates. ${lsmOn ? "AppArmor is still enforcing independently — path-based denies (mount, ptrace across profiles, /proc/sysrq-trigger) still apply regardless of seccomp state." : "With MAC also disabled, this is the fully naive configuration from §3."}`
+      : `<b style="color:var(--pg)">${blockedCount}</b> of this illustrative bank denied by name under <b>${profile}</b>. ${profile==="hardened" ? "The hardened profile additionally blocks the entire ptrace family, useful when a workload has no legitimate debugging/tracing need." : "This mirrors Docker's and Podman's actual default: an allow-list of ordinary syscalls, with mount/keyctl/reboot-class operations denied by name regardless of capability state."} ${lsmOn ? "AppArmor enforcement adds an independent floor on top — some denials shown here would be redundant with an LSM deny rule; MAC still catches path- and label-based cases seccomp structurally cannot." : "MAC is currently disabled in this simulation — toggle it on to see the independent floor it adds."}`;
+  }
+  el("sec-slider").oninput = render;
+  el("sec-lsm").onclick = ()=>{ el("sec-lsm").classList.toggle("on"); render(); };
+  el("sec-lsm").classList.add("on");
+  render();
+})();
+
+/* ============================================================
+   7. ATTACK SURFACE CHART (§10)
+   ============================================================ */
+(function(){
+  let privileged = false, lsmOn = false;
+  const cv = el("as-chart"), ctx = cv.getContext("2d");
+  const WEIGHT_HOT = 9;
+  function model(extra, priv){
+    if (priv) return { reach: 450, surf: 45*3.2 };
+    const reach = 405 + extra;
+    let surf = 405*0.55/40; // baseline weighted floor for the default-allowed set
+    for (let i=0;i<extra;i++) surf += (i<3 ? WEIGHT_HOT : 1.1);
+    return { reach, surf };
+  }
+  function render(){
+    const extra = +el("as-slider").value;
+    el("as-slider-val").textContent = extra;
+    el("as-base").classList.toggle("on", extra===0 && !privileged);
+    el("as-priv").classList.toggle("on", privileged);
+    el("as-lsm").classList.toggle("on", lsmOn);
+    const W = cv.width, H = cv.height, PAD=36;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=0;x<=45;x++) xs.push(x);
+    const pts = xs.map(x=>model(x, false));
+    const maxReach = 450, maxSurf = model(0,true).surf;
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [0,15,30,45].forEach(x=>{ const px = PAD + (x/45)*(W-PAD-16); ctx.beginPath(); ctx.moveTo(px,10); ctx.lineTo(px,H-20); ctx.stroke(); ctx.fillText("+"+x, px-8, H-6); });
+    function curve(get,max,color){
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const px=PAD+(x/45)*(W-PAD-16), py=H-24-(get(pts[i])/max)*(H-44); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+      ctx.stroke();
+    }
+    curve(p=>p.reach, maxReach, "#2dd4bf");
+    curve(p=>p.surf, maxSurf, "#f25c54");
+    // MAC floor line — a flat dashed marker at whatever the LSM still blocks, independent of the slider
+    const macFloorY = H-24-((lsmOn?0.14:0)*(H-44));
+    ctx.strokeStyle="#a78bfa"; ctx.setLineDash([3,4]); ctx.beginPath(); ctx.moveTo(PAD,H-24-(lsmOn?18:0)); ctx.lineTo(W-16,H-24-(lsmOn?18:0)); ctx.stroke(); ctx.setLineDash([]);
+    const cur = model(extra, privileged);
+    const mx = privileged ? W-16 : PAD+(extra/45)*(W-PAD-16);
+    ctx.strokeStyle="#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(mx,10); ctx.lineTo(mx,H-20); ctx.stroke(); ctx.setLineDash([]);
+    el("as-note").innerHTML = `Current selection: <b style="color:var(--pg)">${Math.round(cur.reach)}</b> syscalls reachable, an illustrative <b style="color:var(--bad)">${Math.round(cur.surf)}</b>-unit weighted estimate of exploitable kernel surface. ${privileged ? "unconfined removes the seccomp filter entirely AND typically ships with MAC disabled too — the two together, not just syscall count, are why it's discouraged outside genuine edge cases." : extra===0 ? "This is close to the Docker/Podman default: roughly 405 of ~450 syscalls allowed, with the historically CVE-dense minority (mount, keyring, tracing, module-loading) denied by name." : "Notice the curve's kink: the model treats the first few syscalls added back as most consequential (mount/keyctl-class operations carry disproportionate historical CVE density) — the marginal cost of the rest is comparatively flat."} ${lsmOn ? "The purple dashed floor is MAC's independent contribution — it doesn't move with the seccomp slider, because AppArmor/SELinux enforcement is a wholly separate mechanism." : "MAC is currently off in this model — toggle it to see the independent floor it adds regardless of the seccomp slider."}`;
+  }
+  el("as-slider").oninput = render;
+  el("as-base").onclick = ()=>{ privileged=false; el("as-slider").value=0; render(); };
+  el("as-priv").onclick = ()=>{ privileged = !privileged; render(); };
+  el("as-lsm").onclick = ()=>{ lsmOn = !lsmOn; render(); };
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A container running Docker's default configuration calls keyctl() and gets EPERM. A teammate says 'that's the capability drop working.' Correct them precisely.", hint:"does keyctl need any capability at all?",
+    a:"keyctl() requires zero capabilities under the normal Unix permission model — it's an ordinary syscall from DAC's point of view, available to any UID. The EPERM here comes entirely from the seccomp-bpf filter: Docker's default profile denies keyctl by syscall number, returning SECCOMP_RET_ERRNO(EPERM) before the kernel's keyring code ever runs. Dropping capabilities to the default 14 (chapter 7) has no bearing on this specific call — proven by the fact that even a container granted every capability back would still be blocked by the same seccomp rule, and conversely a container with capabilities dropped to zero but seccomp=unconfined would NOT be blocked." },
+  { lvl:"SENIOR", q:"Why does seccomp evaluate before DAC and capability checks, rather than after?", hint:"where does the BPF program actually run?",
+    a:"The BPF program runs in the syscall entry path (__secure_computing(), called from arch-specific entry code like arch/x86/entry/common.c) before the kernel ever dispatches to the syscall's own implementation — where DAC checks and capable() calls live. Running seccomp first means a denied syscall never executes any of its own logic at all, which matters for two reasons: it's cheaper (no wasted work inside a syscall that's about to be denied anyway), and it's safer for syscalls whose own implementation might have side effects or vulnerable code paths before reaching the point where a capability check would normally run." },
+  { lvl:"STAFF", q:"Explain, with the actual mechanism, why 'block mounting anything under /etc' cannot be expressed as a seccomp rule but can be expressed in an AppArmor or SELinux policy.", hint:"what does seccomp actually see for a pointer argument?",
+    a:"seccomp's BPF program receives struct seccomp_data: the syscall number, target architecture, and six raw 64-bit argument WORDS. For mount()'s path arguments, that word is a pointer's numeric memory address in the calling process — not the string it references — and that address varies run to run (stack/heap layout isn't stable), so no fixed BPF comparison can mean 'this path'. AppArmor's and SELinux's LSM hooks (e.g. security_sb_mount()) run much later, deep inside mount()'s own implementation, AFTER the kernel has safely copied the path from userspace via copy_from_user() and resolved it — at that point the hook receives a real, dereferenced path (AppArmor) or the resolved inode's security label (SELinux), either of which supports genuine path- or label-based policy." },
+  { lvl:"STAFF", q:"CVE-2022-0185 exploited fsconfig() even though mount() had been seccomp-denied by default for years. What does this incident actually indict — seccomp as a technique, or something narrower?", hint:"is the flaw in the BPF mechanism itself?",
+    a:"It indicts profile MAINTENANCE, not the seccomp mechanism. BPF filtering by syscall number works exactly as designed — the problem is that fsopen()/fsconfig()/fsmount() (Linux 5.2, 2019) are different syscall numbers entirely from legacy mount(), so a profile written with only mount() in mind is, correctly and unsurprisingly, silent about them. The mechanism has no flaw; the deployed policy simply hadn't been updated to cover kernel surface added after the policy was written. This generalizes: any allow/deny-by-name list is only as current as its last update, which is exactly why current default profiles explicitly restrict the whole mount-API family, not just the legacy syscall." },
+  { lvl:"STAFF", q:"A container is compromised and the attacker has a shell with the default capability set, default seccomp profile, and AppArmor's docker-default profile enforcing. They can read files, but ptrace() and mounting both fail. Which layer stopped each, and could disabling AppArmor alone let either succeed?", hint:"trace each syscall through all four gates independently",
+    a:"mount() is denied by NAME in the default seccomp profile — EPERM from seccomp, before capable(CAP_SYS_ADMIN) or any AppArmor rule is even reached; disabling AppArmor changes nothing about this outcome. ptrace() against another process is more layered: Docker's default profile gates it via a capability-aware rule (effectively requiring CAP_SYS_PTRACE, which the default 14 don't include), AND docker-default's AppArmor profile separately denies `ptrace (read, trace)` against processes outside its own profile. Disabling AppArmor alone would remove the LSM-level deny, but the missing CAP_SYS_PTRACE (chapter 7) would likely still block it at the capability-check layer inside ptrace()'s own implementation — you'd need to ALSO grant the capability back for AppArmor's removal to actually change the outcome, which is the layered-defense argument from §9 made concrete." },
+  { lvl:"PRINCIPAL", q:"Steelman running with seccomp=unconfined for a specific production workload, then explain what compensating control would be non-negotiable if you allowed it.", hint:"when might the seccomp layer genuinely cost more than it buys?",
+    a:"Legitimate case: a workload that needs a syscall the default profile blocks for reasons irrelevant to it — e.g., a monitoring agent needing perf_event_open() for legitimate profiling, or a nested-container use case needing unshare(CLONE_NEWUSER) unrestricted. Rather than disabling the whole filter, the correct move is almost always a CUSTOM profile that allows exactly the needed syscall(s) and denies everything else the default would have — full unconfined should be reserved for cases where you cannot enumerate the needed syscalls at all (rare, and usually a sign the workload itself needs redesign). If you do run unconfined, the non-negotiable compensating control is a strong MAC profile (AppArmor/SELinux) that stays enforcing regardless — because it's the only remaining layer capable of catching path- and label-based misuse that capabilities alone won't, and it costs nothing extra to keep on." },
+  { lvl:"PRINCIPAL", q:"Docker defaults to AppArmor, Podman defaults to SELinux. Is one a stronger MAC model than the other, or is this a false comparison? Defend your answer with the actual mechanism difference.", hint:"path-based vs label-based — what class of bug does each resist better?",
+    a:"It's a real mechanism difference, not just a branding one, but 'stronger' depends on the failure mode you're weighing. SELinux's label travels with the inode/process credentials independent of path, so it resists a specific bug class AppArmor is structurally more exposed to: a remount, bind mount, or symlink trick that makes a resource reachable via a path the profile didn't anticipate — the policy simply can't be fooled by which path you used to get there. AppArmor's compensating strength is that its policy is dramatically easier for an operator to read, write, and audit — a path list maps directly to 'what files does this container touch,' where SELinux policy requires understanding type enforcement and often means consuming vendor-shipped policy you didn't author. In practice, both engines run the SAME seccomp profile shape (this chapter's other layer) regardless of MAC choice, so the honest framing is: SELinux buys more resistance to a specific bypass class at the cost of authoring complexity; AppArmor buys operator legibility at the cost of that specific structural exposure. Neither claim implies one engine's overall container security posture dominates the other's." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A container calls keyctl() under Docker's default configuration and receives EPERM. Which layer produced it?",
+    opts:[ "The capability check inside keyctl()'s implementation",
+           "The seccomp-bpf filter, before keyctl()'s own code ever runs",
+           "AppArmor's docker-default profile",
+           "DAC — keyctl() requires the CAP_SYS_ADMIN-owning UID" ],
+    a:1,
+    why:"keyctl() carries no capability check at all under the normal Unix model — it's an ordinary syscall available to any UID. The EPERM comes entirely from the seccomp-bpf filter denying it by syscall number, which runs at the syscall entry path before keyctl()'s own kernel implementation ever executes. Option A is impossible because no such check exists in keyctl(); option C is wrong because AppArmor never gets invoked — seccomp already returned an error before any LSM hook runs; option D misdescribes DAC, which has no concept of 'requires a UID that owns a capability'." },
+  { q:"Why can't a seccomp-bpf filter enforce 'deny mounting anything under /etc'?",
+    opts:[ "seccomp only runs for processes with CAP_SYS_ADMIN",
+           "The BPF program sees the path argument as a raw pointer value, not the string it references",
+           "mount() isn't a filterable syscall",
+           "Seccomp filters can't use conditional logic, only flat allow/deny" ],
+    a:1,
+    why:"struct seccomp_data exposes the syscall number and six raw argument WORDS — for a pointer argument, that word is a memory address in the calling process, not a dereferenced string, and it varies run to run. No fixed BPF comparison can mean 'this path'. Option A is false — seccomp filters run regardless of capability state, and indeed run before any capability check. Option C is false — mount() is exactly the kind of syscall default profiles filter by number. Option D is false — Docker's actual profile includes real conditional argument comparisons (e.g. the clone/CLONE_NEWUSER rule)." },
+  { q:"Which of these correctly distinguishes DAC from MAC (AppArmor/SELinux)?",
+    opts:[ "DAC is enforced by the kernel; MAC is enforced entirely in userspace",
+           "MAC can restrict what a resource's owner — even root — is allowed to do, regardless of file mode bits",
+           "DAC only applies to containers; MAC only applies to the host",
+           "MAC and DAC check exactly the same conditions in a different order" ],
+    a:1,
+    why:"Mandatory access control is 'mandatory' precisely because policy, not the resource's owner, decides — a root process with CAP_DAC_OVERRIDE can bypass every DAC check yet still be denied by an AppArmor or SELinux rule, because MAC is evaluated independently and can only further restrict, never grant beyond what DAC/capabilities already allow. Option A is wrong — both AppArmor and SELinux are implemented as in-kernel LSM hooks, not userspace daemons. Option C describes namespacing, not MAC. Option D is false — they check fundamentally different things (ownership/mode vs. label/path policy)." },
+  { q:"Docker's default seccomp profile and Podman's default seccomp profile:",
+    opts:[ "Are functionally unrelated — each engine invented its own list independently with no overlap",
+           "Are nearly identical in the syscalls they deny, despite being compiled to BPF by different code (libseccomp vs. crun's own generator)",
+           "Differ mainly because Podman doesn't support seccomp at all",
+           "Are identical because Podman literally calls Docker's seccomp library at runtime" ],
+    a:1,
+    why:"Both engines converge on very close to the same default-deny list — the underlying kernel attack surface is identical regardless of which engine is asking — but the BPF program is produced by different code: Docker's runc path goes through libseccomp, while crun (Podman's default low-level runtime) deliberately avoids that dependency and generates the BPF program itself. Same policy shape, different implementation path — exactly the kind of 'identical where it matters, different in mechanism' comparison this course asks you to make precisely." },
+  { q:"A container is granted every capability back (essentially --privileged) but keeps Docker's default seccomp profile attached. Can it call mount()?",
+    opts:[ "Yes — CAP_SYS_ADMIN satisfies every remaining check",
+           "No — the default profile denies mount() by syscall number regardless of capability state",
+           "Only if AppArmor is also disabled",
+           "Only inside a user namespace" ],
+    a:1,
+    why:"seccomp's decision is independent of the capability set entirely — a syscall named in the deny list returns EPERM at the entry path no matter what capabilities the process holds, because the BPF program never consults capability state for an unconditional deny rule. This is precisely why --privileged in practice also disables the seccomp filter (and typically AppArmor/SELinux confinement) rather than just granting capabilities — granting capabilities alone would still leave mount() blocked by an unrelated, still-attached seccomp filter." },
+  { q:"Why did CVE-2022-0185 succeed against hosts whose containers had mount() correctly denied by seccomp?",
+    opts:[ "The attacker had CAP_SYS_ADMIN on the host directly",
+           "It used fsopen()/fsconfig(), different syscall numbers not covered by profiles written against the legacy mount() syscall",
+           "Seccomp filters don't apply to unprivileged user namespaces",
+           "AppArmor was required to catch it and wasn't installed" ],
+    a:1,
+    why:"The 'new mount API' (fsopen/fsconfig/fsmount, Linux 5.2) exposes similar functionality to mount() through entirely different syscall numbers. A profile that carefully denies legacy mount() by name says nothing about these — the gap isn't a flaw in seccomp's mechanism, it's a coverage gap in a specific deployed policy that predated the new syscalls. Option A is backwards — the exploit's whole point was gaining CAP_SYS_ADMIN cheaply inside an unprivileged user namespace via unshare(CLONE_NEWUSER), never touching the host's real capability set. Option C is false — seccomp filters apply inside user namespaces exactly as anywhere else." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could write the default.json yourself.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's decks, then try the simulator experiments — the layering clicks fast once you break it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "seccomp-bpf filter evaluated at syscall entry (__secure_computing())",
+    "if ALLOW: syscall implementation begins executing",
+    "DAC check — file owner/mode bits, if the syscall touches a resource",
+    "capability check — capable(CAP_X) inside the syscall's own code",
+    "LSM hook chain — AppArmor/SELinux policy check (e.g. security_sb_mount())",
+    "syscall's actual effect takes place (or -EPERM/-EACCES returned by whichever gate denied it)"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real gate order</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Every layer in this chapter — namespaces, cgroups, capabilities, seccomp, AppArmor/SELinux labels — ends up as fields in one file the OCI Runtime Spec calls config.json. Predict: why would standardizing that ONE file, rather than standardizing an API, be enough to make Docker and Podman genuinely interoperable at the runtime layer?",
+    a:"Because the file is a complete, declarative description of the container's final state — every namespace to create, every cgroup limit, every capability, the seccomp BPF policy, and the LSM label — a runtime never needs to ask the engine anything else once the bundle exists. Docker's runc and Podman's crun can both consume the identical file and produce namespace-for-namespace, capability-for-capability identical containers without either runtime knowing anything about Docker or Podman at all. An API would require both engines to implement matching client/server behavior indefinitely; a file format only requires both to agree on a schema once. This is exactly why chapter 9 can run a container with runc directly, no engine involved, from a config.json you hand-write yourself." },
+  { lvl:"THINK", q:"crun avoids depending on libseccomp and writes its own BPF generator, while runc uses libseccomp. Predict one concrete way this could show up as an observable difference between a Docker container and a Podman container running the identical seccomp policy — and one way it provably CANNOT differ.",
+    a:"Observable difference: startup latency and binary size — crun is measured to start faster and ship a smaller binary partly because it isn't linking and initializing libseccomp's more general-purpose policy-compilation machinery; you might also see subtly different BPF instruction sequences if you dumped and diffed the compiled programs, since two independent generators need not produce byte-identical bytecode. What provably cannot differ: the actual ALLOW/DENY verdict for any given syscall and argument combination, because both are reading the same declarative source policy (the JSON syscalls array, or the OCI config.json linux.seccomp object) — two correct compilers targeting the same semantics must agree on outcomes even if their generated bytecode differs." },
+  { lvl:"THINK", q:"Chapter 9 will show runc and crun's create/start/kill/delete lifecycle, defined by the OCI Runtime Spec independent of any engine. Using this chapter's material, predict which of the four gates from §7 gets installed at which lifecycle stage, and why 'create' rather than 'start' is likely the answer for most of them.",
+    a:"Namespaces, cgroup limits, the capability sets, the seccomp filter, and the LSM label are all properties of the process's OWN credentials and address space, and every one of the strongest guarantees this chapter covered (seccomp's one-way ratchet, the capability bounding set) works by being installed on the process BEFORE it execve()s the untrusted entrypoint binary — so a compromised entrypoint has no window in which to observe or influence its own confinement being set up. That argues strongly for 'create' (which corresponds to the container's init process being forked and configured, but not yet running the actual workload) as the stage where seccomp attachment, capability dropping, and LSM labeling all happen, with 'start' simply triggering the already-fully-confined process's execve() of the real command." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const SYSCALLS = [
+    { id:"read",   label:"read()",              deny:{default:false, hardened:false}, cap:null, lsm:null },
+    { id:"connect",label:"connect()",            deny:{default:false, hardened:false}, cap:null, lsm:null },
+    { id:"mount",  label:"mount()",              deny:{default:true,  hardened:true},  cap:"CAP_SYS_ADMIN", lsm:{type:"apparmor", desc:"docker-default: `deny mount,`"} },
+    { id:"umount2",label:"umount2()",            deny:{default:true,  hardened:true},  cap:"CAP_SYS_ADMIN", lsm:null },
+    { id:"pivot_root", label:"pivot_root() [unprivileged]", deny:{default:true, hardened:true}, cap:"CAP_SYS_ADMIN", lsm:null },
+    { id:"keyctl", label:"keyctl()",             deny:{default:true,  hardened:true},  cap:null, lsm:null },
+    { id:"add_key",label:"add_key()",            deny:{default:true,  hardened:true},  cap:null, lsm:null },
+    { id:"clone_newuser", label:"clone(CLONE_NEWUSER)", deny:{default:true, hardened:true}, cap:"CAP_SYS_ADMIN", lsm:null, note:"blocked by a conditional BPF arg-check on the flags word, not a blanket clone() deny" },
+    { id:"ptrace", label:"ptrace(PTRACE_ATTACH)",deny:{default:false, hardened:true},  cap:"CAP_SYS_PTRACE", lsm:{type:"apparmor", desc:"docker-default: `deny ptrace (read, trace),` against foreign profiles"} },
+    { id:"reboot", label:"reboot()",             deny:{default:true,  hardened:true},  cap:"CAP_SYS_BOOT", lsm:null },
+    { id:"swapon", label:"swapon()",             deny:{default:true,  hardened:true},  cap:"CAP_SYS_ADMIN", lsm:null },
+    { id:"open_by_handle_at", label:"open_by_handle_at()", deny:{default:true, hardened:true}, cap:"CAP_DAC_READ_SEARCH", lsm:null },
+    { id:"init_module", label:"init_module()",   deny:{default:true,  hardened:true},  cap:"CAP_SYS_MODULE", lsm:null },
+    { id:"perf_event_open", label:"perf_event_open()", deny:{default:true, hardened:true}, cap:"CAP_PERFMON", lsm:null },
+    { id:"sysrq", label:"write /proc/sysrq-trigger", deny:{default:false, hardened:false}, cap:"CAP_SYS_ADMIN", lsm:{type:"apparmor", desc:"docker-default: `deny /proc/sysrq-trigger rwklx,`"} },
+    { id:"mcs_read", label:"read sibling container's volume", deny:{default:false, hardened:false}, cap:null, lsm:{type:"selinux", desc:"different MCS category (s0:c789,c321) — denied by container_t policy even though DAC mode is world-readable"} }
+  ];
+  const DEFAULT_CAPS = new Set(); // Docker/Podman default 14 never include any of the caps referenced above
+  const S = { profile:"default", lsm:"apparmor", tried:0, seccomp:0, lsmDenied:0 };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function seccompBlocks(sc){
+    if (S.profile === "unconfined") return false;
+    if (sc.deny.default) return true;
+    if (S.profile === "hardened" && sc.deny.hardened) return true;
+    return false;
+  }
+  function attempt(sc){
+    S.tried++;
+    log("LOG", `attempting ${sc.label}${sc.note ? "  // "+sc.note : ""}`);
+    if (seccompBlocks(sc)){
+      S.seccomp++;
+      log("FATAL", `${sc.label} = -1 EPERM (Operation not permitted)  [seccomp: syscall denied by ${S.profile} profile, syscall body never ran]`);
+      render(); return;
+    }
+    if (sc.cap && !DEFAULT_CAPS.has(sc.cap)){
+      log("FATAL", `${sc.label} = -1 EPERM (Operation not permitted)  [capability: missing ${sc.cap}, checked inside the syscall's own code]`);
+      render(); return;
+    }
+    if (sc.lsm && S.lsm === sc.lsm.type){
+      S.lsmDenied++;
+      log("WARN", `${sc.label} = -1 EACCES (Permission denied)  [MAC: ${S.lsm} denied — ${sc.lsm.desc}]`);
+      render(); return;
+    }
+    log("OK", `${sc.label} succeeded  [passed seccomp, capability, and MAC — nothing in the current configuration blocks this]`);
+    render();
+  }
+  function render(){
+    el("sim-phase").textContent = `PROFILE: ${S.profile} · MAC: ${S.lsm} (${S.lsm==="none"?"disabled":"enforcing"})`;
+    el("sim-blocklist").innerHTML = SYSCALLS.filter(sc=>seccompBlocks(sc)).map(sc=>`<div class="bitcell blocked">${sc.label}</div>`).join("") || `<div style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">no syscalls denied by seccomp under this profile</div>`;
+    el("sim-cmds").innerHTML = SYSCALLS.map(sc=>`<button class="cmdbtn" data-id="${sc.id}">${sc.label}</button>`).join("");
+    el("sim-cmds").querySelectorAll(".cmdbtn").forEach(b=>{
+      b.onclick = ()=> attempt(SYSCALLS.find(s=>s.id===b.dataset.id));
+    });
+    el("cnt-tried").textContent = S.tried;
+    el("cnt-seccomp").textContent = S.seccomp;
+    el("cnt-lsm").textContent = S.lsmDenied;
+  }
+  el("sc-unconfined").onclick = ()=>{ S.profile="unconfined"; log("WARN","seccomp filter detached — every syscall now reaches its own implementation"); render(); };
+  el("sc-default").onclick = ()=>{ S.profile="default"; log("LOG","Docker/Podman default seccomp profile attached"); render(); };
+  el("sc-hardened").onclick = ()=>{ S.profile="hardened"; log("LOG","hardened profile attached — ptrace family now denied by seccomp, not just by capability"); render(); };
+  el("sc-lsm").onclick = ()=>{
+    S.lsm = S.lsm==="apparmor" ? "selinux" : S.lsm==="selinux" ? "none" : "apparmor";
+    log("LOG", S.lsm==="none" ? "MAC disabled — AppArmor/SELinux no longer consulted" : `MAC switched to ${S.lsm}, enforcing`);
+    render();
+  };
+  log("OK","syscall firewall ready — PROFILE: default · MAC: apparmor (enforcing)");
+  log("HINT","Try: keyctl under default vs unconfined → mount under unconfined (still fails, different layer) → cycle MAC and retry the sysrq/MCS probes.");
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-08"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+</body>
+</html>

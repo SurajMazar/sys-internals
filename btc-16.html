@@ -2970,3 +2970,506 @@ parts.push(u32le(tx.locktime));`),
   };
   buildScr();
 })();
+
+/* ============================================================
+   7. DECK: sighash (§11) + live sighash-flags widget
+   ============================================================ */
+(function(){
+  stepper("deckSighash", [
+    { stage: CODE("JavaScript","BTCSIGHASH.sighashLegacy() — the preimage, field by field",
+`<span class="k">const</span> vin = tx.vin.map((v,i) =&gt; ({
+  scriptSig: i===inputIndex ? scriptCode : <span class="k">new</span> Uint8Array(<span class="n">0</span>), <span class="c">// every OTHER input's script is blanked</span>
+  sequence: (baseType===NONE || baseType===SINGLE) &amp;&amp; i!==inputIndex ? <span class="n">0</span> : v.sequence
+}));
+<span class="k">if</span> (anyoneCanPay) vin = [vin[inputIndex]]; <span class="c">// +ANYONECANPAY: drop every other input entirely</span>`),
+      cap:"<b>The signature never hashes the raw transaction.</b> It hashes a modified STUB of it — other inputs' scripts blanked to a fixed value so a later party filling them in can't change what this signature commits to. This is chapter 5's central insight, running verbatim." },
+    { stage: CODE("JavaScript","BTCSIGHASH.sighashLegacy() — the infamous SIGHASH_SINGLE bug, reproduced exactly",
+`<span class="k">if</span> (baseType === SIGHASH_SINGLE){
+  <span class="k">if</span> (inputIndex &gt;= tx.vout.length)
+    <span class="k">return</span> sha256d(hexToBytes(<span class="s">"01".padEnd(64,"0")</span>)); <span class="c">// hash of 0x0000...01, NOT an error</span>
+}`),
+      cap:"<b>A bug frozen into consensus forever.</b> If SIGHASH_SINGLE signs an input with no output at the same index, Satoshi's original code returned the hash of a fixed constant instead of throwing — meaning ANY valid signature satisfies that condition, for any transaction. Fixing this would compute a different hash than the network already agreed on, so real Bitcoin Core reproduces it exactly, and so does this engine." },
+    { stage: CODE("JavaScript","BTCSIGHASH.sighashBIP143() — three cached hashes instead of one per input",
+`<span class="k">function</span> <span class="f">bip143Caches</span>(tx, hashType){
+  <span class="c">// computed ONCE per transaction, reused for every input's sighash — O(inputs) total, not O(inputs²)</span>
+  hashPrevouts = sha256d(concat(tx.vin.map(v =&gt; serializeOutpoint(v.txid, v.vout))));
+  hashSequence = sha256d(concat(tx.vin.map(v =&gt; u32le(v.sequence))));
+  hashOutputs  = sha256d(concat(tx.vout.map(serOut)));
+  <span class="k">return</span> { hashPrevouts, hashSequence, hashOutputs };
+}`),
+      cap:"<b>The quadratic-hashing fix, made mechanical.</b> Legacy sighash re-serializes the (near) entire transaction for every single input being checked — O(inputs²) hashing for a transaction with many inputs, a real pre-SegWit DoS vector. BIP143 computes three midstate hashes once and every input's sighash reuses them — this is why §9's witness-discount slider and this function live in the same chapter: SegWit fixed both a fee-accounting problem and a hashing-cost problem with one restructuring." }
+  ]);
+
+  const U = globalThis.BTCUTIL, H = globalThis.BTCHASH, S = globalThis.SECP256K1, SH = globalThis.BTCSIGHASH, OPS = globalThis.BTCSCRIPTOPS;
+  const priv = 77n, pub = S.pubkeyFromPrivkey(priv, true), h160 = H.hash160(pub);
+  const spk = OPS.p2pkhScript(h160);
+  const demoTx = {
+    version: 1, segwit: false,
+    vin: [
+      { txid:"aa".repeat(32), vout:0, scriptSig:new Uint8Array(0), sequence:0xffffffff, witness:[] },
+      { txid:"bb".repeat(32), vout:1, scriptSig:new Uint8Array(0), sequence:0xffffffff, witness:[] }
+    ],
+    vout: [ { value:100000, scriptPubKey:spk }, { value:200000, scriptPubKey:spk } ],
+    locktime: 0
+  };
+  let acp = false, base = SH.SIGHASH_ALL;
+  function refreshChips(){
+    document.getElementById("sh-all").classList.toggle("on", base===SH.SIGHASH_ALL);
+    document.getElementById("sh-none").classList.toggle("on", base===SH.SIGHASH_NONE);
+    document.getElementById("sh-single").classList.toggle("on", base===SH.SIGHASH_SINGLE);
+    document.getElementById("sh-acp").classList.toggle("on", acp);
+  }
+  function describe(){
+    const flags = base | (acp ? SH.SIGHASH_ANYONECANPAY : 0);
+    const hash = SH.sighashLegacy(demoTx, 0, spk, flags);
+    const inputsTxt = acp ? "1 (only this one)" : `${demoTx.vin.length} (all — other inputs' sequence ${(base===SH.SIGHASH_NONE||base===SH.SIGHASH_SINGLE) ? "zeroed" : "kept"})`;
+    const outputsTxt = base===SH.SIGHASH_NONE ? "0 (NONE — none committed)" : base===SH.SIGHASH_SINGLE ? "1 (SINGLE — only the output at this input's own index)" : `${demoTx.vout.length} (ALL)`;
+    el("sh-fields").innerHTML =
+      `<span class="flabel">flags = 0x${flags.toString(16)}</span>` +
+      `<span class="flabel">inputs committed: ${inputsTxt}</span>` +
+      `<span class="flabel">outputs committed: ${outputsTxt}</span>` +
+      `<span class="flabel">preimage hash: ${U.bytesToHex(hash).slice(0,20)}…</span>`;
+    let note = base===SH.SIGHASH_ALL
+      ? "SIGHASH_ALL: commits to every input and every output — the default, and the only mode where nobody can alter the transaction post-signature without invalidating it."
+      : base===SH.SIGHASH_NONE
+      ? "SIGHASH_NONE: commits to NO outputs — whoever collects enough valid signatures can send the inputs' value anywhere they like. Rarely used alone."
+      : "SIGHASH_SINGLE: commits only to the output whose index equals this input's index. Because this demo's input 0 has a matching output 0, the bug above doesn't fire here — try it against an input index past the last output to trigger it.";
+    if (acp) note += " +ANYONECANPAY: on top of that, commits to only THIS input — someone else can add more inputs later without touching this signature's validity.";
+    el("sh-note").textContent = note;
+  }
+  document.getElementById("sh-all").onclick = ()=>{ base = SH.SIGHASH_ALL; refreshChips(); describe(); };
+  document.getElementById("sh-none").onclick = ()=>{ base = SH.SIGHASH_NONE; refreshChips(); describe(); };
+  document.getElementById("sh-single").onclick = ()=>{ base = SH.SIGHASH_SINGLE; refreshChips(); describe(); };
+  document.getElementById("sh-acp").onclick = ()=>{ acp = !acp; refreshChips(); describe(); };
+  refreshChips(); describe();
+})();
+
+/* ============================================================
+   8. DECK: UTXO set + consensus checklist (§12) + rule-order slider
+   ============================================================ */
+(function(){
+  stepper("deckUtxo", [
+    { stage: CODE("JavaScript","BTCUTXO.applyTx() / undoTx() — the ledger and its inverse",
+`<span class="k">function</span> <span class="f">applyTx</span>(utxo, tx, height, coinbase){
+  <span class="k">const</span> undo = { removed: [], addedKeys: [] };
+  <span class="k">if</span> (!coinbase) <span class="k">for</span> (<span class="k">const</span> vin <span class="k">of</span> tx.vin){
+    <span class="k">const</span> entry = utxo.get(vin.txid, vin.vout);
+    <span class="k">if</span> (!entry) <span class="k">throw</span> <span class="k">new</span> <span class="f">Error</span>(<span class="s">"bad-txns-inputs-missing"</span>); <span class="c">// the double-spend check, in one line</span>
+    undo.removed.push({ txid: vin.txid, vout: vin.vout, entry }); utxo.remove(vin.txid, vin.vout);
+  }
+  tx.vout.forEach((o,i) =&gt; { utxo.add(txid, i, {value:o.value, scriptPubKey:o.scriptPubKey, height, coinbase}); undo.addedKeys.push(...); });
+  <span class="k">return</span> undo; <span class="c">// §13's reorg calls undoTx(utxo, undo) to walk this exactly backwards</span>
+}`),
+      cap:"<b>Every double-spend check in this engine reduces to one map lookup.</b> Spending an outpoint that isn't in the map throws immediately — that's §4's O(1) detection made real. The undo object this function returns is not bookkeeping for its own sake: it's the exact data §13's reorg replays in reverse to make 'undo a block' a real operation instead of a rebuild-from-scratch." },
+    { stage: CODE("JavaScript","BTCCONSENSUS — eleven named, ordered rules (ch.8)",
+`<span class="k">const</span> RULES = [
+  { rule: <span class="s">"proof-of-work"</span>, fn(block, ctx){ <span class="c">/* one hash, one compare */</span> } },
+  { rule: <span class="s">"merkle-root"</span>, fn(block, ctx){ <span class="c">/* recompute, compare to header */</span> } },
+  <span class="c">// ... timestamp-bounds, block-weight, coinbase-first-and-unique, no-duplicate-txids ...</span>
+  { rule: <span class="s">"inputs-exist-and-unspent"</span>, fn(block, ctx){ <span class="c">/* first UTXO-set touch */</span> } },
+  <span class="c">// ... coinbase-maturity, value-conservation ...</span>
+  { rule: <span class="s">"scripts-valid"</span>, fn(block, ctx){ <span class="c">/* real ECDSA, the expensive one, LAST */</span> } },
+  { rule: <span class="s">"sigop-limit"</span>, fn(block, ctx){ <span class="c">/* bounded counter */</span> } }
+];
+<span class="k">function</span> <span class="f">validateBlock</span>(block, ctx){
+  <span class="k">for</span> (<span class="k">const</span> r <span class="k">of</span> RULES){ <span class="k">const</span> res = r.fn(block, ctx); <span class="k">if</span> (!res.ok) <span class="k">break</span>; } <span class="c">// short-circuit, cheapest first</span>
+}`),
+      cap:"<b>This is §5's derived ordering, not a re-derivation of it.</b> Eleven named predicate functions, run in the exact cheapest-and-hardest-to-fake-first sequence, breaking at the first failure — the same short-circuiting behavior a real node's <code>ConnectBlock()</code> exhibits, for the same adversarial reason." }
+  ]);
+
+  const RULE_NAMES = globalThis.BTCCONSENSUS.RULES.map(r=>r.rule);
+  function renderRules(){
+    const n = +el("rule-slider").value;
+    el("rule-val").textContent = n===11 ? "11 (passes all)" : `${n} (fails here)`;
+    el("rule-list").innerHTML = RULE_NAMES.map((name,i)=>{
+      const idx = i+1;
+      let cls, label;
+      if (idx < n || (idx===n && n===11)){ cls="pass"; label="PASS"; }
+      else if (idx === n){ cls="fail"; label="FAILS (simulated)"; }
+      else { cls=""; label="not reached — block already rejected"; }
+      return `<div class="ruleitem ${cls}" style="${idx>n?'opacity:.4':''}"><span style="font-family:var(--mono);color:var(--dim)">#${idx}</span> <b>${name}</b> — ${label}</div>`;
+    }).join("");
+    el("rule-note").textContent = n===11
+      ? "a block that reaches rule 11 (sigop-limit) and passes it has satisfied every rule this engine checks — connectBlock() accepts it."
+      : `a block failing rule #${n} (${RULE_NAMES[n-1]}) is rejected the instant that rule runs — rules ${n+1} through 11 never execute. This is real short-circuiting, not a UI simplification: validateBlock() literally breaks out of its loop here.`;
+  }
+  el("rule-slider").oninput = renderRules;
+  renderRules();
+})();
+
+/* ============================================================
+   9. DECK: mining + fork choice (§13) + real nonce-grind widget
+   ============================================================ */
+(function(){
+  stepper("deckMining", [
+    { stage: CODE("JavaScript","BTCMINING.mineHeader() — the grind, unmodified",
+`<span class="k">function</span> <span class="f">mineHeader</span>(headerTemplate, target, maxTries){
+  <span class="k">const</span> h = Object.assign({}, headerTemplate);
+  <span class="k">for</span> (<span class="k">let</span> n = <span class="n">0</span>; n &lt;= <span class="n">0xffffffff</span> &amp;&amp; n &lt; maxTries; n++){
+    h.nonce = n;
+    <span class="k">const</span> hash = blockHash(h); <span class="c">// the SAME function the validator's proof-of-work rule calls</span>
+    <span class="k">if</span> (hashMeetsTarget(hash, target)) <span class="k">return</span> { header:h, hash, tries:n+<span class="n">1</span> };
+  }
+  <span class="k">return</span> <span class="k">null</span>; <span class="c">// nonce space exhausted -- real miners bump extranonce and rebuild the merkle root here</span>
+}`),
+      cap:"<b>Mining is not a separate algorithm from validation — it's validation run in a loop.</b> <code>mineHeader()</code> calls the exact same <code>blockHash()</code>/<code>hashMeetsTarget()</code> pair §12's proof-of-work rule uses. A miner isn't running special math; it's searching for the one nonce, among billions, that makes the validator's cheapest check pass." },
+    { stage: CODE("JavaScript","BTCMINING.nextTarget() — Bitcoin Core's real GetBlockProof retarget formula",
+`<span class="k">function</span> <span class="f">nextTarget</span>(lastNTimestamps, oldBits){
+  <span class="k">let</span> actual = lastNTimestamps[<span class="n">1</span>] - lastNTimestamps[<span class="n">0</span>];
+  <span class="k">const</span> clamped = Math.max(TARGET_TIMESPAN/<span class="n">4</span>, Math.min(TARGET_TIMESPAN*<span class="n">4</span>, actual)); <span class="c">// 4x band, real Bitcoin's clamp</span>
+  <span class="k">let</span> newTarget = expandTarget(oldBits) * BigInt(Math.round(clamped)) / BigInt(TARGET_TIMESPAN);
+  <span class="k">return</span> compactFromTarget(newTarget &gt; MAX_TARGET ? MAX_TARGET : newTarget);
+}`),
+      cap:"<b>The formula is real; the window is a peephole.</b> Real Bitcoin retargets every 2016 blocks (~2 weeks); this engine's <code>RETARGET_INTERVAL = 10</code> lets you mine past a retarget boundary inside one browser session and watch the target actually move — same ratio-of-actual-to-expected-time math, same 4× clamp, a window small enough to see through." },
+    { stage: CODE("JavaScript","Node._reorgTo() — undo the loser, redo the winner, using §12's exact undo data",
+`<span class="k">for</span> (<span class="k">const</span> h <span class="k">of</span> disconnect) { <span class="c">// tip-first</span>
+  <span class="k">const</span> b = blocks.get(h);
+  <span class="k">for</span> (<span class="k">let</span> i=b.txs.length-<span class="n">1</span>; i&gt;=<span class="n">0</span>; i--) undoTx(utxo, b.undo[i]); <span class="c">// exact inverse of applyTx</span>
+}
+<span class="k">for</span> (<span class="k">const</span> h <span class="k">of</span> connect) { <span class="c">// fork-point-first</span>
+  <span class="k">const</span> b = blocks.get(h);
+  b.txs.forEach((tx,i) =&gt; applyTx(utxo, tx, b.height, i===<span class="n">0</span>));
+}`),
+      cap:"<b>A reorg is not a special code path — it's two ordinary loops over §12's applyTx/undoTx.</b> Disconnect the losing branch tip-first (genuinely reversing every UTXO change), then connect the winning branch fork-point-first (genuinely reapplying every one). Non-conflicting transactions from the disconnected branch return to the mempool exactly as chapter 9 described." }
+  ]);
+
+  const BL = globalThis.BTCBLOCK, MIN = globalThis.BTCMINING, U = globalThis.BTCUTIL;
+  let measuredRate = null;
+  function benchRate(){
+    const h = { version:1, prevHash:"11".repeat(32), merkleRoot:"22".repeat(32), time:Math.floor(Date.now()/1000), bits:0x1d00ffff, nonce:0 };
+    const t0 = performance.now(); let n = 0;
+    while (performance.now()-t0 < 60){ h.nonce = n; BL.blockHash(h); n++; }
+    measuredRate = n / ((performance.now()-t0)/1000);
+    return measuredRate;
+  }
+  function updateExpected(){
+    const bits = +el("mine-slider").value;
+    el("mine-val").textContent = bits+" leading zero bits";
+    const expected = Math.pow(2, bits);
+    el("mine-expected").textContent = "expected tries: ~" + expected.toLocaleString(undefined,{maximumFractionDigits:0});
+    const rate = measuredRate || benchRate();
+    el("mine-rate").textContent = `measured rate: ~${Math.round(rate).toLocaleString()} double-SHA256/s (this tab, right now)`;
+    const secs = expected/rate;
+    el("mine-note").textContent = `at this measured rate, a header meeting a ${bits}-bit target takes on average ~${secs<1?secs.toFixed(2)+"s":secs<60?secs.toFixed(1)+"s":(secs/60).toFixed(1)+" min"} to find — each extra bit doubles it. Mainnet's real target needs roughly 2^80+ tries, chased by exahash/s ASICs, not this loop.`;
+  }
+  el("mine-slider").oninput = updateExpected;
+
+  const history = [];
+  function drawChart(){
+    const c = el("mine-canvas"), ctx = c.getContext("2d"), W=c.width, Hh=c.height, PAD=30;
+    ctx.clearRect(0,0,W,Hh);
+    ctx.strokeStyle = "#2a3446"; ctx.beginPath(); ctx.moveTo(PAD,10); ctx.lineTo(PAD,Hh-PAD); ctx.lineTo(W-10,Hh-PAD); ctx.stroke();
+    if (!history.length) return;
+    const maxTries = Math.max(...history.map(h=>h.tries), 1);
+    ctx.fillStyle = "#f7931a";
+    const bw = (W-PAD-20)/history.length;
+    history.forEach((h,i)=>{ const bh = (h.tries/maxTries)*(Hh-PAD-16); ctx.fillRect(PAD+i*bw+2, Hh-PAD-bh, Math.max(2,bw-4), bh); });
+  }
+  el("mine-grind").onclick = ()=>{
+    const bits = +el("mine-slider").value;
+    const target = (2n**256n-1n) >> BigInt(bits);
+    const rnd = () => U.bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+    const header = { version:1, prevHash: rnd(), merkleRoot: rnd(), time: Math.floor(Date.now()/1000), bits: BL.compactFromTarget(target), nonce:0 };
+    const t0 = performance.now();
+    const res = MIN.mineHeader(header, target, 30000000);
+    const dt = (performance.now()-t0)/1000;
+    if (!res){ el("mine-note").textContent = "budget exhausted (30,000,000 tries) without success at this difficulty — pick a smaller bit count."; return; }
+    history.push({ tries: res.tries }); if (history.length>24) history.shift();
+    drawChart();
+    el("mine-note").textContent = `GROUND IT: nonce ${res.header.nonce} found in ${res.tries.toLocaleString()} real double-SHA256 tries (${dt.toFixed(2)}s) — hash ${res.hash.slice(0,24)}…, verified by the SAME hashMeetsTarget() §12's validator calls.`;
+  };
+  updateExpected();
+  drawChart();
+})();
+
+/* ============================================================
+   10. QUIZ (§14) — six questions on this chapter's actual engine
+   ============================================================ */
+const QUIZ = [
+  { q:"Why does §12's block validator check proof-of-work before it checks that inputs exist and are unspent, rather than the reverse?",
+    opts:[ "Proof-of-work is a legal requirement that must be checked first by convention",
+           "A hostile peer can flood a node with malformed blocks; PoW costs one cheap hash to check and is expensive for an attacker to fake, so it filters almost all garbage before any UTXO-set lookup runs",
+           "UTXO lookups are actually more expensive than any hash function, so order doesn't matter either way",
+           "Bitcoin Core's source code checks them in an arbitrary order that this engine happens to copy" ],
+    a:1,
+    why:"§5 derived this from an adversarial framing: validating data from untrusted peers means ordering checks by cost and fake-resistance. One double-SHA256 comparison rejects almost all garbage before a single UTXO-set lookup or elliptic-curve verification ever runs — reversing the order would let an attacker force expensive work on blocks that never had valid PoW to begin with." },
+  { q:"A UTXO-based double-spend check and a Script-only validator (§3's naive strawman) both reject a forged signature. What can the naive validator NOT detect that the UTXO set fixes?",
+    opts:[ "It cannot verify ECDSA signatures at all",
+           "It cannot detect that the same already-spent output is being referenced a second time, because Script execution never asks 'is this output still unspent'",
+           "It cannot compute a transaction's txid",
+           "It cannot parse a transaction's byte format" ],
+    a:1,
+    why:"Script correctness (is this signature valid for this scriptPubKey) and value-conservation correctness (is this output still spendable) are independent axes. A replayed or double-spent transaction can carry a perfectly valid signature — only a structure that tracks which outpoints are currently unspent, updated atomically per accepted transaction, can catch it." },
+  { q:"Why does this engine's Script VM re-execute the redeem script a SECOND time for a P2SH input, instead of stopping once the HASH160-equality check in the scriptPubKey passes?",
+    opts:[ "It's a performance optimization that happens to run scripts twice",
+           "BIP16 defines P2SH so that the scriptPubKey only ever commits to a HASH of the real spending conditions — the actual conditions are revealed at spend time and must be executed for real, or a hash match alone would let anyone spend the output with any redeem script that merely LOOKS right",
+           "The first execution is only used to compute the txid",
+           "Legacy nodes require duplicate execution for backward compatibility with SegWit" ],
+    a:1,
+    why:"The scriptPubKey's HASH160 check only proves the spender knows SOME script that hashes to the committed value — it says nothing about whether that script's conditions are actually satisfied. BIP16's genius is deploying arbitrarily complex spending conditions (multisig, and later SegWit-wrapped addresses) as a soft fork: old nodes see a hash check they already understand, while upgraded nodes additionally re-execute the revealed script for real." },
+  { q:"BIP143 (segwit sighash) fixes what specific inefficiency in the legacy sighash algorithm this engine also implements?",
+    opts:[ "Legacy sighash uses a weaker hash function than BIP143",
+           "Legacy sighash re-serializes most of the transaction once per input checked — O(inputs²) hashing for large transactions — while BIP143 caches three hashes once per transaction and reuses them for every input",
+           "Legacy sighash cannot sign more than one input at all",
+           "BIP143 removes the need to hash the transaction's outputs" ],
+    a:1,
+    why:"sighashLegacy() rebuilds a near-complete serialization of the transaction for every single input's signature check. sighashBIP143()'s bip143Caches() computes hashPrevouts/hashSequence/hashOutputs exactly once and every input's sighash reuses them — turning a quadratic cost into a linear one, closing a real pre-SegWit DoS vector." },
+  { q:"This engine's UTXO lookups rebuild a snapshot by replaying every block from genesis along a block's ancestry (`_utxoAtBlock()`) rather than maintaining incremental per-branch snapshots. Section 6 calls this a named, deliberate simplification. Why would this be disqualifying in a real node but invisible here?",
+    opts:[ "It wouldn't actually be disqualifying — real nodes work exactly this way",
+           "Because this toy validates at most a few dozen demo blocks per session, so replaying from genesis is imperceptibly fast; a real node's chainstate spans nearly a million blocks, where the same approach would make every validation take minutes to hours",
+           "Real nodes never need to look up UTXO state at all",
+           "This only matters for SegWit transactions, not legacy ones" ],
+    a:1,
+    why:"The simplification changes cost, not correctness — O(chain length) replay is fine at toy scale and disqualifying at mainnet scale. This is exactly the kind of gap §6 insists you should be able to name rather than assume away: the formulas are real, some of the engineering around them is deliberately not production-grade." },
+  { q:"Fork choice in this engine compares cumulative work, not block count, across branches. Why does that distinction matter for the security property Bitcoin actually needs?",
+    opts:[ "Block count and cumulative work are always identical, so it's a stylistic choice",
+           "An attacker could otherwise produce a longer (more blocks) but easier chain cheaply; comparing total work instead makes out-pacing the honest chain require out-pacing its actual accumulated hashrate expenditure, not just its block count",
+           "Cumulative work is only relevant during a reorg, never during normal block acceptance",
+           "Counting blocks is computationally cheaper, so real Bitcoin uses block count instead" ],
+    a:1,
+    why:"If length in blocks were the tiebreaker, an attacker mining at low difficulty (or during a difficulty window that favors them) could cheaply produce many easy blocks. Cumulative work — the sum of workForBits() across every block in a chain — ties 'which chain is real' to genuine, unfakeable energy expenditure, which is the actual security property proof-of-work is supposed to buy." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; the console in §15 will feel like confirmation, not discovery.":correct>=4?"solid mental model; skim the explanations you missed before the console.":"re-run the §8–§13 decks — every wrong answer here has a real function a few sections up."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz — the eleven-rule consensus checklist, in the exact order §12 runs it */
+(function(){
+  const CORRECT = [
+    "proof-of-work — the block header's hash meets the active target",
+    "merkle-root — recomputing it from the block's own transactions matches the header's claim",
+    "timestamp-bounds — header time is after median-time-past and not absurdly far in the future",
+    "block-weight — total weight is under the maximum",
+    "coinbase-first-and-unique — exactly one coinbase transaction, and it's first",
+    "no-duplicate-txids — no two transactions in the block share a txid",
+    "inputs-exist-and-unspent — every non-coinbase input references a live UTXO, with no double-spend within the block",
+    "coinbase-maturity — no input spends a coinbase output before it's old enough",
+    "value-conservation — no transaction (and no coinbase) creates value out of thin air",
+    "scripts-valid — every scriptSig/witness genuinely satisfies its scriptPubKey",
+    "sigop-limit — the block's signature-operation count is under the maximum"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real order validateBlock() runs</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* ============================================================
+   11. SIMULATOR (§15) — a real console wired to a real BTCNODE.Node
+   ============================================================ */
+(function(){
+  const NODE = new globalThis.BTCNODE.Node();
+  const CONSOLE = globalThis.BTCCONSOLE;
+  const U = globalThis.BTCUTIL, TXm = globalThis.BTCTX, BL = globalThis.BTCBLOCK, OPS = globalThis.BTCSCRIPTOPS;
+
+  const out = el("c-out");
+  function printLine(cls, text){ const d=document.createElement("div"); d.className=cls; d.textContent=text; out.appendChild(d); out.scrollTop = out.scrollHeight; }
+  function run(line){
+    if (!line || !line.trim()) return;
+    printLine("c-in", "> "+line);
+    const r = CONSOLE.runConsole(NODE, line);
+    r.lines.forEach(l => printLine(r.ok ? "c-out" : "c-err", l));
+    el("sim-phase").textContent = "height " + NODE.height();
+    renderPanel();
+  }
+  el("c-run").onclick = ()=>{ run(el("c-in").value); el("c-in").value=""; };
+  el("c-in").addEventListener("keydown", e=>{ if (e.key==="Enter"){ run(el("c-in").value); el("c-in").value=""; } });
+
+  const EXAMPLES = ["help","newkey alice","faucet alice","send alice bob 1000000","mine","utxos alice","chaininfo","mempool"];
+  el("c-examples").innerHTML = EXAMPLES.map(x=>`<button class="chip" data-c="${x}">${x}</button>`).join("");
+  el("c-examples").querySelectorAll(".chip").forEach(b=> b.onclick = ()=> run(b.dataset.c));
+
+  const TABS = ["chain","mempool","utxo"];
+  let activeTab = "chain";
+  el("cr-tabs").innerHTML = TABS.map(t=>`<button class="tri-tab${t===activeTab?" on":""}" data-t="${t}">${t}</button>`).join("");
+  function renderPanel(){
+    el("cr-tabs").querySelectorAll(".tri-tab").forEach(b=>b.classList.toggle("on", b.dataset.t===activeTab));
+    const panel = el("cr-panel");
+    if (activeTab==="chain"){
+      const rows = [];
+      for (let h=NODE.height(); h>=0 && rows.length<14; h--){
+        const hash = NODE.heightIndex.get(h); if (!hash) continue;
+        const b = NODE.blocks.get(hash);
+        rows.push(`<div class="chainblock${hash===NODE.tip?" tip":""}"><div class="cb-h">#${h} ${hash.slice(0,16)}…</div><div>${b.txs.length} tx · cumulative work ${b.work}</div></div>`);
+      }
+      panel.innerHTML = rows.join("") || "(empty)";
+    } else if (activeTab==="mempool"){
+      panel.innerHTML = NODE.mempool.size ? [...NODE.mempool.values()].map(tx=>`<div class="chainblock">${TXm.txid(tx).slice(0,20)}… — ${tx.vin.length}in/${tx.vout.length}out, ${TXm.txVsize(tx)} vB</div>`).join("") : "(empty)";
+    } else {
+      const rows = [`<div>UTXO set size: ${NODE.utxo.size()}</div>`];
+      for (const name of NODE.wallets.keys()){
+        const list = NODE.utxosFor(name);
+        rows.push(`<div style="margin-top:8px"><b>${name}</b>: ${list.length} output(s), ${list.reduce((s,u)=>s+u.value,0).toLocaleString()} sats</div>`);
+      }
+      panel.innerHTML = rows.join("");
+    }
+  }
+  el("cr-tabs").addEventListener("click", e=>{ if (e.target.dataset && e.target.dataset.t){ activeTab = e.target.dataset.t; renderPanel(); } });
+
+  const SCENARIOS = [
+    { name:"Confirmed payment", cmds:["newkey s_alice","newkey s_bob","faucet s_alice","send s_alice s_bob 1000000","mine"], desc:"Fund a wallet from the coinbase, send a real signed payment, mine it into a confirmed UTXO." },
+    { name:"Double-spend attempt", cmds:["newkey s_carl","faucet s_carl","send s_carl s_bob 500000","send s_carl s_bob 500000"], desc:"Try to spend the same output twice before it confirms — the second send is rejected by the mempool conflict check." },
+    { name:"Reorg", cmds:["newkey s_dan","faucet s_dan","mine 2","send s_dan s_bob 200000","mine","reorg 1"], desc:"Confirm a send, then force a 1-block reorg and watch the transaction return to the mempool." },
+    { name:"Difficulty grind", cmds:["setdifficulty 18","mine"], desc:"Pin difficulty higher via a regtest-style override and watch a single real block take more tries." }
+  ];
+  el("scenario-grid").innerHTML = SCENARIOS.map((s,i)=>`<div class="scenario-card" data-i="${i}"><b>${s.name}</b><span>${s.desc}</span></div>`).join("");
+  el("scenario-grid").querySelectorAll(".scenario-card").forEach(c=>{
+    c.onclick = ()=>{ const s = SCENARIOS[+c.dataset.i]; printLine("c-out", `— running scenario: ${s.name} —`); s.cmds.forEach(run); };
+  });
+
+  /* ---- verify against real mainnet data ---- */
+  el("verify-genesis").onclick = ()=>{
+    const hash = [...NODE.blocks.keys()].find(h => NODE.blocks.get(h).height===0);
+    const g = NODE.blocks.get(hash);
+    const mr = BL.merkleRoot(g.txs.map(TXm.txid));
+    const KNOWN_HASH = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+    const KNOWN_MERKLE = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
+    el("verify-out").innerHTML = [
+      `computed block hash: ${hash}`,
+      `known-good (every explorer agrees): ${KNOWN_HASH}`,
+      `<b style="color:${hash===KNOWN_HASH?'var(--ok)':'var(--bad)'}">match: ${hash===KNOWN_HASH?"YES":"NO"}</b>`,
+      `computed merkle root: ${mr}`,
+      `known-good: ${KNOWN_MERKLE}`,
+      `<b style="color:${mr===KNOWN_MERKLE?'var(--ok)':'var(--bad)'}">match: ${mr===KNOWN_MERKLE?"YES":"NO"}</b>`
+    ].map(l=>`<div>${l}</div>`).join("");
+  };
+
+  // Real raw bytes of Bitcoin mainnet block 170 (Satoshi → Hal Finney), fetched and cross-checked
+  // against the published header fields, txids, and merkle root before being embedded here.
+  const BLOCK170_HEX = "0100000055bd840a78798ad0da853f68974f3d183e2bd1db6a842c1feecf222a00000000ff104ccb05421ab93e63f8c3ce5c2c2e9dbb37de2764b3a3175c8166562cac7d51b96a49ffff001d283e9e700201000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0102ffffffff0100f2052a01000000434104d46c4968bde02899d2aa0963367c7a6ce34eec332b32e42e5f3407e052d64ac625da6f0718e7b302140434bd725706957c092db53805b821a85b23a7ac61725bac000000000100000001c997a5e56e104102fa209c6a852dd90660a20b2d9c352423edce25857fcd3704000000004847304402204e45e16932b8af514961a1d3a1a25fdf3f4f7732e9d624c6c61548ab5fb8cd410220181522ec8eca07de4860a4acdd12909d831cc56cbbac4622082221a8768d1d0901ffffffff0200ca9a3b00000000434104ae1a62fe09c5f51b13905f07f06b99a2f7159b2225f374cd378d71302fa28414e7aab37397f554a7df5f142c21c1b7303b8a0626f1baded5c72a704f7e6cd84cac00286bee0000000043410411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3ac00000000";
+  el("verify-170").onclick = ()=>{
+    try {
+      const block = globalThis.BTCNODE.parseBlockHex(BLOCK170_HEX);
+      const hash = BL.blockHash(block.header);
+      const mr = BL.merkleRoot(block.txs.map(TXm.txid));
+      const KNOWN_HASH = "00000000d1145790a8694403d4063f323d499e655c83426834d4ce2f8dd4a2ee";
+      const KNOWN_MERKLE = "7dac2c5666815c17a3b36427de37bb9d2e2c5ccec3f8633eb91a4205cb4c10ff";
+      // Block 170's second tx spends output 0 of Satoshi's earlier coinbase — a real P2PK output.
+      // Reconstruct that prevOut and verify the actual 2009 ECDSA signature against it.
+      const parentSpk = U.hexToBytes("410411db93e1dcdb8a016b49840f8c53bc1eb68a382e97b1482ecad7b148a6909a5cb2e0eaddfb84ccf9744464f82e160bfa9b8b64f9d4c03f999b8643f656b412a3ac");
+      const prevOut = { value: 5000000000, scriptPubKey: parentSpk };
+      const sigCheck = OPS.verifyInput(block.txs[1], 0, prevOut);
+      el("verify-out").innerHTML = [
+        `computed block hash: ${hash}`,
+        `known-good: ${KNOWN_HASH}`,
+        `<b style="color:${hash===KNOWN_HASH?'var(--ok)':'var(--bad)'}">match: ${hash===KNOWN_HASH?"YES":"NO"}</b>`,
+        `computed merkle root: ${mr}`,
+        `known-good: ${KNOWN_MERKLE}`,
+        `<b style="color:${mr===KNOWN_MERKLE?'var(--ok)':'var(--bad)'}">match: ${mr===KNOWN_MERKLE?"YES":"NO"}</b>`,
+        `Satoshi's real 2009 signature on tx[1] input 0, verified against this engine's own ECDSA: <b style="color:${sigCheck.ok?'var(--ok)':'var(--bad)'}">${sigCheck.ok?"VALID":"INVALID — "+sigCheck.err}</b>`
+      ].map(l=>`<div>${l}</div>`).join("");
+    } catch(e){
+      el("verify-out").innerHTML = `<div style="color:var(--bad)">error: ${e.message}</div>`;
+    }
+  };
+
+  printLine("c-out", "btc-node ready — type 'help' for commands, or click an example below.");
+  renderPanel();
+})();
+
+/* ============================================================
+   12. KNOWLEDGE CHECK (§16) — reflective, whole-course synthesis
+   ============================================================ */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"The UTXO model (this course) and the account model (most other chains) both prevent double-spends. Predict one concrete property this chapter's engine gets 'for free' from UTXOs that an account-balance model would have to engineer separately, and one it gives up in exchange.",
+    a:"For free: parallel, stateless validation. Because each UTXO is independent and consumed exactly once, this engine (and a real node) can check many transactions' inputs concurrently without a shared mutable 'balance' field creating a serialization bottleneck — there's no analog to needing a lock on 'Alice's account' before crediting or debiting it. What it gives up: a transaction can't simply say 'send 5 from my balance' — §9's send() has to explicitly select specific prior outputs, compute change, and produce a new output, which is more bytes and more bookkeeping per transfer than an account model's single balance decrement. The tradeoff is concurrency and auditability (every satoshi's entire history is traceable through named outpoints) against per-transaction simplicity." },
+  { lvl:"THINK", q:"§8's crypto primitives and §13's proof-of-work both ultimately rest on the same economic claim: that some operation is cheap to check and expensive to fake. State that claim precisely for SIGNATURES and precisely for PROOF-OF-WORK, and explain why Taproot's move from ECDSA to Schnorr signatures (chapter 13) doesn't change which claim is doing the security work.",
+    a:"Signatures: verification is cheap (this engine's S.verify() runs in microseconds) and forgery without the private key is computationally infeasible (breaking the discrete log problem on secp256k1). Proof-of-work: verification is cheap (one double-SHA256 compare) and producing a qualifying hash is expensive in real energy, with no shortcut faster than brute-force search. Schnorr signatures change the SIGNING and aggregation properties (linearity enables multisig that looks like a single signature) but rest on the exact same hardness assumption as ECDSA — the discrete log problem on the same curve. Taproot changes efficiency and privacy, not which mathematical problem is assumed hard." },
+  { lvl:"THINK", q:"This capstone's validator enforces 11 named rules and explicitly does NOT enforce BIP34, BIP65, BIP68, BIP112, BIP113, or Taproot's rules (§12's callout named them). If you were extending this engine into something closer to production, which of those would you implement FIRST, and what property of this chapter's own dependency graph (§7) tells you where in the validation order it belongs?",
+    a:"There's no single right pick, but the reasoning matters: any of BIP65/BIP68/BIP112/BIP113 (locktime and relative-locktime enforcement) are pure arithmetic checks on data already in the transaction and current chain tip — no UTXO lookup, no signature verification needed — so per §5's cost-ordering logic they belong immediately after the existing structural checks (timestamp-bounds, block-weight) and before inputs-exist-and-unspent, since they're just as cheap and can reject a malformed transaction before touching shared state. BIP34 (height-in-coinbase) is similarly cheap and structural. Taproot's rules require the Script VM to gain an entirely new signature algorithm (Schnorr/BIP340) and a new script version (Tapscript) — a genuinely new component in §7's dependency graph, not a slot in the existing rule list, which is why §10 named it as unimplemented rather than merely unenforced." }
+]);
+
+/* ============================================================
+   13. CHROME: readbar, scrollspy, keyboard nav, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if (n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if (p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["btc-16"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#f7931a"><a class="cn-btn" href="btc-15.html"><span>←</span><span><span class="cn-lbl">PREV · CH 15</span><span class="cn-ttl">Incidents: Every Bug That Changed the Rules</span></span></a><div class="cn-mid"><a class="cn-home" href="course-bitcoin.html">☰ Bitcoin Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="btc-01.html">CH 01 · Genesis: The Whitepaper, Decoded</option><option value="btc-02.html">CH 02 · Keys, Addresses & Wallets</option><option value="btc-03.html">CH 03 · Transactions: The Byte Format</option><option value="btc-04.html">CH 04 · Script: The Stack Machine</option><option value="btc-05.html">CH 05 · Signature Hashing: SIGHASH & the Malleability Bug</option><option value="btc-06.html">CH 06 · The UTXO Set: Bitcoin's Real Database</option><option value="btc-07.html">CH 07 · Blocks: Header, Merkle Root & Serialization</option><option value="btc-08.html">CH 08 · Validation: Every Rule a Block Must Satisfy</option><option value="btc-09.html">CH 09 · Mining: Hardware, Pools & Difficulty</option><option value="btc-10.html">CH 10 · The P2P Protocol: Messages on the Wire</option><option value="btc-11.html">CH 11 · The Mempool: Fees, Eviction & Replacement</option><option value="btc-12.html">CH 12 · SegWit: Restructuring the Transaction</option><option value="btc-13.html">CH 13 · Taproot: Schnorr, MAST & Key Aggregation</option><option value="btc-14.html">CH 14 · Lightning: Payment Channels & Routing</option><option value="btc-15.html">CH 15 · Incidents: Every Bug That Changed the Rules</option><option value="btc-16.html" selected>CH 16 · Capstone: Build a Bitcoin Node</option></select><span class="cn-prog">16 / 16</span></div><a class="cn-btn disabled"><span><span class="cn-lbl">END</span><span class="cn-ttl">Course complete</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

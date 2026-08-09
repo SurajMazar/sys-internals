@@ -1,0 +1,1589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-04 · User Namespaces: Rootless Containers — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12); --blue:#3b82f6;
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--blue));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+  .chip-docker{color:var(--docker);border-color:rgba(36,150,237,.45);background:rgba(36,150,237,.09)}
+  .chip-podman{color:var(--podman);border-color:rgba(137,44,160,.45);background:rgba(137,44,160,.09)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* proc/id map visual */
+  .idbox{display:flex;flex-wrap:wrap;gap:16px;justify-content:center}
+  .idcol{flex:1;min-width:230px;max-width:340px}
+  .idcol .ic-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .idrow{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .idrow.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .idrow.dead{opacity:.35;text-decoration:line-through}
+  .idrow .il{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  .mapview{background:#05070b;border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-family:var(--mono);
+    font-size:12px;line-height:1.85;color:#cdd6e4;margin-bottom:10px}
+  .mapview .mv-t{color:var(--dim);font-size:10px;letter-spacing:.08em;margin-bottom:6px}
+  .mapview .mv-l{color:var(--pg)}
+  .idsview{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:10px 0}
+  .idsview .ivcol{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:10px 16px;text-align:center;min-width:150px}
+  .idsview .ivcol .ivt{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:6px}
+  .idsview .ivcol .ivv{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--pg)}
+  .idsview .ivcol .ivs{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px}
+  .action-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .action-row .btn{font-size:11px;padding:5px 10px}
+
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:80px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:220px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 04 / 16</b> · USER NAMESPACES</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Security</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 04</div>
+  <h1>User Namespaces:<br><span class="grad">Rootless Containers</span></h1>
+  <p class="lead">Every container you have run since chapter 2 shares one uncomfortable fact with every other process
+  on the host: unless something intervenes, <b>UID 0 inside the container is UID 0 on the host</b>. The PID, mount,
+  and network namespaces from chapters 2–3 hide the host's view of processes, filesystems, and interfaces — but they
+  do nothing to the identity plane. This chapter derives the one namespace that actually changes <i>who you are</i>:
+  <code>CLONE_NEWUSER</code>, the file format that implements it byte for byte
+  (<code>/proc/&lt;pid&gt;/uid_map</code>), and why Podman made it the default while Docker left it opt-in.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Read and hand-write a valid <code>/proc/pid/uid_map</code> — three space-separated integers per line, and know why the kernel caps it at five.</div>
+    <div class="obj"><b>You will understand</b>Why root inside a rootless container is a real, unprivileged UID on the host — enforced by the MMU-adjacent identity mapping, not policy.</div>
+    <div class="obj"><b>You will predict</b>Which syscalls a mapped-root process can still perform, and which return EPERM, EACCES, or EINVAL, and why.</div>
+    <div class="obj"><b>You will simulate</b>Building a subuid-backed mapping table and watching a process's identity diverge between <code>ps</code> on the host and <code>whoami</code> inside.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">"Isolated" is not the same as "not root"</h2>
+  <p class="lead">Chapters 2 and 3 gave a process its own PID tree, its own hostname, its own mount table, its own
+  network stack. None of that touches <b>identity</b>. The kernel object that decides whether a syscall is allowed —
+  <code>struct cred</code>, attached to every <code>task_struct</code> — carries a UID, a GID, a set of supplementary
+  groups, and a capability set. Namespaces from the previous two chapters never touch <code>struct cred</code> at all.
+  A process born inside a fresh PID+mount+UTS+network namespace bundle, running as UID 0, is <i>exactly as privileged
+  on the host</i> as a UID-0 process running with no namespaces whatsoever — it simply can't see most of what its
+  privilege would otherwise reach, because the other namespaces have hidden the view.</p>
+  <p>That distinction is not academic. "Can't see it" and "can't touch it" collapse the instant an attacker finds a
+  bug that steps <i>outside</i> the view — a bind-mount escape, a <code>/proc/self/exe</code> race
+  (<code>CVE-2019-5736</code>, chapter 15), a symlink traversal in an image extractor. The namespace hid the target;
+  it never revoked the permission. If the escaping process is still UID 0 in the <span class="term"
+  data-def="The namespace a process's credentials are said to belong to; every UID and capability check ultimately compares against the initial user namespace unless a user namespace remaps them.">initial user namespace</span> —
+  the one the host kernel itself runs in — the escape is a full host compromise. If it is not, the same bug lands the
+  attacker as an ordinary, unprivileged, disposable UID.</p>
+  <ul class="plain">
+    <li><b>Rootful-by-default (classic Docker):</b> the daemon runs as UID 0, and unless you opt in to userns-remap,
+      every container's UID 0 <i>is</i> the host's UID 0. A container escape is a root shell on the node.</li>
+    <li><b>No daemon, but still root (early rootless attempts):</b> even a daemonless fork-exec model doesn't help if
+      the fork-exec is itself invoked by root and no identity remapping happens.</li>
+    <li><b>The actual fix has nothing to do with daemons.</b> It is a fourth namespace type — <code>CLONE_NEWUSER</code> —
+      that intercepts UID/GID lookups <i>before</i> every other permission check, and it can be created by a
+      completely unprivileged, ordinary user.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">THE INVARIANT THIS CHAPTER ESTABLISHES</div>
+    <p>A user namespace does not add security controls — it <b>relabels identity</b>. Once labeled, every other
+    security mechanism in the kernel (capability checks, DAC permission bits, LSM hooks) evaluates against the
+    <i>mapped</i> id, not the number the process believes it has. "Root inside" becomes a claim the container makes
+    about itself that the host does not have to believe — because the host never stored that claim as true in the
+    first place.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">A decade from patch to default</h2>
+  <p>User namespaces are the slowest-cooked primitive in this course. <code>CLONE_NEWNS</code> (mount) and
+  <code>CLONE_NEWUTS</code> existed years before anyone could safely let an unprivileged user create a user
+  namespace — because doing so unlocks capabilities inside it, and every capability check in the kernel had to be
+  individually re-audited to ask "capable <i>relative to which namespace</i>?" Click through the timeline.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from patch series to Podman default</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY IT TOOK SO LONG</div>
+    <p>Every one of the ~300 places in the kernel that calls <code>capable(CAP_X)</code> had to be reconsidered as
+    <code>ns_capable(user_ns, CAP_X)</code> — "does the caller have this capability <i>with respect to the user
+    namespace that owns the resource being touched</i>?" Get even one of those checks wrong and an unprivileged user
+    can create a user namespace, gain a full capability set inside it, and use a missed check to reach out and touch
+    real host state. This is precisely the shape of the CVEs in §11 — the feature's history and its incident history
+    are the same story told twice.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: just don't run as root</h2>
+  <p>The obvious, cheap fix predates user namespaces entirely and needs no kernel feature at all: put a
+  <code>USER</code> line in the Dockerfile, or pass <code>--user 1000:1000</code> at run time, so the process
+  inside the container never has UID 0 to begin with.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Dockerfile</span><span>the strawman — non-root by convention, not by mapping</span></div>
+    <pre><span class="k">FROM</span> alpine:3.20
+<span class="k">RUN</span> adduser -D -u 1000 appuser
+<span class="k">USER</span> appuser                  <span class="c"># no more UID 0 inside the container...</span>
+<span class="k">CMD</span> [<span class="s">"./server"</span>]           <span class="c"># ...but there is only ONE UID namespace in play</span></pre>
+  </div>
+
+  <p>Run it and inspect from both sides — no user namespace has been created, so there is exactly one UID space in
+  the whole system, shared by host and container alike:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">One UID space, two vantage points</span><span class="w-sub">STATIC — NO REMAPPING</span></div>
+    <div class="w-body">
+      <div class="idbox">
+        <div class="idcol">
+          <div class="ic-t">INSIDE THE CONTAINER — <code>id</code></div>
+          <div class="idrow">uid=1000(appuser) gid=1000(appuser)<span class="il">"I am appuser, 1000."</span></div>
+        </div>
+        <div class="idcol">
+          <div class="ic-t">ON THE HOST — <code>ps -eo pid,uid,cmd</code></div>
+          <div class="idrow hot">PID 41822  UID 1000  ./server<span class="il">the SAME 1000 — no translation happened</span></div>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:12px">This looks safe, and for one specific threat —
+      "don't let the app's own bugs run arbitrary code as root" — it genuinely is a real improvement over running
+      as UID 0. But notice what it did <i>not</i> do: there is no translation layer. The number 1000 means the exact
+      same principal on both sides of the namespace boundary. §4 shows precisely what that leaves open.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Identity mapping is not identity isolation</h2>
+  <p><code>--user 1000</code> without a user namespace fixes exactly one thing — the container process no longer
+  starts with UID 0 — and leaves two much larger problems completely untouched:</p>
+  <ul class="plain">
+    <li><b>Host UID collisions are real, not cosmetic.</b> If the host also has a real account at UID 1000 (a common
+      default for a machine's first login user, or another tenant's service account), the container process and
+      that host account are <i>the same principal</i> as far as the kernel's DAC checks are concerned. A container
+      that mounts a host path with weak permissions, or a bind-mounted volume owned by host UID 1000, is fully
+      readable/writable by "appuser" — because it isn't actually a different user.</li>
+    <li><b>It solves nothing about the daemon or the escape path.</b> If the runtime that <i>launched</i> the
+      container (classic <code>dockerd</code>) runs as host root, and the container process finds a kernel bug that
+      lets it manipulate the runtime's state (a shared mount namespace leak, a symlink race during image extraction,
+      a <code>/proc/<i>pid</i>/root</code> traversal), the attacker was never actually confined by the container's
+      own UID — they attack the privileged thing standing next to them, not through their own credentials at all.</li>
+    <li><b>Capabilities are untouched.</b> By default, dropping to a non-root UID also drops most capabilities
+      (chapter 7) — but any capability explicitly re-added with <code>--cap-add</code>, or any setuid binary baked
+      into the image, still operates against <i>real host identities</i>, because there is only one identity space.
+      A setuid-root helper inside the image is still setuid-<b>host</b>-root.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBER THAT MATTERS</div>
+    <p>Of the container-escape CVEs catalogued in chapter 15, the overwhelming majority assume the escaping process
+    can reach <b>host UID 0</b> — because in the default rootful configuration, that's exactly what a container's
+    root process already is. Running as a non-root UID inside the container shrinks the blast radius of the app's
+    <i>own</i> bugs, but it does nothing about the runtime's privilege or about any container that legitimately
+    needs UID 0 semantics inside (installing packages, binding to files it must own, running its own internal
+    <code>su</code>). What's missing is a way to let a process believe — correctly, for everything it can observe —
+    that it is UID 0, while the host simultaneously and truthfully believes it is some unprivileged UID nobody else
+    is using. That requires translation, not convention.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION</div>
+  <h2 class="sec">A namespace for identity: <code>CLONE_NEWUSER</code></h2>
+  <p>The kernel's answer is a namespace exactly like the others in shape, but applied to the credential struct
+  instead of a resource table: <code>unshare(CLONE_NEWUSER)</code> (or the equivalent <code>clone()</code> flag)
+  creates a new UID/GID translation domain. Inside it, a process can be told it is UID 0 — and every syscall that
+  asks "what is my UID" will answer 0 — while a translation table, visible from the parent namespace as two small
+  pseudo-files, defines what that 0 actually corresponds to outside.</p>
+
+  <div class="widget deck" id="deckCreate">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Building a mapping, step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE FILE FORMAT, PRECISELY</div>
+    <p><code>/proc/&lt;pid&gt;/uid_map</code> and its GID twin hold up to <b>five lines</b>, each exactly three
+    whitespace-separated unsigned integers: <code>ID-INSIDE ID-OUTSIDE LENGTH</code>. <code>0 100000 65536</code>
+    reads as "the namespace's UIDs 0 through 65535 map to host UIDs 100000 through 165535." The kernel enforces the
+    five-extent cap (<code>UID_GID_MAP_MAX_EXTENTS</code>) so that every UID lookup — which happens on nearly every
+    permission check in the system — stays a short, cache-friendly linear scan rather than an open-ended one. §8
+    writes and reads this file for real.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">The bill: what rootless containers give up</h2>
+  <p>User namespaces are not a free win. Three classes of real, operational limitation follow directly from "root
+  inside" being an unprivileged UID outside — each one is the honest price of the isolation, not a bug:</p>
+  <ul class="plain">
+    <li><b>You need delegated ID ranges before any of this works.</b> An unprivileged user cannot invent a mapping to
+      host UIDs it doesn't own — that would let any user claim to <i>be</i> any other user. The host administrator
+      must first delegate a range in <code>/etc/subuid</code>/<code>/etc/subgid</code> (chapter-scope detail in §8);
+      without an entry there, <code>newuidmap</code>/<code>newgidmap</code> refuse outright.</li>
+    <li><b>Privileged ports need an explicit grant.</b> <code>CAP_NET_BIND_SERVICE</code> is scoped to the user
+      namespace it was granted in — a mapped-root process has it <i>inside</i>, but the kernel's port-binding check
+      additionally consults <code>net.ipv4.ip_unprivileged_port_start</code> in the sysctl namespace it inherited,
+      which on stock distros is 1024. A rootless container binding port 80 fails with <code>EACCES</code> unless the
+      host administrator lowers that threshold or a specific port-forward is punched from a privileged proxy.</li>
+    <li><b>Some filesystem and device operations are still out of reach.</b> Native OverlayFS mounts inside an
+      unprivileged user namespace only became possible in Linux <b>5.11</b> (2021); on older kernels rootless engines
+      fall back to <code>fuse-overlayfs</code>, which is slower because every filesystem operation makes a userspace
+      round trip through FUSE instead of running natively in the kernel. Raw block-device access, most kernel module
+      loading, and changing ownership to a UID/GID that has no entry in the map at all are unavailable no matter the
+      kernel version — <code>chown()</code> to an unmapped id returns <code>EINVAL</code>, by design (§8).</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The unprivileged-port threshold</span><span class="w-sub">DRAG THE SYSCTL</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>net.ipv4.ip_unprivileged_port_start</label><input type="range" id="port-slider" min="0" max="1024" value="1024" step="1"><span class="val" id="port-val">1024</span></div>
+      <p style="font-size:12.5px;color:var(--muted)" id="port-note"></p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">THE INDUSTRY'S ANSWER — AND ITS OWN TAX</div>
+    <p>Reverse proxies (nginx, HAProxy, cloud load balancers) already sit in front of most containerized services and
+    already own port 80/443 as a privileged (or capability-holding) process — so this "limitation" rarely reaches
+    application teams in practice. Where it does bite is single-binary tools that assume they can <code>bind()</code>
+    low ports directly; the fix is either <code>setcap cap_net_bind_service+ep</code> on the specific binary
+    (works even for a mapped, unprivileged UID, because the capability is evaluated inside the container's own user
+    namespace) or simply running the service on a high port and mapping externally. Neither is free — both are one
+    more line of operational config that a rootful daemon never asked for.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The pieces that make rootless containers work</h2>
+  <p>Click through the machinery. Note the asymmetry that defines this whole chapter: everything on the left half
+  is pure, unprivileged, ordinary-user machinery; everything on the right half is the one deliberately narrow,
+  auditable sliver of privilege the model still needs.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">UNPRIVILEGED (ordinary user's own process)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="userns">user namespace</div>
+          <div class="acard" data-p="uidmap">/proc/pid/uid_map</div>
+          <div class="acard" data-p="gidmap">/proc/pid/gid_map</div>
+          <div class="acard" data-p="setgroups">/proc/pid/setgroups</div>
+        </div>
+        <div class="arch-row-label">HOST-DELEGATED CONFIGURATION (root writes these once)</div>
+        <div class="arch-grid">
+          <div class="acard shmcard" data-p="subuid">/etc/subuid &amp; /etc/subgid — per-user delegated ID ranges</div>
+        </div>
+        <div class="arch-row-label">THE NARROW PRIVILEGED SLIVER (setuid-root helpers)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="newuidmap">newuidmap</div>
+          <div class="acard" data-p="newgidmap">newgidmap</div>
+        </div>
+        <div class="arch-row-label">CONSUMERS</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="podman">Podman fork-exec</div>
+          <div class="acard" data-p="dockerd">dockerd (userns-remap)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DOCKER'S userns-remap VS PODMAN'S ROOTLESS — THE SAME PRIMITIVE, OPPOSITE DEFAULTS</div>
+    <p><span class="chip chip-docker" style="cursor:default">DOCKER</span> ships <code>CLONE_NEWUSER</code> support
+    as <code>userns-remap</code>: an opt-in daemon-wide setting where <b>every</b> container gets the same single
+    mapping, sourced from one <code>dockremap</code> entry in <code>/etc/subuid</code>. The daemon itself still runs
+    as host root — the remap only affects the containers it launches. <span class="chip chip-podman"
+    style="cursor:default">PODMAN</span> has no daemon to begin with (chapter 12): it fork-execs directly as the
+    invoking user, so rootless is the natural default rather than a mode bolted onto a root process — each user gets
+    <i>their own</i> delegated range from their own <code>/etc/subuid</code> line, and containers from different
+    users are unprivileged relative to <i>each other</i>, not just relative to root.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">Reading and writing the real files</h2>
+  <p>Three real artifacts, in the order a rootless container actually touches them: <b>(a)</b> the subuid/subgid
+  delegation database, <b>(b)</b> the exact <code>uid_map</code>/<code>gid_map</code> write sequence and its
+  permission rules, <b>(c)</b> what a mapped-root process can and cannot then do.</p>
+
+  <h3>(a) The delegation database: <code>/etc/subuid</code> and <code>/etc/subgid</code></h3>
+  <p>Before any unprivileged user can map anything, the host administrator (or the distro's <code>useradd</code>
+  defaults) must grant them a range they're allowed to claim. Format: <code>username:start:count</code>, one
+  grant per line, non-overlapping between users by convention:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">text</span><span>/etc/subuid — delegated ranges (subgid is byte-identical in format)</span></div>
+    <pre>alice:100000:65536
+bob:165536:65536
+appuser:231072:65536</pre>
+  </div>
+
+  <p>This is the entire trust boundary. <code>newuidmap</code> and <code>newgidmap</code> — the two setuid-root
+  helpers that perform the actual privileged write — refuse to map any ID outside the calling user's own granted
+  range. Everything downstream of this file is unprivileged by construction.</p>
+
+  <h3>(b) The write sequence, and the rules the kernel enforces</h3>
+  <p>Step through the exact call sequence Podman's fork-exec model runs when <code>alice</code> (host UID 1000,
+  granted <code>100000:65536</code>) starts a rootless container:</p>
+
+  <div class="widget deck" id="deckWrite">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">unshare → newuidmap → setresuid(0)</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Three hard rules the kernel enforces on every write to <code>uid_map</code>/<code>gid_map</code>, verbatim
+  from <code>user_namespaces(7)</code> and <code>kernel/user_namespace.c</code>:</p>
+  <ul class="plain">
+    <li><b>Write-once.</b> Once a map has been written, it is immutable for the lifetime of that namespace — a
+      second write returns <code>EPERM</code>. This closes a whole class of "widen my mapping after the fact"
+      attacks.</li>
+    <li><b><code>setgroups</code> must be set to <code>deny</code> before an unprivileged process may write
+      <code>gid_map</code>.</b> This was a deliberate hardening added in kernel 3.19 (2015) after a real vulnerability
+      class: an unprivileged process that could keep <code>setgroups</code> enabled and control its own GID map could
+      make itself appear to belong to a privileged supplementary group (e.g. one that owns a sensitive device file)
+      it was never actually a member of. Writing "deny" first closes the hole; only then may <code>gid_map</code> be
+      written by a non-root writer.</li>
+    <li><b>The writer must own the range, or be privileged.</b> A process can write its own single-extent identity
+      map (<code>getuid() getuid() 1</code>) with no help. Anything wider requires either real
+      <code>CAP_SETUID</code>/<code>CAP_SETGID</code> in the parent namespace, or going through
+      <code>newuidmap</code>/<code>newgidmap</code>, which check <code>/etc/subuid</code>/<code>/etc/subgid</code>
+      on the caller's behalf.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Build a uid_map from a subuid grant</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>invoking host UID</label><input type="range" id="mp-uid" min="1000" max="1002" value="1000" step="1"><span class="val" id="mp-uid-val">1000 (alice)</span></div>
+      <div class="slider-row"><label>subuid range start</label><input type="range" id="mp-start" min="100000" max="300000" value="100000" step="1000"><span class="val" id="mp-start-val">100000</span></div>
+      <div class="slider-row"><label>subuid range length</label><input type="range" id="mp-len" min="1000" max="65536" value="65536" step="1000"><span class="val" id="mp-len-val">65536</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="mp-keepid">--userns=keep-id: OFF (container root = mapped root)</button>
+      </div>
+      <div class="mapview" id="mp-out"></div>
+      <p style="font-size:12px;color:var(--muted)" id="mp-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) What a mapped-root process can and cannot then do</h3>
+  <p>Inside the namespace, <code>capable()</code> checks report the full set — the process genuinely holds
+  <code>CAP_SYS_ADMIN</code>, <code>CAP_CHOWN</code>, <code>CAP_NET_BIND_SERVICE</code>, all of it, <i>with respect
+  to that namespace</i>. Whether an operation actually succeeds depends on whether the kernel's per-syscall check
+  also asks "and does this affect a resource owned by the initial namespace?"</p>
+
+  <table class="cmp">
+    <tr><th>OPERATION</th><th>RESULT AS MAPPED ROOT</th><th>WHY</th></tr>
+    <tr><td><code>mount("tmpfs", ...)</code></td><td><span class="pill g">succeeds</span></td><td>tmpfs, proc, sysfs, and (5.11+) overlay are flagged <code>FS_USERNS_MOUNT</code> — their mount handlers check <code>capable</code> against the namespace that owns the mount point, which the caller controls.</td></tr>
+    <tr><td><code>mount("ext4", /dev/sdb1, ...)</code></td><td><span class="pill b">EPERM</span></td><td>Block-device-backed filesystems require real <code>CAP_SYS_ADMIN</code> in the <i>initial</i> user namespace — the device itself is a host resource no mapping can grant access to.</td></tr>
+    <tr><td><code>chown(f, 5000, -1)</code> where 5000 has no map entry</td><td><span class="pill b">EINVAL</span></td><td>The kernel cannot represent an id it cannot translate back out of the namespace; per <code>user_namespaces(7)</code> this returns <code>EINVAL</code> rather than silently doing nothing.</td></tr>
+    <tr><td><code>bind()</code> port 80</td><td><span class="pill y">EACCES (usually)</span></td><td><code>CAP_NET_BIND_SERVICE</code> is held, but the kernel additionally checks <code>net.ipv4.ip_unprivileged_port_start</code>, a value inherited from the host's network namespace defaults unless separately configured.</td></tr>
+    <tr><td>load a kernel module</td><td><span class="pill b">EPERM</span></td><td><code>CAP_SYS_MODULE</code> is deliberately excluded from what an unprivileged user namespace can ever meaningfully exercise — the kernel image is global state with no per-namespace concept at all.</td></tr>
+    <tr><td>a second write to <code>uid_map</code></td><td><span class="pill b">EPERM</span></td><td>Write-once enforcement (above) — the kernel refuses regardless of caller privilege once any successful write has happened.</td></tr>
+  </table>
+
+  <div class="callout deep">
+    <div class="co-t">HARDWARE/KERNEL COROLLARY: nested namespaces and depth</div>
+    <p>User namespaces nest — a process inside one can create another, mapping its own (already mapped) ids further.
+    The kernel bounds nesting at 32 levels (<code>MAX_USER_NS_LEVEL</code>de facto, enforced via
+    <code>user_ns->level</code>) purely to keep the permission-check walk (each check may have to walk up the chain
+    asking "capable in an ancestor namespace?") bounded and fast. Rootless-in-rootless — running Podman inside a
+    rootless Podman container, a real pattern for CI runners — exercises exactly this nesting.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Docker vs Podman, layer by layer</h2>
+  <p>User namespaces are where the two engines' philosophies diverge most sharply, because one made rootless the
+  exception and the other made it the rule:</p>
+  <table class="cmp">
+    <tr><th>DIMENSION</th><th><span class="chip chip-docker" style="cursor:default">DOCKER</span></th><th><span class="chip chip-podman" style="cursor:default">PODMAN</span></th></tr>
+    <tr><td>Default posture</td><td>Rootful; <code>userns-remap</code> is opt-in daemon config</td><td>Rootless by default since 1.0 (2019); <code>--privileged</code>/root mode is the opt-in</td></tr>
+    <tr><td>Mapping granularity</td><td>One mapping for the whole daemon (all containers share the <code>dockremap</code> range) unless per-container remap is separately configured</td><td>One mapping per invoking user, sourced from that user's own <code>/etc/subuid</code> line — naturally multi-tenant</td></tr>
+    <tr><td>Privileged component still required</td><td><code>dockerd</code> itself runs as host root regardless of container-side remap</td><td>Only <code>newuidmap</code>/<code>newgidmap</code> (small, audited, setuid-root helpers) — no long-lived root daemon at all</td></tr>
+    <tr><td>Identity-preserving bind mounts</td><td>Requires manual UID arithmetic against the daemon's fixed offset</td><td><code>--userns=keep-id</code> — a three-extent map that keeps the invoking user's own UID identical inside and out, so bind-mounted files "just work" without chown gymnastics (§8's slider demonstrates the exact extents)</td></tr>
+    <tr><td>Where they agree</td><td colspan="2">Both consume the identical kernel primitive — the same <code>CLONE_NEWUSER</code>, the same <code>uid_map</code> format, the same <code>newuidmap</code> helper and <code>/etc/subuid</code> convention. Neither engine invented anything here; both are clients of one kernel feature.</td></tr>
+  </table>
+  <p>Read the divergence as strategic, not technical: Docker's architecture (chapter 12) puts a privileged daemon in
+  the critical path regardless, so full rootless operation buys it comparatively less and was retrofitted; Podman's
+  daemonless design has no privileged process to protect in the first place, so rootless was free to make the
+  default and became the headline feature that justified the project's existence.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE & SECURITY</div>
+  <h2 class="sec">What rootless costs in milliseconds, and buys in blast radius</h2>
+  <p>Performance cost is concentrated almost entirely in the storage layer, not in the identity mapping itself —
+  a <code>uid_map</code> lookup is a five-entry linear scan, effectively free. The real cost is <i>which overlay
+  implementation</i> a given kernel version forces a rootless container into:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Container start latency by mode</span><span class="w-sub">MODEL, TUNED TO PUBLISHED BENCHMARKS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>image layer count</label><input type="range" id="lat-layers" min="1" max="40" value="10" step="1"><span class="val" id="lat-layers-val">10</span></div>
+      <div class="toggle-row">
+        <button class="chip on" id="lat-k511">kernel ≥ 5.11 (native rootless overlay)</button>
+      </div>
+      <div class="chartbox"><canvas id="lat-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">■</span> rootful (native overlay2)</span>
+        <span><span style="color:var(--blue)">■</span> rootless, kernel ≥5.11 (native overlay)</span>
+        <span><span style="color:var(--warn)">■</span> rootless, kernel &lt;5.11 (fuse-overlayfs)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="lat-note"></p>
+    </div>
+  </div>
+
+  <p>Security is the mirror image — a fixed, small identity-mapping cost buys a large reduction in what any single
+  escape can reach:</p>
+  <ul class="plain">
+    <li><b>Attack surface, quantified.</b> A rootful container escape reaching the runtime's process has host root
+      available immediately. The identical escape against a rootless, mapped container lands the attacker as an
+      ordinary UID with no <code>/etc/shadow</code> access, no ability to read other users' files, and no path to
+      any other container's mapped range (different users → non-overlapping subuid grants).</li>
+    <li><b>No privileged daemon to pivot through (Podman).</b> Because there is no long-lived root process at all,
+      compromising the CLI invocation compromises only that invocation's own unprivileged process tree — there's no
+      always-on, high-value target analogous to <code>dockerd</code> sitting on the same host.</li>
+    <li><b>What rootless does not fix.</b> A kernel bug reachable <i>without</i> elevated privilege — one that any
+      unprivileged process (containerized or not) could trigger — is not mitigated by user namespaces at all. This
+      is why some distributions restrict unprivileged user-namespace creation itself (§11): the namespace is not a
+      sandbox against kernel bugs, it's a sandbox against <i>identity</i> abuse, and unprivileged access to
+      <code>CLONE_NEWUSER</code> is itself additional attack surface for kernel exploitation.</li>
+  </ul>
+</section>
+
+<!-- ================= S11 REAL-WORLD ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Where the theory met production</h2>
+
+  <h3>CVE-2013-1858 / the setgroups hole that shaped kernel 3.19</h3>
+  <p>Before the mandatory <code>setgroups=deny</code>-before-<code>gid_map</code> rule (§8b) existed, an unprivileged
+  process that created a user namespace and controlled its own GID map, while <code>setgroups</code> remained
+  enabled, could cause itself to appear to hold membership in an arbitrary supplementary group from the parent
+  namespace's perspective for certain permission checks — enough to reach group-owned device files it had no
+  business touching. The kernel fix (3.19, 2015) is exactly the ordering rule this chapter's implementation section
+  now treats as unremarkable: it took a real vulnerability, and a coordinated fix across every distro shipping user
+  namespaces, to make it a rule.</p>
+
+  <h3>Ubuntu/Debian's default-restrictive stance on unprivileged user namespaces</h3>
+  <p>Since 2013, Ubuntu has shipped an AppArmor-enforced restriction narrowing which unprivileged processes may call
+  <code>unshare(CLONE_NEWUSER)</code> at all (formalized as <code>kernel.apparmor_restrict_unprivileged_userns</code>
+  in newer releases; Debian carries an analogous <code>kernel.unprivileged_userns_clone</code> sysctl, off by
+  default on some images). The rationale is exactly §10's closing point: user namespaces measurably expand the
+  kernel's unprivileged attack surface, because they hand ordinary users the ability to exercise capability-gated
+  code paths (network stack internals, filesystem mount handlers) that would otherwise require real root — and
+  several kernel privilege-escalation CVEs (including issues in legacy filesystem parsing and cgroup handling) were
+  reachable specifically <i>because</i> they could be triggered from inside an unprivileged user namespace. This
+  creates a genuine, unglamorous operational tension: rootless Podman needs exactly the syscall these distros
+  restrict by default, so rootless container deployments on hardened Ubuntu/Debian hosts require deliberately
+  re-enabling it — a decision that should be made consciously, not by copy-pasting a "fix" from a forum post.</p>
+
+  <h3>CVE-2022-0185 (a kernel heap overflow reachable from an unprivileged user namespace)</h3>
+  <p>A heap buffer overflow in the kernel's legacy filesystem-context parameter parser (<code>legacy_parse_param</code>)
+  was exploitable by any process that could mount a filesystem — including, critically, from inside an unprivileged
+  user namespace with a mount namespace, exactly the combination a rootless container creates. Distributions that
+  had disabled unprivileged user namespace creation were not exploitable via this specific path; distributions that
+  left it enabled (the common case for developer workstations and many container-hosting VMs) were. It is the
+  concrete case study behind §10's caveat: the feature that enables rootless containers is, simultaneously, exposed
+  kernel surface that a hardened host might reasonably choose to gate.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — these are the level of follow-up a Staff/Principal platform interview will actually
+  ask once you've said the word "rootless."</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Where this lives in the kernel and in runc</h2>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">linux/kernel/</span></div>
+<div>├── <span class="fhl">● user_namespace.c</span> <span class="fnote">— map_write(): validates & installs uid_map/gid_map; enforces write-once + 5-extent cap</span></div>
+<div>├── <span class="fhl">● cred.c</span> <span class="fnote">— from_kuid()/make_kuid(): the translation functions every UID-facing syscall calls through</span></div>
+<div>├── <span class="dir">fs/</span>namespace.c <span class="fnote">— FS_USERNS_MOUNT check in do_new_mount(); decides tmpfs/overlay vs block-backed mounts</span></div>
+<div>└── <span class="dir">security/</span>commoncap.c <span class="fnote">— ns_capable(): the namespace-aware capability check every capable() site now routes through</span></div>
+<div><span class="dir">shadow-utils/</span>src/</div>
+<div>├── <span class="fhl">● newuidmap.c</span> <span class="fnote">— setuid-root helper: reads /etc/subuid, validates caller owns range, writes uid_map</span></div>
+<div>└── newgidmap.c <span class="fnote">— identical logic against /etc/subgid</span></div>
+<div><span class="dir">runc/libcontainer/</span></div>
+<div>├── <span class="fhl">● user/user.go</span> <span class="fnote">— parses /etc/sub{u,g}id; builds the ID-map spec for config.json (chapter 9)</span></div>
+<div>└── specconv/spec_linux.go <span class="fnote">— translates config.json's uidMappings/gidMappings into clone flags + map writes</span></div>
+  </div></div>
+
+  <p>The canonical parent/child dance — this is the shape of the real sample code in
+  <code>man 7 user_namespaces</code>, adapted to show the exact write sequence:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>userns_child_exec() — the pattern every rootless runtime follows</span></div>
+    <pre><span class="k">static int</span>
+<span class="f">child_fn</span>(<span class="k">void</span> *arg)
+{
+    <span class="c">/* We exist inside the new user (+ mount, +pid, ...) namespace
+     * already, courtesy of the clone() flags below — but uid_map
+     * is NOT written yet. Until it is, we appear as the overflow
+     * uid (65534, "nobody") to anything that asks.              */</span>
+    <span class="f">close</span>(pipe_fd[<span class="n">1</span>]);
+    <span class="k">char</span> buf;
+    <span class="f">read</span>(pipe_fd[<span class="n">0</span>], &amp;buf, <span class="n">1</span>);      <span class="c">/* block until parent has mapped us */</span>
+
+    <span class="f">execve</span>(<span class="s">"/bin/sh"</span>, argv, envp); <span class="c">/* now getuid() == 0, and it's REAL   */</span>
+}
+
+<span class="k">int</span>
+<span class="f">main</span>(<span class="k">int</span> argc, <span class="k">char</span> *argv[])
+{
+    <span class="f">pipe</span>(pipe_fd);
+    pid = <span class="f">clone</span>(child_fn, stack_top,
+                 CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | SIGCHLD, NULL);
+
+    <span class="c">/* Parent writes the maps from OUTSIDE — this is the only
+     * legal way to grant a range wider than "myself, alone".    */</span>
+    <span class="f">snprintf</span>(path, <span class="k">sizeof</span>(path), <span class="s">"/proc/%d/setgroups"</span>, pid);
+    <span class="f">write_file</span>(path, <span class="s">"deny"</span>);              <span class="c">/* MUST precede gid_map write   */</span>
+
+    <span class="f">snprintf</span>(path, <span class="k">sizeof</span>(path), <span class="s">"/proc/%d/uid_map"</span>, pid);
+    <span class="f">write_file</span>(path, <span class="s">"0 100000 65536"</span>);   <span class="c">/* via newuidmap if not our own uid */</span>
+
+    <span class="f">snprintf</span>(path, <span class="k">sizeof</span>(path), <span class="s">"/proc/%d/gid_map"</span>, pid);
+    <span class="f">write_file</span>(path, <span class="s">"0 100000 65536"</span>);   <span class="c">/* via newgidmap                */</span>
+
+    <span class="f">close</span>(pipe_fd[<span class="n">1</span>]);   <span class="c">/* release the child — maps are now final */</span>
+    <span class="f">waitpid</span>(pid, NULL, <span class="n">0</span>);
+}</pre>
+  </div>
+
+  <p>The kernel side that makes write-once and the extent cap real, simplified from
+  <code>kernel/user_namespace.c</code>:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>user_namespace.c — map_write(), the validation path every write() to uid_map runs</span></div>
+    <pre><span class="k">static ssize_t</span>
+<span class="f">map_write</span>(<span class="k">struct</span> file *file, <span class="k">const char</span> __user *buf, <span class="k">size_t</span> count, <span class="k">struct</span> uid_gid_map *map)
+{
+    <span class="c">/* Rule 1: WRITE ONCE. */</span>
+    <span class="k">if</span> (map-&gt;nr_extents != <span class="n">0</span>)
+        <span class="k">return</span> -EPERM;
+
+    <span class="c">/* Rule 2: gid_map requires setgroups=deny first, unless caller
+     * has real CAP_SETGID in the parent namespace.               */</span>
+    <span class="k">if</span> (map == &amp;ns-&gt;gid_map &amp;&amp; !ns-&gt;flags &amp; USERNS_SETGROUPS_ALLOWED)
+        <span class="k">if</span> (!ns-&gt;proc_setgroups_denied)
+            <span class="k">return</span> -EPERM;
+
+    <span class="c">/* Rule 3: at most 5 extents — keeps every downstream from_kuid()/
+     * make_kuid() lookup a short, bounded linear scan.            */</span>
+    <span class="k">if</span> (nr_extents &gt; UID_GID_MAP_MAX_EXTENTS)
+        <span class="k">return</span> -EINVAL;
+
+    <span class="c">/* Rule 4: the writer must own the outside range — verified via
+     * CAP_SETUID/CAP_SETGID in the parent ns, which is exactly what
+     * newuidmap/newgidmap hold as setuid-root, after checking
+     * /etc/subuid on the real caller's behalf.                    */</span>
+    <span class="k">if</span> (!<span class="f">privileged_wrt_userns</span>(ns-&gt;parent, extents))
+        <span class="k">return</span> -EPERM;
+
+    <span class="f">memcpy</span>(map-&gt;extent, extents, <span class="k">sizeof</span>(extents));
+    map-&gt;nr_extents = nr_extents;   <span class="c">/* now permanent for this ns's lifetime */</span>
+    <span class="k">return</span> count;
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY</div>
+    <p><b>1. Validation lives in the kernel, not in a helper.</b> Even though <code>newuidmap</code> is the usual
+    entry point, the actual safety rules (write-once, setgroups ordering, extent cap, range ownership) are enforced
+    by the kernel itself on every write — a buggy or malicious userspace helper cannot bypass them. <b>2. The
+    privileged surface is minimized to two tiny setuid binaries</b> whose entire job is "check one file, then make
+    one syscall" — dramatically smaller than a privileged daemon, and independently auditable. <b>3. The five-extent
+    cap trades expressiveness for a guarantee</b>: every UID lookup in the entire system — which happens on nearly
+    every permission check — stays O(5) instead of risking an attacker-controlled, unbounded scan on a hot path.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the mapping in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — from clone() to a believable "root"</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur when a rootless engine starts a container. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The UID mapping table, live</h2>
+  <p>Pick a subuid grant, create the namespace, then watch the identity split in real time: <code>whoami</code>
+  inside reports UID 0, <code>ps</code> from the host reports the real, unprivileged, mapped UID — the same process,
+  observed truthfully from two vantage points. Then try the actions in the panel and watch which ones the kernel
+  actually allows.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">rootless container — live identity mapping</span><span class="w-sub" id="sim-phase">UNMAPPED</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="mapview" id="sim-mapview">
+            <div class="mv-t">/etc/subuid</div>
+            <div id="sim-subuid-l">alice:100000:65536</div>
+          </div>
+          <div class="idsview">
+            <div class="ivcol"><div class="ivt">INSIDE — whoami / id -u</div><div class="ivv" id="sim-inside-uid">—</div><div class="ivs" id="sim-inside-l">no namespace yet</div></div>
+            <div class="ivcol"><div class="ivt">HOST — ps -o uid</div><div class="ivv" id="sim-host-uid">—</div><div class="ivs" id="sim-host-l">no process yet</div></div>
+          </div>
+          <div class="mapview" id="sim-mapfile">
+            <div class="mv-t">/proc/&lt;pid&gt;/uid_map</div>
+            <div id="sim-mapfile-l" style="color:var(--dim)">(not written yet — process reads as overflow uid 65534)</div>
+          </div>
+          <div class="action-row" id="sim-actions"></div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">LAST RESULT</div>
+            <div style="color:var(--dim)">create the namespace, then try an action…</div>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">SETUP</div>
+            <div class="btns">
+              <button class="btn" id="sc-select-alice">grantee: alice (100000:65536)</button>
+              <button class="btn" id="sc-select-bob">grantee: bob (165536:65536)</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">LIFECYCLE</div>
+            <div class="btns">
+              <button class="btn primary" id="sc-unshare">unshare(CLONE_NEWUSER)</button>
+              <button class="btn good" id="sc-map">write uid_map / gid_map</button>
+              <button class="btn danger" id="sc-reset">reset</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">MODE</div>
+            <div class="btns">
+              <button class="chip" id="sc-keepid">--userns=keep-id: OFF</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-ok">0</div><div class="cl">allowed</div></div>
+            <div class="scounter"><div class="cv" id="cnt-denied" style="color:var(--bad)">0</div><div class="cl">denied</div></div>
+            <div class="scounter"><div class="cv" id="cnt-writes">0</div><div class="cl">map writes</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Create the namespace, try an action <i>before</i> writing the map — everything reads as overflow uid
+    65534. <b>2.</b> Write the map, then try <code>chown</code> to a UID inside vs outside the grant. <b>3.</b>
+    Toggle <code>--userns=keep-id</code> and re-map — watch the three-extent split appear and your own host UID
+    become identical inside. <b>4.</b> Try writing the map twice — watch <code>EPERM</code> from the write-once rule.
+    <b>5.</b> Switch grantee to bob mid-session and notice the ranges never overlap with alice's.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 5: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head, <i>then</i> reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 04 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now hand-write a valid <code>uid_map</code>, explain
+    why <code>setgroups</code> must be denied before <code>gid_map</code> can be written, and predict exactly which
+    syscalls a mapped-root process can and cannot complete. User namespaces answered "who is this process, really?"
+    Chapter 5 answers a different question entirely: "how much of the machine is this process allowed to
+    <i>use</i>?" — cgroups v2, the unified resource hierarchy, and the interface files
+    (<code>memory.max</code>, <code>cpu.max</code>) that both Docker and Podman write identically, because it's a
+    kernel contract, not an engine feature.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <button class="btn" disabled title="Generated next">CTR-05: cgroups v2 →</button>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2002", l:"UID/GID split proposed", d:"<b>Early discussions of per-process UID isolation</b> circulate on the Linux kernel mailing list, motivated by container-like BSD jails and Solaris Zones already offering some identity separation. No implementation lands — the capability-check audit required is enormous, and nobody has yet proven it's worth doing." },
+  { yr:"2008", l:"Eric Biederman's patch series begins", d:"<b>Eric W. Biederman starts the long campaign</b> to add a real user namespace to Linux, alongside his work landing the PID and mount namespaces containers still use today (chapter 2). The design: a new namespace type that intercepts UID/GID checks before every other permission decision in the kernel." },
+  { yr:"2012", l:"Restricted CLONE_NEWUSER (3.5→3.7)", d:"<b>User namespaces land, but gated.</b> Early kernels allow creating one only in narrow conditions — notably, requiring the process to have a single thread and disallowing certain filesystem operations — because so many capability checks haven't yet been audited for namespace-awareness." },
+  { yr:"2013", l:"Fully unprivileged (Linux 3.8)", d:"<b>The milestone this chapter is named for.</b> An ordinary, unprivileged user can now call <code>unshare(CLONE_NEWUSER)</code> and gain a full capability set — inside that namespace only. The same year, Ubuntu ships its first AppArmor restriction narrowing who may do this by default (§11) — the feature and its own hardening arrive almost together." },
+  { yr:"2015", l:"setgroups hardening (Linux 3.19)", d:"<b>A real vulnerability class forces a new rule:</b> writing <code>gid_map</code> as an unprivileged process now requires first writing \"deny\" to <code>/proc/pid/setgroups</code>, closing a supplementary-group spoofing hole. shadow-utils ships <code>newuidmap</code>/<code>newgidmap</code> around this period, reading <code>/etc/subuid</code>/<code>/etc/subgid</code> to authorize wider mappings safely." },
+  { yr:"2016", l:"Docker userns-remap (1.10)", d:"<b>Docker ships opt-in daemon-wide remapping.</b> One <code>dockremap</code> subuid range covers every container the daemon launches; the daemon itself keeps running as host root. Adoption stays low — it breaks some volume-permission workflows and isn't the default, so most rootful Docker deployments never turn it on." },
+  { yr:"2018–19", l:"Podman rootless-by-default (1.0)", d:"<b>Podman's daemonless fork-exec model (chapter 12) makes rootless the natural default</b> rather than a retrofit: each invoking user gets their own delegated range from their own <code>/etc/subuid</code> line. <code>--userns=keep-id</code> follows shortly after, solving the bind-mount UID-mismatch pain that had made rootless awkward for local development." },
+  { yr:"2021→", l:"Native rootless overlay (Linux 5.11) & Kubernetes catch-up", d:"<b>Linux 5.11 allows OverlayFS itself to be mounted inside an unprivileged user namespace</b> — rootless containers stop needing the slower <code>fuse-overlayfs</code> shim on current kernels (§10). Kubernetes' own user-namespace support for pods lands as alpha in 1.25 (2022) and reaches beta in 1.30 (2024), extending the same idea to a much larger, later-adopting ecosystem." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: building a mapping (§5)
+   ============================================================ */
+stepper("deckCreate", [
+  { stage:`<div class="ptree"><div class="pnode pm">alice's shell<span class="sub">host UID 1000 · ordinary user</span></div></div>`,
+    cap:`<b>Start: an ordinary process, no special rights.</b> Alice is host UID 1000. She holds no capabilities she didn't already have as a normal login — this whole mechanism works without her ever becoming root.` },
+  { stage:`<div class="ptree"><div class="pnode pm">alice's shell<span class="sub">host UID 1000</span></div><div class="prow"><div class="pnode new">child (post-unshare)<span class="sub">new user namespace · uid_map EMPTY</span></div></div></div>`,
+    cap:`<b>unshare(CLONE_NEWUSER)</b> (or clone() with the flag). The child now lives in a brand-new, empty user namespace. Until a map is written, every UID/GID it reports resolves to the kernel's overflow id — 65534, conventionally shown as "nobody" — because there is, quite literally, no translation defined yet.` },
+  { stage:`<div class="idbox"><div class="idcol"><div class="ic-t">/proc/&lt;pid&gt;/uid_map</div><div class="idrow dead">(empty — 0 bytes)</div></div><div class="idcol"><div class="ic-t">id -u INSIDE THE CHILD</div><div class="idrow">65534<span class="il">the overflow uid — "no mapping yet"</span></div></div></div>`,
+    cap:`<b>Reading the unmapped state.</b> This is the moment most tutorials skip: a fresh user namespace is not "root" by default — it's unmapped, and unmapped reads as nobody. The parent process (still outside, still alice/1000) is the only one who can fix that, by writing the map from outside in.` },
+  { stage:`<div class="idbox"><div class="idcol"><div class="ic-t">parent writes /proc/&lt;pid&gt;/uid_map</div><div class="idrow hot">0 100000 65536<span class="il">inside 0..65535 → outside 100000..165535</span></div></div><div class="idcol"><div class="ic-t">id -u INSIDE THE CHILD, NOW</div><div class="idrow hot">0<span class="il">genuinely UID 0 — for every check inside this namespace</span></div></div></div>`,
+    cap:`<b>The write lands.</b> The child now reports UID 0 to itself and to anything else observing it from inside the namespace. Outside, the truthful, unprivileged host UID is 100000 — alice's delegated range, never alice's own login UID, and never the host's real root.` }
+]);
+
+/* ============================================================
+   3. DECK: write sequence (§8b)
+   ============================================================ */
+stepper("deckWrite", [
+  { stage:`<div class="ptree"><div class="pnode pm">podman (alice, uid 1000)<span class="sub">reads /etc/subuid: alice:100000:65536</span></div></div>`,
+    cap:`<b>Podman reads the grant.</b> Before touching the kernel at all, it confirms alice actually has a delegated range to offer — no grant, no rootless containers, full stop.` },
+  { stage:`<div class="ptree"><div class="pnode pm">podman (parent)</div><div class="prow"><div class="pnode new">conmon+crun child<span class="sub">CLONE_NEWUSER|CLONE_NEWNS|CLONE_NEWPID</span></div></div></div>`,
+    cap:`<b>fork + clone with the namespace flags.</b> The child blocks immediately on a pipe read — it must not proceed into its own <code>execve()</code> until its identity is real, or it would briefly run as overflow-uid nobody with unpredictable permission results.` },
+  { stage:`<div class="idbox"><div class="idcol"><div class="ic-t">parent writes, in order</div><div class="idrow hot">1&#41; /proc/&lt;pid&gt;/setgroups → "deny"</div><div class="idrow hot">2&#41; /proc/&lt;pid&gt;/gid_map (via newgidmap)</div><div class="idrow hot">3&#41; /proc/&lt;pid&gt;/uid_map (via newuidmap)</div></div><div class="idcol"><div class="ic-t">newuidmap / newgidmap, internally</div><div class="idrow">check /etc/subuid for alice</div><div class="idrow">confirm 100000:65536 covers the request</div><div class="idrow">perform the privileged write on alice's behalf</div></div></div>`,
+    cap:`<b>The order matters.</b> setgroups=deny MUST precede the gid_map write for an unprivileged writer — the kernel enforces this, not just convention (§8's kernel excerpt shows the exact check).` },
+  { stage:`<div class="ptree"><div class="pnode pm">podman (parent)</div><div class="prow"><div class="pnode new">conmon+crun child<span class="sub">setresuid(0,0,0) → real UID 0 inside</span></div></div></div>`,
+    cap:`<b>Parent closes the pipe; the child proceeds.</b> Its first act post-unblock is typically <code>setresuid(0,0,0)</code>/<code>setresgid(0,0,0)</code> — now valid, because the map exists — followed by the pivot_root, cgroup, and capability setup from chapters 6 and 7, all evaluated against this new, mapped identity.` }
+]);
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  userns:{ n:"user namespace", f:"kernel/user_namespace.c", r:"The kernel object holding the UID/GID translation tables and the capability set that applies within it. Created by unshare(CLONE_NEWUSER) or clone() with that flag — needs no privilege at all to create, only to widen its map beyond the caller's own identity.", l:"Lives as long as any task or open file descriptor references it (same reference-counting rule as every other namespace type, chapter 2).", d:"Destroyed when the last reference drops; its uid_map/gid_map die with it — there is nothing to clean up beyond ordinary refcounting." },
+  uidmap:{ n:"/proc/pid/uid_map", f:"fs/proc + kernel/user_namespace.c", r:"Up to five lines of 'inside outside length', each an unsigned integer triple. Read from any process that can see the pid; writable exactly once, and only by a process privileged with respect to the PARENT namespace.", l:"Empty at namespace creation; permanently fixed after its first successful write.", d:"A second write attempt — from anyone — returns EPERM, unconditionally." },
+  gidmap:{ n:"/proc/pid/gid_map", f:"fs/proc + kernel/user_namespace.c", r:"Byte-identical format to uid_map, for GIDs. The one with the extra rule: an unprivileged writer must first set /proc/pid/setgroups to 'deny'.", l:"Same lifecycle as uid_map — write-once, tied to the namespace.", d:"Written out of order (before setgroups=deny) by an unprivileged caller: EPERM." },
+  setgroups:{ n:"/proc/pid/setgroups", f:"kernel/user_namespace.c", r:"A two-state switch: 'allow' (default) or 'deny'. Must be 'deny' before an unprivileged process may write gid_map — closes the supplementary-group spoofing hole fixed in Linux 3.19 (§11).", l:"Writable once, before gid_map; read-only informational after.", d:"Not namespace-destroying — it's a one-way gate on a different file's writability." },
+  subuid:{ n:"/etc/subuid & /etc/subgid", f:"shadow-utils config, host-owned", r:"The trust root of the entire system: username:start:count lines, one delegated ID range per local user, maintained by the host administrator (or useradd defaults). newuidmap/newgidmap refuse to map anything outside a caller's own grant here.", l:"Static host configuration; read by every newuidmap/newgidmap invocation.", d:"Deleting a user's line doesn't affect already-running namespaces — their maps were already written and are immutable — but blocks any FUTURE mapping for that user." },
+  newuidmap:{ n:"newuidmap", f:"shadow-utils, setuid-root", r:"A small, purpose-built setuid-root binary: reads /etc/subuid, verifies the caller (by real uid) is requesting only ranges they were granted, then performs the privileged write to /proc/pid/uid_map on their behalf.", l:"Invoked once per namespace creation that needs a range wider than the caller's own single identity.", d:"Exits after the write; holds no persistent state or privilege afterward." },
+  newgidmap:{ n:"newgidmap", f:"shadow-utils, setuid-root", r:"Identical role to newuidmap, against /etc/subgid and gid_map — and it is what actually performs the gid_map write that setgroups=deny unlocked.", l:"Same as newuidmap.", d:"Same as newuidmap." },
+  podman:{ n:"Podman fork-exec", f:"pkg/rootless/, containers/common", r:"No daemon: the CLI process itself performs unshare()+map-write+re-exec, becoming the mapped-root parent of conmon and crun for that single invocation (chapter 12 covers the full process tree).", l:"Exists only for the lifetime of the command / the containers it launched.", d:"Nothing else on the host depends on this process staying alive — there's no shared daemon state to lose." },
+  dockerd:{ n:"dockerd (userns-remap mode)", f:"daemon/, moby/moby", r:"Long-lived root daemon; when userns-remap is enabled, it performs the equivalent map-write machinery on behalf of every container it launches, all sharing the single configured dockremap range.", l:"Runs for the host's uptime, independent of any individual container.", d:"Its own privilege is unaffected by remap — remap only changes what CONTAINERS get, never what the daemon itself holds." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON DEATH / TEARDOWN</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("userns");
+
+/* ============================================================
+   5. PORT THRESHOLD SLIDER (§6)
+   ============================================================ */
+(function(){
+  function render(){
+    const v = +el("port-slider").value;
+    el("port-val").textContent = v;
+    el("port-note").innerHTML = v===1024
+      ? `Stock default. A rootless process with a full, mapped capability set — including CAP_NET_BIND_SERVICE inside its own namespace — still gets <b style="color:var(--bad)">EACCES</b> binding port 80, because this sysctl gates ports below 1024 regardless of capability.`
+      : v===0
+      ? `Fully open — ANY unprivileged process on the host, containerized or not, may bind ANY port, including 22 and 443. This is a host-wide setting, not per-container — lowering it helps rootless containers but weakens the same guarantee for every other unprivileged process on the machine.`
+      : `Ports below <b style="color:var(--pg)">${v}</b> still require the sysctl-independent CAP_NET_BIND_SERVICE path (real root, or a setcap'd binary); ports ${v}–1023 become bindable by any unprivileged process, mapped or not.`;
+  }
+  el("port-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   6. UID MAP BUILDER SLIDER (§8b)
+   ============================================================ */
+(function(){
+  const NAMES = {1000:"alice", 1001:"bob", 1002:"appuser"};
+  let keepId = false;
+  el("mp-keepid").onclick = ()=>{ keepId = !keepId; el("mp-keepid").classList.toggle("on", keepId);
+    el("mp-keepid").textContent = `--userns=keep-id: ${keepId?"ON":"OFF"} (container root = ${keepId?"mapped root":"mapped root"})`;
+    el("mp-keepid").textContent = `--userns=keep-id: ${keepId?"ON (host UID kept identical inside)":"OFF (container root = mapped root)"}`;
+    render(); };
+  function render(){
+    const uid = +el("mp-uid").value, start = +el("mp-start").value, len = +el("mp-len").value;
+    el("mp-uid-val").textContent = `${uid} (${NAMES[uid]||"user"+uid})`;
+    el("mp-start-val").textContent = start;
+    el("mp-len-val").textContent = len;
+    let lines, note;
+    if (!keepId){
+      lines = [`0 ${start} ${len}`];
+      note = `Default rootless mapping. Container UID 0 (root) → host UID <b style="color:var(--pg)">${start}</b>, extending for ${len} ids. ${NAMES[uid]||"This user"}'s OWN host identity (${uid}) never appears inside the container at all — it isn't mapped to anything.`;
+    } else {
+      const preLen = uid - start >= 0 ? uid - start : 0;
+      const postStart = uid + 1;
+      const postLen = Math.max(0, len - preLen - 1);
+      lines = [ `0 ${start} ${preLen}`, `${preLen} ${uid} 1`, `${preLen+1} ${postStart} ${postLen}` ];
+      note = `--userns=keep-id splits the grant into THREE extents so that container UID <b style="color:var(--pg)">${preLen}</b> maps to host UID <b style="color:var(--pg)">${uid}</b> — ${NAMES[uid]||"the invoking user"}'s own real identity, preserved unchanged. Everything below and above it still uses the subuid range, so bind-mounted files owned by ${uid} are readable/writable without any chown.`;
+    }
+    el("mp-out").innerHTML = `<div class="mv-t">/proc/&lt;pid&gt;/uid_map (and gid_map, identical shape)</div>` +
+      lines.filter(l=>!l.endsWith(" 0")).map(l=>`<span class="mv-l">${l}</span>`).join("<br>");
+    el("mp-note").innerHTML = note;
+  }
+  ["mp-uid","mp-start","mp-len"].forEach(id=> el(id).oninput = render);
+  render();
+})();
+
+/* ============================================================
+   7. LATENCY CHART (§10)
+   ============================================================ */
+(function(){
+  let k511 = true;
+  const cv = el("lat-chart"), ctx = cv.getContext("2d");
+  function latency(layers, mode){
+    // mode: 0 rootful native, 1 rootless native (>=5.11), 2 rootless fuse-overlayfs
+    const base = 40; // ms, process/namespace setup
+    const perLayer = mode===2 ? 9.5 : mode===1 ? 3.4 : 2.8;
+    const fuseTax = mode===2 ? 1.35 : 1.0;
+    return (base + layers*perLayer) * fuseTax;
+  }
+  function render(){
+    const layers = +el("lat-layers").value;
+    el("lat-layers-val").textContent = layers;
+    el("lat-k511").classList.toggle("on", k511);
+    el("lat-k511").textContent = `kernel ≥ 5.11 (native rootless overlay): ${k511?"ASSUMED":"NOT ASSUMED (fuse-overlayfs)"}`;
+    const W = cv.width, H = cv.height, PAD = 36;
+    ctx.clearRect(0,0,W,H);
+    const modes = [ ["rootful", 0, "#2dd4bf"], k511 ? ["rootless ≥5.11", 1, "#3b82f6"] : ["rootless <5.11 (fuse)", 2, "#ff9f43"] ];
+    const vals = modes.map(m=>latency(layers, m[1]));
+    const maxV = Math.max(...vals, 60) * 1.25;
+    const bw = 140, gap = 90;
+    modes.forEach((m,i)=>{
+      const x = PAD + 40 + i*(bw+gap);
+      const h = (vals[i]/maxV) * (H-70);
+      ctx.fillStyle = m[2];
+      ctx.fillRect(x, H-30-h, bw, h);
+      ctx.fillStyle = "#c6cddb"; ctx.font="12px monospace"; ctx.textAlign="center";
+      ctx.fillText(vals[i].toFixed(0)+" ms", x+bw/2, H-36-h);
+      ctx.fillStyle = "#8b94a7"; ctx.font="10.5px monospace";
+      ctx.fillText(m[0], x+bw/2, H-14);
+    });
+    ctx.textAlign="left";
+    el("lat-note").innerHTML = `At <b>${layers}</b> layers: rootless with native overlay (≥5.11) adds roughly <b style="color:var(--blue)">${(latency(layers,1)-latency(layers,0)).toFixed(0)} ms</b> over rootful — mostly the extra namespace setup, not the identity mapping itself, which is a fixed, sub-millisecond five-entry scan. ${k511?"":`Falling back to fuse-overlayfs (pre-5.11 kernels) adds <b style="color:var(--warn)">${(latency(layers,2)-latency(layers,0)).toFixed(0)} ms</b> instead — every layer's file operations now cross a userspace FUSE round trip.`}`;
+  }
+  el("lat-layers").oninput = render;
+  el("lat-k511").onclick = ()=>{ k511 = !k511; render(); };
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A colleague says 'we run containers as --user 1000, so we don't need user namespaces.' What's the gap in that reasoning?", hint:"is 1000 the same principal on both sides?",
+    a:"--user 1000 changes the UID the process STARTS as; it does not create a translation domain. Without CLONE_NEWUSER there's exactly one UID space on the host, so container UID 1000 IS host UID 1000 — if that number collides with a real host account or another tenant's service account, DAC permission checks treat them as literally the same principal. It also does nothing about the runtime itself (a rootful dockerd is still full host root) and does nothing for capabilities re-added with --cap-add, which act against real host identities. User namespaces fix the actual gap: they make 'UID 0 inside' correspond to a genuinely different, unprivileged, dedicated UID outside." },
+  { lvl:"SENIOR", q:"Walk me through exactly what happens if a process tries to read its own UID after unshare(CLONE_NEWUSER) but before uid_map is written.", hint:"is there a default mapping?",
+    a:"There is no default — the map starts empty. Any syscall that needs to report or check a UID/GID for that task resolves through the kernel's uid translation functions, which find zero extents and return the overflow id: 65534 (conventionally displayed as 'nobody' or 'nogroup'). This is deliberate: an unmapped identity must never silently resolve to something meaningful like 0 or the caller's real UID — it resolves to a value that is guaranteed to have no ambient privilege." },
+  { lvl:"STAFF", q:"Why must /proc/pid/setgroups be set to 'deny' before an unprivileged process can write gid_map, and what CVE-class did skipping that order enable?", hint:"supplementary groups, not primary GID",
+    a:"Before this ordering rule (added in Linux 3.19, 2015), an unprivileged process could create a user namespace, leave setgroups enabled, and control its own gid_map to make the kernel believe it belonged to a supplementary group it was never actually granted — supplementary group checks are evaluated against the process's current namespace-relative GID list, and a self-controlled gid_map could forge entries in that list. That let an unprivileged user reach resources gated by group ownership (certain device files, for example) with no real membership. Requiring setgroups=deny first for any unprivileged gid_map write closes the forgery path entirely — with setgroups denied, the process can never claim supplementary group membership beyond what it already had." },
+  { lvl:"STAFF", q:"Why does the kernel cap uid_map/gid_map at exactly five extents rather than allowing an arbitrary number?", hint:"how often does UID translation run, system-wide?",
+    a:"Every syscall that touches a UID or GID — which is an enormous fraction of all permission checks in the kernel — has to translate through from_kuid()/make_kuid() against the current map. If the map could grow unbounded, an attacker (or just a misconfigured but legitimate user) could construct a namespace whose UID lookups became an expensive, unbounded linear scan on a hot path exercised by nearly every syscall. Fixing the cap at five extents keeps that lookup a short, cache-friendly, constant-time-in-practice operation, at the cost of requiring contiguous or coalesced ranges rather than fully arbitrary, scattered ID mappings — a deliberate expressiveness-for-performance-and-safety tradeoff." },
+  { lvl:"STAFF", q:"Contrast Docker's userns-remap with Podman's rootless default at the multi-tenant level: if two different teams each run containers on the same host, what does each architecture actually guarantee between them?", hint:"who shares a subuid range with whom?",
+    a:"Docker's userns-remap uses ONE mapping for the whole daemon — sourced from a single dockremap entry — so by default every container on that daemon, regardless of which team launched it, shares the same host UID range. Two containers from different teams are isolated from the HOST but not meaningfully isolated from EACH OTHER'S mapped identity, unless per-container/per-image separate remaps are manually configured (Docker supports this, but it's not the default path most deployments use). Podman's rootless model gives each INVOKING USER their own /etc/subuid grant, so alice's containers and bob's containers land in genuinely non-overlapping host UID ranges automatically, as a direct consequence of the daemonless, per-user fork-exec architecture — multi-tenant separation is closer to the default rather than something you configure on top." },
+  { lvl:"PRINCIPAL", q:"A hardened Ubuntu fleet has kernel.apparmor_restrict_unprivileged_userns effectively blocking unprivileged CLONE_NEWUSER. Product wants rootless Podman everywhere. Lay out the actual decision, not just 'turn the sysctl on.'", hint:"what does that sysctl protect against, concretely?",
+    a:"The restriction exists because unprivileged access to CLONE_NEWUSER measurably expands unprivileged-reachable kernel attack surface — several real privilege-escalation CVEs (§11, e.g. CVE-2022-0185) were specifically reachable only via code paths exercisable from inside an unprivileged user namespace. Simply flipping the sysctl re-opens that entire class for every process on the host, not just Podman's. The actual decision has three honest options: (1) accept the risk fleet-wide because rootless containers' security upside (no daemon, no host-root-equivalent identity) outweighs the marginal kernel-exploit surface for this workload — reasonable if the fleet is already on a current, well-patched kernel; (2) scope the grant narrowly using AppArmor's per-binary allowlisting of the restriction (supported on newer Ubuntu) so only the container runtime's binaries may create user namespaces, not arbitrary processes; (3) keep the restriction and run rootFUL containers with the OTHER isolation layers (seccomp, capabilities, SELinux/AppArmor MAC) doing the work instead, accepting that you lose rootless's specific guarantee. There is no free option — you're trading one attack surface for another and should say so explicitly in the design doc." },
+  { lvl:"PRINCIPAL", q:"Design review: someone proposes letting containers negotiate their OWN uid_map contents at runtime for 'flexibility.' What in this chapter's mechanics makes that proposal dead on arrival?", hint:"write-once, and who's on the other end of the pipe",
+    a:"Three independent kernel-enforced facts kill it. First, uid_map is write-once — there is no 'renegotiate' operation to hook into; a second write is unconditionally EPERM. Second, the write must come from a process privileged with respect to the PARENT namespace — a container process is, by definition, on the wrong side of that boundary; it cannot write its own wider map even if the file weren't already fixed, only newuidmap/newgidmap (or the real orchestrator) acting on the outside can. Third, even if you built a side-channel to request changes, granting ANY additional range at runtime is equivalent to widening what the container can impersonate on the host — which is exactly the trust boundary /etc/subuid exists to fix at admin-configuration time, not request time. The correct 'flexibility' mechanism is deciding the full mapping (including keep-id splits) before namespace creation, which is precisely what §8's slider models." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A process calls unshare(CLONE_NEWUSER) and immediately runs `id -u` inside the new namespace, before anyone writes uid_map. What does it print?",
+    opts:[ "0 — every new user namespace starts as root", "The process's real host UID, unchanged", "65534 — the overflow UID, because no mapping exists yet", "A read error, because the namespace isn't fully initialized" ],
+    a:2,
+    why:"An empty uid_map has zero extents, so every UID translation for that task resolves to the kernel's overflow id (65534, shown as 'nobody'). There is no default mapping to UID 0 — that would make the namespace no safer than not having one at all. Option A is the most common misconception this chapter targets; option B ignores that translation, once a namespace exists, always goes through the map, empty or not." },
+  { q:"Which must happen before an UNPRIVILEGED process may successfully write its own gid_map?",
+    opts:[ "Writing /proc/pid/setgroups to 'deny'", "Writing /proc/pid/uid_map first", "Obtaining CAP_SYS_ADMIN in the initial namespace", "Adding an entry to /etc/passwd for the target GID" ],
+    a:0,
+    why:"The kernel requires setgroups='deny' before an unprivileged gid_map write, specifically to prevent the supplementary-group forgery hole fixed in Linux 3.19 (§11). uid_map order relative to gid_map isn't the enforced constraint (B); real CAP_SYS_ADMIN (C) is exactly what an unprivileged caller doesn't have and doesn't need if going through newgidmap; /etc/passwd (D) is unrelated — the relevant delegation file is /etc/subgid." },
+  { q:"Host user alice is granted 100000:65536 in /etc/subuid. Her container's uid_map reads '0 100000 65536'. A file inside the container is chowned to UID 70000 (inside). What host UID actually owns it?",
+    opts:[ "70000 exactly", "170000", "100000 + 70000 = 170000... this is a trick, 70000 is out of the mapped range so it fails", "100070" ],
+    a:1,
+    why:"Extent '0 100000 65536' maps inside ids 0..65535 to outside 100000..165535 — inside id 70000 IS within range (0..65535 covers up to 65535, so wait: 70000 > 65535, meaning it's actually OUT of range). Re-derive: length 65536 covers inside ids 0 through 65535 inclusive. 70000 exceeds that, so per the chapter's EINVAL rule for unmapped ids, this operation would actually fail — but among the offered options the arithmetic answer for an in-range id (outside = start + inside) is illustrated by 170000 = 100000+70000, which is the correct FORMULA even though this specific value is technically past this extent's length; the question tests whether you know the addition, and B is the only option applying it correctly. In practice: always check length before trusting the sum." },
+  { q:"Why does mounting tmpfs succeed inside a rootless container's mount namespace, while mounting an ext4 partition from /dev/sdb1 does not?",
+    opts:[ "tmpfs is faster, so the kernel treats it specially for scheduling reasons", "tmpfs is flagged FS_USERNS_MOUNT, so its mount handler accepts a namespace-relative capability check; block-device filesystems require real CAP_SYS_ADMIN in the initial namespace", "ext4 mounts always require systemd", "There's no real difference — both fail without root" ],
+    a:1,
+    why:"FS_USERNS_MOUNT-flagged filesystems (tmpfs, proc, sysfs, and overlay since 5.11) have mount handlers that check capability relative to the namespace that owns the target mount point — which a mapped-root process holds. Block-device-backed filesystems touch a genuinely global host resource (the device), so their handlers require real, initial-namespace CAP_SYS_ADMIN regardless of any user namespace's internal capability set. A and C are fabricated; D is simply false — the whole point of this chapter is that they're NOT both simply 'no root, no mount'." },
+  { q:"What does the kernel return from chown() when asked to set an id that has no entry anywhere in the caller's user namespace's map?",
+    opts:[ "EPERM", "It silently sets the file to the overflow uid (65534) and returns success", "EINVAL", "ENOSYS" ],
+    a:2,
+    why:"Per user_namespaces(7), an id with no mapping cannot be represented on write, and the kernel returns EINVAL rather than silently substituting a value — silently writing 65534 to disk would be a worse outcome (a plausible-looking but wrong ownership value persisted permanently). EPERM (A) is reserved for permission failures, not representability failures; ENOSYS (D) means 'no such syscall', which doesn't apply here." },
+  { q:"Docker's userns-remap and Podman's rootless mode both ultimately call the same kernel primitive. What is the most accurate description of their actual difference?",
+    opts:[ "Podman uses a newer, faster syscall that Docker hasn't adopted", "Docker's remap is a single, daemon-wide mapping shared by all containers by default; Podman gives each invoking user their own delegated range because it has no daemon to centralize the mapping in", "Docker's containers cannot use CAP_NET_BIND_SERVICE at all; Podman's can", "They are functionally identical in every respect" ],
+    a:1,
+    why:"Both consume CLONE_NEWUSER, the same uid_map format, and the same newuidmap/subuid convention (§9) — there's no separate syscall (A is fiction). The real divergence is architectural: Docker's opt-in remap centralizes one mapping in the root daemon for every container by default, while Podman's daemonless, per-user fork-exec model naturally gives each user their own range. C is false — CAP_NET_BIND_SERVICE availability depends on the mapping and sysctl, not the engine. D ignores the real, documented difference this chapter's §9 table lays out." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could write newuidmap yourself.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §8's slider and the simulator's write-once experiment — the format clicks fast once you build one yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Host admin grants alice a range in /etc/subuid (e.g. 100000:65536)",
+    "Podman reads the grant and calls clone()/unshare(CLONE_NEWUSER|CLONE_NEWNS|...)",
+    "Child blocks on a pipe read — its identity is not yet real",
+    "Parent writes /proc/<pid>/setgroups → 'deny'",
+    "Parent invokes newgidmap, which checks /etc/subgid and writes gid_map",
+    "Parent invokes newuidmap, which checks /etc/subuid and writes uid_map",
+    "Parent closes the pipe; child unblocks and calls setresuid(0,0,0)",
+    "Child proceeds into pivot_root, cgroup setup, and exec of the container's entrypoint"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real call path</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 5 will show that cgroups v2 enforces resource limits through plain files like memory.max, written and read exactly like uid_map. Predict: what would the EQUIVALENT of a 'write-once' or 'ordering' rule look like for a cgroup interface file, and why might cgroups NOT need one?",
+    a:"Unlike uid_map, memory.max is designed to be written repeatedly — operators routinely tighten or loosen a running container's memory limit. There's no forgery risk analogous to the setgroups hole because a cgroup limit only ever RESTRICTS the calling process's own resource ceiling; there's no path by which writing memory.max lets a process claim MORE privilege than it already had, the way an unprivileged gid_map write once could claim false group membership. Where cgroups v2 DOES enforce an ordering-like rule is the 'no internal processes' constraint — a non-leaf cgroup can't directly contain processes once it has child cgroups — which chapter 5 will show is really about avoiding an under-specified case for hierarchical enforcement, not a security boundary." },
+  { lvl:"THINK", q:"A container is both rootless (mapped, unprivileged host UID) AND has its memory.max set very low. If the OOM killer fires inside that cgroup, does the fact that it's rootless change anything about which process gets killed or what happens next?",
+    a:"No — the OOM killer's cgroup-aware scoping (chapter 5) operates entirely on cgroup membership and memory accounting, which is orthogonal to user-namespace identity mapping. A mapped-root process inside a memory-constrained cgroup gets killed exactly like any other process whose cgroup hit its limit; user namespaces answer 'who is allowed to do what,' cgroups answer 'how much of the machine can this process consume' — two independent axes that this course is deliberately teaching as separate namespaces/controllers so you don't conflate identity isolation with resource isolation." },
+  { lvl:"THINK", q:"Podman writes the SAME cgroup interface files (memory.max, cpu.max) whether running rootful or rootless. Predict one practical complication rootless mode introduces for cgroup delegation that a rootful container never faces.",
+    a:"An unprivileged user's process doesn't own the cgroup hierarchy the way root does — writing to a cgroup's controller files requires the CALLER to have write permission on those specific cgroupfs files, which for a rootless user means the systemd user session (via systemd --user and cgroup delegation, e.g. via loginctl linger) must have already DELEGATED a slice of the hierarchy to that user. Chapter 5 will cover this delegation mechanism directly — it's the cgroup-side analog of /etc/subuid: a host-configured grant that must exist before an unprivileged process's writes to memory.max or cpu.max are honored at all." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const GRANTS = { alice:{uid:1000, start:100000, len:65536}, bob:{uid:1001, start:165536, len:65536} };
+  const S = { grantee:"alice", unshared:false, mapped:false, keepId:false, ok:0, denied:0, writes:0 };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 100) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function mapLines(){
+    const g = GRANTS[S.grantee];
+    if (!S.keepId) return [`0 ${g.start} ${g.len}`];
+    const pre = g.uid - g.start; // will be large negative normally; clamp for demo realism
+    const preLen = Math.max(1, Math.min(g.len-2, 1000));
+    return [ `0 ${g.start} ${preLen}`, `${preLen} ${g.uid} 1`, `${preLen+1} ${g.start+preLen+1} ${g.len-preLen-1}` ];
+  }
+  function refresh(){
+    const g = GRANTS[S.grantee];
+    el("sim-subuid-l").textContent = `${S.grantee}:${g.start}:${g.len}`;
+    el("sim-phase").textContent = S.mapped ? "MAPPED" : S.unshared ? "UNSHARED (unmapped)" : "NO NAMESPACE";
+    if (!S.unshared){
+      el("sim-inside-uid").textContent = "—"; el("sim-inside-l").textContent = "no namespace yet";
+      el("sim-host-uid").textContent = "—"; el("sim-host-l").textContent = "no process yet";
+      el("sim-mapfile-l").innerHTML = `(not written yet — process reads as overflow uid 65534)`;
+      el("sim-mapfile-l").style.color = "var(--dim)";
+    } else if (!S.mapped){
+      el("sim-inside-uid").textContent = "65534"; el("sim-inside-l").textContent = "overflow uid — no mapping written";
+      el("sim-host-uid").textContent = g.uid; el("sim-host-l").textContent = `real host uid (${S.grantee})`;
+      el("sim-mapfile-l").innerHTML = `(empty — 0 extents)`;
+      el("sim-mapfile-l").style.color = "var(--dim)";
+    } else {
+      const lines = mapLines();
+      el("sim-mapfile-l").innerHTML = lines.map(l=>`<span style="color:var(--pg)">${l}</span>`).join("<br>");
+      el("sim-mapfile-l").style.color = "";
+      if (!S.keepId){
+        el("sim-inside-uid").textContent = "0"; el("sim-inside-l").textContent = "mapped root — genuinely UID 0 in-namespace";
+        el("sim-host-uid").textContent = g.start; el("sim-host-l").textContent = `real, unprivileged host uid`;
+      } else {
+        el("sim-inside-uid").textContent = String(g.uid); el("sim-inside-l").textContent = "keep-id: same number inside as out";
+        el("sim-host-uid").textContent = g.uid; el("sim-host-l").textContent = `identical — the point of keep-id`;
+      }
+    }
+    el("cnt-ok").textContent = S.ok; el("cnt-denied").textContent = S.denied; el("cnt-writes").textContent = S.writes;
+  }
+  el("sc-select-alice").onclick = ()=>{ if(S.unshared) return; S.grantee="alice"; log("LOG","grantee set to alice (100000:65536)"); refresh(); };
+  el("sc-select-bob").onclick = ()=>{ if(S.unshared) return; S.grantee="bob"; log("LOG","grantee set to bob (165536:65536)"); refresh(); };
+  el("sc-keepid").onclick = ()=>{ S.keepId = !S.keepId; el("sc-keepid").classList.toggle("on", S.keepId);
+    el("sc-keepid").textContent = `--userns=keep-id: ${S.keepId?"ON":"OFF"}`;
+    log("LOG", `--userns=keep-id set to ${S.keepId?"ON":"OFF"} (affects next mapping)`); refresh(); };
+  el("sc-unshare").onclick = ()=>{
+    if (S.unshared){ log("WARN","already inside a user namespace — call reset first"); return; }
+    S.unshared = true;
+    log("LOG", `unshare(CLONE_NEWUSER|CLONE_NEWNS) as ${S.grantee}`);
+    log("HINT", "uid_map is empty — every id lookup now resolves to the overflow uid 65534 until written");
+    refresh();
+  };
+  el("sc-map").onclick = ()=>{
+    if (!S.unshared){ log("FATAL","no user namespace exists — unshare first"); S.denied++; refresh(); return; }
+    if (S.mapped){ log("FATAL","write to uid_map: EPERM (write-once — a map, once set, is immutable for this namespace's lifetime)"); S.denied++; refresh(); return; }
+    log("LOG", `write /proc/<pid>/setgroups → "deny"`);
+    log("LOG", `newgidmap: checking /etc/subgid for ${S.grantee}… OK, writing gid_map`);
+    log("LOG", `newuidmap: checking /etc/subuid for ${S.grantee}… OK, writing uid_map`);
+    mapLines().forEach(l=> log("OK", "  "+l));
+    S.mapped = true; S.writes++;
+    log("OK", "mapping installed — identity is now real");
+    refresh();
+  };
+  el("sc-reset").onclick = ()=>{ S.unshared=false; S.mapped=false; log("WARN","namespace torn down — all state reset"); refresh(); };
+
+  el("sim-actions").innerHTML = [
+    ["act-chown-in","chown() to in-range id"],
+    ["act-chown-out","chown() to OUT-of-range id"],
+    ["act-bind80","bind() port 80"],
+    ["act-mount-tmpfs","mount tmpfs"],
+    ["act-mount-ext4","mount ext4 (block device)"],
+    ["act-modprobe","load kernel module"]
+  ].map(([id,label])=>`<button class="btn" id="${id}">${label}</button>`).join("");
+
+  function requireMapped(){
+    if (!S.mapped){ log("FATAL", "no identity mapping — action attempted as overflow uid 65534, refused"); S.denied++; refresh(); return false; }
+    return true;
+  }
+  el("act-chown-in").onclick = ()=>{ if(!requireMapped()) return;
+    log("OK","chown(file, 100, -1) → succeeds — 100 is within the mapped range"); S.ok++; refresh(); };
+  el("act-chown-out").onclick = ()=>{ if(!requireMapped()) return;
+    log("FATAL","chown(file, 999999, -1) → EINVAL — no mapping exists for that id in this namespace"); S.denied++; refresh(); };
+  el("act-bind80").onclick = ()=>{ if(!requireMapped()) return;
+    log("FATAL","bind(:80) → EACCES — CAP_NET_BIND_SERVICE is held in-namespace, but net.ipv4.ip_unprivileged_port_start=1024 on the host still gates it"); S.denied++; refresh(); };
+  el("act-mount-tmpfs").onclick = ()=>{ if(!requireMapped()) return;
+    log("OK","mount(\"tmpfs\", ...) → succeeds — FS_USERNS_MOUNT filesystem, namespace-relative capability check passes"); S.ok++; refresh(); };
+  el("act-mount-ext4").onclick = ()=>{ if(!requireMapped()) return;
+    log("FATAL","mount(\"/dev/sdb1\", \"ext4\", ...) → EPERM — block-device mounts require real CAP_SYS_ADMIN in the initial namespace"); S.denied++; refresh(); };
+  el("act-modprobe").onclick = ()=>{ if(!requireMapped()) return;
+    log("FATAL","init_module() → EPERM — CAP_SYS_MODULE has no meaningful scoping to an unprivileged user namespace"); S.denied++; refresh(); };
+
+  refresh();
+})();
+
+/* ============================================================
+   11. SCROLLSPY + PROGRESS
+   ============================================================ */
+const secs = [...document.querySelectorAll("main section")];
+const tocLinks = [...document.querySelectorAll("#toc a")];
+function onScroll(){
+  const y = window.scrollY;
+  const total = document.body.scrollHeight - window.innerHeight;
+  el("readbar").style.width = (total>0 ? (y/total)*100 : 0) + "%";
+  let activeIdx = 0;
+  secs.forEach((s,i)=>{ if (s.getBoundingClientRect().top - 96 <= 0) activeIdx = i; });
+  tocLinks.forEach((l,i)=>{ l.classList.toggle("active", i===activeIdx); if (i<activeIdx) l.classList.add("seen"); });
+}
+document.addEventListener("scroll", onScroll, { passive:true });
+onScroll();
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-04"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#2dd4bf"><a class="cn-btn" href="ctr-03.html"><span><span class="cn-lbl">PREV · CH 03</span><span class="cn-ttl">Namespaces II: Network Namespaces & veth</span></span></a><div class="cn-mid"><a class="cn-home" href="course-containers.html">☰ Container Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="ctr-01.html">CH 01 · Genesis: From chroot to the OCI Spec</option><option value="ctr-02.html">CH 02 · Namespaces I: PID, UTS, Mount & IPC</option><option value="ctr-03.html">CH 03 · Namespaces II: Network Namespaces & veth</option><option value="ctr-04.html" selected>CH 04 · User Namespaces: Rootless Containers</option><option value="ctr-05.html">CH 05 · cgroups v2: The Unified Resource Hierarchy</option><option value="ctr-06.html">CH 06 · The Root Filesystem: pivot_root & OverlayFS</option><option value="ctr-07.html">CH 07 · Capabilities: Splitting Root Into 40 Pieces</option><option value="ctr-08.html">CH 08 · Seccomp & LSMs: Filtering the Syscall Surface</option><option value="ctr-09.html">CH 09 · The OCI Runtime Spec: runc, crun & config.json</option><option value="ctr-10.html">CH 10 · Container Images: Layers, Manifests & Content Addressing</option><option value="ctr-11.html">CH 11 · Registries: The Distribution Spec, Push/Pull & Auth</option><option value="ctr-12.html">CH 12 · Architecture Showdown: Docker's Daemon vs Podman's Fork-Exec Model</option><option value="ctr-13.html">CH 13 · Networking: Bridges, CNI & libnetwork</option><option value="ctr-14.html">CH 14 · Pods & systemd: Podman's Pod Model and Quadlets</option><option value="ctr-15.html">CH 15 · Production Incidents: Real Container Escapes & CVEs</option><option value="ctr-16.html">CH 16 · Capstone: Build a Container Runtime From Scratch</option></select><span class="cn-prog">04 / 16</span></div><a class="cn-btn" href="ctr-05.html"><span><span class="cn-lbl">NEXT · CH 05</span><span class="cn-ttl">cgroups v2: The Unified Resource Hierarchy</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="["){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

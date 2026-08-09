@@ -1,0 +1,1847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-10 · Container Images: Layers, Manifests & Content Addressing — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+  .eng-docker{color:var(--docker);font-weight:600}
+  .eng-podman{color:var(--podman);font-weight:600}
+  .chipd{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(36,150,237,.4);color:var(--docker);background:rgba(36,150,237,.08)}
+  .chipp{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(137,44,160,.4);color:var(--podman);background:rgba(137,44,160,.08)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* ---------- layer stack visual ---------- */
+  .layerstack{display:flex;flex-direction:column-reverse;gap:5px;max-width:520px;margin:10px auto}
+  .layerbox{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:9px 13px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both;display:flex;justify-content:space-between;gap:10px}
+  .layerbox .lb-dig{color:var(--dim);font-size:10px}
+  .layerbox.meta{border-style:dashed;opacity:.75}
+  .layerbox.new{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .layerbox.hit{border-color:var(--ok)}
+  .layerbox.changed{border-color:var(--warn)}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* multi-stage graph */
+  .stagegraph{display:flex;gap:22px;justify-content:center;flex-wrap:wrap;padding:8px 0}
+  .stagecol{border:1px solid var(--border-hi);border-radius:12px;padding:10px;min-width:150px;background:var(--panel-2)}
+  .stagecol .sg-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:center;margin-bottom:8px;letter-spacing:.05em}
+  .stagecol.discarded{opacity:.32;filter:grayscale(1)}
+  .stagecol.final{border-color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.12)}
+  .sg-layer{border:1px solid var(--border-hi);background:var(--panel);border-radius:7px;padding:5px 8px;font-family:var(--mono);
+    font-size:10px;margin-bottom:5px;color:var(--muted)}
+  .sg-arrow{align-self:center;font-family:var(--mono);color:var(--dim);font-size:20px}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* image size bars */
+  .sizebar{display:flex;height:44px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .sizebar .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .sizelegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .sizelegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .sim-ctl textarea{width:100%;background:var(--bg-2);border:1px solid var(--border);border-radius:8px;color:var(--text);
+    font-family:var(--mono);font-size:11px;padding:6px 8px;resize:vertical;min-height:44px}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  .layertable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:10.5px}
+  .layertable th{text-align:left;color:var(--dim);font-weight:500;padding:5px 7px;border-bottom:1px solid var(--border-hi);letter-spacing:.04em}
+  .layertable td{padding:5px 7px;border-bottom:1px solid var(--border);color:var(--muted);vertical-align:top}
+  .layertable tr.hit td{color:var(--ok)}
+  .layertable tr.changed td{color:var(--warn)}
+  .layertable tr.meta td{opacity:.6;font-style:italic}
+  .digest{word-break:break-all}
+
+  .jsonbox{background:#05070b;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-family:var(--mono);
+    font-size:10.5px;line-height:1.6;color:#9fd0ff;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-CACHED{color:var(--ok)}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)} .slog .lv-RUN{color:#82aaff}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#38bdf8);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 10 / 16</b> · CONTAINER IMAGES</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Security</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 10</div>
+  <h1>Layers, Manifests &<br><span class="grad">the Address Is the Content</span></h1>
+  <p class="lead">Chapters 6 and 9 assumed a rootfs and a <code>config.json</code> just <i>existed</i> on disk,
+  ready for <code>pivot_root()</code> and a runtime to consume. This chapter builds the thing that produces them:
+  a container <b>image</b> — not a single file, but a small JSON manifest pointing at a config blob and an ordered
+  list of filesystem-diff blobs, every one of them named after the SHA-256 hash of its own bytes. You will derive
+  why that naming scheme is the whole point, hand-compute real digests in JavaScript, and watch a build cache
+  invalidate — or not — for exactly the reason the content-addressing model predicts.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Read a real OCI image manifest and config JSON and say precisely which bytes each digest commits to.</div>
+    <div class="obj"><b>You will understand</b>Why a digest is a strictly stronger reference than a tag, and what content-addressing buys you at build, push, and pull time.</div>
+    <div class="obj"><b>You will predict</b>Which layers a one-line Dockerfile edit invalidates — and which it doesn't — before you run the build.</div>
+    <div class="obj"><b>You will simulate</b>Two builds of the "same" Dockerfile with one line changed, computing every digest yourself and diffing the results.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Shipping a filesystem is a distribution problem, not a storage problem</h2>
+  <p class="lead">Chapter 6 showed you how a container gets its root filesystem <i>on one machine</i>: overlay
+  lowerdirs stacked under a fresh upperdir, assembled by <code>pivot_root()</code>. That machinery has an
+  unstated assumption baked into it — that the lowerdirs already exist, sitting on local disk, ready to be
+  mounted. Something has to put them there. An <b>image</b> is the answer to "how do those bytes get from a
+  developer's laptop, through a build, through a registry, onto a thousand machines, without re-sending
+  everything every time and without any machine trusting bytes it can't verify."</p>
+  <p>Unpack that into the actual constraints an image format must satisfy, because each one eliminates a whole
+  category of naive design:</p>
+  <ul class="plain">
+    <li><b>Deduplication.</b> Ten thousand images built <code>FROM ubuntu:22.04</code> share the same base
+      filesystem. A format that can't recognize "I already have this" re-stores and re-transmits it ten thousand
+      times.</li>
+    <li><b>Integrity.</b> A build artifact crosses an untrusted network (the registry, a CDN, a mirror) before it
+      is unpacked as root — as chapter 9's OCI runtime bundle — on a production machine. Silent corruption or
+      tampering in transit must be <i>detectable</i>, not just unlikely.</li>
+    <li><b>Incremental change.</b> A one-line code change should not force a multi-hundred-megabyte re-upload and
+      re-download of a dependency tree that didn't change.</li>
+    <li><b>Separation of recipe from bytes.</b> Metadata that never touches the filesystem — the default command,
+      environment variables, exposed ports — shouldn't cost you a filesystem diff to change.</li>
+    <li><b>Portability across architectures.</b> One human-facing name (<code>myapp:1.4</code>) must resolve to
+      different bytes on an amd64 build server and an arm64 laptop, correctly, automatically.</li>
+  </ul>
+  <p>The mechanism that satisfies all five at once is <span class="term" data-def="Naming a piece of data by a cryptographic hash of its own bytes, so the name IS a verifiable claim about the content, and two identical byte sequences always produce the same name regardless of who created them or when.">content addressing</span>:
+  every blob in the system — a layer, a config, a manifest — is named by the SHA-256 digest of its own bytes.
+  That single idea is this chapter's spine. Everything else — Dockerfile-to-layer mapping, multi-stage builds,
+  BuildKit's build cache, manifest lists for multi-architecture images — is a consequence of taking content
+  addressing seriously and following it all the way through.</p>
+  <div class="callout">
+    <div class="co-t">WHERE THIS SITS IN THE COURSE</div>
+    <p>Chapters 1–9 built and ran a single container's isolation boundary. This chapter and the next
+    (11: registries and the Distribution Spec) are about <i>everything that happens before</i> a runtime ever
+    calls <code>clone()</code>: how the bundle chapter 9 consumes gets built, named, and moved. The OCI Runtime
+    Spec (ch. 9) and the OCI Image Spec (this chapter) are deliberately separate documents maintained by the same
+    body — a runtime never needs to know how an image was built, and a builder never needs to know how a runtime
+    executes it. That seam is why <code class="eng-docker">dockerd</code>/containerd and
+    <code class="eng-podman">Buildah</code>/Podman can both produce images that <code>runc</code> and
+    <code>crun</code> run identically.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From "just tar it" to a standards body</h2>
+  <p>The image format took real wrong turns before it converged. Click through — each event is a fingerprint
+  still visible in the JSON you'll read in §8.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the road to the OCI Image Spec</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY TWO ALMOST-IDENTICAL SCHEMAS STILL EXIST</div>
+    <p>You will see both <code>application/vnd.docker.distribution.manifest.v2+json</code> and
+    <code>application/vnd.oci.image.manifest.v1+json</code> in the wild. They are structurally near-twins because
+    the OCI manifest was deliberately modeled on Docker's schema2 (2015) rather than invented from scratch — OCI's
+    founding compromise was "standardize what already works," not "design something new." A registry, and every
+    tool in this chapter, must handle both mediaTypes as first-class citizens; §11 shows what happens when a
+    consumer guesses the schema instead of reading the <code>mediaType</code> field.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: an image is just a tarball of the whole filesystem</h2>
+  <p>Derive it honestly. You have a running container's filesystem (chapter 6) and you want to hand it to someone
+  else. The obvious move: freeze the merged overlay view into one archive, upload it under a human-readable name,
+  and let anyone with that name download and extract it.</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">bash</span><span>naive_publish.sh — the strawman</span></div>
+    <pre><span class="c"># "build": snapshot an entire running container's merged rootfs</span>
+<span class="f">tar</span> -czf myapp-v1.tar.gz -C /var/lib/containers/mycontainer/merged .
+
+<span class="c"># "push": upload the whole blob under a mutable name</span>
+<span class="f">curl</span> -T myapp-v1.tar.gz https://registry.example/images/myapp:latest
+
+<span class="c"># "pull": whoever wants it downloads the entire thing, every time</span>
+<span class="f">curl</span> -o myapp.tar.gz https://registry.example/images/myapp:latest
+<span class="f">tar</span> -xzf myapp.tar.gz -C /var/lib/containers/newcontainer/rootfs</pre>
+  </div>
+  <p>This is not a strawman built to be laughed at — it is genuinely how the earliest container image tooling
+  worked, and it gets the core job done: a self-contained filesystem moves from one machine to another. It is
+  also exactly how <code>docker export</code> still works today for the single case it's honest about — a flat
+  filesystem snapshot with <b>no layers, no history, no image config</b>. The naive model's failure isn't that
+  the idea is wrong; it's that it stops one step too early.</p>
+  <p><code>myapp:latest</code> is a bare string pointing at whatever bytes were last uploaded under that name. Two
+  people pulling "the same" tag five minutes apart may get different bytes with no way to know it happened.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">The naive tarball fails on every one of §1's five constraints</h2>
+  <p>Put real numbers on it. Say your base image (OS packages + language runtime) is 180&nbsp;MB and your
+  application code is 2&nbsp;MB, and your team ships 40 deploys a day — a conservative number for an active
+  service.</p>
+  <div class="callout bad">
+    <div class="co-t">THE ARITHMETIC OF NOT DEDUPING</div>
+    <p><b>No incremental transfer:</b> every deploy re-uploads and every machine re-downloads the full 182&nbsp;MB,
+    even though 180 of those megabytes are byte-identical to yesterday's. At 40 deploys/day that's
+    <b>7.28&nbsp;GB/day</b> of pure waste versus the 80&nbsp;MB/day (40 × 2&nbsp;MB) actually needed — a
+    <b>91×</b> overpay, before you even count fan-out to N runtime hosts. <b>No dedup across images:</b> 200
+    microservices built from the same base image store <b>200 independent copies</b> of that 180&nbsp;MB on the
+    registry's disk and in every host's local cache — 36&nbsp;GB where content addressing needs one copy plus 200
+    tiny manifests.</p>
+  </div>
+  <ul class="plain">
+    <li><b>No integrity guarantee.</b> Nothing in the naive flow lets a puller verify the bytes it received are
+      the bytes that were pushed. A corrupted download, a compromised mirror, or a registry bug that serves the
+      wrong blob for a name is silently accepted and <code>pivot_root()</code>'d into as root.</li>
+    <li><b>No name stability.</b> <code>:latest</code> is a pointer, reassigned on every push. "Roll back to what
+      was running last Tuesday" requires you to have kept your own separate record of which tarball that was —
+      the registry itself remembers nothing.</li>
+    <li><b>Metadata costs a full re-upload.</b> Changing the container's default command or an environment
+      variable — zero filesystem bytes — still means re-tarring, re-uploading, and re-downloading the entire
+      filesystem, because metadata and filesystem are the same undifferentiated blob.</li>
+    <li><b>No architecture story.</b> One tag, one blob, one architecture. Supporting amd64 and arm64 means either
+      two different tag names (a client-side, error-prone convention) or nothing at all.</li>
+  </ul>
+  <p>Every one of these is fixable, and every fix is a variant of the same idea: <b>stop naming things by human
+  intent and start naming them by their own content.</b> §5 derives the format that does that.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION</div>
+  <h2 class="sec">Deriving the OCI image format, one fix at a time</h2>
+  <p>Step through the same five failures from §4 and watch each one force a specific, minimal design change.
+  By the last step you have reconstructed the real OCI Image Spec from first principles.</p>
+  <div class="widget deck" id="deckBetter">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">From tarball to content-addressed image</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+  <div class="callout ok">
+    <div class="co-t">THE ONE-SENTENCE VERSION</div>
+    <p>An OCI image is a small JSON <b>manifest</b> that points to one JSON <b>config</b> blob and an ordered list
+    of tar-diff <b>layer</b> blobs — and every one of those four kinds of thing (manifest, config, layer,
+    eventually the image index in §8) is named by the SHA-256 digest of its own bytes, never by anything a human
+    typed.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Content addressing solves distribution and creates new sharp edges</h2>
+  <p>None of these are arguments against the model — they are the bill for taking "name it by its bytes"
+  literally, and every one of them explains a real, frequently-misdiagnosed production symptom.</p>
+  <ul class="plain">
+    <li><b>Compression breaks digest stability across tools.</b> The layer digest that appears in the
+      <i>manifest</i> is a hash of the <b>compressed</b> (gzip) blob — and gzip is not a pure function of its
+      input alone; different gzip implementations, compression levels, or even library versions can produce
+      different compressed bytes from <i>identical</i> uncompressed content. Two builders that produce
+      byte-identical filesystem diffs can legitimately disagree on the layer's manifest digest. This is exactly
+      why the config blob separately records a <code>diff_id</code> per layer — the digest of the
+      <b>uncompressed</b> tar stream — as the content identity that's actually stable. §8 makes this precise.</li>
+    <li><b>Cache invalidation cascades.</b> Classic sequential builders invalidate a linear chain: the moment one
+      instruction's cache key misses (because its own command or input changed), every instruction after it is
+      treated as a miss too, <i>even if</i> a later instruction's own inputs are completely unaffected — because
+      the builder only knows "the state I'd be building on top of has changed," not "this specific downstream
+      step doesn't care." A one-line change near the top of a 20-line Dockerfile can force a multi-minute
+      dependency reinstall that produces byte-identical output to what was already cached.</li>
+    <li><b>Deleted bytes aren't reclaimed across a layer boundary.</b> Recall chapter 6: a whiteout file hides a
+      lower layer's file from the merged view — it does not shrink the lower layer's own tar. <code>RUN apt-get
+      install ...</code> followed by a <i>separate</i> <code>RUN rm -rf /var/lib/apt/lists/*</code> leaves the
+      downloaded package cache's bytes permanently inside the first layer's blob, still transferred and stored on
+      every pull, forever, unless you rewrite history.</li>
+    <li><b>Content addressing doesn't imply access control.</b> A digest proves "these are the bytes that hash to
+      this value" — it says nothing about whether those bytes should be trusted or who was allowed to push them.
+      Integrity and authenticity are different properties; §11 (next chapter) covers signing, and §10 of this
+      chapter covers what a digest specifically does <i>not</i> protect against (a secret baked into an
+      intermediate layer is still fully recoverable from that layer's own content, digest and all).</li>
+  </ul>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The full build-to-store pipeline</h2>
+  <p>Click any component to see its job, its real on-disk or on-wire shape, and which engine's tooling touches
+  it. Note the asymmetry: everything left of the registry differs meaningfully between
+  <span class="eng-docker">Docker</span> and <span class="eng-podman">Podman</span>; everything at and right of
+  the registry boundary is the same OCI-defined JSON regardless of which engine produced it.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">SOURCE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="dockerfile">Dockerfile / Containerfile</div>
+          <div class="acard" data-p="context">build context</div>
+        </div>
+        <div class="arch-row-label">BUILDER (engine-specific)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="buildkit">BuildKit (DAG solver)</div>
+          <div class="acard" data-p="buildah">Buildah (imperative)</div>
+        </div>
+        <div class="arch-row-label">CONTENT-ADDRESSED BLOBS (OCI-defined, engine-agnostic)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="layer">layer blob (tar+gzip)</div>
+          <div class="acard" data-p="config">config blob (JSON)</div>
+          <div class="acard" data-p="manifest">image manifest (JSON)</div>
+          <div class="acard" data-p="index">image index / manifest list</div>
+        </div>
+        <div class="arch-row-label">LOCAL STORE (engine-specific)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="containerd">containerd content store</div>
+          <div class="acard" data-p="cstorage">containers/storage</div>
+        </div>
+        <div class="arch-row-label">REMOTE (ch. 11 — same for both engines)</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="registry">OCI Distribution-Spec registry</div></div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">WHERE CHAPTER 9's config.json COMES FROM</div>
+    <p>Nothing you clicked above is the OCI <i>Runtime</i> Spec's <code>config.json</code> from chapter 9 — that
+    file doesn't exist until <i>run</i> time. When you <code>docker run</code> or <code>podman run</code> an
+    image, the engine reads the <b>image config</b> blob shown here (env, cmd, working dir, exposed ports),
+    combines it with your CLI flags and the extracted layers, and <i>generates</i> a fresh OCI runtime bundle —
+    a new <code>config.json</code> plus a rootfs directory — for that one container. One image can generate many
+    runtime bundles; the image format and the runtime format are related by a translation step, not by sharing
+    a file.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The actual bytes: manifest, config, layers, and how a Dockerfile becomes them</h2>
+  <p>Four pieces, in the order they compose: <b>(a)</b> the real JSON shapes of manifest and config, <b>(b)</b>
+  how each Dockerfile instruction maps to a layer or to pure metadata, <b>(c)</b> multi-stage builds as a graph
+  of discarded and kept stages, <b>(d)</b> what consolidating instructions costs and saves.</p>
+
+  <h3>(a) The manifest and the config, annotated field by field</h3>
+  <p>A manifest is deliberately tiny — it exists so a client can decide what it needs to fetch <i>before</i>
+  fetching anything large. It never contains filesystem content, only descriptors: mediaType, digest, size.</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">json</span><span>image manifest — application/vnd.oci.image.manifest.v1+json</span></div>
+    <pre>{
+  <span class="t">"schemaVersion"</span>: <span class="n">2</span>,
+  <span class="t">"mediaType"</span>: <span class="s">"application/vnd.oci.image.manifest.v1+json"</span>,
+  <span class="t">"config"</span>: {                                  <span class="c">// ← descriptor for the config blob below</span>
+    <span class="t">"mediaType"</span>: <span class="s">"application/vnd.oci.image.config.v1+json"</span>,
+    <span class="t">"digest"</span>: <span class="s">"sha256:9a8f4b2c...e21d"</span>,        <span class="c">// hash of the config JSON's own bytes</span>
+    <span class="t">"size"</span>: <span class="n">1857</span>
+  },
+  <span class="t">"layers"</span>: [                                  <span class="c">// ← ordered bottom (base) to top (newest)</span>
+    { <span class="t">"mediaType"</span>: <span class="s">"application/vnd.oci.image.layer.v1.tar+gzip"</span>,
+      <span class="t">"digest"</span>: <span class="s">"sha256:c1e2f0...aa41"</span>, <span class="t">"size"</span>: <span class="n">28572160</span> },
+    { <span class="t">"mediaType"</span>: <span class="s">"application/vnd.oci.image.layer.v1.tar+gzip"</span>,
+      <span class="t">"digest"</span>: <span class="s">"sha256:77bd91...0c3f"</span>, <span class="t">"size"</span>: <span class="n">412007</span> }
+  ]
+}</pre>
+  </div>
+  <p>The config is where the recipe lives — everything a runtime needs to turn layers into a runnable process,
+  plus a full build history for humans:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">json</span><span>image config — application/vnd.oci.image.config.v1+json</span></div>
+    <pre>{
+  <span class="t">"architecture"</span>: <span class="s">"amd64"</span>, <span class="t">"os"</span>: <span class="s">"linux"</span>,
+  <span class="t">"config"</span>: {
+    <span class="t">"Env"</span>: [<span class="s">"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"</span>, <span class="s">"NODE_ENV=production"</span>],
+    <span class="t">"WorkingDir"</span>: <span class="s">"/app"</span>, <span class="t">"Cmd"</span>: [<span class="s">"node"</span>, <span class="s">"server.js"</span>], <span class="t">"ExposedPorts"</span>: { <span class="s">"3000/tcp"</span>: {} }
+  },
+  <span class="t">"rootfs"</span>: {
+    <span class="t">"type"</span>: <span class="s">"layers"</span>,
+    <span class="t">"diff_ids"</span>: [                              <span class="c">// ← hash of UNCOMPRESSED tar per layer, same order as manifest</span>
+      <span class="s">"sha256:5e2f88...1b90"</span>,
+      <span class="s">"sha256:0af73c...d417"</span>
+    ]
+  },
+  <span class="t">"history"</span>: [                                  <span class="c">// ← one entry per Dockerfile instruction, even metadata-only ones</span>
+    { <span class="t">"created_by"</span>: <span class="s">"WORKDIR /app"</span>, <span class="t">"empty_layer"</span>: <span class="k">true</span> },
+    { <span class="t">"created_by"</span>: <span class="s">"COPY package*.json ./"</span> },        <span class="c">// no empty_layer key ⇒ false, this one has bytes</span>
+    { <span class="t">"created_by"</span>: <span class="s">"ENV NODE_ENV=production"</span>, <span class="t">"empty_layer"</span>: <span class="k">true</span> }
+  ]
+}</pre>
+  </div>
+  <div class="callout warn">
+    <div class="co-t">THE FIELD EVERYONE CONFUSES: digest VS diff_id</div>
+    <p>The manifest's <code>layers[].digest</code> hashes the <b>compressed</b> blob — what's actually stored and
+    transferred by the registry. The config's <code>rootfs.diff_ids[]</code> hashes the same layer's
+    <b>uncompressed</b> tar stream, in the same order. They are deliberately two different digests for the same
+    logical content, because compression isn't deterministic across tools but the filesystem diff itself is —
+    <code>diff_id</code> is what you'd compare to know "is this actually the same content," and it's also the
+    input to the <b>chain ID</b> algorithm your local store uses to key its layer cache (§13 shows the exact
+    recursive formula, real from Docker's <code>image/layer</code> package).</p>
+  </div>
+
+  <h3>(b) Dockerfile instructions, mapped to layers or to nothing at all</h3>
+  <p>Not every instruction touches the filesystem. Step through a real Dockerfile and watch which lines produce
+  a layer blob and which only rewrite the config's metadata:</p>
+  <div class="widget deck" id="deckMap">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Instruction → layer, or instruction → metadata?</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(c) Multi-stage builds: a DAG of stages, most of which never ship</h3>
+  <p>A multi-stage Dockerfile has several <code>FROM</code> lines, each starting a fresh, independent stage.
+  <code>COPY --from=&lt;stage&gt;</code> pulls specific files out of an earlier stage's filesystem into the
+  current one. Only the <b>final</b> stage's layers end up in the pushed image — every earlier stage, compilers,
+  build caches and all, is computed, used, and then thrown away.</p>
+  <div class="widget deck" id="deckMulti">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">A Go binary, built and shipped without a Go toolchain</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(d) What instruction consolidation actually buys you</h3>
+  <p>Drag the slider from fully separated <code>RUN</code> instructions to one consolidated <code>RUN</code>
+  block for a package-install-then-cleanup sequence, and watch what changes and what doesn't. Nothing here is
+  invented: it's the direct consequence of §6's "deleted bytes aren't reclaimed across a layer boundary."</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Layer consolidation vs image size</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>RUN instructions</label><input type="range" id="s8-slider" min="0" max="3" value="0" step="1"><span class="val" id="s8-val">4 separate</span></div>
+      <div class="sizelegend" id="s8-legend"></div>
+      <div class="sizebar" id="s8-bar"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="s8-note"></p>
+    </div>
+  </div>
+  <div class="callout">
+    <div class="co-t">HARDWARE COROLLARY: HASHING IS NOT FREE</div>
+    <p>Every layer that crosses a trust boundary — written by a builder, verified by a puller — gets its SHA-256
+    computed at least once, sometimes twice (compressed digest on the wire, <code>diff_id</code> after
+    decompression). Unaccelerated software SHA-256 runs at roughly <b>400–600&nbsp;MB/s per core</b>; a 1&nbsp;GB
+    layer costs on the order of 2 seconds of single-core CPU just to verify, before decompression or extraction.
+    Modern x86 (SHA-NI) and ARMv8 crypto extensions push this into the multi-GB/s range in hardware, which is why
+    build and pull throughput on cheap CI runners without those extensions can visibly lag identical work on
+    newer silicon — a real, frequently misdiagnosed "why is our CI slower on this runner class" bug.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">BuildKit vs Buildah: same output format, different builder architecture</h2>
+  <p>The image format in §8 is identical either way — that's the entire point of a shared spec. What differs is
+  <i>how</i> the builder gets there:</p>
+  <table class="cmp">
+    <tr><th>ASPECT</th><th class="eng-docker">DOCKER (BuildKit)</th><th class="eng-podman">PODMAN (Buildah)</th></tr>
+    <tr><td>Execution model</td>
+      <td>Parses the Dockerfile into an <b>LLB DAG</b> (low-level build graph); a solver executes independent
+        vertices — including independent <code>FROM</code> stages — in <b>parallel</b>, and caches per-vertex
+        keyed on content, not position.</td>
+      <td>Executes instructions <b>sequentially</b>, top to bottom, inside a real working container backed by
+        <code>containers/storage</code>; each step is an actual <code>run</code>/<code>copy</code> against that
+        container, then a commit.</td></tr>
+    <tr><td>Default builder</td>
+      <td>BuildKit has been the default for <code>docker build</code> since Docker 23.0 (opt-in via
+        <code>DOCKER_BUILDKIT=1</code> since 18.09).</td>
+      <td>Always Buildah — <code>podman build</code> is a thin CLI over the <code>containers/buildah</code>
+        library; there is no separate legacy builder to opt out of.</td></tr>
+    <tr><td>Cache granularity</td>
+      <td>Content-keyed per op in the DAG: a downstream step can stay cached even if an unrelated upstream step
+        changed, as long as that step's own inputs are unchanged (§15's simulator shows this exactly).</td>
+      <td>Sequential, position-keyed: a cache miss at step <i>n</i> invalidates every step after it, matching the
+        classic pre-BuildKit Docker behavior described in §6.</td></tr>
+    <tr><td>Dockerfile-less builds</td>
+      <td>Requires a frontend (the Dockerfile frontend is default and shipped in-tree; other frontends like
+        Mockerfile/Nix exist but are not mainstream).</td>
+      <td><span class="pill g">first-class</span> — Buildah's own primitives
+        (<code>buildah from</code>/<code>run</code>/<code>copy</code>/<code>commit</code>) let you script an
+        image build in plain shell with no Dockerfile at all; <code>podman build</code> is one specific way to
+        drive those same primitives.</td></tr>
+    <tr><td>Build-time secrets</td>
+      <td><code>RUN --mount=type=secret</code> — the secret is mounted only for that one <code>RUN</code>,
+        never written into any layer.</td>
+      <td><code>--secret</code> with the equivalent <code>RUN --mount=type=secret</code> syntax — same
+        capability, same underlying guarantee, because both consume the same Dockerfile <code>RUN --mount</code>
+        syntax and neither writes the secret's bytes into a committed layer.</td></tr>
+    <tr><td>Rootless building</td>
+      <td>Rootful <code>dockerd</code> builds by default; rootless Docker mode supports BuildKit but with more
+        historical friction (cgroup/network setup) than Podman's rootless-first design.</td>
+      <td><span class="pill g">rootless by default</span> — Buildah has supported unprivileged builds via user
+        namespaces since early releases, consistent with Podman's rootless-by-default posture (chapter 4).</td></tr>
+    <tr><td>Multi-arch cross-build</td>
+      <td><code>docker buildx build --platform ...</code> integrates QEMU user-mode emulation directly into the
+        BuildKit workflow — one command, one Dockerfile, N architectures.</td>
+      <td><code>podman build --platform</code> shells out to <code>qemu-user-static</code> binfmt handlers the
+        same way; assembling the resulting manifest list is a separate, explicit step via
+        <code>podman manifest</code> (§8's index concept, mechanics in ch. 11).</td></tr>
+    <tr><td>Remote/registry cache export</td>
+      <td><span class="pill g">native</span> — <code>--cache-to</code>/<code>--cache-from</code> can push and
+        pull the build cache itself as registry blobs, sharing cache across CI runners.</td>
+      <td><span class="pill y">indirect</span> — typically achieved by pushing intermediate tagged images and
+        pulling them back with <code>--layers</code>, reusing the same content-addressed layer store rather than
+        a dedicated cache export format.</td></tr>
+  </table>
+  <p>Read this table the way §9 tables in earlier chapters read: neither builder is strictly better. BuildKit's
+  DAG buys parallelism and precise cache reuse at the cost of a second, more complex build system living inside
+  the daemon. Buildah's imperative model buys simplicity, scriptability without a Dockerfile, and reuse of the
+  exact same storage library Podman already needs for running containers — consistent with Podman's whole
+  design philosophy of composing existing <code>containers/*</code> libraries instead of running a monolithic
+  daemon (a theme chapter 12 covers head-on).</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE / SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">What a digest actually protects — and what it doesn't</h2>
+  <p><b>Integrity, not authorization or secrecy.</b> A digest proves the bytes you have are the bytes that hash
+  to that value — nothing more. It says nothing about whether those bytes should be trusted, and it does not
+  make anything inside a layer unrecoverable.</p>
+  <div class="callout bad">
+    <div class="co-t">THE SECRET-IN-A-LAYER TRAP</div>
+    <p><code>ARG API_KEY</code> or <code>ENV API_KEY=...</code> followed later by <code>RUN unset API_KEY</code>
+    does not remove the key from the image. The value was written into the config's <code>history</code> (build
+    args and env are recorded there) and, if used inside a <code>RUN</code>, potentially into that layer's own
+    tar bytes — and a later instruction only <i>hides</i> earlier content via overlay semantics (chapter 6); it
+    never rewrites an earlier, already-hashed, already-pushed blob. Anyone who can <code>docker save</code> or
+    <code>skopeo copy</code> the image and inspect its layers and config <code>history</code> gets the secret
+    back, digest and all. The only real fix is never writing the secret to any layer or history entry in the
+    first place — exactly what <code>RUN --mount=type=secret</code> (§9) is for.</p>
+  </div>
+  <p>Drag the sliders to see the practical benefit content addressing was built for: pulling an image where most
+  layers are already present locally (a common base image, a rebuild after a small code change).</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Cold pull time vs already-cached layers</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>total image size</label><input type="range" id="perf-size" min="20" max="2000" value="400" step="10"><span class="val" id="perf-size-val">400 MB</span></div>
+      <div class="slider-row"><label>% of layer bytes already local</label><input type="range" id="perf-cache" min="0" max="100" value="0" step="5"><span class="val" id="perf-cache-val">0%</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="perf-parallel">Parallel layer fetch (5 concurrent)</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> bytes to transfer (relative)</span>
+        <span><span style="color:var(--bad)">━</span> wall-clock pull time (relative)</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch — bytes-to-transfer scales linearly with the uncached fraction by
+    definition of content addressing; wall-clock time additionally accounts for per-layer HTTP round-trip
+    overhead and the diminishing returns of parallel fetch past typical registry concurrency limits (commonly
+    3–8 simultaneous blob pulls). Real numbers depend on your registry, CDN, and network path; the point is the
+    <i>shape</i> — content addressing turns "redeploy with one changed layer" from an O(image size) operation
+    into an O(changed layers) one, which is the entire economic case for layering.</p>
+  </div>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Three ways the image layer has actually been the attack surface</h2>
+
+  <h3>CVE-2014-9356 — path traversal during layer extraction</h3>
+  <p>Before content-addressed verification was universal in the tooling of the day, Docker's image-loading path
+  applied a layer's tar archive to the target directory largely trusting the paths inside it. A crafted layer
+  containing path-traversal sequences (<code>../</code> segments in file names) or malicious symlinks could, on
+  vulnerable versions, cause files to be written <b>outside</b> the intended extraction directory during
+  <code>docker pull</code>/<code>docker load</code> — a straightforward consequence of treating "apply this
+  archive" as a filesystem operation without validating that every resulting path stayed inside the sandbox.
+  Fixed in Docker 1.3.3 (December 2014) alongside a batch of related image-handling advisories. The durable
+  lesson: content addressing tells you the blob you fetched matches its digest — it says nothing about whether
+  the tar <i>parser</i> safely applies that blob's contents, which is a separate piece of code that must be
+  hardened on its own.</p>
+
+  <h3>CVE-2021-41190 — manifest ambiguity ("Manifest Confusion")</h3>
+  <p>The OCI Distribution Spec and Docker Registry HTTP API v2 allow a single JSON document to be structurally
+  valid as either a single-platform <b>image manifest</b> or a multi-platform <b>manifest list/index</b>,
+  distinguished properly only by the <code>mediaType</code> field. Some tools in the ecosystem inferred which
+  kind of document they were looking at by sniffing its structure (does it have a <code>config</code> key? does
+  it have a <code>manifests</code> array?) rather than trusting <code>mediaType</code> strictly. That gap meant
+  two different, spec-compliant consumers could examine the "same" manifest and validate or execute
+  <b>different content</b> as trusted — a real content-confusion vulnerability class, not a hypothetical one.
+  The fix, coordinated across the image-spec, distribution-spec, containerd, and CRI-O projects, tightened the
+  spec language and consuming code to require strict <code>mediaType</code>-driven parsing. The lesson generalizes
+  well beyond this CVE: a content-addressed system's safety depends on every consumer agreeing on <i>what a blob
+  means</i>, not only on being able to verify its bytes.</p>
+
+  <h3>2018 — cryptomining images hiding in plain sight on Docker Hub</h3>
+  <p>Security researchers at Kromtech reported that 17 images published under a single Docker Hub account had
+  been pulled a cumulative <b>~5 million times</b> over roughly a year while quietly running cryptocurrency
+  miners, with an estimated <b>~$90,000</b> in Monero mined using other people's compute. Nothing about the
+  <i>image format</i> was exploited — every layer digest was perfectly valid and every manifest perfectly
+  well-formed; the attack targeted the layer <i>upstream</i> of what a digest can ever protect: the decision to
+  trust an unfamiliar publisher's tag in the first place. This is precisely the gap digest-pinning and image
+  signing (cosign/Sigstore, <code>podman --sign-by</code> — chapter 11) close: a digest tells you the bytes
+  weren't tampered with in transit; it never tells you the publisher who produced those exact bytes was
+  trustworthy to begin with.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the format at a whiteboard?</h2>
+  <p>Think before revealing — these are calibrated to Staff-level rigor.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: image-spec, BuildKit, and Buildah</h2>
+  <p>Where the JSON shapes from §8 and the two build architectures from §9 actually live in source. Files marked
+  <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">opencontainers/image-spec/</span></div>
+<div>├── <span class="dir">specs-go/v1/</span></div>
+<div>│   ├── <span class="fhl">● manifest.go</span> <span class="fnote">— type Manifest struct{...}: the exact JSON shape from §8(a)</span></div>
+<div>│   ├── <span class="fhl">● config.go</span> <span class="fnote">— type Image struct{...}: RootFS, History, platform fields</span></div>
+<div>│   └── index.go <span class="fnote">— type Index struct{...}: the manifest list / image index (§9's multi-arch)</span></div>
+<div>├── <span class="dir">schema/</span>manifest-schema.json <span class="fnote">— the JSON Schema validators run against</span></div>
+<div>└── image-layout.md <span class="fnote">— the on-disk "OCI image layout": blobs/sha256/&lt;digest&gt; + index.json</span></div>
+<div></div>
+<div><span class="dir">moby/buildkit/</span> <span class="fnote">— Docker's builder</span></div>
+<div>├── <span class="dir">frontend/dockerfile/</span>dockerfile2llb/convert.go <span class="fnote">— Dockerfile instructions → LLB graph vertices</span></div>
+<div>├── <span class="dir">solver/</span><span class="fhl">● llbsolver/solver.go</span> <span class="fnote">— the DAG scheduler: dependency resolution, parallel execution, cache lookups</span></div>
+<div>└── <span class="dir">cache/</span>manager.go <span class="fnote">— content-keyed cache: this is what makes §15's "downstream layer survives" possible</span></div>
+<div></div>
+<div><span class="dir">containers/buildah/</span> <span class="fnote">— Podman's builder</span></div>
+<div>├── <span class="dir">imagebuildah/</span><span class="fhl">● build.go</span> <span class="fnote">— sequential instruction executor: run → commit → next</span></div>
+<div>└── run_linux.go <span class="fnote">— executes a RUN instruction inside the in-progress container via runc/crun (ch. 9's machinery, reused)</span></div>
+<div></div>
+<div><span class="dir">moby/moby/image/</span></div>
+<div>└── <span class="fhl">● layer/layer.go</span> <span class="fnote">— CreateChainID(): the real recursive chain-ID algorithm behind local layer caching</span></div>
+  </div></div>
+
+  <p>First, the OCI manifest and image config structs — this is the literal Go shape behind every JSON example
+  in §8(a):</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">go</span><span>specs-go/v1/manifest.go & config.go — simplified, field-faithful</span></div>
+    <pre><span class="k">type</span> Manifest <span class="k">struct</span> {
+    SchemaVersion <span class="k">int</span>        <span class="s">`json:"schemaVersion"`</span>
+    MediaType     <span class="k">string</span>     <span class="s">`json:"mediaType,omitempty"`</span>
+    Config        Descriptor   <span class="s">`json:"config"`</span>
+    Layers        []Descriptor <span class="s">`json:"layers"`</span>
+}
+
+<span class="k">type</span> Descriptor <span class="k">struct</span> {
+    MediaType <span class="k">string</span> <span class="s">`json:"mediaType"`</span>
+    Digest    digest.Digest <span class="s">`json:"digest"`</span>   <span class="c">// "sha256:<hex>" — content address</span>
+    Size      <span class="k">int64</span>  <span class="s">`json:"size"`</span>
+}
+
+<span class="k">type</span> Image <span class="k">struct</span> {
+    Architecture <span class="k">string</span>    <span class="s">`json:"architecture"`</span>
+    OS           <span class="k">string</span>    <span class="s">`json:"os"`</span>
+    Config       ImageConfig <span class="s">`json:"config"`</span>
+    RootFS       RootFS      <span class="s">`json:"rootfs"`</span>
+    History      []History   <span class="s">`json:"history,omitempty"`</span>
+}
+
+<span class="k">type</span> RootFS <span class="k">struct</span> {
+    Type    <span class="k">string</span>          <span class="s">`json:"type"`</span>       <span class="c">// always "layers"</span>
+    DiffIDs []digest.Digest <span class="s">`json:"diff_ids"`</span> <span class="c">// UNCOMPRESSED per-layer hash, base→top order</span>
+}
+
+<span class="k">type</span> History <span class="k">struct</span> {
+    Created    *time.Time <span class="s">`json:"created,omitempty"`</span>
+    CreatedBy  <span class="k">string</span>     <span class="s">`json:"created_by,omitempty"`</span>
+    EmptyLayer <span class="k">bool</span>       <span class="s">`json:"empty_layer,omitempty"`</span>  <span class="c">// true ⇒ metadata-only instruction</span>
+}</pre>
+  </div>
+
+  <p>Next, the real chain-ID recursion — how a local store turns "N diff_ids in order" into one stable cache key
+  per stack depth, so <code>alpine → alpine+curl</code> and <code>alpine → alpine+wget</code> can each be cached
+  independently while both reusing the identical bottom layer:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">go</span><span>image/layer/layer.go — CreateChainID(), the real algorithm</span></div>
+    <pre><span class="c">// ChainID identifies a STACK of layers (not just one layer) by folding
+// each diff_id into the running hash of everything beneath it.</span>
+<span class="k">func</span> <span class="f">CreateChainID</span>(dgsts []digest.Digest) digest.Digest {
+    <span class="k">return</span> <span class="f">chainID</span>(dgsts)
+}
+
+<span class="k">func</span> <span class="f">chainID</span>(dgsts []digest.Digest) digest.Digest {
+    <span class="k">if</span> <span class="f">len</span>(dgsts) == <span class="n">1</span> {
+        <span class="k">return</span> dgsts[<span class="n">0</span>]                 <span class="c">// base case: chain of 1 IS that layer's diff_id</span>
+    }
+    <span class="c">// recursive case: hash "<chainID of everything below> <this diff_id>"</span>
+    <span class="n">parent</span> := <span class="f">chainID</span>(dgsts[:<span class="f">len</span>(dgsts)-<span class="n">1</span>])
+    <span class="n">input</span>  := <span class="n">parent</span>.String() + <span class="s">" "</span> + dgsts[<span class="f">len</span>(dgsts)-<span class="n">1</span>].String()
+    <span class="k">return</span> digest.FromString(<span class="n">input</span>)   <span class="c">// sha256 of that string — a NEW real digest</span>
+}</pre>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY</div>
+    <p><b>BuildKit's DAG</b> exists because Dockerfile execution is not inherently linear — independent stages in
+    a multi-stage build have no data dependency on each other, and a solver that models the build as a graph can
+    discover and exploit that parallelism automatically, plus key its cache on <i>which inputs actually changed</i>
+    rather than <i>how far down the file you got</i>. <b>Buildah's imperative model</b> exists because Podman's
+    entire design thesis is "don't invent a new engine — compose the same <code>containers/storage</code> and
+    <code>containers/image</code> libraries that Podman, CRI-O, and skopeo already share," so a sequential
+    run-then-commit loop that reuses the exact same layer store Podman uses for running containers was the
+    lower-risk, higher-code-reuse choice. <b>The chain-ID recursion</b> is built to fold, not just hash the list
+    directly, so that two images sharing a long common prefix of layers also share every intermediate chain ID —
+    the local store can answer "do I already have layers 1–5 as a stack" in one lookup instead of five.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — read them.</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — from Dockerfile to a pushable manifest</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur during a fresh build (no cache hits). Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The layer inspector — real SHA-256, computed in your browser</h2>
+  <p>Every digest below is a genuine SHA-256 hash, computed by a from-scratch JavaScript implementation running
+  right here (verified against Node's <code>crypto.createHash('sha256')</code> before this chapter shipped —
+  nothing is faked hex). Build the image, then flip either toggle in the right panel and rebuild: watch which
+  layers keep their old digest (a real cache hit, because that layer's own inputs didn't change) and which get a
+  brand-new one — exactly the mechanism from §6 and §9.</p>
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">docker build / podman build — layer & manifest inspector</span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="layerstack" id="sim-stack"></div>
+          <h3 style="margin-top:22px">image manifest (live)</h3>
+          <div class="jsonbox" id="sim-manifest">click "build image A" →</div>
+          <h3>image config (live)</h3>
+          <div class="jsonbox" id="sim-config"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">BUILD A (baseline)</div>
+            <div class="btns">
+              <button class="btn primary" id="sc-build-a">build image A</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">MUTATE FOR BUILD B</div>
+            <div class="btns" style="margin-bottom:8px">
+              <button class="chip" id="tgl-pkg">bump express in package.json</button>
+              <button class="chip" id="tgl-app">edit app.js response text</button>
+            </div>
+            <button class="btn good" id="sc-build-b" style="width:100%">rebuild as image B & diff</button>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">RESET</div>
+            <div class="btns"><button class="btn danger" id="sc-reset">reset simulator</button></div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-builds">0</div><div class="cl">builds</div></div>
+            <div class="scounter"><div class="cv" id="cnt-hits">0</div><div class="cl">cache hits</div></div>
+            <div class="scounter"><div class="cv" id="cnt-miss">0</div><div class="cl">recomputed</div></div>
+          </div>
+          <div style="padding:11px 15px;overflow:auto">
+            <div class="ctl-t" style="margin-bottom:6px">LAYER TABLE (build B vs A)</div>
+            <table class="layertable" id="sim-layertable"><thead><tr><th>instr</th><th>diff_id (uncompressed)</th><th>manifest digest (compressed, simulated)</th><th>status</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Build image A, then rebuild with no toggles flipped — every layer is a cache hit, digests are
+    byte-for-byte identical. <b>2.</b> Flip only "edit app.js" and rebuild — only the <code>COPY . .</code> layer
+    (and everything whose command literally references it) changes; the <code>npm ci</code> layer keeps its old
+    digest because its own input, <code>package.json</code>, didn't move. <b>3.</b> Flip only "bump express" and
+    rebuild — now the dependency-install layer changes too, because its content is a real function of
+    <code>package.json</code>'s bytes in this simulation, exactly like real <code>npm ci</code> output depends on
+    the lockfile. <b>4.</b> Compare the final manifest digest and config digest between builds — even a single
+    changed layer changes <i>both</i>, because the config's <code>diff_ids</code> array and the manifest's
+    <code>layers</code> array both include every layer's identity.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 11: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer, then reveal. Chapter 11 is where the manifests and layers you
+  just learned to build get pushed and pulled over HTTP — the OCI Distribution Spec.</p>
+  <div id="qa-check"></div>
+  <div class="lesson-end">
+    <h3>Chapter 10 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now read a real OCI manifest and config byte-for-byte,
+    explain precisely why <code>digest</code> and <code>diff_id</code> differ, predict which layers a Dockerfile
+    edit invalidates, and you've computed genuine SHA-256 digests yourself in the simulator. Chapter 11 takes
+    these exact JSON documents and asks: what HTTP calls actually move them between a client and a registry —
+    blob existence checks, chunked uploads, manifest PUTs, and the Bearer-token auth dance both engines use
+    identically.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="ctr-11.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-11: Registries & the Distribution Spec →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* qa cards */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. REAL SHA-256 — pure JS, no libraries
+   verified against Node's crypto.createHash('sha256') for
+   empty string / ascii / unicode / long input / JSON before ship
+   ============================================================ */
+function sha256Hex(str){
+  function rotr(x,n){ return (x>>>n)|(x<<(32-n)); }
+  const K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ];
+  let H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const bytes = [];
+  for (let i=0;i<str.length;i++){
+    let c = str.codePointAt(i);
+    if (c > 0xFFFF) i++;               // consume the low surrogate too
+    if (c < 0x80) bytes.push(c);
+    else if (c < 0x800){ bytes.push(0xc0|(c>>6), 0x80|(c&0x3f)); }
+    else if (c < 0x10000){ bytes.push(0xe0|(c>>12), 0x80|((c>>6)&0x3f), 0x80|(c&0x3f)); }
+    else { bytes.push(0xf0|(c>>18), 0x80|((c>>12)&0x3f), 0x80|((c>>6)&0x3f), 0x80|(c&0x3f)); }
+  }
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  const hi = Math.floor(bitLen / 0x100000000);
+  const lo = bitLen >>> 0;
+  for (const s of [24,16,8,0]) bytes.push((hi>>>s)&0xff);
+  for (const s of [24,16,8,0]) bytes.push((lo>>>s)&0xff);
+  const w = new Array(64);
+  for (let chunk=0; chunk<bytes.length; chunk+=64){
+    for (let i=0;i<16;i++){
+      w[i] = ((bytes[chunk+i*4]<<24)|(bytes[chunk+i*4+1]<<16)|(bytes[chunk+i*4+2]<<8)|(bytes[chunk+i*4+3]))>>>0;
+    }
+    for (let i=16;i<64;i++){
+      const s0 = rotr(w[i-15],7) ^ rotr(w[i-15],18) ^ (w[i-15]>>>3);
+      const s1 = rotr(w[i-2],17) ^ rotr(w[i-2],19) ^ (w[i-2]>>>10);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) >>> 0;
+    }
+    let [a,b,c,d,e,f,g,h] = H;
+    for (let i=0;i<64;i++){
+      const S1 = rotr(e,6)^rotr(e,11)^rotr(e,25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + K[i] + w[i]) >>> 0;
+      const S0 = rotr(a,2)^rotr(a,13)^rotr(a,22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + temp1) >>> 0;
+      d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+    H[0]=(H[0]+a)>>>0; H[1]=(H[1]+b)>>>0; H[2]=(H[2]+c)>>>0; H[3]=(H[3]+d)>>>0;
+    H[4]=(H[4]+e)>>>0; H[5]=(H[5]+f)>>>0; H[6]=(H[6]+g)>>>0; H[7]=(H[7]+h)>>>0;
+  }
+  return H.map(x=>x.toString(16).padStart(8,"0")).join("");
+}
+function sha256Digest(str){ return "sha256:" + sha256Hex(str); }
+
+/* ============================================================
+   2. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1979", l:"ustar", d:"<b>The ustar tar format</b> is standardized. It was designed for tape archival, not as a filesystem transport mechanism — no digests, no compression built in, no notion of 'layers.' Every image format in this chapter is, underneath, still assembling ustar-compatible tar streams; the innovation is entirely in what surrounds them." },
+  { yr:"2013", l:"Docker launches", d:"<b>Docker's original image format (v1).</b> Layers exist and are stacked, but each is identified by a randomly generated ID linked via a parent pointer in a small JSON file — not by a hash of its own content. Two byte-identical layers built independently get two different, unrelated IDs: no dedup, no tamper-evidence from the ID alone." },
+  { yr:"2015", l:"schema2 + OCI founded", d:"<b>Two things happen the same year.</b> Docker's Registry API v2 introduces manifest <b>schema2</b>: layers and config are now identified by the SHA-256 digest of their own bytes — content addressing arrives. Separately, the <b>Open Container Initiative</b> is founded under the Linux Foundation, with Docker donating what becomes <code>runc</code> (chapter 9) as the seed of a vendor-neutral runtime spec." },
+  { yr:"2017", l:"OCI Image Spec 1.0", d:"<b>The OCI Image Format Specification reaches 1.0</b>, modeled closely on Docker's schema2 rather than invented from scratch — the pragmatic choice to standardize a proven shape. From here, 'is this a Docker image or an OCI image' becomes almost entirely a <code>mediaType</code> string, not a structural difference." },
+  { yr:"2018", l:"Buildah & BuildKit, same year", d:"<b>Two different answers to 'how should building work' ship in the same year.</b> Podman's <code>containers/buildah</code> reaches maturity as a library-based, imperative builder reusing <code>containers/storage</code>. Docker ships <b>BuildKit</b> as an opt-in builder introducing a DAG-based execution model with content-keyed caching — the two architectures compared in §9." },
+  { yr:"2020", l:"buildx & manifest lists go mainstream", d:"<b>Docker Buildx</b> integrates QEMU emulation directly into the BuildKit workflow, making <code>docker buildx build --platform linux/amd64,linux/arm64</code> a one-command multi-architecture build producing a real OCI image index (§8). Multi-arch stops being a niche concern the moment Apple Silicon Macs (arm64 developer laptops, amd64 production servers) make it a daily reality for ordinary teams." },
+  { yr:"2021", l:"Manifest Confusion", d:"<b>CVE-2021-41190</b> (§11) forces the ecosystem to tighten exactly what 'valid manifest' means across parsers — a reminder that a spec's safety depends on every implementation agreeing on meaning, not only on every implementation being able to verify bytes." },
+  { yr:"2023", l:"BuildKit becomes default", d:"<b>Docker 23.0</b> makes BuildKit the default builder for <code>docker build</code> — five years after it shipped as opt-in. The multi-year gap is itself a data point: replacing a build engine underneath a decade of Dockerfiles and CI pipelines is treated with the same caution this course has seen for changing execution models generally (recall PostgreSQL's multi-year threading effort, a different course, same lesson about touching load-bearing defaults)." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===2 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[2].d;
+
+/* ============================================================
+   3. DECK: from tarball to content-addressed image (§5)
+   ============================================================ */
+(function(){
+  const steps = [
+    { stage:`<div class="layerstack">
+        <div class="layerbox meta"><span>one tarball, name = "myapp:latest"</span><span class="lb-dig">no digest at all</span></div>
+      </div>`,
+      cap:`<b>Start: §3's naive tarball.</b> One name, one blob, mutable. Nothing here can be verified, deduped, or partially transferred.` },
+    { stage:`<div class="layerstack">
+        <div class="layerbox new"><span>layer blob (tar+gzip)</span><span class="lb-dig">sha256:c1e2f0...</span></div>
+      </div>`,
+      cap:`<b>Fix #1 — name the filesystem diff by its own hash.</b> Split the one tarball into per-instruction diffs, and identify each one by <code>sha256(bytes)</code> instead of a filename. Two builds that produce identical bytes now produce the identical name — dedup and tamper-evidence arrive together, for free.` },
+    { stage:`<div class="layerstack">
+        <div class="layerbox"><span>config blob (JSON: env, cmd, rootfs.diff_ids)</span><span class="lb-dig">sha256:9a8f4b...</span></div>
+        <div class="layerbox new"><span>layer blob</span><span class="lb-dig">sha256:c1e2f0...</span></div>
+      </div>`,
+      cap:`<b>Fix #2 — separate the recipe from the bytes.</b> Metadata that never touches the filesystem (env vars, the default command) moves into its own small config JSON, itself content-addressed. Changing <code>CMD</code> now costs re-hashing a 2&nbsp;KB file, not re-hashing gigabytes of filesystem.` },
+    { stage:`<div class="layerstack">
+        <div class="layerbox meta"><span>manifest (JSON: config digest + ordered layer digests)</span><span class="lb-dig">sha256:e77a12...</span></div>
+        <div class="layerbox"><span>config blob</span><span class="lb-dig">sha256:9a8f4b...</span></div>
+        <div class="layerbox new"><span>layer blob</span><span class="lb-dig">sha256:c1e2f0...</span></div>
+      </div>`,
+      cap:`<b>Fix #3 — one small index of pointers, the manifest.</b> A client fetches this tiny JSON first, sees exactly which digests it needs, and can skip anything it already has by digest — before downloading a single large byte. This is the object chapter 11's push/pull protocol actually negotiates over.` },
+    { stage:`<div class="layerstack">
+        <div class="layerbox meta"><span>image index / manifest list (per-platform manifest digests)</span><span class="lb-dig">sha256:5c90aa...</span></div>
+        <div class="layerbox meta"><span>manifest (amd64)</span><span class="lb-dig">sha256:e77a12...</span></div>
+        <div class="layerbox"><span>config blob</span><span class="lb-dig">sha256:9a8f4b...</span></div>
+        <div class="layerbox new"><span>layer blob</span><span class="lb-dig">sha256:c1e2f0...</span></div>
+      </div>`,
+      cap:`<b>Fix #4 — one more index level for architecture.</b> A human-facing tag now resolves to an <b>image index</b> listing one manifest digest per platform; the puller's own architecture picks which manifest — and therefore which layer stack — it actually fetches. This is the real, complete OCI shape.` }
+  ];
+  stepper("deckBetter", steps);
+})();
+
+/* ============================================================
+   4. DECK: instruction → layer or metadata (§8b)
+   ============================================================ */
+(function(){
+  const rows = [
+    { i:"FROM node:20-slim", kind:"base", note:"Not a new layer of its own — it pulls in the base image's existing layer stack (3 layers here, already content-addressed and cached)." },
+    { i:"WORKDIR /app", kind:"meta", note:"Metadata only. Recorded as history{created_by:\"WORKDIR /app\", empty_layer:true}. No filesystem bytes, no new diff_id." },
+    { i:"COPY package*.json ./", kind:"layer", note:"Real layer. The tar diff contains exactly the two copied files; its diff_id is the SHA-256 of that tar stream." },
+    { i:"RUN npm ci --omit=dev", kind:"layer", note:"Real layer. Whatever files npm ci writes to node_modules become this layer's diff — and its content is a deterministic function of package.json's bytes, not of npm ci's literal command text." },
+    { i:"COPY . .", kind:"layer", note:"Real layer. Application source becomes its own diff, independent of the dependency-install layer above it." },
+    { i:"ENV NODE_ENV=production", kind:"meta", note:"Metadata only, folded directly into config.Config.Env — no layer." },
+    { i:"EXPOSE 3000", kind:"meta", note:"Metadata only — purely documentation for tooling; folded into config.Config.ExposedPorts. Never enforced by the kernel or the runtime." },
+    { i:'CMD ["node","server.js"]', kind:"meta", note:"Metadata only, folded into config.Config.Cmd — the default argv a runtime uses absent an override." }
+  ];
+  function render(upto){
+    return `<div class="layerstack">` + rows.slice(0,upto+1).reverse().map((r,idx)=>{
+      const isLast = idx===0;
+      const cls = r.kind==="meta" ? "meta" : (isLast?"new":"");
+      return `<div class="layerbox ${cls}"><span>${r.i}</span><span class="lb-dig">${r.kind==="meta"?"empty_layer: true":r.kind==="base"?"(inherited stack)":"new diff_id"}</span></div>`;
+    }).join("") + `</div>`;
+  }
+  const steps = rows.map((r,idx)=>({
+    stage: render(idx),
+    cap: `<b>${r.i}</b> ${r.note}`
+  }));
+  stepper("deckMap", steps);
+})();
+
+/* ============================================================
+   5. DECK: multi-stage build (§8c)
+   ============================================================ */
+(function(){
+  const steps = [
+    { stage:`<div class="stagegraph">
+        <div class="stagecol"><div class="sg-t">STAGE "builder"<br>FROM golang:1.22</div>
+          <div class="sg-layer">go toolchain (~500 MB)</div><div class="sg-layer">go.mod / go.sum</div><div class="sg-layer">source (.go files)</div></div>
+      </div>`,
+      cap:`<b>Stage 1 declared:</b> <code>FROM golang:1.22 AS builder</code>. This stage gets the full Go toolchain — hundreds of megabytes — because it needs to compile.` },
+    { stage:`<div class="stagegraph">
+        <div class="stagecol"><div class="sg-t">STAGE "builder"</div>
+          <div class="sg-layer">go toolchain</div><div class="sg-layer">go.mod / go.sum</div><div class="sg-layer">source</div>
+          <div class="sg-layer" style="border-color:var(--pg);color:var(--pg)">RUN go build -o /out/app</div></div>
+      </div>`,
+      cap:`<b>The build runs inside stage 1.</b> <code>RUN go build -o /out/app</code> executes with the full toolchain available, producing one statically-relevant artifact: a compiled binary at <code>/out/app</code>.` },
+    { stage:`<div class="stagegraph">
+        <div class="stagecol discarded"><div class="sg-t">STAGE "builder"</div>
+          <div class="sg-layer">go toolchain</div><div class="sg-layer">go.mod / go.sum</div><div class="sg-layer">source</div><div class="sg-layer">RUN go build</div></div>
+        <div class="sg-arrow">→</div>
+        <div class="stagecol final"><div class="sg-t">STAGE "final"<br>FROM gcr.io/distroless</div>
+          <div class="sg-layer" style="border-color:var(--pg);color:var(--pg)">COPY --from=builder /out/app /app</div></div>
+      </div>`,
+      cap:`<b>Stage 2 begins fresh:</b> <code>FROM gcr.io/distroless/static</code> — no shell, no package manager, no Go toolchain. <code>COPY --from=builder /out/app /app</code> pulls <i>only that one file</i> across the stage boundary as this stage's one real layer.` },
+    { stage:`<div class="stagegraph">
+        <div class="stagecol discarded"><div class="sg-t">STAGE "builder" — DISCARDED</div>
+          <div class="sg-layer">go toolchain</div><div class="sg-layer">go.mod / go.sum</div><div class="sg-layer">source</div><div class="sg-layer">RUN go build</div>
+          <div style="font-family:var(--mono);font-size:9.5px;color:var(--bad);margin-top:6px;text-align:center">never pushed, never pulled</div></div>
+        <div class="sg-arrow">⇥</div>
+        <div class="stagecol final"><div class="sg-t">STAGE "final" — SHIPPED</div>
+          <div class="sg-layer" style="border-color:var(--pg);color:var(--pg)">distroless base (~2 MB)</div>
+          <div class="sg-layer" style="border-color:var(--pg);color:var(--pg)">/app binary (~8 MB)</div></div>
+      </div>`,
+      cap:`<b>Only the final stage's manifest gets pushed.</b> The builder stage's layers were real, were hashed, and existed in the local store during the build — but nothing about them appears in the final image's manifest. A ~500&nbsp;MB toolchain compiled a ~10&nbsp;MB shipped artifact, and the registry only ever sees the 10&nbsp;MB.` }
+  ];
+  stepper("deckMulti", steps);
+})();
+
+/* ============================================================
+   6. SLIDER: consolidation vs image size (§8d)
+   ============================================================ */
+(function(){
+  const LEVELS = [
+    { label:"4 separate", segs:[
+        {n:"update (+28MB apt lists)",v:28,c:"#f25c54"},
+        {n:"install pkgs (+140MB)",v:140,c:"#82aaff"},
+        {n:"cleanup layer (whiteout only, +0.1MB)",v:0.1,c:"#2dd4bf"},
+        {n:"app code (+2MB)",v:2,c:"#4ade80"}],
+      total:170.1, hops:4,
+      note:"Four separate RUN/COPY layers. The apt-get update layer's downloaded package index (~28 MB) and the install layer's package cache remain fully present in their own layer blobs — cleanup happens in a LATER layer, which can only hide those bytes from the merged view, never remove them from the earlier layer's tar." },
+    { label:"3 (update+install combined)", segs:[
+        {n:"update+install (+140MB, no separate index residue)",v:140,c:"#82aaff"},
+        {n:"cleanup layer (whiteout only, +0.1MB)",v:0.1,c:"#2dd4bf"},
+        {n:"app code (+2MB)",v:2,c:"#4ade80"}],
+      total:142.1, hops:3,
+      note:"Combining update+install into one RUN means apt's own transient index files never get committed as a separate, permanent layer — they're written and read within the SAME layer's build step. Cleanup is still separate, so its whiteout-only cost remains, but ~28 MB is already gone." },
+    { label:"2 (update+install+cleanup combined)", segs:[
+        {n:"update+install+cleanup, single layer (+114MB)",v:114,c:"#82aaff"},
+        {n:"app code (+2MB)",v:2,c:"#4ade80"}],
+      total:116, hops:2,
+      note:"update, install, AND cleanup in one RUN with &&. Now the deleted apt cache never exists in any COMMITTED layer at all — the delete happens before that RUN's diff is captured. This is the real reason production Dockerfiles chain apt commands with && instead of one RUN per step." },
+    { label:"1 (fully consolidated)", segs:[
+        {n:"base tooling + deps + app, single layer (+116MB)",v:116,c:"#82aaff"}],
+      total:116, hops:1,
+      note:"Maximally consolidated: smallest possible pull-latency overhead (one HTTP round trip for this whole layer) but the WORST build-cache behavior — changing the app code now invalidates the entire 116 MB layer, re-running apt-get from scratch. Real Dockerfiles deliberately do NOT go this far for exactly that reason: §6 and §9's cache-cascade cost outweighs the marginal size/round-trip savings once dependencies are already isolated in their own layer." }
+  ];
+  const slider = el("s8-slider"), val = el("s8-val"), bar = el("s8-bar"), legend = el("s8-legend"), note = el("s8-note");
+  function render(){
+    const L = LEVELS[+slider.value];
+    val.textContent = L.label;
+    const maxTotal = 170.1;
+    bar.innerHTML = L.segs.map(s=>{
+      const pct = Math.max(2, (s.v/maxTotal)*100);
+      return `<div class="seg" style="width:${pct}%;background:${s.c}">${s.v>=1?Math.round(s.v)+" MB":""}</div>`;
+    }).join("");
+    legend.innerHTML = L.segs.map(s=>`<span><span class="sw" style="background:${s.c}"></span>${s.n}</span>`).join("") +
+      `<span style="margin-left:auto;color:var(--text)">total: <b>${L.total.toFixed(1)} MB</b> across <b>${L.hops}</b> layer${L.hops>1?"s":""}</span>`;
+    note.textContent = L.note;
+  }
+  slider.oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  dockerfile: { name:"Dockerfile / Containerfile", file:"plain text, build-context relative", sections:[
+    ["JOB","Human-authored recipe: base image, instructions, in order."],
+    ["NOTE","Podman calls the same file format a 'Containerfile' by convention (either filename works with both engines) — the syntax is identical."]]},
+  context: { name:"Build context", file:"the directory tree sent to the builder", sections:[
+    ["JOB","Every local file a COPY/ADD instruction might reference. Sent wholesale to the builder before the first instruction runs — a .dockerignore keeps this from including things like .git or node_modules."],
+    ["COST","A large, unfiltered context is itself a real perf bug: BuildKit and Buildah both must hash/scan it before any instruction executes."]]},
+  buildkit: { name:"BuildKit", file:"moby/buildkit — runs inside dockerd/buildkitd", sections:[
+    ["JOB","Parses the Dockerfile into an LLB DAG, resolves per-vertex content-addressed cache keys, executes independent vertices in parallel."],
+    ["ENGINE","Docker-only. Default since Docker 23.0."]]},
+  buildah: { name:"Buildah", file:"containers/buildah — linked library, no daemon", sections:[
+    ["JOB","Executes Dockerfile instructions sequentially against a real working container backed by containers/storage; commits a new layer per filesystem-touching step."],
+    ["ENGINE","podman build is a thin wrapper over this library — always, no daemon involved."]]},
+  layer: { name:"Layer blob", file:"application/vnd.oci.image.layer.v1.tar+gzip", sections:[
+    ["JOB","A gzip-compressed tar diff. Named by sha256 of its OWN compressed bytes in the manifest; its UNCOMPRESSED hash is recorded separately as diff_id in the config."],
+    ["WHO WRITES IT","Either builder — identical format, identical mediaType, regardless of which engine produced it."]]},
+  config: { name:"Config blob", file:"application/vnd.oci.image.config.v1+json", sections:[
+    ["JOB","Env, cmd, working dir, exposed ports, architecture/os, ordered diff_ids, and full build history. What a runtime reads to build a fresh OCI runtime bundle (ch. 9) at container-create time."]]},
+  manifest: { name:"Image manifest", file:"application/vnd.oci.image.manifest.v1+json", sections:[
+    ["JOB","Small JSON pointing at the config blob's digest and each layer's digest+size, in order. The first thing a puller fetches — everything else is decided from this."]]},
+  index: { name:"Image index / manifest list", file:"application/vnd.oci.image.index.v1+json", sections:[
+    ["JOB","One JSON listing one manifest digest per (os, architecture, variant) — what a tag like myapp:1.4 actually resolves to when the image supports multiple platforms. Covered in depth in ch. 11's push mechanics."]]},
+  containerd: { name:"containerd content store", file:"/var/lib/docker/containerd/... (Docker's default shim)", sections:[
+    ["JOB","Docker's local content-addressed blob store: every layer, config, and manifest lands here keyed by digest before/after use."]]},
+  cstorage: { name:"containers/storage", file:"/var/lib/containers/storage (root) or $XDG_DATA_HOME/containers/storage (rootless)", sections:[
+    ["JOB","Podman's (and CRI-O's, and Buildah's) shared local image/layer store — overlay-layers keyed by chain ID, overlay-images keyed by image ID."]]},
+  registry: { name:"OCI Distribution-Spec registry", file:"HTTP API — full mechanics in chapter 11", sections:[
+    ["JOB","Receives and serves blobs by digest and manifests by digest-or-tag. Identical HTTP contract regardless of which engine pushes or pulls."]]}
+};
+(function(){
+  const cards = document.querySelectorAll(".acard");
+  const detail = el("arch-detail");
+  function show(key){
+    const a = ARCH[key];
+    cards.forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+    detail.innerHTML = `<div class="ad-name">${a.name}</div><div class="ad-file">${a.file}</div>` +
+      a.sections.map(([h,b])=>`<div class="ad-sec">${h}</div><p style="margin-bottom:8px">${b}</p>`).join("");
+  }
+  cards.forEach(c=> c.onclick = ()=> show(c.dataset.p));
+  show("dockerfile");
+})();
+
+/* ============================================================
+   8. PERF CHART (§10)
+   ============================================================ */
+(function(){
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  let parallel = false;
+  function compute(sizeMB, cachePct){
+    const uncachedFrac = 1 - cachePct/100;
+    const bytesToXfer = sizeMB * uncachedFrac;
+    // crude round-trip model: ~12 layers assumed regardless of size, each with fixed overhead
+    const layers = 12;
+    const roundTripMs = 60;
+    const throughputMBps = 90;
+    const xferTimeMs = (bytesToXfer / throughputMBps) * 1000;
+    const overheadMs = parallel ? (layers/5)*roundTripMs : layers*roundTripMs;
+    return { bytesToXfer, timeMs: xferTimeMs + overheadMs };
+  }
+  function render(){
+    const size = +el("perf-size").value, cache = +el("perf-cache").value;
+    el("perf-size-val").textContent = size + " MB";
+    el("perf-cache-val").textContent = cache + "%";
+    el("perf-parallel").classList.toggle("on", parallel);
+    const W = cv.width, H = cv.height, PAD = 40;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=0;x<=100;x+=2) xs.push(x);
+    const maxBytes = size;
+    const maxTime = compute(size, 0).timeMs;
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [0,25,50,75,100].forEach(x=>{ const px = PAD + (x/100)*(W-PAD-16); ctx.beginPath(); ctx.moveTo(px,10); ctx.lineTo(px,H-20); ctx.stroke(); ctx.fillText(x+"%", px-10, H-6); });
+    function curve(getY, maxY, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const c = compute(size, x); const py = H-24-(getY(c)/maxY)*(H-44); const px = PAD+(x/100)*(W-PAD-16); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+      ctx.stroke();
+    }
+    curve(c=>c.bytesToXfer, maxBytes||1, "#2dd4bf");
+    curve(c=>c.timeMs, maxTime||1, "#f25c54");
+    const mx = PAD + (cache/100)*(W-PAD-16);
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(mx,10); ctx.lineTo(mx,H-20); ctx.stroke(); ctx.setLineDash([]);
+    const cur = compute(size, cache);
+    el("perf-note").innerHTML = `At <b style="color:var(--pg)">${cache}%</b> already cached: transfer <b style="color:var(--pg)">${cur.bytesToXfer.toFixed(0)} MB</b> of ${size} MB, modeled wall-clock ≈ <b style="color:var(--bad)">${(cur.timeMs/1000).toFixed(2)}s</b>${parallel?" (parallel fetch enabled)":""}. ${cache===0?"This is a cold pull — every layer is new, content addressing buys you nothing yet.":cache>=90?"This is the common case for a small code change against a stable base image — almost the entire transfer is skipped by digest.":""}`;
+  }
+  el("perf-size").oninput = render;
+  el("perf-cache").oninput = render;
+  el("perf-parallel").onclick = ()=>{ parallel = !parallel; render(); };
+  render();
+})();
+
+/* ============================================================
+   9. INTERVIEW QUESTIONS (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"What exactly does a layer's digest in the manifest hash, versus its diff_id in the config — and why do the two differ?", hint:"compression is the wedge",
+    a:"The manifest's layers[].digest is the SHA-256 of the layer's COMPRESSED (gzip) tar blob — the exact bytes stored and transferred by the registry. The config's rootfs.diff_ids[] is the SHA-256 of the same layer's UNCOMPRESSED tar stream. They differ because gzip compression is not a pure function of input alone — different gzip implementations, versions, or compression-level settings can produce different compressed bytes from identical uncompressed content. diff_id is the stable identity you'd use to ask 'is this really the same filesystem change,' and it's also the input to the chain-ID algorithm local stores use for layer caching." },
+  { lvl:"SENIOR", q:"Why doesn't changing an ENV instruction near the top of a Dockerfile force a rebuild of the RUN instructions below it, while changing a RUN instruction does?", hint:"does it touch the filesystem?",
+    a:"ENV, WORKDIR, CMD, LABEL, EXPOSE, and USER are metadata-only instructions — they're recorded as history entries with empty_layer:true and folded directly into the config JSON's Config struct, never producing a filesystem diff. A build cache keyed on 'did this instruction's own command or inputs change' sees no filesystem change from an ENV edit, so nothing downstream needs its diff_id recomputed. A RUN instruction, by contrast, always produces (or can produce) real filesystem bytes, so its cache key legitimately depends on more than just its command text." },
+  { lvl:"STAFF", q:"You add RUN rm -rf /tmp/build-artifacts as its OWN layer, right after a big RUN that created them. Image size doesn't shrink. Why, and what's the fix?", hint:"whiteout vs deletion, chapter 6",
+    a:"Deleting a file in a later layer only writes a whiteout marker into that layer's own tar — it tells the overlay merge (chapter 6) to hide the file from the merged view. It does not, and cannot, reach back and shrink an earlier, already-committed, already-hashed layer's blob. The build-artifact bytes are still fully present in the earlier layer's compressed tar, still transferred on every pull. The fix is to combine creation and cleanup into a SINGLE RUN with &&, so the artifacts never exist in any layer that gets committed on its own." },
+  { lvl:"STAFF", q:"A teammate says 'multi-stage builds save disk space at runtime.' Are they right, and what exactly is being saved vs not?", hint:"what actually ships",
+    a:"They're right about the SHIPPED image, wrong if they think the builder stage's cost disappears entirely. Only the final stage's layers appear in the pushed manifest and get pulled onto runtime hosts — a 500 MB Go toolchain never reaches production if the final stage is a distroless base plus a compiled binary. But the builder stage still fully executes, still gets hashed, and still occupies space in whatever machine performed the build (and possibly its local cache/registry cache) — multi-stage builds don't make the build cheaper, they make the DISTRIBUTED artifact smaller." },
+  { lvl:"STAFF", q:"Two CI runners build 'the same' Dockerfile and get different layer digests for logically identical output. List the real causes and how the diff_id design mitigates or fails to mitigate each.", hint:"compression, timestamps, ordering",
+    a:"(1) Different gzip implementations/levels producing different compressed bytes from identical uncompressed content — diff_id mitigates this completely, since it's computed post-decompression; the manifest digest still differs, which is expected and harmless for CONTENT verification but can still miss registry-level blob dedup keyed on the compressed digest. (2) Non-deterministic file timestamps or directory-entry ordering inside the tar itself changing the UNCOMPRESSED bytes — diff_id does NOT mitigate this; it will differ because the actual tar content differs. This is why reproducible-build efforts (normalized mtimes, sorted tar entries) target the tar-generation step itself, upstream of any digest algorithm. (3) Genuinely different RUN output (e.g. a package manager resolving a floating version differently on different days) — a real content difference, correctly reflected as a real digest difference; no mitigation is appropriate here because the content actually is different." },
+  { lvl:"PRINCIPAL", q:"Design review: pin production base images by tag or by digest? Steelman both.", hint:"who benefits from mutability?",
+    a:"By tag: you get automatic security patches when the upstream maintainer rebuilds node:20-slim with a patched OpenSSL, with zero action from your team — valuable for a low-risk-tolerance-for-staleness, high-trust-in-upstream posture. By digest: you get exact reproducibility — the same input to your build today and in six months, immune to an upstream tag being silently repointed (accidentally or maliciously, as in §11's Docker Hub incident) — valuable when supply-chain integrity and byte-for-bit reproducible builds matter more than automatic patching. The steelman synthesis most serious shops land on: pin by digest in the Dockerfile for reproducibility, and run automated digest-bump PRs (Renovate/Dependabot-style) so upstream patches still arrive, but only after passing your own CI — getting both properties instead of choosing one." },
+  { lvl:"PRINCIPAL", q:"Compare BuildKit's DAG solver to Buildah's imperative model for a monorepo with 40 Dockerfiles sharing common base layers. Where does each architecture pay off or cost you at that scale?", hint:"parallelism vs simplicity, at scale",
+    a:"BuildKit's content-keyed cache and parallel vertex execution pay off precisely at this scale: 40 Dockerfiles sharing a base and a common dependency-install pattern can share cache entries keyed on actual content (not file position), and independent stages across different Dockerfiles' builds can run concurrently on a CI fleet, especially with --cache-to/--cache-from sharing a remote cache across runners. Buildah's sequential, per-Dockerfile model doesn't parallelize within a single build and has no first-class remote cache export, so at 40-Dockerfile scale you're leaning harder on tagged intermediate images and container-storage reuse to approximate the same benefit — more manual plumbing, but zero dependency on a second, more complex solver living inside a daemon, which is exactly the tradeoff a team already committed to Podman's daemonless philosophy (chapter 12) would accept." }
+]);
+
+/* ============================================================
+   10. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"In an OCI image manifest, what does layers[0].digest identify?",
+    opts:[ "The uncompressed tar stream of the base layer",
+           "The compressed (gzip) blob exactly as stored and transferred by the registry",
+           "A random UUID assigned when the layer was first built",
+           "The combined hash of every layer in the image" ],
+    a:1,
+    why:"Manifest layer digests hash the compressed blob — what's actually stored/transferred. The uncompressed hash is the diff_id, recorded separately in the config's rootfs.diff_ids. Random UUIDs describe the pre-2015 Docker v1 format (§2), not content addressing; a combined hash of every layer describes something closer to a chain ID (§13), which is a local cache-store concept, not a manifest field." },
+  { q:"Which Dockerfile instruction does NOT produce a new filesystem layer?",
+    opts:[ "COPY app.js /app/app.js", "RUN npm install", "ENV NODE_ENV=production", "ADD archive.tar.gz /data/" ],
+    a:2,
+    why:"ENV (like WORKDIR, CMD, LABEL, EXPOSE, USER) is metadata-only — recorded in config.Config and as a history entry with empty_layer:true, with no filesystem diff. COPY, RUN, and ADD all can and typically do write real files, producing a real layer with its own diff_id." },
+  { q:"A Dockerfile changes RUN apt-get install foo to RUN apt-get install foo bar on line 4 of 10. What happens to the cache for lines 5–10 under a classic (pre-BuildKit) sequential builder?",
+    opts:[ "Only line 4 is recomputed; lines 5–10 stay cached because their own text is unchanged",
+           "Every line from 4 onward is recomputed, even if a later line's own command and inputs are unaffected",
+           "The entire build restarts including lines 1–3, since the Dockerfile as a whole changed",
+           "Nothing is recomputed — Dockerfile edits never invalidate cache" ],
+    a:1,
+    why:"Classic sequential builders check each instruction's cache against the exact parent image state; once line 4 misses, the 'parent state' for line 5 has changed by definition, forcing a miss regardless of whether line 5's own command or inputs actually differ. This is precisely the cascading cost described in §6 — and precisely what BuildKit's content-keyed DAG cache (§9, §15) can sometimes avoid for genuinely independent downstream steps." },
+  { q:"Why might two different tools compute or trust different content for what looks like 'the same' manifest, as in CVE-2021-41190?",
+    opts:[ "Because SHA-256 has a known collision allowing two different manifests to share a digest",
+           "Because some tools inferred manifest-vs-index by sniffing JSON structure instead of trusting the mediaType field strictly",
+           "Because Docker and OCI use physically incompatible hash algorithms",
+           "Because manifests are not digitally signed by default" ],
+    a:1,
+    why:"The real root cause was structural ambiguity: a document could be read as either a single-platform manifest or a multi-platform index depending on which fields a parser happened to check, if it didn't strictly honor the mediaType field. SHA-256 has no known practical collision (option A is false); Docker and OCI manifests both use SHA-256 (option C is false); missing signatures is a real, separate concern (chapter 11) but wasn't this CVE's mechanism." },
+  { q:"You run a container from an image, then docker exec in and delete a secret file that was baked into an early layer. Is the secret gone from the image?",
+    opts:[ "Yes — deleting the file removes it from the underlying layer",
+           "No — the running container's filesystem is separate from the already-pushed image's layer blobs, which are immutable and still contain the secret",
+           "Only if you also run docker system prune afterward",
+           "Only if the secret was set via ENV rather than written to a file" ],
+    a:1,
+    why:"A running container writes to its own writable layer (chapter 6), not to the immutable, already-hashed layer blobs that make up the pushed image. Deleting the file at runtime affects only that one container's ephemeral state. The secret remains permanently recoverable by anyone who pulls and inspects the original image's layers or config history — exactly §10's secret-in-a-layer trap, regardless of whether it arrived via ENV or a written file." },
+  { q:"What's the real difference between an OCI image manifest and an OCI image index (manifest list)?",
+    opts:[ "The index is a compressed version of the manifest",
+           "The manifest describes one platform's layer stack + config; the index lists one manifest digest per platform for a multi-arch tag",
+           "The manifest is used by Docker, the index is used exclusively by Podman",
+           "There is no real difference — they are two names for the same JSON schema" ],
+    a:1,
+    why:"A manifest is the single-platform object from §8: config digest + ordered layer digests. An index is one level up — a small JSON array of {digest, platform} entries, each pointing at a platform-specific manifest. Both engines produce and consume both document types identically; the index isn't compression (it doesn't reduce bytes, it adds a routing layer) and isn't engine-exclusive." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; you could review the OCI image-spec PR queue.":correct>=4?"solid; re-read the explanations you missed.":"re-run §5's stepper and §15's simulator — the digest/diff_id split clicks fast once you compute one by hand."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Builder parses the Dockerfile (or BuildKit converts it to an LLB DAG)",
+    "Each instruction is checked against the local build cache",
+    "Cache miss: instruction executes inside a real container, filesystem diff captured as a new layer",
+    "diff_id computed = SHA-256 of the UNCOMPRESSED tar stream",
+    "Layer tar is gzip-compressed for storage and transport",
+    "Compressed blob's digest computed = SHA-256 of the COMPRESSED bytes",
+    "Config JSON assembled: architecture, Config, rootfs.diff_ids[], full history[]",
+    "Manifest JSON assembled: config descriptor + ordered layer descriptors, ready to push"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real build pipeline</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"You already know every layer's compressed digest and size before contacting the registry at all. Predict exactly what HTTP calls a push can SKIP when most layers already exist server-side — and what verb/method makes that check possible without uploading anything.", hint:"digest as a lookup key, not just a verification tool",
+    a:"Because the digest is computed locally before any network call, a push can issue a lightweight existence check per layer — a HEAD request against the registry's blob-by-digest endpoint — before attempting any upload. If the registry responds 200, that layer's bytes are already present server-side (someone else pushed the identical content, or a prior push of this same image already landed it) and the client skips uploading it entirely, sending only the small manifest and whichever blobs actually got a 404. Chapter 11 shows this exact HEAD-then-conditionally-PUT/PATCH flow as the real OCI Distribution Spec push algorithm." },
+  { lvl:"THINK", q:"An image index references three per-platform manifests by DIGEST, not by tag. Predict what invariant this guarantees for docker pull myapp on an arm64 machine vs an amd64 machine — and what would break if the index instead stored a separate mutable tag per platform.", hint:"what can silently change out from under a digest reference vs a tag reference?",
+    a:"Because each platform entry is pinned by digest, 'myapp:1.4 resolved on this exact date' always names the exact same bytes for a given platform, forever — the index itself, once pushed, cannot silently drift, because a digest reference has nothing left to reassign. If the index instead stored per-platform TAGS (e.g. 'myapp:1.4-amd64'), each of those tags could be independently repointed at any time by anyone with push access, meaning 'the amd64 variant of myapp:1.4' would no longer be a fixed, verifiable claim — exactly the failure mode digests were built to eliminate in the first place (§1, §4)." },
+  { lvl:"THINK", q:"Using nothing but what you learned about digests in this chapter, predict how a registry — or a client — can detect that a push was corrupted mid-transfer.", hint:"the client computed the digest BEFORE sending anything",
+    a:"The client already knows the expected digest of every blob it's about to upload, computed locally before the transfer starts. The OCI Distribution Spec's blob-upload completion step requires the client to state that expected digest, and the registry independently re-hashes the bytes it actually received and compares. Any mismatch — a dropped connection, a proxy that mangled bytes, a bit flip — produces a hash that doesn't match the claimed digest, and the registry rejects the upload outright. No separate checksum mechanism is needed because the content address IS the checksum; chapter 11 shows the actual PUT-with-digest-query-parameter mechanics." }
+]);
+
+/* ============================================================
+   11. SIMULATOR (§15) — layer inspector with real SHA-256
+   ============================================================ */
+(function(){
+  const BASE_LAYERS = [
+    { instr:"FROM node:20-slim (layer 1/3)", content:"debian-rootfs-slice-v20240410" },
+    { instr:"FROM node:20-slim (layer 2/3)", content:"node-v20-runtime-binaries" },
+    { instr:"FROM node:20-slim (layer 3/3)", content:"npm-and-corepack-bundle" }
+  ];
+  const META_INSTR = [
+    "WORKDIR /app",
+    "ENV NODE_ENV=production",
+    "EXPOSE 3000",
+    'CMD ["node","server.js"]'
+  ];
+  const PKG_V1 = '{"name":"app","dependencies":{"express":"^4.18.0"}}';
+  const PKG_V2 = '{"name":"app","dependencies":{"express":"^4.19.0"}}';
+  const APP_V1 = 'console.log("hello v1");';
+  const APP_V2 = 'console.log("hello v2 - updated message");';
+
+  const S = { pkgBumped:false, appEdited:false, buildA:null, buildB:null, builds:0, hits:0, misses:0 };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 140) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function computeBuild(pkgContent, appContent){
+    const real = [];
+    BASE_LAYERS.forEach(b=>{
+      const diffId = sha256Digest(b.content);
+      const compressed = sha256Digest("gzip-standin:" + diffId);
+      real.push({ instr:b.instr, diffId, compressed, size: b.content.length, kind:"base" });
+    });
+    const copyPkg = "COPY:package.json=" + pkgContent;
+    real.push({ instr:"COPY package*.json ./", diffId: sha256Digest(copyPkg), compressed: sha256Digest("gzip-standin:"+sha256Digest(copyPkg)), size: copyPkg.length, kind:"layer" });
+    const npmCi = "RUN:npm-ci:resolved-from:" + pkgContent;
+    real.push({ instr:"RUN npm ci --omit=dev", diffId: sha256Digest(npmCi), compressed: sha256Digest("gzip-standin:"+sha256Digest(npmCi)), size: npmCi.length, kind:"layer" });
+    const copyApp = "COPY:app.js=" + appContent;
+    real.push({ instr:"COPY . .", diffId: sha256Digest(copyApp), compressed: sha256Digest("gzip-standin:"+sha256Digest(copyApp)), size: copyApp.length, kind:"layer" });
+
+    // chain IDs — real recursive algorithm: chain(n) = n==0 ? diffId0 : sha256(chain(n-1) + " " + diffId_n)
+    let chain = null;
+    real.forEach(r=>{
+      chain = chain === null ? r.diffId : sha256Digest(chain + " " + r.diffId);
+      r.chainId = chain;
+    });
+
+    const history = [];
+    real.forEach(r=> history.push({ created_by: r.instr, empty_layer: false }));
+    META_INSTR.forEach(m=> history.push({ created_by: m, empty_layer: true }));
+
+    const config = {
+      architecture: "amd64", os: "linux",
+      config: { Env:["PATH=/usr/local/sbin:/usr/local/bin","NODE_ENV=production"], WorkingDir:"/app", Cmd:["node","server.js"], ExposedPorts:{"3000/tcp":{}} },
+      rootfs: { type:"layers", diff_ids: real.map(r=>r.diffId) },
+      history
+    };
+    const configStr = JSON.stringify(config, null, 2);
+    const configDigest = sha256Digest(configStr);
+
+    const manifest = {
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      config: { mediaType:"application/vnd.oci.image.config.v1+json", digest: configDigest, size: configStr.length },
+      layers: real.map(r=>({ mediaType:"application/vnd.oci.image.layer.v1.tar+gzip", digest:r.compressed, size:r.size }))
+    };
+    const manifestStr = JSON.stringify(manifest, null, 2);
+    const manifestDigest = sha256Digest(manifestStr);
+
+    return { real, configStr, configDigest, manifestStr, manifestDigest };
+  }
+
+  function renderStack(build){
+    el("sim-stack").innerHTML = build.real.slice().reverse().map(r=>
+      `<div class="layerbox"><span>${r.instr}</span><span class="lb-dig digest">${r.compressed.slice(0,24)}…</span></div>`
+    ).join("") + META_INSTR.slice().reverse().map(m=>
+      `<div class="layerbox meta"><span>${m}</span><span class="lb-dig">empty_layer</span></div>`
+    ).join("");
+    el("sim-manifest").textContent = build.manifestStr + "\n\n// manifest digest: " + build.manifestDigest;
+    el("sim-config").textContent = build.configStr + "\n\n// config digest: " + build.configDigest;
+  }
+
+  function renderDiffTable(){
+    const tbody = document.querySelector("#sim-layertable tbody");
+    tbody.innerHTML = "";
+    if (!S.buildB){
+      META_INSTR.forEach(()=>{});
+      return;
+    }
+    let hits = 0, misses = 0;
+    S.buildB.real.forEach((rb, i)=>{
+      const ra = S.buildA.real[i];
+      const same = ra.compressed === rb.compressed;
+      if (same) hits++; else misses++;
+      const tr = document.createElement("tr");
+      tr.className = same ? "hit" : "changed";
+      tr.innerHTML = `<td>${rb.instr}</td><td class="digest">${rb.diffId.slice(0,20)}…</td><td class="digest">${rb.compressed.slice(0,20)}…</td><td>${same?"CACHE HIT":"RECOMPUTED"}</td>`;
+      tbody.appendChild(tr);
+    });
+    META_INSTR.forEach(m=>{
+      const tr = document.createElement("tr");
+      tr.className = "meta";
+      tr.innerHTML = `<td>${m}</td><td>—</td><td>—</td><td>metadata only</td>`;
+      tbody.appendChild(tr);
+    });
+    el("cnt-hits").textContent = hits;
+    el("cnt-miss").textContent = misses;
+  }
+
+  el("sc-build-a").onclick = ()=>{
+    log("RUN", "$ docker build -t app:A .   (BuildKit, no cache)");
+    S.buildA = computeBuild(PKG_V1, APP_V1);
+    S.builds++;
+    el("cnt-builds").textContent = S.builds;
+    S.buildA.real.forEach(r=> log("LOG", `=> [${r.instr}] diff_id ${r.diffId.slice(0,24)}… (${r.size}B uncompressed)`));
+    log("OK", `=> exporting manifest ${S.buildA.manifestDigest.slice(0,28)}…`);
+    log("HINT", "Image A built. Flip a toggle on the right and click 'rebuild as image B & diff'.");
+    renderStack(S.buildA);
+    S.buildB = null;
+    renderDiffTable();
+  };
+
+  el("tgl-pkg").onclick = ()=>{ S.pkgBumped = !S.pkgBumped; el("tgl-pkg").classList.toggle("on", S.pkgBumped); };
+  el("tgl-app").onclick = ()=>{ S.appEdited = !S.appEdited; el("tgl-app").classList.toggle("on", S.appEdited); };
+
+  el("sc-build-b").onclick = ()=>{
+    if (!S.buildA){ log("WARN", "build image A first"); return; }
+    log("RUN", "$ docker build -t app:B .   (BuildKit, warm cache from image A)");
+    const pkg = S.pkgBumped ? PKG_V2 : PKG_V1;
+    const app = S.appEdited ? APP_V2 : APP_V1;
+    S.buildB = computeBuild(pkg, app);
+    S.builds++;
+    el("cnt-builds").textContent = S.builds;
+    S.buildB.real.forEach((r,i)=>{
+      const same = r.compressed === S.buildA.real[i].compressed;
+      log(same?"CACHED":"LOG", `${same?"=> CACHED":"=>"} [${r.instr}] ${same? "reused "+r.compressed.slice(0,20)+"…" : "new digest "+r.compressed.slice(0,20)+"…"}`);
+    });
+    log(S.buildB.manifestDigest===S.buildA.manifestDigest?"CACHED":"OK",
+      `=> exporting manifest ${S.buildB.manifestDigest.slice(0,28)}… ${S.buildB.manifestDigest===S.buildA.manifestDigest?"(identical to A — fully cached build)":"(differs from A)"}`);
+    renderStack(S.buildB);
+    renderDiffTable();
+  };
+
+  el("sc-reset").onclick = ()=>{
+    S.buildA = null; S.buildB = null; S.builds = 0; S.pkgBumped=false; S.appEdited=false;
+    el("tgl-pkg").classList.remove("on"); el("tgl-app").classList.remove("on");
+    el("cnt-builds").textContent = "0"; el("cnt-hits").textContent = "0"; el("cnt-miss").textContent = "0";
+    el("sim-stack").innerHTML = ""; el("sim-manifest").textContent = 'click "build image A" →'; el("sim-config").textContent = "";
+    document.querySelector("#sim-layertable tbody").innerHTML = "";
+    logEl.innerHTML = "";
+    log("HINT", "Simulator reset. Build image A to begin.");
+  };
+
+  log("HINT", "Every digest here is computed by a from-scratch SHA-256 implementation running in this page — verified against Node's crypto module before this chapter shipped.");
+  log("LOG", "Try: build A, rebuild B with no toggles (all cache hits) → flip 'edit app.js' only, rebuild → flip 'bump express' only, rebuild.");
+})();
+
+/* ============================================================
+   12. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-10"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,1815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-02 · Namespaces I: PID, UTS, Mount & IPC — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- engine chips ---------- */
+  .eng{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 8px;margin:1px;font-weight:700;letter-spacing:.03em}
+  .eng.docker{color:var(--docker);background:rgba(36,150,237,.12)}
+  .eng.podman{color:var(--podman);background:rgba(137,44,160,.12)}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#04211c}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* stack frames / boxes */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* proc tree mini */
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .pnode.zombie{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.08)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .shm{border:1.5px dashed var(--border-hi);border-radius:12px;padding:9px 18px;font-family:var(--mono);
+    font-size:11px;color:var(--muted);transition:all .3s}
+  .shm.corrupt{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.07)}
+  .shm.fresh{border-color:var(--ok);color:var(--ok);background:rgba(74,222,128,.06)}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* nesting / pidmax visuals */
+  .nestwrap{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:14px 0 6px}
+  .nestbox{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:8px;padding:6px 9px;
+    font-family:var(--mono);font-size:10px;color:var(--muted)}
+  .nestbox.deep{border-color:var(--warn);color:var(--warn)}
+  .nestbox.over{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.08)}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#04211c;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#04211c}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#04211c}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  .nsviews{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  .nsview{flex:1;min-width:200px;border:1px solid var(--border-hi);border-radius:11px;padding:10px 12px;background:var(--panel-2)}
+  .nsview .nv-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:7px}
+  .nsview.host .nv-t{color:var(--muted)}
+  .nsview.container .nv-t{color:var(--pg)}
+  .nsview pre{font-family:var(--mono);font-size:10.6px;line-height:1.6;color:#c6cddb;white-space:pre-wrap;min-height:70px}
+  .flagrow{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px}
+  .flagchip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:10px;
+    padding:6px 11px;font-size:11px;font-family:var(--mono);cursor:pointer;transition:all .15s;text-align:center}
+  .flagchip .fc-l{display:block;font-size:9px;color:var(--dim);margin-top:2px}
+  .flagchip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+  .flagchip.on .fc-l{color:var(--pg)}
+  .flagchip:disabled,.flagchip.locked{opacity:.4;cursor:default}
+
+  /* inspector / log console */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:70px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 02 / 16</b> · Namespaces I</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>The Real Primitives</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Security</a>
+  <a href="#s11"><span class="n">11</span>Production Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 02</div>
+  <h1>Namespaces I: PID, UTS,<br><span class="grad">Mount & IPC</span></h1>
+  <p class="lead">A container is not a new kernel object. It is an ordinary process wearing a set of masks — each
+  mask a <b>namespace</b>, a kernel data structure that changes what one syscall's worth of "the world" looks like
+  from inside. This chapter builds four of those masks by hand, with the real syscalls (<code>clone()</code>,
+  <code>unshare()</code>, <code>setns()</code>) and the real flags (<code>CLONE_NEWPID</code>,
+  <code>CLONE_NEWUTS</code>, <code>CLONE_NEWNS</code>, <code>CLONE_NEWIPC</code>), and hits the two problems every
+  from-scratch container implementer hits on day one: <b>PID 1's zombie-reaping obligation</b>, and the fact that
+  <code>/proc</code> will keep lying to you until you remount it in exactly the right place, in exactly the right
+  order.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Call <code>unshare()</code> with the right flags and explain precisely what each one hides and when it takes effect.</div>
+    <div class="obj"><b>You will understand</b>Why a bare process as PID 1 ignores <code>docker stop</code>, and what tini/dumb-init/catatonit actually do about it.</div>
+    <div class="obj"><b>You will predict</b>Why <code>ps</code> inside a "container" can show either one process or two hundred, depending on one missing <code>mount()</code> call.</div>
+    <div class="obj"><b>You will simulate</b>Building a namespaced process by hand, flag by flag, and watching <code>ps</code>/<code>hostname</code>/<code>mount</code>/<code>ipcs</code> change underneath it.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">One kernel, one PID space, one hostname, one mount table</h2>
+  <p class="lead">Chapter 1 established that Linux containers share a kernel — there is no hypervisor, no second
+  copy of the scheduler, no virtualized CPU. That leaves an uncomfortable question standing: by default, <b>every
+  process on a Linux box sees the exact same global state for almost everything that matters</b>. There is one PID
+  space (run <code>ps aux</code> anywhere and you see every process on the machine). There is one hostname
+  (<code>uname -n</code> returns the same string to every process, because it is one kernel-global string). There
+  is one mount table inherited at boot and mutated in place by every subsequent <code>mount()</code> call from any
+  process with permission. There is one pool of System V and POSIX IPC objects, addressed by small integer keys
+  that any two unrelated programs can collide on.</p>
+  <p>None of that is a bug — it is exactly how Unix has worked since 1969, and it is precisely right for a single
+  multi-user machine where "sees everything" is the point. It is exactly wrong for a container, whose entire
+  promise is that a process believes it is alone on the machine: PID 1 of its very own tiny world, its own
+  hostname, its own filesystem view, its own IPC namespace so a stale semaphore from an unrelated program can never
+  collide with its own. The problem this chapter solves is mechanical and specific: <b>how does the kernel let one
+  process see a private, self-consistent version of PIDs, hostname, mounts, and IPC objects, without cloning the
+  kernel itself?</b></p>
+  <ul class="plain">
+    <li><b>Process identity</b> — a process needs to believe it is PID 1 (or some small number), with only its own
+      descendants visible to it, even though the real kernel-wide PID space contains thousands of unrelated processes.</li>
+    <li><b>Host identity</b> — <code>hostname</code>/<code>domainname</code> must be independently settable per
+      container without one container's <code>sethostname()</code> call reaching every other process on the box.</li>
+    <li><b>Filesystem view</b> — mounting, unmounting, and remounting inside a container must not appear in — or
+      disappear from — the host's mount table, and vice versa.</li>
+    <li><b>IPC isolation</b> — System V semaphores, message queues, and shared memory segments (all addressed by a
+      small integer key via <code>ftok()</code>) must not collide between unrelated containers that happen to pick
+      the same key, which legacy software does constantly.</li>
+  </ul>
+  <p>The answer Linux settled on — arrived at piecemeal, over six years, by different engineers solving different
+  narrow problems who only later realized they were building one general mechanism — is the
+  <span class="term" data-def="A per-resource-class kernel object that a process is a member of; the kernel consults the calling process's membership before resolving PIDs, hostnames, mount tables, or IPC keys, giving each namespace its own private version of that resource class.">namespace</span>:
+  a kernel object, one per resource class, that a process is a <i>member of</i>, and that the kernel consults on
+  every relevant syscall. This chapter covers the first four kinds — PID, UTS, mount, and IPC — chosen because they
+  are the oldest, the ones a container's <code>init</code> process must set up correctly before anything else can
+  work, and the ones most likely to bite you with subtle, half-working isolation if you get the order of operations
+  wrong. Network namespaces (chapter 3) and user namespaces (chapter 4) build on the exact same mechanism and are
+  deliberately deferred so this chapter can go deep on the primitive itself.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE NEXT 14 CHAPTERS</div>
+    <p>Every namespace in this course is the same shape: a kernel struct, a counter of how many tasks/mounts/fds
+    reference it, and a rule for what a process inside it can address. Learn that shape once — on PID, UTS, mount,
+    and IPC, where the state being isolated is small and easy to reason about — and network namespaces (chapter 3),
+    user namespaces (chapter 4), and cgroup namespaces (chapter 5's neighbor) are the identical mechanism applied
+    to harder resource classes. This is also the chapter where the course's central discipline starts paying off:
+    we will say exactly what is isolated (addressing/visibility) and exactly what is not (the underlying kernel,
+    the CPU scheduler, the physical devices) — never "it's like a lightweight VM."</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Six years, four kernel releases, no master plan</h2>
+  <p>Namespaces were not designed as a unified subsystem and then implemented. Each one was added independently,
+  years apart, by people solving a specific irritant — and only around 2006–2008 did it become clear these were
+  instances of one general pattern. Click through the timeline; the ordering explains some real oddities you will
+  meet later (starting with why the mount-namespace flag is oddly named <code>CLONE_NEWNS</code> instead of
+  <code>CLONE_NEWMNT</code>).</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — namespaces, one at a time</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · THE "NEWNS" NAMING TRIVIA</div>
+    <p><code>CLONE_NEWNS</code> is not an abbreviation of anything to do with mounts. It is short for
+    <b>"new namespace"</b>, full stop — because when it was added in <b>Linux 2.4.19 (2002)</b>, mount namespaces
+    were the <i>only</i> namespace type in existence, so "new namespace" and "new mount namespace" were the same
+    sentence. Every namespace type added afterward needed its own, more specific name
+    (<code>CLONE_NEWUTS</code>, <code>CLONE_NEWIPC</code>, <code>CLONE_NEWPID</code>...), leaving the original
+    with a name that reads as a bug report about itself. It is one of the most-asked "why is this called that"
+    questions in the container-tooling world, and now you know: it is a first-mover artifact, not a design choice.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: chroot and a prayer</h2>
+  <p>Chapter 1 already introduced <code>chroot()</code> as 1979's answer to filesystem isolation, and it is the
+  natural first thing anyone reaches for when asked to "isolate a process." Here is the honest naive attempt at a
+  container using only what chapter 1 gave us — no namespaces of any kind yet:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">bash</span><span>naive_container.sh — chroot only, no namespaces</span></div>
+    <pre><span class="c">#!/bin/bash</span>
+<span class="c"># "Containerize" a process using nothing but chroot(). This is genuinely</span>
+<span class="c"># attempt #1 that most people try before learning namespaces exist.</span>
+
+<span class="f">mkdir</span> -p /rootfs/myapp
+<span class="f">tar</span> -xf myapp-rootfs.tar -C /rootfs/myapp    <span class="c"># extract an image's filesystem</span>
+
+<span class="f">echo</span> <span class="s">"myapp-container"</span> &gt; /rootfs/myapp/etc/hostname   <span class="c"># hope this "sets" the hostname</span>
+
+<span class="f">chroot</span> /rootfs/myapp /bin/myapp                 <span class="c"># jump the filesystem root, exec the app</span></pre>
+  </div>
+
+  <p>Writing a file named <code>/etc/hostname</code> inside the chroot feels like it should isolate the hostname —
+  it is, after all, the file most Linux distros read at boot to <i>call</i> <code>sethostname()</code>. But nothing
+  in this script actually calls <code>sethostname()</code>, and even if it did, that syscall changes one
+  kernel-global string with no notion of "for this chroot only." Similarly, nothing here touches process visibility
+  or IPC at all — chroot only ever changes what <code>/</code> resolves to for path lookups. Everything else about
+  the process's view of the machine is completely unchanged.</p>
+  <div class="callout warn">
+    <div class="co-t">WHAT THIS GETS RIGHT</div>
+    <p>Don't dismiss it — chroot's filesystem-root trick is real, cheap, and still part of every container runtime's
+    final rootfs setup today (via <code>pivot_root</code>, chapter 6's sharper version of the same idea). The naive
+    attempt's failure mode is not "wrong tool" — it's "incomplete tool": chroot solves exactly one of the four
+    problems from §1, and nothing here even attempts the other three.</p>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Run it, and watch three kinds of leakage — quantified</h2>
+  <p>Run <code>naive_container.sh</code> and then poke at it from inside the chroot. Every one of these is a
+  real, reproducible command, not a hypothetical:</p>
+  <ul class="plain">
+    <li><b><code>ps aux</code> inside the chroot lists every process on the host</b> — not a handful, all of them.
+      On a modestly busy host that is 150–300 lines, complete with other users' command lines, full argv (which
+      routinely contains secrets passed as flags), and real PIDs. Worse: if the containerized process runs as root,
+      those real PIDs are directly addressable — <code>kill -9 &lt;host-pid&gt;</code> from inside the "container"
+      terminates a host process, because there is no PID namespace stopping the signal from being delivered.</li>
+    <li><b><code>hostname</code> is a global write, not a local one.</b> If the naive script's app calls
+      <code>sethostname()</code> to actually apply that <code>/etc/hostname</code> file, it changes the real
+      kernel's hostname string — the one <code>uname -n</code> returns for <i>every process on the machine,
+      including the host's own monitoring agents</i>. Run two of these "containers" wanting two different hostnames
+      on one host and the second one to call <code>sethostname()</code> wins, silently, for everyone.</li>
+    <li><b><code>mount</code> inside the chroot is <code>mount</code> everywhere.</b> <code>mount -t tmpfs tmpfs
+      /tmp</code> run inside the chroot adds a line to the kernel's one global mount table — visible in
+      <code>cat /proc/self/mountinfo</code> from a completely unrelated host shell, immediately. Unmounting it from
+      the host, or from a second "container," removes it for the first one too.</li>
+    <li><b>IPC keys collide.</b> Two unrelated legacy applications both calling <code>ftok("/app", 'A')</code>
+      compute the <i>same</i> System V IPC key by construction — <code>ftok()</code>'s whole design is a
+      deterministic hash of a pathname and a project id, and pathnames repeat constantly across images built from
+      similar bases. Without an IPC namespace, the second app's <code>semget(key, ..., IPC_CREAT|IPC_EXCL)</code>
+      returns <code>EEXIST</code> against the <i>first</i> app's semaphore set — or worse, a non-exclusive
+      <code>shmget()</code> silently attaches to the wrong shared memory segment and the two unrelated programs
+      start corrupting each other's data with zero error at all.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE PATTERN TO NOTICE</div>
+    <p>Every one of these failures has the identical shape: <b>a syscall that mutates or queries global kernel
+    state, with no parameter anywhere in its signature for "which container."</b> <code>sethostname(const char
+    *name, size_t len)</code> has no container argument. Neither does <code>mount()</code>, nor
+    <code>semget()</code>, nor the PID-addressing half of <code>kill()</code>. You cannot fix this by writing more
+    userspace code around these calls — there is nothing to pass. The only fix is a kernel-side one: make the
+    syscall itself resolve against <i>per-process</i> state instead of one global. That is precisely what a
+    namespace is.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · THE REAL PRIMITIVES</div>
+  <h2 class="sec">clone(), unshare(), setns() — and the four flags</h2>
+  <p>Three syscalls create and join namespaces. Get their difference straight now, because the simulator in §15
+  and the incidents in §11 both hinge on it:</p>
+  <ul class="plain">
+    <li><code>clone(int (*fn)(void*), void *stack, int flags, void *arg, ...)</code> — like <code>fork()</code>,
+      but <code>flags</code> can include one or more <code>CLONE_NEW*</code> bits. The new child is placed into
+      brand-new namespaces of exactly those kinds <i>at the moment it is created</i>. This is what container
+      runtimes actually call.</li>
+    <li><code>unshare(int flags)</code> — moves the <b>calling process itself</b> out of its current namespaces
+      and into new ones, with no new process created. The catch, and it is a real gotcha covered in depth in §8
+      and §12: for <code>CLONE_NEWPID</code> specifically, <code>unshare()</code> does <i>not</i> change the
+      caller's own PID or its own view of <code>/proc</code> — it only sets up a new PID namespace for the
+      caller's <i>future children</i>. The calling process's own <code>getpid()</code> is unaffected because a
+      running process's PID cannot change out from under it.</li>
+    <li><code>setns(int fd, int nstype)</code> — joins an <i>existing</i> namespace, given an open file descriptor
+      to one of the <code>/proc/[pid]/ns/*</code> files (§8 shows the real paths). This is the syscall behind
+      <code>nsenter</code> and behind <code>docker exec</code>/<code>podman exec</code>: joining a namespace that
+      some other, already-running process created.</li>
+  </ul>
+  <p>Step through what each of the four flags in scope for this chapter actually isolates, and what it deliberately
+  leaves untouched:</p>
+
+  <div class="widget deck" id="deckFlags">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The four flags, one at a time</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE GENERAL SHAPE, NOW VISIBLE</div>
+    <p>Every flag above follows an identical kernel-side recipe: allocate a small reference-counted struct
+    (<code>struct pid_namespace</code>, <code>struct uts_namespace</code>, a new mount tree, <code>struct
+    ipc_namespace</code>), copy or reset the relevant state into it, and store a pointer to it in the calling
+    task's <code>struct nsproxy</code> (or, for PID, in the field that governs <i>future children</i> specifically —
+    §8 explains exactly why PID is special). Every syscall that used to consult one global now consults
+    <code>current-&gt;nsproxy-&gt;whatever_ns</code> instead. That one-line conceptual change is the entire
+    mechanism — everything else in this chapter is consequences of it.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL HURTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">Congratulations, your process is now PID 1</h2>
+  <p>Namespacing a process solves the four isolation problems from §1 — and immediately hands you a fifth problem
+  that chroot never had to face, because chroot never made anything believe it was <code>init</code>.
+  <b>Every PID namespace's first process is, from the kernel's point of view, that namespace's PID 1</b> — and PID 1
+  carries obligations that ordinary processes don't.</p>
+  <p>On real Unix, PID 1 (the system's actual <code>init</code>) has one full-time job: reap every process whose
+  parent has died, so they never become permanent zombies. When a process's parent dies before calling
+  <code>wait()</code> on it, the kernel <b>reparents</b> the orphan to the nearest living ancestor that has marked
+  itself a <span class="term" data-def="A process that opted in via prctl(PR_SET_CHILD_SUBREAPER, 1); orphaned descendants reparent to it instead of climbing all the way to PID 1.">subreaper</span> (via <code>prctl(PR_SET_CHILD_SUBREAPER)</code>, Linux 3.4, 2012), or, failing
+  that, all the way up to PID 1 of its <i>namespace</i>. A PID namespace's PID 1 inherits this responsibility
+  automatically and completely, whether or not the program running as PID 1 was ever written with that in mind —
+  and almost none are. A web server, a Node script, a Python entrypoint: none of them call <code>wait()</code> on
+  processes they never spawned. Watch what happens:</p>
+
+  <div class="widget deck" id="deckZombie">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The zombie accumulation, step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>There is a second, independent PID-1 surprise, and it is the one that generates far more support tickets:
+  the kernel gives <b>any</b> namespace's PID 1 the exact same special signal treatment the real, global
+  <code>init</code> has always had — <b>any signal for which PID 1 has not explicitly installed a handler is
+  silently ignored</b>, with the sole exception of <code>SIGKILL</code> and <code>SIGSTOP</code>, which can never be
+  blocked or ignored by anyone. Most application binaries never call <code>sigaction()</code> for
+  <code>SIGTERM</code> — they rely on the default disposition, which for every <i>non</i>-PID-1 process is
+  "terminate the process." As PID 1, that default silently flips to "do nothing at all."</p>
+  <div class="callout bad">
+    <div class="co-t">WHY tini AND dumb-init EXIST</div>
+    <p>Both problems have the same fix, and it is exactly what a real <code>init</code> does: run a tiny,
+    purpose-built binary as PID 1 instead of the application. <b>tini</b> (Meltwater/krallin, MIT-licensed) and
+    <b>dumb-init</b> (Yelp) both (a) install real signal handlers for the signals that matter and forward them to
+    the actual application process, and (b) run a <code>wait()</code>/<code>waitpid(-1, ...)</code> loop that reaps
+    <i>every</i> exited child, including ones reparented to them that they never spawned directly. The application
+    then runs as PID 1's <i>child</i> instead of PID 1 itself, and inherits none of PID 1's kernel-special
+    treatment. §9 covers exactly which binary each engine ships by default — and it is not the same one.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The four masks, assembled</h2>
+  <p>Click through each piece of a correctly built namespaced process. Note the deliberate ordering dependency
+  between the mount namespace and the PID namespace — it is the single most common source of "my container's
+  <code>ps</code> is wrong" bug reports, and §8 explains the mechanism in full.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Namespace explorer</span><span class="w-sub">CLICK ANY PIECE</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">ISOLATION UNITS (this chapter)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="pidns">PID namespace</div>
+          <div class="acard" data-p="utsns">UTS namespace</div>
+          <div class="acard" data-p="mntns">mount namespace</div>
+          <div class="acard" data-p="ipcns">IPC namespace</div>
+        </div>
+        <div class="arch-row-label">THE ORDERING DEPENDENCY</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="procfs">fresh /proc mount — must happen AFTER both mount ns and PID ns exist</div></div>
+        <div class="arch-row-label">WHO LIVES HERE FIRST</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="init">the container's PID 1 / init process</div>
+          <div class="acard" data-p="nsproxy">struct nsproxy (kernel bookkeeping)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHAT'S DELIBERATELY MISSING FROM THIS DIAGRAM</div>
+    <p>No network namespace, no user namespace, no cgroup. That is not an oversight — chapter 3 gives network
+    namespaces (and the veth pairs that connect them) the space they need, chapter 4 does the same for user
+    namespaces and UID mapping, and chapter 5 covers cgroups v2. A process with only these four namespaces plus
+    the default network and user namespaces is a real, useful, partially-isolated process — it just still shares
+    the host's network stack and still runs as whatever UID it was launched with, which is exactly the gap the
+    next two chapters close.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The actual syscalls, the actual files, the actual limits</h2>
+  <p>Three pieces: <b>(a)</b> the flag values and the boot sequence a runtime actually executes, <b>(b)</b> how
+  <code>/proc</code> is bound to a PID namespace at mount time — the mechanism behind the ordering dependency from
+  §7, and <b>(c)</b> two hard numeric limits worth internalizing: PID-namespace nesting depth, and how fast an
+  unreaped namespace runs out of PIDs.</p>
+
+  <h3>(a) The flags, and the boot sequence</h3>
+  <table class="cmp">
+    <tr><th>FLAG</th><th>VALUE</th><th>ISOLATES</th><th>KERNEL VERSION</th></tr>
+    <tr><td>CLONE_NEWNS</td><td>0x00020000</td><td>Mount table (this chapter)</td><td>2.4.19 (2002)</td></tr>
+    <tr><td>CLONE_NEWCGROUP</td><td>0x02000000</td><td>Cgroup root directory view (ch. 5's neighbor)</td><td>4.6 (2016)</td></tr>
+    <tr><td>CLONE_NEWUTS</td><td>0x04000000</td><td>Hostname, NIS domain name (this chapter)</td><td>2.6.19 (2006)</td></tr>
+    <tr><td>CLONE_NEWIPC</td><td>0x08000000</td><td>SysV IPC objects, POSIX mqueues (this chapter)</td><td>2.6.19 (2006)</td></tr>
+    <tr><td>CLONE_NEWUSER</td><td>0x10000000</td><td>UID/GID mapping (chapter 4)</td><td>3.8 (2013, completed)</td></tr>
+    <tr><td>CLONE_NEWPID</td><td>0x20000000</td><td>Process ID space (this chapter)</td><td>2.6.24 (2008)</td></tr>
+    <tr><td>CLONE_NEWNET</td><td>0x40000000</td><td>Network interfaces, routes, ports (chapter 3)</td><td>2.6.29 (2009, completed)</td></tr>
+  </table>
+  <p>A real runtime's boot sequence for a namespaced PID 1, in the order that actually works — this is the exact
+  ordering the code walkthrough in §13 implements:</p>
+
+  <div class="widget deck" id="deckBoot">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Building a namespaced PID 1, in order</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) /proc/[pid]/ns/* — namespace identity as a file</h3>
+  <p>Every process exposes its current namespace membership as a set of magic symlinks under
+  <code>/proc/[pid]/ns/</code>. Reading one with <code>readlink</code> shows the namespace's <i>type</i> and a
+  kernel-internal inode number that uniquely identifies <i>which</i> instance it is — two processes in the same
+  namespace show identical output; two processes in different namespaces of the same type never do:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">shell</span><span>readlink /proc/self/ns/*  — on the host's initial namespaces</span></div>
+    <pre>$ <span class="f">for</span> f in /proc/self/ns/*; <span class="f">do</span> <span class="f">echo</span> -n <span class="s">"$f -&gt; "</span>; readlink <span class="t">$f</span>; <span class="f">done</span>
+/proc/self/ns/cgroup -&gt; cgroup:[4026531835]
+/proc/self/ns/ipc    -&gt; ipc:[4026531839]
+/proc/self/ns/mnt    -&gt; mnt:[4026531840]
+/proc/self/ns/net    -&gt; net:[4026531992]
+/proc/self/ns/pid    -&gt; pid:[4026531836]
+/proc/self/ns/pid_for_children -&gt; pid:[4026531836]
+/proc/self/ns/user   -&gt; user:[4026531837]
+/proc/self/ns/uts    -&gt; uts:[4026531838]</pre>
+  </div>
+  <p>These files are the mechanism behind <code>setns()</code>: open one, pass its fd to <code>setns(fd,
+  CLONE_NEWPID)</code> (or whichever type), and the calling thread joins that exact namespace instance. It is also
+  the mechanism behind a subtle but important fact from the callout below.</p>
+  <div class="callout warn">
+    <div class="co-t">NAMESPACE LIFETIME IS REFERENCE-COUNTED, NOT PROCESS-COUNTED</div>
+    <p>A namespace is destroyed only when its reference count hits zero — and there are three independent kinds of
+    reference: (1) a running task whose <code>nsproxy</code> points at it, (2) a bind-mount of one of these
+    <code>/proc/[pid]/ns/*</code> files onto a persistent path (exactly how <code>ip netns add</code> keeps a
+    network namespace alive with zero processes in it — a technique chapter 3 uses directly), and (3) a plain open
+    file descriptor to one of these files, held by any process for any reason (a monitoring agent that opened one
+    to inspect a container and never closed it). All three keep the namespace — and everything it isolates —
+    alive after the container's last process exits. §11 covers the real operational incident this causes.</p>
+  </div>
+
+  <h3>(c) Two hard limits worth knowing exactly</h3>
+  <p>Drag the nesting-depth slider to see the kernel's actual ceiling on PID namespace depth, and the second pair
+  of sliders to compute exactly how long an unreaped PID 1 takes to exhaust a namespace's PID space:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">PID namespace nesting depth</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>nesting depth</label><input type="range" id="nest-slider" min="1" max="36" value="3" step="1"><span class="val" id="nest-val">3</span></div>
+      <div class="nestwrap" id="nest-vis"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="nest-note"></p>
+    </div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Time to PID exhaustion — an unreaped namespace</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>pid_max in namespace</label><input type="range" id="pidmax-slider" min="300" max="32768" value="4096" step="100"><span class="val" id="pidmax-val">4096</span></div>
+      <div class="slider-row"><label>orphaned zombies / sec</label><input type="range" id="zrate-slider" min="0.05" max="20" value="2" step="0.05"><span class="val" id="zrate-val">2.0/s</span></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="zombie-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY 32 LEVELS, EXACTLY</div>
+    <p>The kernel constant is <code>MAX_PID_NS_LEVEL = 32</code> (<code>include/linux/pid_namespace.h</code>). It
+    is not derived from any deep theoretical bound — it is a deliberately generous, fixed safety cap chosen
+    because every process needs one <code>struct upid</code> (a per-namespace PID mapping entry) for <i>every
+    level of nesting it is visible at</i>, and every cross-namespace operation — delivering a signal, resolving a
+    PID for <code>/proc</code>, reaping in <code>wait()</code> — must walk that chain of ancestors. Unbounded
+    nesting means unbounded per-process memory and unbounded worst-case syscall latency; 32 was picked as "more
+    than anyone sane will nest containers-in-containers" rather than computed from a formula.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Docker vs Podman at the namespace layer</h2>
+  <p>Namespaces are a kernel contract, not an engine feature — the syscalls in §5 and the flag values in §8 are
+  identical no matter which tool calls them. The honest comparison is therefore short where it should be short,
+  and specific where a real difference exists:</p>
+  <table class="cmp">
+    <tr><th>LAYER</th><th><span class="eng docker">DOCKER</span></th><th><span class="eng podman">PODMAN</span></th></tr>
+    <tr><td>Namespace creation call</td>
+      <td colspan="2">Identical kernel contract both ways: the low-level runtime (<code>runc</code> for Docker,
+        <code>crun</code> by default for Podman — chapter 9) issues the same <code>clone()</code>/<code>unshare()</code>
+        with the same <code>CLONE_NEW*</code> flags read from the OCI <code>config.json</code>'s namespaces array.
+        <span class="pill g">no difference at this layer</span></td></tr>
+    <tr><td>Default PID 1</td>
+      <td>The application binary itself, unless <code>--init</code> is passed.</td>
+      <td>The application binary itself, unless <code>--init</code> is passed. <span class="pill g">identical default</span></td></tr>
+    <tr><td>The init shim, when requested</td>
+      <td><code>--init</code> injects <b>tini</b> (shipped as <code>docker-init</code>, statically linked, added in Docker 1.13 / 2017).</td>
+      <td><code>--init</code> injects <b>catatonit</b>, an independently written minimal init from the containers/ project. <span class="pill y">different binary, same job</span></td></tr>
+    <tr><td>procfs remount</td>
+      <td colspan="2">Both mount a fresh <code>procfs</code> inside the container's mount+PID namespace as part of
+        the OCI runtime spec's default mounts — required kernel-level behavior (§8b), not engine-specific.
+        <span class="pill g">identical</span></td></tr>
+    <tr><td>Joining an existing container (<code>exec</code>)</td>
+      <td><code>docker exec</code>: containerd-shim's exec helper calls <code>setns()</code> against the target
+        container's <code>/proc/[pid]/ns/*</code> fds, then <code>execve()</code>s the requested command.</td>
+      <td><code>podman exec</code>: <code>conmon</code>/<code>crun</code> perform the identical
+        <code>setns()</code> + <code>execve()</code> sequence directly, with no separate daemon process to route
+        through. <span class="pill y">same primitive, different process topology — chapter 12 covers the daemon question in full</span></td></tr>
+    <tr><td>IPC namespace default</td>
+      <td colspan="2">Both create a fresh, empty IPC namespace per container by default —
+        <code>ftok()</code> key collisions between containers are structurally impossible either way.
+        <span class="pill g">identical</span></td></tr>
+  </table>
+  <p>Read this table as the pattern for the whole course: at the kernel-primitive layer, Docker and Podman are the
+  same kernel doing the same syscalls — because they must be, it is not an area either engine gets to reinterpret.
+  The real, meaningful differences live one layer up: in which binary occupies PID 1 by default, in whether a
+  request to run or exec a container transits a long-lived daemon, and (starting in chapter 4) in whether rootless
+  operation is the default posture or an opt-in flag. Chapter 12 is where the daemon-architecture difference gets
+  its full treatment; this chapter's job was to establish that the namespace floor beneath both engines is one
+  floor, not two.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE / SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">Cheap to create, not free to trust</h2>
+  <p>Two independent claims, and it matters that you keep them separate:</p>
+  <ul class="plain">
+    <li><b>Namespace creation is fast.</b> Each <code>CLONE_NEW*</code> flag allocates one small, reference-counted
+      kernel struct and (for mount and IPC) walks existing state to copy or reset it — work measured in
+      microseconds, not milliseconds, and utterly dwarfed by the cost of booting an actual virtual machine's kernel
+      and device model (typically hundreds of milliseconds to low seconds). This is the honest, mechanism-level
+      version of "containers start fast" — not because a container is a smaller VM, but because <i>creating a
+      namespace is orders of magnitude cheaper than booting a kernel</i>, since it is just kernel bookkeeping
+      against a kernel that is already running.</li>
+    <li><b>Namespace isolation is not a privilege boundary.</b> A process inside a fresh PID/UTS/mount/IPC
+      namespace is still running on the exact same kernel, under the exact same scheduler, subject to the exact
+      same syscall table as everything else on the box. Namespaces restrict <i>what a process can address by
+      name</i> — which PIDs it can target with <code>kill()</code>, which hostname string it reads, which mount
+      table it sees. They say nothing at all about what a process is <i>permitted to do</i> once it has found a
+      way to reach something — that is capabilities' job (chapter 7) and seccomp/LSM's job (chapter 8), both still
+      ahead. A process with <code>CAP_SYS_ADMIN</code> and a private mount namespace can still, for example, load a
+      kernel module or flip a non-namespaced <code>sysctl</code> that affects the entire host.</li>
+  </ul>
+  <p>Drag the sliders below to see the shape of the first claim — namespace creation cost stays flat as you add
+  isolation, while a VM's boot cost is a different order of magnitude entirely, shown on a log scale so both fit
+  on one chart:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Process start latency — namespaces vs a VM boot</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>namespace flags combined</label><input type="range" id="chart-flags" min="0" max="4" value="4" step="1"><span class="val" id="chart-flags-val">4</span></div>
+      <div class="slider-row"><label>host CPU contention</label><input type="range" id="chart-contention" min="0" max="100" value="20" step="5"><span class="val" id="chart-contention-val">20%</span></div>
+      <div class="chartbox"><canvas id="ns-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> clone()+namespaces (µs, log scale)</span>
+        <span><span style="color:var(--bad)">━</span> VM boot (ms, log scale, reference)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="chart-note"></p>
+    </div>
+  </div>
+
+  <div class="callout bad">
+    <div class="co-t">THE ATTACK-SURFACE COROLLARY</div>
+    <p>Because every namespaced process still shares one kernel, a single kernel vulnerability in namespace-aware
+    code (a bug in the PID-translation path, the mount-propagation logic, or the IPC key lookup) is a vulnerability
+    against <i>every container on the host simultaneously</i> — there is no second kernel instance to contain the
+    blast radius the way a hypervisor would. This is precisely why chapter 15's incident catalog is dominated by
+    kernel-level and runtime-level escapes rather than "a container guessed another container's password": the
+    shared kernel is both the entire reason containers are cheap and the entire reason a namespace escape is
+    catastrophic rather than merely embarrassing.</p>
+  </div>
+</section>
+
+<!-- ================= S11 PRODUCTION ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD PRODUCTION</div>
+  <h2 class="sec">Four incidents this chapter's mechanics fully explain</h2>
+
+  <h3>Incident 1: "Every deploy hangs for exactly 10 seconds"</h3>
+  <p>A team notices every rolling deploy pauses for precisely ten seconds per container before the next one starts
+  — long enough to matter at fleet scale, short enough to be easy to shrug off. Root cause, directly from §6: the
+  application is PID 1, it never installed a <code>SIGTERM</code> handler, and PID 1's kernel-special default
+  disposition for an unhandled signal is <i>ignore</i>, not <i>terminate</i>. The container runtime's
+  <code>stop</code> command sends <code>SIGTERM</code>, waits for a configurable grace period (10 seconds is both
+  Docker's and Podman's default <code>stop.timeout</code>), gets no response, and finally sends the un-ignorable
+  <code>SIGKILL</code>. <b>Fix:</b> add <code>--init</code> (injecting tini or catatonit per §9), or have the
+  application install its own handler — either converts PID 1 from "silently immune" to "actually listening."</p>
+
+  <h3>Incident 2: slow, silent zombie accumulation until fork() fails</h3>
+  <p>A long-running container that shells out to short-lived helper processes (a cron-like scheduler, a build
+  agent invoking compilers) accumulates <code>Z</code> (defunct) entries in its own <code>ps</code> output at a
+  low, easy-to-miss rate. Weeks later, new process creation inside that container starts failing with
+  <code>EAGAIN</code> ("Resource temporarily unavailable") from <code>fork()</code> — exactly the mechanism the
+  §8(c) slider makes concrete: the namespace's <code>pid_max</code> has been silently consumed by zombies that
+  were never <code>wait()</code>-ed on, because the application, acting as PID 1, was never written to reap
+  processes it didn't directly spawn. <b>Fix:</b> the same one as Incident 1 — a real init as PID 1 that reaps
+  everything reparented to it, not just its direct children.</p>
+
+  <h3>Incident 3: mount events leaking from container to host</h3>
+  <p>In the early years of container tooling on systemd-managed hosts, a container's own internal
+  <code>mount()</code> calls were observed appearing in the <i>host's</i> mount table — despite the container
+  correctly having its own mount namespace. The mechanism: Linux mount namespaces support
+  <span class="term" data-def="A property of a mount describing how new mount/unmount events on it propagate to other mount namespaces that share its peer group.">propagation modes</span>
+  (<code>shared</code>, <code>private</code>, <code>slave</code>, <code>unbindable</code>), and a namespace's
+  mounts default to whatever propagation the parent mount had at the moment the namespace was created. Because
+  systemd mounts <code>/</code> as <code>MS_SHARED</code> by default, a naively created container mount namespace
+  inherited shared propagation too — a private namespace in name, but one still wired into the host's propagation
+  peer group. The fix that container runtimes converged on: explicitly run <code>mount --make-rprivate /</code>
+  (or the equivalent <code>MS_REC|MS_PRIVATE</code> remount) inside the new mount namespace before doing anything
+  else, severing the propagation link. Every modern container runtime does this unconditionally now — it is why
+  this specific failure mode is largely historical, but the propagation-mode concept it exposed is not optional
+  knowledge for anyone debugging a bind-mount that "shouldn't" be visible somewhere.</p>
+
+  <h3>Incident 4: "Bus error" from a 64 MB /dev/shm</h3>
+  <p>Applications that lean on POSIX shared memory under <code>/dev/shm</code> — most visibly, PyTorch/TensorFlow
+  data-loader workers and headless Chrome/Selenium — crash with <code>SIGBUS</code> ("bus error") under real
+  workloads that ran fine on bare metal. Cause: <code>/dev/shm</code> is a <code>tmpfs</code> mount, and a fresh
+  mount namespace's default size for it is a conservative <b>64 MB</b>, far smaller than the multi-gigabyte
+  <code>/dev/shm</code> most bare-metal hosts are configured with. It is not an IPC-namespace bug — POSIX shared
+  memory segments under <code>/dev/shm</code> are files on a namespaced tmpfs mount, so this is really a mount
+  namespace default colliding with an application's undocumented assumption. <b>Fix:</b> both Docker
+  (<code>--shm-size</code>) and Podman (<code>--shm-size</code>, identical flag name) let you raise the tmpfs size
+  explicitly per container.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the mechanism at a whiteboard?</h2>
+  <p>Think before you reveal — these are calibrated to what a Staff-level systems interview actually probes.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: kernel namespace code and a minimal init</h2>
+  <p>Where the mechanism from this chapter physically lives, plus a from-scratch minimal container launcher and a
+  simplified reaping loop shaped exactly like tini's. Files marked <span style="color:var(--warn)">●</span> are
+  this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">kernel/</span></div>
+<div>├── <span class="fhl">● fork.c</span> <span class="fnote">— ksys_unshare(), copy_process(): dispatches CLONE_NEW* flags into copy_namespaces()</span></div>
+<div>├── <span class="fhl">● nsproxy.c</span> <span class="fnote">— struct nsproxy: the per-task bundle of namespace pointers every relevant syscall consults</span></div>
+<div>├── <span class="fhl">● pid_namespace.c</span> <span class="fnote">— alloc_pid_namespace(), MAX_PID_NS_LEVEL=32, zap_pid_ns_processes() on teardown</span></div>
+<div>├── utsname.c <span class="fnote">— create_uts_ns(): allocates struct uts_namespace wrapping struct new_utsname</span></div>
+<div>└── exit.c <span class="fnote">— do_wait(), the reparenting-to-subreaper-or-PID-1 logic on parent exit</span></div>
+<div><span class="dir">fs/</span></div>
+<div>├── <span class="fhl">● namespace.c</span> <span class="fnote">— copy_mnt_ns(), do_mount(): mount tree cloning and propagation (MS_SHARED/MS_PRIVATE/MS_SLAVE)</span></div>
+<div>└── <span class="dir">proc/</span>root.c <span class="fnote">— proc_fill_super(): binds a NEW procfs mount to the PID namespace of the mounting task, at mount time</span></div>
+<div><span class="dir">ipc/</span></div>
+<div>└── namespace.c <span class="fnote">— copy_ipcs(), free_ipc_ns(): per-namespace SysV IPC + POSIX mqueue instances</span></div>
+<div><span class="dir">tools/nsenter/</span>, <span class="dir">runc/libcontainer/nsenter/</span></div>
+<div>└── <span class="fhl">● nsenter.c</span> <span class="fnote">— C constructor that setns()'s into target namespaces before the Go runtime spins up threads</span></div>
+  </div></div>
+
+  <p>First, a minimal namespaced launcher — everything from §5 and §8(a) in about thirty real lines:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>minimal_init.c — hand-rolled namespace setup, no runtime involved</span></div>
+    <pre><span class="k">int</span> <span class="f">main</span>(<span class="k">void</span>)
+{
+    <span class="c">/* One call, four namespaces. The calling process's own PID is
+     * unaffected by CLONE_NEWPID here -- see the callout in §5. */</span>
+    <span class="k">if</span> (<span class="f">unshare</span>(CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID) == -<span class="n">1</span>)
+        <span class="f">err</span>(<span class="n">1</span>, <span class="s">"unshare"</span>);
+
+    pid_t child = <span class="f">fork</span>();          <span class="c">/* THIS process enters the new PID namespace as PID 1 */</span>
+    <span class="k">if</span> (child == <span class="n">0</span>) {
+        <span class="f">sethostname</span>(<span class="s">"my-container"</span>, <span class="n">12</span>);      <span class="c">/* safe now: private UTS ns   */</span>
+
+        <span class="f">mount</span>(<span class="k">NULL</span>, <span class="s">"/"</span>, <span class="k">NULL</span>, MS_REC | MS_PRIVATE, <span class="k">NULL</span>);  <span class="c">/* sever propagation (§11)  */</span>
+
+        <span class="c">/* THE fix for the /proc lie: mount a FRESH procfs now that we
+         * are both inside the new mount ns AND the new pid ns. The
+         * inherited /proc mount still points at the OLD pid ns.     */</span>
+        <span class="f">mount</span>(<span class="s">"proc"</span>, <span class="s">"/proc"</span>, <span class="s">"proc"</span>, <span class="n">0</span>, <span class="k">NULL</span>);
+
+        <span class="f">execve</span>(<span class="s">"/bin/myapp"</span>, argv, envp);   <span class="c">/* becomes PID 1 for real   */</span>
+    }
+    <span class="f">waitpid</span>(child, &amp;status, <span class="n">0</span>);   <span class="c">/* the ORIGINAL process reaps its one known child */</span>
+    <span class="k">return</span> WEXITSTATUS(status);
+}</pre>
+  </div>
+
+  <p>Second, the reaping loop that turns any binary into a namespace-safe PID 1 — the actual shape of tini's core,
+  simplified but structurally faithful:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>tini_core.c — signal forwarding + the reap-everything loop</span></div>
+    <pre><span class="k">static</span> pid_t child_pid;
+
+<span class="k">static void</span> <span class="f">forward_signal</span>(<span class="k">int</span> sig) {
+    <span class="f">kill</span>(child_pid, sig);        <span class="c">/* PID 1 now HAS a handler: SIGTERM is no longer ignored */</span>
+}
+
+<span class="k">int</span> <span class="f">main</span>(<span class="k">int</span> argc, <span class="k">char</span> *argv[]) {
+    <span class="k">for</span> (<span class="k">int</span> s = <span class="n">1</span>; s &lt; NSIG; s++) <span class="f">signal</span>(s, forward_signal); <span class="c">/* except SIGCHLD */</span>
+    <span class="f">signal</span>(SIGCHLD, SIG_DFL);
+
+    child_pid = <span class="f">fork</span>();
+    <span class="k">if</span> (child_pid == <span class="n">0</span>) <span class="f">execvp</span>(argv[<span class="n">1</span>], argv + <span class="n">1</span>);   <span class="c">/* the REAL app, now NOT PID 1 */</span>
+
+    <span class="k">int</span> app_exit_code = <span class="n">0</span>;
+    <span class="k">for</span> (;;) {
+        <span class="k">int</span> status;
+        pid_t reaped = <span class="f">waitpid</span>(-<span class="n">1</span>, &amp;status, <span class="n">0</span>); <span class="c">/* -1: reap ANY child, including ones we never spawned --</span>
+                                              <span class="c">   this IS the zombie-prevention fix from §6           */</span>
+        <span class="k">if</span> (reaped == child_pid) app_exit_code = WEXITSTATUS(status);
+        <span class="k">if</span> (reaped == -<span class="n">1</span> &amp;&amp; errno == ECHILD) <span class="k">break</span>;   <span class="c">/* no children left at all */</span>
+    }
+    <span class="k">return</span> app_exit_code;
+}</pre>
+  </div>
+
+  <p>Third, why <code>runc</code> writes its namespace-joining logic in C rather than Go — a real, well-known
+  design constraint rather than a style choice:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>nsenter.c — a constructor that runs before the Go runtime exists</span></div>
+    <pre><span class="c">/* The Go runtime is heavily multithreaded from the moment it starts --
+ * it spins up OS threads for the scheduler and garbage collector before
+ * main() ever runs. setns() into a PID namespace only affects a process's
+ * FUTURE children (§5's unshare() gotcha applies to setns() too), and
+ * joining some namespace types correctly is only well-defined while the
+ * calling process is still single-threaded. A cgo constructor runs
+ * before Go's runtime has spawned anything: */</span>
+<span class="k">__attribute__((constructor)) static void</span> <span class="f">nsenter_init</span>(<span class="k">void</span>) {
+    <span class="k">int</span> fd = <span class="f">open</span>(<span class="s">"/proc/1234/ns/pid"</span>, O_RDONLY);
+    <span class="f">setns</span>(fd, CLONE_NEWPID);          <span class="c">/* single-threaded: this is safe here      */</span>
+    <span class="c">/* ... setns() for mnt, uts, ipc, net, user, cgroup similarly ... */</span>
+    <span class="f">syscall</span>(SYS_clone, ...);          <span class="c">/* now fork the process that becomes PID 1 */</span>
+    <span class="c">/* control returns to Go's main() only inside the correctly-namespaced child */</span>
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THE DEVELOPERS WROTE IT THIS WAY</div>
+    <p><b>1. Order is not negotiable.</b> Mount namespace before PID namespace before procfs remount — reverse any
+    two of those and <code>/proc</code> ends up bound to the wrong PID namespace, silently, with no error at all
+    (this is exactly why §11's incidents are so easy to introduce and so hard to notice in code review).
+    <b>2. Never assume default signal disposition on PID 1.</b> tini's entire reason to exist is one sentence: the
+    kernel's PID-1 special-casing is a feature for real init systems and a footgun for arbitrary application
+    binaries pressed into that role. <b>3. Single-threaded windows are load-bearing.</b> runc's C constructor
+    trick is not incidental style — some namespace operations are only well-defined before a process has spawned
+    additional OS threads, which is exactly what a Go binary does automatically and immediately.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the mechanism in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> — read them, they encode the
+  chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — building a namespaced PID 1</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order a runtime must perform them, from
+      reading the config to a fully namespaced, reapable PID 1. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Namespace builder</h2>
+  <p>Toggle a flag set, call <code>unshare()</code>, fork the first child, remount <code>/proc</code>, and then run
+  <code>ps</code>/<code>hostname</code>/<code>mount</code>/<code>ipcs</code> to see exactly what each flag hides —
+  and exactly what forgetting a step leaves leaking. The zombie panel lets you reproduce §6's PID-1 problem and
+  fix it by flipping the reaper on.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">unshare() workbench — live namespace state</span><span class="w-sub" id="sim-phase">NOT UNSHARED</span></div>
+    <div class="w-body">
+      <div class="flagrow">
+        <button class="flagchip" id="flag-pid" data-f="pid">CLONE_NEWPID<span class="fc-l">PID space</span></button>
+        <button class="flagchip" id="flag-uts" data-f="uts">CLONE_NEWUTS<span class="fc-l">hostname</span></button>
+        <button class="flagchip" id="flag-mnt" data-f="mnt">CLONE_NEWNS<span class="fc-l">mount table</span></button>
+        <button class="flagchip" id="flag-ipc" data-f="ipc">CLONE_NEWIPC<span class="fc-l">IPC objects</span></button>
+      </div>
+      <div class="sim-ctl" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px">
+        <div class="ctl-t">LIFECYCLE</div>
+        <div class="btns">
+          <button class="btn primary" id="btn-unshare">unshare(flags)</button>
+          <button class="btn" id="btn-fork">fork() first child</button>
+          <button class="btn" id="btn-mountproc">mount fresh /proc</button>
+          <button class="btn danger" id="btn-reset">reset</button>
+        </div>
+      </div>
+      <div class="nsviews">
+        <div class="nsview host"><div class="nv-t">HOST VIEW (unaffected, always)</div><pre id="view-host">click a command below</pre></div>
+        <div class="nsview container"><div class="nv-t">YOUR PROCESS'S VIEW</div><pre id="view-container">click a command below</pre></div>
+      </div>
+      <div class="sim-ctl" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px">
+        <div class="ctl-t">RUN A COMMAND</div>
+        <div class="btns">
+          <button class="btn" id="cmd-ps">ps aux</button>
+          <button class="btn" id="cmd-hostname">hostname -s newname</button>
+          <button class="btn" id="cmd-mount">mount tmpfs /tmp</button>
+          <button class="btn" id="cmd-ipcs">ipcs -m (shmget key 0x51)</button>
+        </div>
+      </div>
+      <div class="sim-ctl" style="border:1px solid var(--border);border-radius:12px;margin-bottom:12px">
+        <div class="ctl-t">PID 1 &amp; ZOMBIES</div>
+        <div class="btns">
+          <button class="btn" id="btn-spawn">spawn short-lived worker</button>
+          <button class="btn warn" id="btn-orphan">worker exits, unreaped</button>
+          <button class="chip" id="btn-reaper">reaper (tini): OFF</button>
+          <button class="btn danger" id="btn-sigterm">send SIGTERM (docker stop)</button>
+        </div>
+      </div>
+      <div class="sim-counters">
+        <div class="scounter"><div class="cv" id="cnt-unshares">0</div><div class="cl">unshares</div></div>
+        <div class="scounter"><div class="cv" id="cnt-pids">0</div><div class="cl">pids used</div></div>
+        <div class="scounter"><div class="cv" id="cnt-zombies" style="color:var(--bad)">0</div><div class="cl">zombies</div></div>
+      </div>
+      <div style="padding:11px 15px">
+        <div class="meter"><div class="m-l"><span>NAMESPACE pid_max (32 slots, demo)</span><span id="m-pid-v">0 / 32</span></div><div class="m-bar"><div class="m-fill" id="m-pid"></div></div></div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Run every command with NO flags set — watch every view show identical, fully-leaked state.
+    <b>2.</b> Set only <code>CLONE_NEWPID</code>, call <code>unshare()</code>, then run <code>ps</code> without
+    forking first — confirm the calling process's own view never changes. <b>3.</b> Set all four flags, unshare,
+    fork, then run <code>ps</code> <i>before</i> mounting fresh <code>/proc</code> — the classic half-isolated bug.
+    Then mount <code>/proc</code> and run it again. <b>4.</b> Spawn several workers, let them exit unreaped with
+    the reaper OFF, and watch the pid meter climb toward 32 and <code>fork()</code> start failing. Flip the reaper
+    ON and repeat — zero zombies. <b>5.</b> Send SIGTERM with the reaper off, then on — watch PID 1's default
+    disposition flip from silently ignoring it to forwarding it.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 3: three questions, no options</h2>
+  <p>No multiple choice. Form a full answer — out loud is better — before you reveal. Chapter 3 is Namespaces II:
+  network namespaces and veth pairs, and each of these questions is built to point straight at it.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 02 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now call <code>unshare()</code> with the right flags,
+    explain precisely why PID 1 needs a real init, and trace exactly why <code>/proc</code> must be remounted in
+    the right order. Chapter 3 takes the exact same mechanism — a namespace, a syscall, a kernel struct — and
+    applies it to the hardest resource class yet: the network stack. A fresh network namespace starts with nothing
+    but a loopback interface, administratively down, and you'll build the veth pair that gives it a way out.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="ctr-03.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-03: Namespaces II →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1979", l:"chroot()", d:"<b>chroot() ships in Version 7 Unix.</b> Filesystem-root isolation only — no process, hostname, or IPC isolation exists yet. Recap from chapter 1: this is the tool the naive attempt in §3 leans on, and it's still part of every modern rootfs setup via pivot_root (chapter 6)." },
+  { yr:"2002", l:"CLONE_NEWNS", d:"<b>Linux 2.4.19: mount namespaces, by Al Viro.</b> The first namespace type ever merged — which is why the flag is named CLONE_NEWNS ('new namespace', full stop) rather than anything mount-specific. At this point there is exactly one namespace kind in existence, so the generic name was accurate. It stops being accurate the moment a second kind is added." },
+  { yr:"2006", l:"UTS + IPC", d:"<b>Linux 2.6.19: CLONE_NEWUTS and CLONE_NEWIPC land together</b>, largely driven by early container-oriented work from engineers including Serge Hallyn and Eric Biederman. Hostname isolation and SysV/POSIX IPC isolation arrive as two separate, narrowly-scoped patches — not yet framed as 'namespaces, the general concept.'" },
+  { yr:"2008", l:"CLONE_NEWPID + LXC", d:"<b>Linux 2.6.24: PID namespaces</b>, primarily authored by Eric Biederman and Sukadev Bhattiprolu (IBM) — the hardest of the four to get right, because PID 1 semantics, /proc, and signal delivery all had to become namespace-aware simultaneously. The same year, <b>LXC (LinuXContainers)</b> launches as the first project to combine these namespaces with Google's contemporaneous cgroups work into something recognizable as 'a container.'" },
+  { yr:"2009", l:"CLONE_NEWNET completed", d:"<b>Linux 2.6.29: network namespaces reach a usable state</b> after incremental work since 2.6.24. Deliberately out of scope for this chapter — chapter 3 gives them the full treatment, including why a fresh one starts with only a down loopback interface." },
+  { yr:"2013", l:"Docker + user namespaces", d:"<b>Docker launches (built initially on LXC)</b> and makes these six-years-scattered kernel primitives usable behind a single CLI and a distributable image format — chapter 1's whole thesis. The same year, <b>Linux 3.8 completes user namespaces</b> (CLONE_NEWUSER), the piece that makes 'root inside, unprivileged outside' possible — chapter 4's subject." },
+  { yr:"2016→", l:"cgroup ns, time ns", d:"<b>The pattern keeps extending.</b> Linux 4.6 (2016) adds cgroup namespaces (hiding a container's true position in the cgroup hierarchy — the neighbor of chapter 5's subject); Linux 5.6 (2020) adds time namespaces, letting a container have its own idea of boot time and monotonic clock offset. Same mechanism, still being applied to new resource classes fifteen years after the first one." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: the four flags (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:14px;${style}">
+     <div style="font-family:var(--mono);font-size:10.5px;color:var(--pg);letter-spacing:.08em;margin-bottom:9px">${t}</div>${inner}</div>`;
+  const row = (l,v,c="#8b94a7") => `<div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding:6px 0;font-family:var(--mono);font-size:11.5px"><span style="color:var(--dim)">${l}</span><span style="color:${c}">${v}</span></div>`;
+  stepper("deckFlags", [
+    { stage: box("THE THREE SYSCALLS", row("clone(fn, stack, flags, ...)","new process + new namespaces, atomically","#4ade80") + row("unshare(flags)","moves the CALLER into new namespaces","#2dd4bf") + row("setns(fd, nstype)","joins an EXISTING namespace via /proc/pid/ns/*","#a78bfa")),
+      cap:`Three verbs, three different moments in a namespace's life: <b>create-with-a-new-process</b>, <b>convert-the-caller</b>, and <b>join-an-existing-one</b>. Container runtimes use all three at different points — creation at launch, joining at <code>exec</code>.` },
+    { stage: box("CLONE_NEWUTS — 0x04000000", row("isolates","hostname, NIS domain name","#4ade80") + row("does NOT isolate","anything else — no PID, no mounts, no IPC","#f25c54") + row("kernel struct","struct uts_namespace { struct new_utsname name; ... }") + row("landed","Linux 2.6.19 (2006)")),
+      cap:`The simplest of the four. <code>sethostname()</code> and <code>gethostname()</code> now read/write <code>current-&gt;nsproxy-&gt;uts_ns-&gt;name</code> instead of one kernel-global buffer. This alone fixes the §4 hostname-collision failure completely.` },
+    { stage: box("CLONE_NEWIPC — 0x08000000", row("isolates","SysV semaphores, message queues, shared memory; POSIX mqueues","#4ade80") + row("does NOT isolate","POSIX shared memory under /dev/shm (that's a MOUNT namespace concern — §11 incident 4)","#ff9f43") + row("kernel struct","struct ipc_namespace { ... struct idr ids[3]; }") + row("landed","Linux 2.6.19 (2006)")),
+      cap:`Every IPC namespace starts with zero objects — no pre-population, no defaults. <code>ftok()</code> key collisions between two containers become structurally impossible: they're now resolving against two entirely separate <code>idr</code> tables, not one shared one.` },
+    { stage: box("CLONE_NEWNS — 0x00020000", row("isolates","the mount table: what's mounted where","#4ade80") + row("gotcha","new namespace's mounts inherit the PARENT's propagation mode unless explicitly made private (§11 incident 3)","#ff9f43") + row("kernel struct","a cloned struct mount tree, referenced via nsproxy->mnt_ns") + row("landed","Linux 2.4.19 (2002) — the FIRST namespace type")),
+      cap:`Mount namespaces don't just isolate — they <i>fork the whole mount tree</i>. Every mount and unmount from this point only affects the calling process's copy, unless propagation was left shared. This is also the namespace §8(b)'s /proc ordering dependency lives in.` },
+    { stage: box("CLONE_NEWPID — 0x20000000", row("isolates","which PIDs a process can see or signal","#4ade80") + row("critical gotcha","unshare(CLONE_NEWPID) does NOT change the caller's own PID or /proc view — only future children enter it","#f25c54") + row("kernel struct","struct pid_namespace, MAX_PID_NS_LEVEL = 32") + row("landed","Linux 2.6.24 (2008) — the hardest one")),
+      cap:`The newest and most invasive of the four: it touches <code>/proc</code>, signal delivery, and <code>wait()</code> reparenting simultaneously. It is also the one whose first process becomes that namespace's PID 1 — with every obligation §6 describes.` },
+    { stage: box("COMPOSING ALL FOUR", row("real runtime call","clone3(&args, sizeof(args))  // args.flags = CLONE_NEWPID|CLONE_NEWUTS|CLONE_NEWNS|CLONE_NEWIPC","#2dd4bf") + row("what you get","one child process, four fresh namespaces, all at once","#4ade80") + row("what's still missing","network (ch.3), user (ch.4), cgroup (ch.5's neighbor)","#ff9f43")),
+      cap:`Real container runtimes OR every requested flag together into a single <code>clone3()</code> call (or the older variadic <code>clone()</code>), because creating the namespaces one syscall at a time would leave awkward, order-dependent partially-isolated windows. §8 walks the full boot sequence that follows this one call.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: zombie accumulation (§6)
+   ============================================================ */
+(function(){
+  function tree(o){
+    const w = (i)=>{ const s = o.w[i]||""; const labels = {"":"running", zombie:"defunct (Z)", gone:""};
+      return `<div class="pnode ${s}">worker ${7001+i}<span class="sub">${labels[s]??s}</span></div>`; };
+    let h = `<div class="ptree"><div class="pnode pm ${o.pmSub?'':''}">app (PID 1 of namespace)<span class="sub">${o.pmSub||"never calls wait()"}</span></div>`;
+    if (o.mid) h += `<div class="pnode" style="border-color:var(--purple);color:var(--purple)">short-lived shell<span class="sub">${o.midGone?"exited":"spawns worker, then exits"}</span></div>`;
+    h += `<div class="prow">` + (o.w||[]).map((_,i)=>w(i)).join("") + `</div>`;
+    h += `<div class="shm ${o.pidmax?'corrupt':''}">${o.pidmaxNote||"namespace pid_max: plenty of headroom"}</div></div>`;
+    return h;
+  }
+  stepper("deckZombie", [
+    { stage: tree({ mid:true, w:[] }),
+      cap:`<b>Setup.</b> The application is PID 1 of its own namespace. It spawns a short-lived shell to run a helper task, which itself spawns a worker process, then exits. Nobody wrote this app expecting to be an init system.` },
+    { stage: tree({ mid:true, midGone:true, w:["",""] }),
+      cap:`<b>The shell exits.</b> Its worker child is now an orphan — reparented by the kernel to the nearest subreaper, or, absent one, straight to PID 1 of the namespace: the application itself. The application does not know this reparenting happened; nothing notified it in any way it's likely to check.` },
+    { stage: tree({ mid:true, midGone:true, w:["zombie","zombie"], pmSub:"still never calls wait()" }),
+      cap:`<b>The orphaned workers finish and exit.</b> A process that has exited but not yet been wait()-ed on becomes a <b>zombie</b> — kernel keeps its exit status around, occupying a PID slot, until <i>something</i> reaps it. PID 1 never calls <code>wait()</code> on processes it didn't spawn directly, because it was never written to.` },
+    { stage: tree({ w:["zombie","zombie","zombie","zombie","zombie"], pidmax:true, pidmaxNote:"pid_max approaching — fork() will start returning EAGAIN soon" }),
+      cap:`<b>Repeat this thousands of times over weeks</b> and the zombie count climbs monotonically — nothing ever removes a zombie except a reap. Eventually the namespace's PID space fills with corpses and legitimate new processes can no longer be created: <code>fork(): Resource temporarily unavailable</code>.` },
+    { stage: tree({ w:["","","","",""], pmSub:"real init: waitpid(-1, ...) loop reaps EVERYTHING" }),
+      cap:`<b>The fix, applied.</b> Replace the bare application as PID 1 with tini/dumb-init/catatonit (§9): a real init that calls <code>waitpid(-1, ...)</code> in a loop, reaping every child reparented to it — spawned directly or not — the instant it exits. Zero zombies, indefinitely, regardless of what the application itself was ever written to do.` }
+  ]);
+})();
+
+/* ============================================================
+   4. DECK: boot sequence (§8a)
+   ============================================================ */
+(function(){
+  const box = (title, lines, accent="var(--pg)") =>
+    `<div style="max-width:560px;margin:0 auto;border:1px solid var(--border-hi);border-radius:12px;overflow:hidden">
+      <div style="padding:9px 14px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10.5px;color:${accent};letter-spacing:.06em">${title}</div>
+      <div style="padding:12px 16px">${lines.map(l=>`<div style="font-family:var(--mono);font-size:12px;color:#c6cddb;padding:4px 0">${l}</div>`).join("")}</div>
+    </div>`;
+  stepper("deckBoot", [
+    { stage: box("STEP 1 — read the spec", ["runtime parses config.json's <span style='color:var(--pg)'>namespaces</span> array (chapter 9)", "→ decides which CLONE_NEW* flags this container needs"]),
+      cap:`Every OCI-compliant runtime (runc, crun) starts here: a declarative list of which namespace types this particular container gets. Nothing kernel-side happens yet.` },
+    { stage: box("STEP 2 — clone() with the flags", ["clone3(&args)  // NEWPID|NEWUTS|NEWNS|NEWIPC", "→ ONE new child process, FOUR fresh namespaces, atomically"]),
+      cap:`One syscall. The child is placed into new PID, UTS, mount, and IPC namespaces the instant it's created — there is no window where it exists in the old ones. (unshare()-based approaches, by contrast, need the extra explicit fork() from §5's gotcha.)` },
+    { stage: box("STEP 3 — sethostname() inside the child", ["sethostname(\"web-1\", 5)", "→ safe now: writes to THIS namespace's uts_namespace only"]),
+      cap:`Order doesn't matter much here — UTS isolation is already fully in effect the moment CLONE_NEWUTS took effect in step 2. This step is included because it's the first visible, observable proof that isolation is real.` },
+    { stage: box("STEP 4 — sever mount propagation", ["mount(NULL, \"/\", NULL, MS_REC|MS_PRIVATE, NULL)", "→ prevents §11 incident 3: mount leakage via inherited SHARED propagation"]),
+      cap:`Must happen before any container-specific mounts are added — otherwise those mounts might propagate straight back out to the host's mount namespace via a shared peer group inherited from systemd's default `/` propagation mode.` },
+    { stage: box("STEP 5 — mount a FRESH /proc", ["mount(\"proc\", \"/proc\", \"proc\", 0, NULL)", "→ THIS is what makes ps show the container's OWN pid namespace"], "var(--warn)"),
+      cap:`<b>The step everyone gets wrong in some order.</b> This must run (a) inside the new mount namespace (step 4 already true) AND (b) inside a process that is actually a member of the new PID namespace (true since step 2's clone()). A procfs mount binds to the PID namespace of whichever process performs the mount — not simply "whichever mount namespace it's in." Skip this and the OLD /proc mount (inherited via the mount-tree copy in step 2) keeps showing the host's PIDs forever.` },
+    { stage: box("STEP 6 — execve() the target binary", ["execve(\"/bin/myapp\", argv, envp)", "→ myapp is now PID 1 of its namespace, with every obligation from §6"]),
+      cap:`Isolation is complete. What is NOT complete: this process has no init behavior — no signal forwarding, no zombie reaping. If §6's problem matters for this workload, an init shim (tini/dumb-init/catatonit) needs to occupy PID 1 INSTEAD of myapp, with myapp becoming its child.` }
+  ]);
+})();
+
+/* ============================================================
+   5. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  pidns:{ n:"PID namespace", f:"kernel/pid_namespace.c", r:"Gives the calling process's future children a private view of process IDs: they see only their own descendants, addressed by namespace-local PIDs starting at 1. The kernel maintains a mapping (struct upid) from the namespace-local PID to the single real, global PID that every process still has underneath.", l:"Created by clone()/unshare(CLONE_NEWPID); the first process to run inside it becomes that namespace's PID 1, inheriting zombie-reaping and signal-default obligations (§6).", d:"Destroyed only once every process inside it has exited AND no bind-mount/open-fd reference to its /proc/pid/ns/pid file remains (§8b)." },
+  utsns:{ n:"UTS namespace", f:"kernel/utsname.c", r:"Isolates the hostname and NIS domain name. 'UTS' is a historical name (Unix Timesharing System, from the struct utsname of uname(2)) that predates this namespace type by decades — the namespace just claimed the same struct's fields.", l:"Created alongside PID/mount/IPC in the same clone()/unshare() call; independent of process lifetime beyond the standard reference-counting rules.", d:"Cheapest of the four to reason about: no ordering dependencies with anything else in this chapter." },
+  mntns:{ n:"mount namespace", f:"fs/namespace.c", r:"Clones the entire mount tree at creation time, then isolates all subsequent mount()/umount() calls to that copy — unless propagation mode (shared/private/slave) says otherwise (§11 incident 3). The oldest namespace type (2002), and the one everything else in this chapter's ordering dependency revolves around.", l:"Created first among this chapter's four in every real boot sequence (§8a), specifically so its propagation can be made private before any container-specific mount happens.", d:"A namespace with zero remaining member processes but a live bind-mount reference (e.g. via `ip netns`-style persistence tricks) can outlive its last process indefinitely." },
+  ipcns:{ n:"IPC namespace", f:"ipc/namespace.c", r:"Gives System V semaphores/message queues/shared memory, and POSIX message queues, a fresh, empty per-namespace table (struct idr) instead of one shared global one — eliminating ftok() key collisions between unrelated containers by construction.", l:"Created alongside the others; starts genuinely empty, unlike UTS (which starts as a copy of the parent's hostname).", d:"Does NOT cover /dev/shm-style POSIX shared memory — that's tmpfs, a MOUNT namespace concern (§11 incident 4)." },
+  procfs:{ n:"the /proc remount", f:"fs/proc/root.c — proc_fill_super()", r:"A procfs mount is bound, at mount() time, to the PID namespace of the task performing the mount. The mount namespace merely determines WHERE in the filesystem tree /proc appears — it says nothing about WHICH pid namespace's data it shows. Getting an isolated-looking /proc requires both: a private mount namespace to place the new mount, AND being a member of the new PID namespace when the mount() call executes.", l:"Must happen after both CLONE_NEWNS and CLONE_NEWPID have taken effect for the calling process — §8a step 5, in that exact position.", d:"Forgetting this step doesn't error — it silently leaves the OLD /proc mount (inherited via the mount-tree copy) bound to the OLD, host PID namespace. This is the single most common 'my container isn't really isolated' bug in from-scratch implementations." },
+  init:{ n:"the container's PID 1 / init", f:"userspace: your application, or tini/dumb-init/catatonit", r:"Whichever process the runtime execve()'s at the end of the boot sequence becomes PID 1 of the new PID namespace, inheriting the kernel's PID-1-specific behavior: unhandled signals default to IGNORED (not terminated), and any descendant orphaned within the namespace reparents here.", l:"Lives for the container's whole lifetime by definition — if PID 1 exits, the kernel tears down the entire PID namespace and every remaining process in it.", d:"If PID 1 was the bare application (no init shim) and it never installed signal handlers or a wait() loop, both of §6's failure modes are live for the container's entire life." },
+  nsproxy:{ n:"struct nsproxy", f:"kernel/nsproxy.c", r:"The per-task struct holding pointers to a task's current mount, UTS, IPC, PID-for-children, network, cgroup, and time namespaces. Every namespace-aware syscall's first move is effectively 'look up current->nsproxy->relevant_ns and resolve against THAT instead of a global.' This one struct is the entire mechanism this chapter has been describing in prose.", l:"Allocated once per task; shared (refcounted, not copied) between threads of the same process unless CLONE_NEWNS/etc. forces a private copy.", d:"Never directly visible to userspace — it's pure kernel bookkeeping, exposed indirectly only through the /proc/pid/ns/* symlinks (§8b)." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">GOTCHA / TEARDOWN</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("pidns");
+
+/* ============================================================
+   6. NESTING DEPTH SLIDER (§8c)
+   ============================================================ */
+(function(){
+  function render(){
+    const depth = +el("nest-slider").value;
+    el("nest-val").textContent = depth;
+    const boxes = [];
+    for (let i=1;i<=Math.min(depth,20);i++){
+      boxes.push(`<div class="nestbox ${depth>32?'over':depth>24?'deep':''}">ns level ${i}</div>`);
+    }
+    if (depth>20) boxes.push(`<div class="nestbox ${depth>32?'over':'deep'}">… +${Math.min(depth,32)-20} more</div>`);
+    el("nest-vis").innerHTML = boxes.join("");
+    let note;
+    if (depth<=32){
+      note = `Depth <b style="color:var(--pg)">${depth}</b> / 32 — legal. Every process visible at all ${depth} levels needs one <code>struct upid</code> per level it's addressable from; a signal or /proc lookup crossing all ${depth} levels walks that chain each time.`;
+    } else {
+      note = `Depth <b style="color:var(--bad)">${depth}</b> exceeds <code>MAX_PID_NS_LEVEL = 32</code> — the ${33}rd nested <code>unshare(CLONE_NEWPID)</code> fails outright with <code>errno = EUSERS</code>. This is a hard kernel ceiling, not a soft warning.`;
+    }
+    el("nest-note").innerHTML = note;
+  }
+  el("nest-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. PID-EXHAUSTION SLIDER (§8c)
+   ============================================================ */
+(function(){
+  function render(){
+    const pidmax = +el("pidmax-slider").value;
+    const rate = +el("zrate-slider").value;
+    el("pidmax-val").textContent = pidmax.toLocaleString();
+    el("zrate-val").textContent = rate.toFixed(2)+"/s";
+    const usable = pidmax - 300; // rough reserved/system overhead
+    const seconds = usable / rate;
+    const fmt = s => s < 60 ? s.toFixed(0)+"s" : s < 3600 ? (s/60).toFixed(1)+" min" : s < 86400 ? (s/3600).toFixed(1)+" hr" : (s/86400).toFixed(1)+" days";
+    el("zombie-note").innerHTML = `At <b style="color:var(--pg)">${rate.toFixed(2)}</b> unreaped zombies/sec against a <b>${pidmax.toLocaleString()}</b>-slot namespace, <code>fork()</code> starts returning <code>EAGAIN</code> in roughly <b style="color:var(--warn)">${fmt(seconds)}</b> — assuming nothing else ever recycles a PID, which is exactly what "unreaped" means. A reaper (tini/dumb-init) sitting in a <code>waitpid(-1, ...)</code> loop collapses this to <b style="color:var(--ok)">never</b>, regardless of pid_max or the spawn rate.`;
+  }
+  el("pidmax-slider").oninput = render;
+  el("zrate-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   8. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  const cv = el("ns-chart"), ctx = cv.getContext("2d");
+  function render(){
+    const flags = +el("chart-flags").value;
+    const contention = +el("chart-contention").value;
+    el("chart-flags-val").textContent = flags;
+    el("chart-contention-val").textContent = contention+"%";
+    // clone cost model: base + per-flag + contention jitter, in microseconds
+    const cloneUs = 35 + flags*9 + contention*0.6;
+    const vmMs = 900 + contention*4; // reference VM boot, roughly constant order of magnitude
+    const W = cv.width, H = cv.height, PAD=44;
+    ctx.clearRect(0,0,W,H);
+    // log scale from 10us to 3000ms combined axis (convert vm ms to us for one shared log axis)
+    const vmUs = vmMs*1000;
+    const minLog = Math.log10(10), maxLog = Math.log10(5*1000*1000);
+    const X = us => PAD + (Math.log10(Math.max(us,10))-minLog)/(maxLog-minLog) * (W-PAD-20);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    const ticks = [ [10,"10µs"], [100,"100µs"], [1000,"1ms"], [10000,"10ms"], [100000,"100ms"], [1000000,"1s"], [5000000,"5s"] ];
+    ticks.forEach(([v,l])=>{ const x=X(v); ctx.beginPath(); ctx.moveTo(x,20); ctx.lineTo(x,H-26); ctx.stroke(); ctx.fillText(l, x-12, H-8); });
+    // bars
+    function bar(y, us, color, label){
+      const x0 = PAD, x1 = X(us);
+      ctx.fillStyle = color; ctx.fillRect(x0, y, Math.max(2,x1-x0), 34);
+      ctx.fillStyle = "#e8ecf4"; ctx.font="12px monospace"; ctx.textAlign="left";
+      ctx.fillText(label, x0+6, y+22);
+    }
+    bar(50, cloneUs, "#2dd4bf", `clone()+${flags} namespace flag(s) — ${cloneUs.toFixed(0)} µs`);
+    bar(130, vmUs, "#f25c54", `VM boot (reference) — ${vmMs.toFixed(0)} ms`);
+    ctx.textAlign="left";
+    el("chart-note").innerHTML = `At <b>${flags}</b> combined namespace flags and <b>${contention}%</b> host contention: namespace creation costs about <b style="color:var(--pg)">${cloneUs.toFixed(0)} microseconds</b> — kernel bookkeeping against an already-running kernel. The VM reference bar sits roughly <b style="color:var(--bad)">${Math.round(vmUs/cloneUs).toLocaleString()}×</b> further right on the SAME log scale, because it includes booting a second kernel and its device model. This is the precise, mechanism-level reason containers start fast — not "a smaller VM," but "no second kernel boot at all."`;
+  }
+  el("chart-flags").oninput = render;
+  el("chart-contention").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   9. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"You call unshare(CLONE_NEWPID) in your own shell process, then immediately run `echo $$` and `ps`. What do you see, and why?", hint:"whose PID can change while it's running?",
+    a:"Your own PID and your own `ps` view are completely unchanged. unshare(CLONE_NEWPID) only sets up a new PID namespace for the CALLER'S FUTURE CHILDREN — a live process's own PID cannot be reassigned out from under it, since every other part of the kernel (and every other process still holding a reference to it) addresses it by that PID. To actually observe the new namespace, you must fork() (or clone()) AFTER the unshare() call; the resulting child is the first member of, and PID 1 within, the new namespace." },
+  { lvl:"SENIOR", q:"Why must a container's init explicitly mount a fresh /proc, even though it already has its own mount namespace?", hint:"what does a procfs mount actually bind to at mount() time?",
+    a:"A procfs instance's PID-listing behavior is bound, at mount(2) time, to the PID namespace of whichever task performs the mount — not simply determined by 'which mount namespace is this in.' The /proc mount inherited from before the CLONE_NEWPID unshare (copied along with the rest of the mount tree when the new mount namespace was created) still points at the OLD, host PID namespace. Only a NEW mount(\"proc\", \"/proc\", \"proc\", ...) call, executed by a process that is actually a member of the new PID namespace, produces a /proc that lists the container's own processes." },
+  { lvl:"STAFF", q:"Explain precisely why PID 1 ignores SIGTERM by default, and exactly how tini changes that.", hint:"what's the kernel's default disposition for an unhandled signal, and does PID 1 get a different one?",
+    a:"For every ordinary process, the default disposition of a signal with no installed handler is usually 'terminate the process' (for SIGTERM specifically). The kernel special-cases PID 1 of a namespace exactly like it always special-cased the global init: SIGKILL and SIGSTOP still can't be blocked or ignored, but every OTHER signal's default disposition for PID 1 becomes 'ignore' unless PID 1 explicitly installs a handler via sigaction(). Application binaries essentially never install a SIGTERM handler because they were never written expecting to run as PID 1. tini fixes this not by changing kernel behavior but by being a PID 1 that DOES install handlers for the signals that matter, and forwards each one to the real application (now running as tini's child, no longer subject to PID-1 signal rules itself)." },
+  { lvl:"STAFF", q:"A long-running container's zombie count has been climbing by roughly 2/hour for weeks with no apparent problem, then suddenly new subprocesses inside it start failing to spawn. Diagnose the mechanism end to end.", hint:"where do zombies actually 'live', and what resource do they consume?",
+    a:"The application (running as the namespace's PID 1) spawns short-lived helper processes, possibly through an intermediate shell that exits before its own children do; those grandchildren orphan and reparent to PID 1, which — never having been written as an init — never calls wait()/waitpid() on processes it didn't spawn directly. Each unreaped exited child becomes a zombie: it still occupies a PID slot in the namespace's pid_max range even though it's doing no work. Once accumulated zombies plus live processes approach pid_max, fork() inside the namespace starts returning EAGAIN — 'Resource temporarily unavailable' — because the kernel cannot allocate a new PID. Fix: put a real init (tini/dumb-init/catatonit) at PID 1, reaping via waitpid(-1, ...) in a loop; it clears zombies the instant they appear regardless of whether it spawned them." },
+  { lvl:"STAFF", q:"Docker's --init and Podman's --init both promise 'a tiny init.' Are you getting the same protection either way?", hint:"same job, same codebase?",
+    a:"Functionally, both solve the exact same two problems from this chapter — signal forwarding and zombie reaping — but they are NOT the same binary. Docker's --init injects tini (shipped as docker-init, statically linked, MIT-licensed, added in Docker 1.13/2017). Podman's --init injects catatonit, an independently written minimal init maintained under the containers/ organization. The OCI runtime spec has no opinion on which init a runtime uses; it only requires SOMETHING sane to occupy PID 1. In practice both close the same gaps, but they have separate codebases, separate maintainers, and separate (if similar) feature surfaces — worth knowing if you're auditing exactly what's running as PID 1 in your fleet." },
+  { lvl:"PRINCIPAL", q:"Why is PID namespace nesting hard-capped at 32 levels (MAX_PID_NS_LEVEL), and what would actually break without a cap?", hint:"what does the kernel need to track per level, per process?",
+    a:"Every process visible at N nested PID namespace levels needs a struct upid — a per-level PID mapping entry — for each of those levels, since a process addressed from an outer namespace and from its own innermost namespace needs distinct PID values resolvable at both. Every cross-namespace operation (delivering a signal via kill(), resolving a PID in /proc, reaping via wait()) has to walk that chain of ancestor namespaces. Unbounded nesting means unbounded per-process memory for the upid array and unbounded worst-case latency for any of those operations. MAX_PID_NS_LEVEL = 32 is a deliberately generous, fixed engineering limit — 'far more than any sane container-in-a-container setup needs' — not a value derived from an asymptotic analysis. Without SOME cap, a malicious or buggy workload could nest indefinitely and turn ordinary PID-resolution syscalls into unbounded-cost operations." },
+  { lvl:"PRINCIPAL", q:"Steelman the claim 'PID/UTS/mount/IPC namespaces are a real security boundary,' then rebut it precisely, using only what this chapter covered.", hint:"separate 'can't see/address' from 'can't affect'",
+    a:"Steelman: these namespaces enforce genuine, kernel-verified restrictions, not merely userspace convention — a process inside a PID namespace structurally CANNOT target a PID outside it via kill() or /proc, because the kernel resolves that PID against a namespace-local table that simply doesn't contain the outside PID; the same is true for mount visibility, hostname, and IPC key resolution. This is real isolation, implemented as actual separate data structures, not security theater. Rebut: namespaces isolate WHAT A PROCESS CAN SEE AND ADDRESS, not what it is PRIVILEGED TO DO. The process still runs on the identical kernel, under the identical scheduler, subject to the identical syscall table as everything else on the host. If it retains sufficient capabilities (chapter 7) it can still affect the whole machine through syscalls that have nothing to do with namespacing — loading a kernel module, flipping a non-namespaced sysctl, or exploiting a shared-kernel vulnerability that doesn't care what namespace the exploiting process happens to be in. Namespaces answer 'can you see and name the host's stuff'; they say nothing about 'can you affect the host's stuff given a privilege you still hold' — that separation is exactly why capabilities and seccomp/LSMs (chapters 7-8) exist as distinct, additional layers rather than being subsumed by namespaces." }
+]);
+
+/* ============================================================
+   10. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A process calls unshare(CLONE_NEWPID) and then immediately runs `ps` in the SAME process, without forking. What does it see?",
+    opts:[ "Only itself, as PID 1",
+           "The exact same process list it saw before the call — its own PID/view are unaffected",
+           "An empty process list, since the new namespace has nothing in it yet",
+           "An error — you cannot call unshare(CLONE_NEWPID) without forking first" ],
+    a:1,
+    why:"unshare(CLONE_NEWPID) only sets up a new PID namespace for the CALLER's future children; a live process's own PID and its own view of /proc cannot change mid-flight, since other parts of the kernel and other processes still address it by its original PID. Only a subsequently forked child actually lives inside the new namespace, as its PID 1. Option D is wrong — the call succeeds; its effect is just deferred to future children." },
+  { q:"A container's init has correctly unshared into a new mount AND PID namespace, but `ps` inside it still lists every host process. What's the most likely missing step?",
+    opts:[ "It never called sethostname()",
+           "It never mounted a fresh procfs inside the new namespaces",
+           "CLONE_NEWIPC was omitted from the flags",
+           "The container needs CLONE_NEWNET as well" ],
+    a:1,
+    why:"A procfs mount is bound, at mount() time, to the PID namespace of whichever process performed the mount. The /proc inherited from before namespace creation (copied along with the rest of the mount tree) still points at the host's PID namespace. Only a fresh mount(\"proc\", \"/proc\", \"proc\", ...), run by a process that's actually a member of the new PID namespace, fixes this. Hostname (A), IPC (C), and networking (D) are all real namespace concerns but none of them affect what `ps`/procfs shows." },
+  { q:"Why does a bare application binary running as a container's PID 1 typically ignore `docker stop`'s SIGTERM for the full grace period?",
+    opts:[ "Docker delivers SIGTERM to the wrong process by mistake",
+           "SIGTERM is blocked by the mount namespace's security policy",
+           "The kernel's default disposition for an unhandled signal on PID 1 is 'ignore', and the app never installed a handler",
+           "The container's IPC namespace intercepts the signal" ],
+    a:2,
+    why:"The kernel gives any namespace's PID 1 the same special treatment the global init has always had: SIGKILL/SIGSTOP still can't be blocked, but every other unhandled signal's default disposition becomes IGNORE rather than terminate. Application binaries almost never install a SIGTERM handler, since they weren't written expecting to be an init. This is precisely the gap tini/dumb-init/catatonit close by installing real handlers and forwarding the signal to the actual app running as their child." },
+  { q:"A container has been running for months with zero visible problems, then suddenly fork() inside it starts returning EAGAIN. What's the most likely root cause given this chapter?",
+    opts:[ "The host ran out of physical memory",
+           "The container's mount namespace filled up with stale bind-mounts",
+           "Accumulated, unreaped zombie processes have exhausted the namespace's pid_max",
+           "The UTS namespace's hostname buffer overflowed" ],
+    a:2,
+    why:"Zombies occupy a PID slot until something calls wait()/waitpid() on them. If the application is PID 1 and was never written as an init, it never reaps grandchildren reparented to it, and the zombie count climbs monotonically until the namespace's pid_max is effectively exhausted — at which point fork() cannot allocate a new PID and returns EAGAIN. The fix is a real init (tini/dumb-init/catatonit) reaping via waitpid(-1, ...) in a loop." },
+  { q:"Which of these is NOT isolated by any of the four namespace types covered in this chapter (PID, UTS, mount, IPC)?",
+    opts:[ "Which hostname string a process reads via uname()", "Which processes a process can target with kill()",
+           "Which network interfaces and ports a process can see and bind", "Which mount table a process's mount()/umount() calls affect" ],
+    a:2,
+    why:"Network interfaces, routes, and ports are the domain of CLONE_NEWNET — network namespaces — which this chapter explicitly deferred to chapter 3. UTS covers hostname (A), PID covers kill() targeting (B), and mount namespaces cover the mount table (D). A process with only this chapter's four namespaces still shares the host's entire network stack." },
+  { q:"Why is CLONE_NEWNS, the mount-namespace flag, named that way instead of something like CLONE_NEWMNT?",
+    opts:[ "NS stands for 'Network Service', an early working name for the feature",
+           "Mount namespaces were the first namespace type ever added (2002), so 'new namespace' and 'new mount namespace' meant the same thing at the time",
+           "It's a typo that shipped and was never fixed for ABI-compatibility reasons",
+           "NS refers to the 'nsproxy' struct, and the flag was named after its implementation detail" ],
+    a:1,
+    why:"When CLONE_NEWNS landed in Linux 2.4.19 (2002), it was the ONLY namespace type in existence, so the generic name 'new namespace' was completely accurate. Every subsequent namespace type needed its own more specific name (NEWUTS, NEWIPC, NEWPID, ...) because by then 'new namespace' was ambiguous — but changing NEWNS's name afterward would have broken every program that already referenced the constant. It's a first-mover naming artifact, not a typo or an unrelated acronym." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; PID 1 would be proud (and fully reaped).":correct>=4?"solid mental model; skim what you missed.":"re-run §5/§6's decks, then the simulator in §15 — the ordering clicks fast once you break it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Runtime reads config.json's namespaces list (OCI spec, ch. 9)",
+    "clone3(): one child process enters fresh PID+UTS+mount+IPC namespaces atomically",
+    "Child: sethostname() — safe, private UTS namespace already in effect",
+    "Child: mount(\"/\", MS_REC|MS_PRIVATE) — sever mount propagation from the host",
+    "Child: mount(\"proc\",\"/proc\",\"proc\") — bind a fresh procfs to THIS pid namespace",
+    "Child: execve() the target binary — it becomes PID 1 of the namespace",
+    "PID 1 must now reap reparented orphans (wait()) or an init shim does it instead"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real boot sequence</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check (§16) — forward-references chapter 3 */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"You've unshared into new PID/UTS/mount/IPC namespaces — every flag this chapter covered — but NOT CLONE_NEWNET. Predict exactly what `ip addr` shows inside this process, and why that's a much bigger leak than any single flag in this chapter.",
+    a:"Without CLONE_NEWNET, the process shares the host's actual network interfaces, routing table, and socket namespace completely — `ip addr` shows every real host interface (eth0, the host's real IP, everything), and binding port 80 inside this 'container' competes directly with the host's own port 80 for the same socket namespace. It's a bigger leak than any single flag here because networking is a single resource class that, left unnamespaced, defeats the entire premise of per-container addressing — exactly why chapter 3 exists as its own chapter rather than a footnote to this one." },
+  { lvl:"THINK", q:"Chapter 3 states that a fresh network namespace starts with only a loopback interface, administratively DOWN. Using this chapter's IPC namespace (which starts genuinely empty, not pre-populated) as your model, predict whether 'loopback but down' is deliberate minimalism or an oversight — and what a runtime must explicitly do about it.",
+    a:"It's the same deliberate-minimalism pattern this chapter already showed with IPC namespaces starting with zero objects rather than copied defaults: the kernel provides the isolated CONTAINER for a resource class and lets userspace populate it explicitly. A runtime must explicitly bring the loopback interface up (equivalent to `ip link set lo up`) and then construct any further connectivity itself — nothing is handed to the namespace pre-configured, exactly as no IPC objects are handed to a fresh IPC namespace pre-populated." },
+  { lvl:"THINK", q:"This chapter's mount namespaces share content across the isolation boundary only via explicit bind-mounts, and its /proc/pid/ns/* files share namespace references only via an explicit open fd or bind-mount. Using that pattern, predict — before reading chapter 3 — what a veth pair conceptually must be.",
+    a:"By the same 'nothing crosses the isolation boundary unless explicitly constructed' pattern seen twice already in this chapter (bind-mounts for sharing mount-namespace content, fd/bind-mount references for keeping a namespace alive), a veth pair is almost certainly two ends of an explicitly created virtual link, with each end deliberately placed into a different (or the same) network namespace by the runtime — a wire threaded across the isolation boundary on purpose, never implicit. Chapter 3 confirms this and builds the full picture: veth creation, moving one end into a namespace, and bridging it to reach the outside world." }
+]);
+
+/* ============================================================
+   11. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const S = {
+    flags:{ pid:false, uts:false, mnt:false, ipc:false },
+    unshared:false, forked:false, procMounted:false,
+    hostname:"prod-host-07", containerHostname:null,
+    hostMounts:["/ (ext4,rw)","/proc (proc)","/sys (sysfs)","/dev (devtmpfs)"],
+    containerMounts:null,
+    hostIpc:["0x00000000 shmid=0 (unrelated app A)"],
+    containerIpc:null,
+    unshares:0, pidsUsed:1, zombies:0, reaperOn:false, pidmaxSim:32,
+    workers:0
+  };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function renderFlags(){
+    ["pid","uts","mnt","ipc"].forEach(f=>{
+      el("flag-"+f).classList.toggle("on", S.flags[f]);
+      el("flag-"+f).classList.toggle("locked", S.unshared);
+    });
+    el("sim-phase").textContent = !S.unshared ? "NOT UNSHARED" : !S.forked ? "UNSHARED — NEEDS fork()" : S.procMounted ? "FULLY ISOLATED PID 1" : "FORKED — /proc NOT REMOUNTED";
+    el("sim-phase").style.color = S.procMounted ? "var(--ok)" : S.unshared ? "var(--warn)" : "var(--dim)";
+  }
+  ["pid","uts","mnt","ipc"].forEach(f=>{
+    el("flag-"+f).onclick = ()=>{
+      if (S.unshared){ log("WARN","flags are locked after unshare() — click reset to change them"); return; }
+      S.flags[f] = !S.flags[f];
+      renderFlags();
+    };
+  });
+  el("btn-unshare").onclick = ()=>{
+    if (S.unshared){ log("WARN","already unshared — reset first"); return; }
+    const active = Object.entries(S.flags).filter(([,v])=>v).map(([k])=>k);
+    if (!active.length){ log("WARN","no flags set — unshare(0) is a no-op"); return; }
+    S.unshared = true; S.unshares++;
+    el("cnt-unshares").textContent = S.unshares;
+    log("LOG", `unshare(${active.map(a=>"CLONE_NEW"+a.toUpperCase()).join("|")}) = 0`);
+    if (S.flags.pid) log("WARN", "CLONE_NEWPID set — but YOUR pid is unchanged; only FUTURE CHILDREN enter the new pid namespace (§5)");
+    if (S.flags.uts){ S.containerHostname = S.hostname; log("LOG","UTS namespace created — hostname copied from host, now independently settable"); }
+    if (S.flags.mnt){ S.containerMounts = [...S.hostMounts]; log("LOG","mount namespace created — mount table cloned; no longer shared with host"); }
+    if (S.flags.ipc){ S.containerIpc = []; log("LOG","IPC namespace created — starts EMPTY, no objects copied"); }
+    renderFlags();
+  };
+  el("btn-fork").onclick = ()=>{
+    if (!S.unshared){ log("WARN","call unshare() first"); return; }
+    if (S.forked){ log("WARN","already forked"); return; }
+    S.forked = true; S.pidsUsed = 1;
+    el("cnt-pids").textContent = S.pidsUsed;
+    if (S.flags.pid) log("OK","fork() — child is now PID 1 of the new pid namespace (per §5's gotcha, THIS is the process the isolation actually applies to)");
+    else log("LOG","fork() — child created, but no pid namespace was requested, so it's just an ordinary host PID");
+    renderFlags();
+  };
+  el("btn-mountproc").onclick = ()=>{
+    if (!S.forked){ log("WARN","fork() first — there's no child to remount /proc inside of yet"); return; }
+    if (!S.flags.mnt || !S.flags.pid){ log("FATAL","mount(\"proc\",...) ran, but without BOTH CLONE_NEWNS and CLONE_NEWPID it binds to the OLD host pid namespace — ps will still leak (§8b)"); return; }
+    S.procMounted = true;
+    log("OK","mount(\"proc\",\"/proc\",\"proc\",0,NULL) — fresh procfs bound to THIS pid namespace. ps is now trustworthy.");
+    renderFlags();
+  };
+  el("btn-reset").onclick = ()=>{
+    Object.assign(S, { flags:{pid:false,uts:false,mnt:false,ipc:false}, unshared:false, forked:false, procMounted:false,
+      containerHostname:null, containerMounts:null, containerIpc:null, workers:0 });
+    log("LOG","--- reset ---");
+    el("view-host").textContent = "click a command below";
+    el("view-container").textContent = "click a command below";
+    renderFlags();
+  };
+  el("cmd-ps").onclick = ()=>{
+    el("view-host").textContent = "PID   CMD\n1     systemd\n842   sshd\n1193  nginx\n2091  dbserver\n2734  cron\n...   (187 total host processes)";
+    if (S.flags.pid && S.forked && S.procMounted){
+      el("view-container").textContent = "PID   CMD\n1     myapp   <- this process, container PID 1\n" + (S.workers?`${1+S.workers}     worker(s)\n`:"");
+    } else if (S.flags.pid && S.forked && !S.procMounted){
+      el("view-container").textContent = "PID   CMD\n1     systemd\n842   sshd\n... (187 total — /proc NOT remounted, still bound to HOST pid ns!)";
+      log("FATAL","ps: /proc still reflects the host pid namespace — the CLONE_NEWPID flag exists, but the procfs mount wasn't redone");
+    } else {
+      el("view-container").textContent = "PID   CMD\n1     systemd\n842   sshd\n... (187 total — NO pid namespace requested; fully shared with host)";
+    }
+  };
+  el("cmd-hostname").onclick = ()=>{
+    el("view-host").textContent = "$ hostname\n" + S.hostname;
+    if (S.flags.uts && S.unshared){
+      S.containerHostname = "newname";
+      el("view-container").textContent = "$ hostname -s newname\n$ hostname\nnewname   (private UTS namespace — host unaffected)";
+      log("OK","sethostname(\"newname\") — writes to THIS namespace's uts_namespace only");
+    } else {
+      S.hostname = "newname";
+      el("view-host").textContent = "$ hostname\nnewname   (!!)";
+      el("view-container").textContent = "$ hostname -s newname\n$ hostname\nnewname";
+      log("FATAL", "sethostname(\"newname\") ran with NO uts namespace — this changed the REAL HOST'S hostname for every process on the machine");
+    }
+  };
+  el("cmd-mount").onclick = ()=>{
+    el("view-host").textContent = S.hostMounts.join("\n");
+    if (S.flags.mnt && S.unshared){
+      S.containerMounts.push("/tmp (tmpfs)");
+      el("view-container").textContent = S.containerMounts.join("\n") + "\n(host's mount table above is untouched)";
+      log("OK","mount(-t tmpfs tmpfs /tmp) — added to THIS namespace's private mount table only");
+    } else {
+      S.hostMounts.push("/tmp (tmpfs)  <- leaked from \"container\"");
+      el("view-host").textContent = S.hostMounts.join("\n");
+      el("view-container").textContent = S.hostMounts.join("\n");
+      log("FATAL","mount(-t tmpfs tmpfs /tmp) ran with NO mount namespace — this mount is now visible on the REAL HOST and every other unnamespaced process");
+    }
+  };
+  el("cmd-ipcs").onclick = ()=>{
+    el("view-host").textContent = S.hostIpc.join("\n");
+    if (S.flags.ipc && S.unshared){
+      el("view-container").textContent = "(empty — private ipc namespace)\n$ shmget(0x51, ..., IPC_CREAT) = 0  (fresh id, no collision possible)";
+      log("OK","shmget(0x51,...) — resolved against a private, empty ipc_namespace idr table");
+    } else {
+      el("view-container").textContent = S.hostIpc.join("\n") + "\n$ shmget(0x51, ..., IPC_CREAT) = -1 EEXIST";
+      log("FATAL","shmget(0x51,...) collided with unrelated app A's shared memory segment — NO ipc namespace means ONE shared key space");
+    }
+  };
+  el("btn-spawn").onclick = ()=>{
+    if (!S.forked){ log("WARN","fork() the first child before spawning workers under it"); return; }
+    if (S.pidsUsed + S.zombies >= S.pidmaxSim){ log("FATAL","fork(): Resource temporarily unavailable (EAGAIN) — namespace pid_max exhausted"); return; }
+    S.workers++; S.pidsUsed++;
+    el("cnt-pids").textContent = S.pidsUsed;
+    updatePidMeter();
+    log("LOG", `worker ${7000+S.workers} spawned (child of PID 1)`);
+  };
+  el("btn-orphan").onclick = ()=>{
+    if (!S.workers){ log("WARN","spawn a worker first"); return; }
+    if (S.reaperOn){
+      S.pidsUsed--; S.workers--;
+      log("OK","worker exited — reaper's waitpid(-1,...) reaped it immediately. No zombie.");
+    } else {
+      S.zombies++; S.pidsUsed--; S.workers--;
+      log("WARN","worker exited — PID 1 never called wait() on it. It is now a ZOMBIE, still occupying a pid slot.");
+    }
+    el("cnt-zombies").textContent = S.zombies;
+    el("cnt-pids").textContent = S.pidsUsed;
+    updatePidMeter();
+  };
+  function updatePidMeter(){
+    const used = S.pidsUsed + S.zombies;
+    el("m-pid-v").textContent = `${used} / ${S.pidmaxSim}`;
+    const pct = Math.min(100, used/S.pidmaxSim*100);
+    const f = el("m-pid"); f.style.width = pct+"%";
+    f.className = "m-fill " + (pct>85?"hot":pct>55?"warm":"");
+  }
+  el("btn-reaper").onclick = ()=>{
+    S.reaperOn = !S.reaperOn;
+    el("btn-reaper").textContent = "reaper (tini): " + (S.reaperOn?"ON":"OFF");
+    el("btn-reaper").classList.toggle("on", S.reaperOn);
+    log("LOG", S.reaperOn ? "tini installed as PID 1 — real init: reaps everything via waitpid(-1,...), installs signal handlers" : "reaper removed — bare application is PID 1 again, no reaping, no signal handlers");
+  };
+  el("btn-sigterm").onclick = ()=>{
+    log("LOG","sending SIGTERM to container PID 1 (docker stop / podman stop)");
+    if (S.reaperOn){
+      log("OK","tini's installed handler catches SIGTERM, forwards it to the real app, app exits cleanly — container stops immediately");
+    } else {
+      log("WARN","PID 1 has NO handler for SIGTERM. Kernel default disposition for a namespace's PID 1 is IGNORE (not terminate). Nothing happens.");
+      setTimeout(()=>{ log("FATAL","grace period (10s) expired — SIGKILL sent. Container stops, but ungracefully — in-flight work is dropped."); }, 900);
+    }
+  };
+  updatePidMeter();
+  renderFlags();
+  log("OK","workbench ready — no flags set, nothing isolated yet.");
+  log("HINT","Try: set all four flags → unshare() → fork() → mount fresh /proc → run ps/hostname/mount/ipcs.");
+})();
+
+/* ============================================================
+   12. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-02"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#2dd4bf"><a class="cn-btn" href="ctr-01.html"><span>←</span><span><span class="cn-lbl">PREV · CH 01</span><span class="cn-ttl">Genesis: From chroot to the OCI Spec</span></span></a><div class="cn-mid"><a class="cn-home" href="course-containers.html">☰ Container Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="ctr-01.html">CH 01 · Genesis: From chroot to the OCI Spec</option><option value="ctr-02.html" selected>CH 02 · Namespaces I: PID, UTS, Mount &amp; IPC</option><option value="ctr-03.html">CH 03 · Namespaces II: Network Namespaces &amp; veth</option><option value="ctr-04.html">CH 04 · User Namespaces: Rootless Containers</option><option value="ctr-05.html">CH 05 · cgroups v2: The Unified Resource Hierarchy</option><option value="ctr-06.html">CH 06 · The Root Filesystem: pivot_root &amp; OverlayFS</option><option value="ctr-07.html">CH 07 · Capabilities: Splitting Root Into 40 Pieces</option><option value="ctr-08.html">CH 08 · Seccomp &amp; LSMs: Filtering the Syscall Surface</option><option value="ctr-09.html">CH 09 · The OCI Runtime Spec: runc, crun &amp; config.json</option><option value="ctr-10.html">CH 10 · Container Images: Layers, Manifests &amp; Content Addressing</option><option value="ctr-11.html">CH 11 · Registries: The Distribution Spec, Push/Pull &amp; Auth</option><option value="ctr-12.html">CH 12 · Architecture Showdown: Docker's Daemon vs Podman's Fork-Exec Model</option><option value="ctr-13.html">CH 13 · Networking: Bridges, CNI &amp; libnetwork</option><option value="ctr-14.html">CH 14 · Pods &amp; systemd: Podman's Pod Model and Quadlets</option><option value="ctr-15.html">CH 15 · Production Incidents: Real Container Escapes &amp; CVEs</option><option value="ctr-16.html">CH 16 · Capstone: Build a Container Runtime From Scratch</option></select><span class="cn-prog">02 / 16</span></div><a class="cn-btn" href="ctr-03.html"><span><span class="cn-lbl">NEXT · CH 03</span><span class="cn-ttl">Namespaces II: Network Namespaces &amp; veth</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>

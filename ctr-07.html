@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-07 · Capabilities: Splitting Root Into 40 Pieces — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+  .eng-docker{color:var(--docker);font-weight:600}
+  .eng-podman{color:var(--podman);font-weight:600}
+  .chipd{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(36,150,237,.4);color:var(--docker);background:rgba(36,150,237,.08)}
+  .chipp{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px;border:1px solid rgba(137,44,160,.4);color:var(--podman);background:rgba(137,44,160,.08)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(45,212,191,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .bitrow{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:10px 0}
+  .bitcell{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:8px;padding:6px 9px;
+    font-family:var(--mono);font-size:10.5px;color:var(--dim);transition:all .25s;text-align:center;min-width:76px}
+  .bitcell.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim);box-shadow:0 0 12px rgba(45,212,191,.15)}
+  .bitcell.gone{opacity:.25;text-decoration:line-through}
+  .bitcell.danger{border-color:rgba(242,92,84,.4)}
+  .bitcell.danger.on{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.1);box-shadow:0 0 12px rgba(242,92,84,.15)}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+  .cmdgrid{display:flex;flex-wrap:wrap;gap:6px}
+  .cmdbtn{border:1px solid var(--border-hi);background:var(--panel-2);color:#c6cddb;border-radius:8px;
+    padding:6px 10px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s}
+  .cmdbtn:hover{border-color:var(--pg);color:var(--pg)}
+  .cmdbtn.needs{color:var(--dim)}
+
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:210px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#38bdf8);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 07 / 16</b> · CAPABILITIES</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Splitting Root</a>
+  <a href="#s6"><span class="n">06</span>The SYS_ADMIN Grab Bag</a>
+  <a href="#s7"><span class="n">07</span>Five Capability Sets</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Attack Surface</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 07</div>
+  <h1>Capabilities: Splitting<br><span class="grad">Root Into 40 Pieces</span></h1>
+  <p class="lead">Every container that runs as UID 0 inside its namespace is, by default, missing about
+  twenty-six thirty-seconds of what "root" used to mean. This chapter derives why the kernel stopped treating
+  privilege as a single bit, walks the exact five-set bitmask machinery that replaced it, and shows precisely
+  which of the ~40 capabilities Docker and Podman grant a container by default — and why they agree almost
+  exactly on the list.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Read a process's <code>CapInh</code>/<code>CapPrm</code>/<code>CapEff</code>/<code>CapBnd</code>/<code>CapAmb</code> from <code>/proc/pid/status</code> and say exactly what it can and cannot do.</div>
+    <div class="obj"><b>You will understand</b>Why <code>CAP_SYS_ADMIN</code> is called "the new root," and why no container engine grants it by default.</div>
+    <div class="obj"><b>You will predict</b>Which single capability a given container failure is missing, from ping's <code>EPERM</code> to a failed <code>mount(2)</code>, before checking documentation.</div>
+    <div class="obj"><b>You will simulate</b>Dropping capabilities one at a time from a live process and watching real commands fail with real errno codes.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Root is not a permission — it's the absence of permission checks</h2>
+  <p class="lead">Every namespace you met in chapters 2–4 answers "what can this process <i>see</i>?" Every cgroup
+  limit in chapter 5 answers "how much can this process <i>consume</i>?" Neither one touches a question that
+  matters just as much for a process running as UID 0 inside a container: <b>what privileged kernel operations
+  can this process invoke?</b> On classical Unix the answer was a single comparison. Deep inside the kernel,
+  the permission check behind <code>mount()</code>, <code>reboot()</code>, raw sockets, changing any file's
+  owner, tracing any process, and dozens of other operations was the same three lines: is the caller's
+  effective UID zero? If yes, allowed. If no, <code>EPERM</code>. There was no partial credit.</p>
+  <p>That binary model creates a specific, acute problem for containers. A huge fraction of container images
+  run their main process as root inside the container — not out of laziness, but because decades of Unix
+  tooling assumes it: package managers write to <code>/usr</code>, web servers want to bind port 80 (privileged,
+  &lt;1024), backup agents need to read files regardless of owner, init-style processes need to <code>chown</code>
+  freshly-created device nodes. Namespaces (chapters 2–4) make that root <i>look</i> harmless by hiding the
+  rest of the host filesystem, process tree, and network from it. But namespaces are a visibility boundary, not
+  a privilege boundary — nothing about "you can't see <code>/etc/shadow</code> on the host" stops UID 0 inside
+  an unconstrained container from loading a kernel module, rewriting the system clock, or attaching a debugger
+  to any process it <i>can</i> see. If root is still monolithic, "give the container root" is never a scoped
+  grant — it's the entire kernel's privileged surface, handed to a process because it needed one sliver of it.</p>
+  <ul class="plain">
+    <li><b>Compatibility pressure.</b> Most container images still assume UID 0 for legitimate, mundane reasons — not because the workload needs the whole of root's power.</li>
+    <li><b>Heterogeneous need.</b> An nginx container needs exactly one privileged thing (bind &lt;1024). A backup agent needs a different one (bypass file-owner checks). Nothing in a normal container workload needs to load kernel modules or reboot the host.</li>
+    <li><b>The boundary must be kernel-enforced.</b> A convention ("please don't call <code>reboot()</code>") is not a security boundary; only a check the kernel itself performs on every privileged syscall counts.</li>
+    <li><b>It has to compose with namespaces.</b> Visibility isolation and privilege reduction are orthogonal — a process can be namespaced within an inch of its life and still, with full capabilities, threaten the host kernel directly.</li>
+    <li><b>It has to be expressible identically by every engine.</b> Docker and Podman must describe "which slice of root" in one shared, spec-defined vocabulary, or portability between them breaks at exactly this layer.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">WHERE THIS SITS IN THE STACK</div>
+    <p>Capabilities are the second of three privilege-reduction layers a container engine stacks on top of a
+    root-equivalent UID: <b>namespaces</b> (chapters 2–4) bound what the process can <i>see</i>; <b>capabilities</b>
+    (this chapter) bound which privileged <i>operations</i> UID 0 may still perform; <b>seccomp and LSMs</b>
+    (chapter 8) bound which raw <i>syscalls</i> it may even attempt, and layer mandatory access control on top
+    of the discretionary checks capabilities perform. All three are orthogonal, all three are usually needed,
+    and a container hardened in only one dimension is not hardened.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">Thirty years of trying to make root divisible</h2>
+  <p>The idea of splitting root predates Linux containers by two decades and was motivated by exactly the
+  problem in §1: setuid-root binaries that only needed one sliver of privilege but got all of it. Click through
+  the events that produced today's five-set model.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — from one bit to forty</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · A STANDARD THAT DIED BUT WON</div>
+    <p>POSIX.1e ("POSIX capabilities") never became a ratified standard — the IEEE working group withdrew the
+    draft in 1997 after years of stalled consensus. Linux implemented it anyway, informally, and every capability
+    name you will use this chapter (<code>CAP_CHOWN</code>, <code>CAP_NET_BIND_SERVICE</code>, <code>CAP_SYS_ADMIN</code>…)
+    traces directly to that abandoned draft's bit layout. It is a rare case of a failed standard winning by
+    becoming the only serious implementation left standing — much like how <code>cgroup</code> v1's multi-hierarchy
+    design (chapter 5) lost to v2 by simply being replaced rather than voted down.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: one bit, checked everywhere</h2>
+  <p>Derive it honestly, the way the actual kernel did for its first two decades. Every privileged operation's
+  entry point performed the same test:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>linux ~2.0 era — the pattern behind dozens of syscalls</span></div>
+    <pre><span class="c">/* fs/super.c — sys_mount(), pre-capabilities kernel */</span>
+<span class="k">asmlinkage</span> <span class="k">int</span> <span class="f">sys_mount</span>(<span class="k">char</span> *dev_name, <span class="k">char</span> *dir_name, ...)
+{
+    <span class="k">if</span> (!<span class="f">suser</span>())              <span class="c">/* suser(): current->euid == 0 ?           */</span>
+        <span class="k">return</span> -EPERM;          <span class="c">/* one bit, checked, nothing in between    */</span>
+    ...                            <span class="c">/* mount proceeds fully trusted            */</span>
+}
+
+<span class="c">/* net/ipv4/raw.c — raw socket creation, same shape */</span>
+<span class="k">if</span> (protocol == IPPROTO_ICMP &amp;&amp; !<span class="f">suser</span>())
+    <span class="k">return</span> -EACCES;             <span class="c">/* → this is why /bin/ping was setuid-root */</span>
+
+<span class="c">/* kernel/sys.c — reboot(), same shape again */</span>
+<span class="k">if</span> (!<span class="f">suser</span>())
+    <span class="k">return</span> -EPERM;</pre>
+  </div>
+
+  <p>This is not a strawman built to be knocked down for entertainment — it is the correct starting point, and
+  it got real things right. One comparison, one bit to protect, no separate policy engine to misconfigure, and
+  it composed trivially with the rest of Unix's permission model (file modes, setuid). For a single-user
+  workstation or a small trusted server fleet, "root can do anything, nobody untrusted is root" was a coherent,
+  defensible security model for a very long time.</p>
+  <p>It breaks down exactly where Unix tooling meets least privilege: <code>/bin/ping</code> needs one thing —
+  a raw ICMP socket — and the only way to grant it under the binary model is to make the whole binary setuid-root,
+  so that any ordinary user executing it briefly <i>becomes</i> root for the duration of the process.</p>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">One sliver of root, purchased with all of it</h2>
+  <p>Quantify the over-grant precisely. <code>/bin/ping</code> needs exactly one of the kernel's roughly forty
+  independent privilege gates — <code>CAP_NET_RAW</code>, in the vocabulary this chapter is about to introduce.
+  Under the binary model, the only way to grant that one sliver is <code>chmod u+s /bin/ping; chown root
+  /bin/ping</code> — which, the instant it runs, also hands the process the power to load kernel modules
+  (<code>CAP_SYS_MODULE</code>), bypass every file permission check on the system (<code>CAP_DAC_OVERRIDE</code>),
+  attach a debugger to any process (<code>CAP_SYS_PTRACE</code>), and reboot the machine (<code>CAP_SYS_BOOT</code>)
+  — none of which <code>ping</code> has ever needed to send an ICMP echo request.</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>Of the kernel's roughly <b>40</b> independent privileged-operation gates, a task like "bind a listening
+    socket on port 80" needs exactly <b>1</b> — about <b>2.5%</b> of root's total surface. The binary model has
+    no unit smaller than "all of it," so satisfying that 2.5% need means over-granting by roughly <b>40×</b>.
+    That gap is not theoretical: it is the reason "local privilege escalation via a memory-safety bug in a
+    setuid-root utility" was, for two decades, one of the single most common severe vulnerability classes in
+    Unix history — a bug that should only let an attacker forge one ICMP packet instead handed over the entire
+    kernel, because the binary carrying the bug had been granted the entire kernel to satisfy a 2.5% need.</p>
+  </div>
+  <p>Containers make this worse by concentrating the problem: a container's main process usually runs as UID 0
+  for the <i>whole lifetime of the container</i>, not just for one setuid'd syscall. Without a finer-grained
+  model, "containerize a legacy app that assumes root" and "give an attacker who compromises that app the whole
+  host kernel's privileged surface" become the same sentence. The industry needed a privilege unit smaller than
+  "all of root" decades before containers existed — and one already existed by the time Docker shipped in 2013.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION, DERIVED</div>
+  <h2 class="sec">Replace one bit with forty independent bits</h2>
+  <p>The fix, in outline, is almost embarrassingly direct: instead of one bit (<code>euid==0</code>) guarding
+  every privileged operation, assign each coherent slice of root's power its own bit, and have every one of the
+  kernel's ~40 privileged-operation check sites test its own specific bit instead of the shared UID-zero test.
+  Step through the transformation:</p>
+
+  <div class="widget deck" id="deckModel">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">From suser() to capable()</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Applied to containers, this is the entire mechanism behind "safer default": instead of a container's root
+  process holding a single all-or-nothing bit, it holds a 40-bit vector, and both Docker and Podman ship an
+  identical default vector with <b>14</b> bits set and the rest cleared — including, deliberately, leaving
+  <code>CAP_SYS_ADMIN</code>, <code>CAP_SYS_MODULE</code>, <code>CAP_SYS_RAWIO</code>, and <code>CAP_NET_ADMIN</code>
+  unset. A compromised nginx container with the default capability set literally cannot call
+  <code>mount()</code>, <code>insmod</code>, or manipulate network interfaces — not because a policy says not to,
+  but because the kernel's <code>capable(CAP_SYS_ADMIN)</code> check returns false for that process, full stop.</p>
+
+  <div class="callout ok">
+    <div class="co-t">THE 14 KEPT BY DEFAULT</div>
+    <p><code>CAP_CHOWN</code> · <code>CAP_DAC_OVERRIDE</code> · <code>CAP_FOWNER</code> · <code>CAP_FSETID</code> ·
+    <code>CAP_KILL</code> · <code>CAP_SETGID</code> · <code>CAP_SETUID</code> · <code>CAP_SETPCAP</code> ·
+    <code>CAP_NET_BIND_SERVICE</code> · <code>CAP_NET_RAW</code> · <code>CAP_SYS_CHROOT</code> ·
+    <code>CAP_MKNOD</code> · <code>CAP_AUDIT_WRITE</code> · <code>CAP_SETFCAP</code>. Every one of the roughly
+    26 others — including all of the ones that can reach the host kernel or hardware directly — is dropped
+    before your container's first instruction runs.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">CAP_SYS_ADMIN: the bit that became root again</h2>
+  <p>Splitting root into forty independent bits works cleanly when each bit guards one coherent idea. It broke
+  down for exactly one bit, and the story of that breakdown is worth understanding because it is still ongoing.
+  When the original POSIX.1e authors ran out of an obvious existing category for a new privileged operation,
+  the path of least resistance was to gate it behind <code>CAP_SYS_ADMIN</code> — and for roughly fifteen years,
+  kernel developers took that path constantly. Step through what accreted onto one bit:</p>
+
+  <div class="widget deck" id="deckAdmin">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Everything CAP_SYS_ADMIN still gates</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <p>Three other costs compound the CAP_SYS_ADMIN problem:</p>
+  <ul class="plain">
+    <li><b>Capabilities are Linux-only.</b> There is no POSIX ratification (§2) and no direct analogue on BSD or
+      macOS — tooling and mental models don't transfer, unlike namespaces' rough conceptual cousins (FreeBSD
+      jails) or cgroups' rough cousins (Solaris resource controls).</li>
+    <li><b>A capability is a host-kernel-wide notion unless paired with a user namespace.</b> <code>CAP_SYS_ADMIN</code>
+      granted to a process in the <i>host's</i> user namespace is, for nearly every practical purpose,
+      equivalent to <code>CAP_SYS_ADMIN</code> on the host — the capability boundary and the namespace boundary
+      are orthogonal, not layered for safety by default. Chapter 4's rootless model changes this precisely by
+      making the capability meaningful only <i>inside</i> a private user namespace, which is why rootless Podman's
+      threat model is genuinely different from rootful Docker's capability-only defense.</li>
+    <li><b>The list still grows the wrong direction sometimes.</b> Kernel 5.8 finally split <code>CAP_BPF</code>
+      and <code>CAP_PERFMON</code> out of <code>CAP_SYS_ADMIN</code>'s historical territory, and 5.9 added
+      <code>CAP_CHECKPOINT_RESTORE</code> — a tacit admission, thirty years in, that "when in doubt, gate it
+      behind SYS_ADMIN" was a mistake worth slowly unwinding.</li>
+  </ul>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The five capability sets</h2>
+  <p>A real Linux process doesn't carry one 40-bit vector — it carries <b>five</b>, each answering a different
+  question about how capabilities may be gained, kept, or lost across a lifetime that includes <code>fork()</code>
+  and <code>execve()</code>. Click each set to see its precise definition, where it lives, and what happens to
+  it when the process calls <code>execve()</code>.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Capability set explorer</span><span class="w-sub">CLICK ANY SET</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">WHAT THE PROCESS MAY EVENTUALLY HAVE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="bounding">bounding (P<sub>bnd</sub>)</div>
+          <div class="acard" data-p="permitted">permitted (P<sub>p</sub>)</div>
+        </div>
+        <div class="arch-row-label">WHAT THE PROCESS MAY USE RIGHT NOW</div>
+        <div class="arch-grid"><div class="acard" data-p="effective">effective (P<sub>e</sub>)</div></div>
+        <div class="arch-row-label">WHAT SURVIVES execve()</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="inheritable">inheritable (P<sub>i</sub>)</div>
+          <div class="acard" data-p="ambient">ambient (P<sub>a</sub>)</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHERE THESE ACTUALLY LIVE</div>
+    <p>All five sets are fields of <code>struct cred</code> (<code>include/linux/cred.h</code>): <code>cap_permitted</code>,
+    <code>cap_effective</code>, <code>cap_inheritable</code>, <code>cap_bset</code>, and <code>cap_ambient</code>,
+    each a <code>kernel_cap_t</code> — currently a single 64-bit word, though only ~40 bits are assigned. Every
+    task's <code>struct task_struct</code> points at a <code>struct cred</code>; <code>fork()</code> copies the
+    pointer (copy-on-write, same as the rest of a task's credentials), and it is this same struct that also
+    carries the UID/GID and — foreshadowing chapter 4 — the user-namespace pointer that determines which
+    namespace's "root" a given <code>CAP_SYS_ADMIN</code> actually means.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The exact formula the kernel runs on every execve()</h2>
+  <p>Now the mechanism precisely enough to predict any container's post-<code>execve()</code> capability set by
+  hand. Three pieces: <b>(a)</b> the transition formula and a worked example, <b>(b)</b> a live calculator you
+  can drive with sliders, <b>(c)</b> the real syscalls involved.</p>
+
+  <h3>(a) The execve() capability transition, step by step</h3>
+  <p>Every <code>execve()</code> recomputes all five sets from the calling process's sets (written <code>P(x)</code>)
+  and the target file's capabilities (written <code>F(x)</code>, read from its <code>security.capability</code>
+  extended attribute). Step through it for a concrete container scenario: a shell at UID 0 with Docker's default
+  capability profile calling <code>execve("/usr/sbin/nginx")</code>, a binary with no file capabilities of its own.</p>
+
+  <div class="widget deck" id="deckExec">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">execve() capability computation</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) Live calculator — drag the file and process capability sets</h3>
+  <p>The full formula from <code>capabilities(7)</code>, applied live. <code>P'</code> denotes the set <i>after</i>
+  <code>execve()</code>:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">formula</span><span>capabilities(7) — the execve() transition</span></div>
+    <pre>P'(ambient)     = (file is privileged) ? 0 : P(ambient)
+P'(permitted)   = (P(inheritable) &amp; F(inheritable))
+                  | (F(permitted) &amp; P(bounding))
+                  | P'(ambient)
+P'(effective)   = F(effective) ? P'(permitted) : P'(ambient)
+P'(inheritable) = P(inheritable)          <span class="c">/* execve() never changes it */</span>
+P'(bounding)    = P(bounding)             <span class="c">/* only prctl(PR_CAPBSET_DROP) shrinks it */</span></pre>
+  </div>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Capability calculator</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>process bounding set</label><input type="range" id="bound-slider" min="0" max="3" value="2" step="1"><span class="val" id="bound-val">Docker default (14)</span></div>
+      <div class="slider-row"><label>file capabilities (F)</label><input type="range" id="fcap-slider" min="0" max="3" value="0" step="1"><span class="val" id="fcap-val">none</span></div>
+      <p style="font-size:12px;color:var(--muted);margin:6px 0" id="capcalc-note"></p>
+      <div class="bitrow" id="capcalc-eff"></div>
+    </div>
+  </div>
+
+  <h3>(c) The real syscalls</h3>
+  <table class="cmp">
+    <tr><th>CALL</th><th>DIRECTION</th><th>PURPOSE</th></tr>
+    <tr><td>capget(2) / capset(2)</td><td>read / write</td><td>Get or set the calling thread's permitted/effective/inheritable sets directly. <code>libcap</code>'s <code>cap_get_proc()</code>/<code>cap_set_proc()</code> wrap these.</td></tr>
+    <tr><td>prctl(PR_CAPBSET_READ/DROP)</td><td>read / write</td><td>Test whether a capability is in the bounding set, or permanently remove one from it — a one-way ratchet for the life of the process (and its descendants).</td></tr>
+    <tr><td>prctl(PR_CAP_AMBIENT)</td><td>write</td><td>Raise, lower, or clear ambient capabilities. Raising one requires it to already be in both permitted and inheritable.</td></tr>
+    <tr><td>setxattr("security.capability", …)</td><td>write (on a file)</td><td>What <code>setcap</code> actually calls — stores <code>F(permitted)</code>/<code>F(inheritable)</code>/<code>F(effective)</code> as an inode extended attribute.</td></tr>
+  </table>
+
+  <div class="callout warn">
+    <div class="co-t">OPERATIONAL GOTCHA WORTH KNOWING</div>
+    <p>File capabilities live in an extended attribute, tied to the inode, not the file's bytes. That means a
+    naive <code>tar</code> without <code>--xattrs</code>, or a <code>cp</code> without <code>--preserve=xattr</code>,
+    silently drops <code>security.capability</code> — a binary that worked perfectly in a build stage can lose
+    its capability and fail with a bare <code>EPERM</code> after being copied into a final image layer, with no
+    error at copy time. It is one of the more surprising multi-stage-build (chapter 10) failure modes in
+    practice, and it looks nothing like a capability problem until you check <code>getcap</code> on the copy.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Capabilities among the other privilege-reduction levers</h2>
+  <table class="cmp">
+    <tr><th>APPROACH</th><th>WHAT IT BUYS</th><th>WHAT IT COSTS</th></tr>
+    <tr><td>Full root, no restriction</td>
+      <td><span class="pill g">zero compatibility friction</span></td>
+      <td><span class="pill b">every privileged syscall reachable</span> <span class="pill b">1 bug = full host risk</span></td></tr>
+    <tr><td>Default capability set (14/40)</td>
+      <td><span class="pill g">blocks mount/module-load/raw-io/net-admin by default</span> <span class="pill g">near-zero runtime cost</span></td>
+      <td><span class="pill y">still trusts UID 0's other checks (DAC) unless paired with more</span></td></tr>
+    <tr><td><code>--privileged</code> / add ALL back</td>
+      <td><span class="pill g">unblocks legitimate edge cases (nested containers, some device access)</span></td>
+      <td><span class="pill b">reintroduces exactly the §4 over-grant, deliberately</span></td></tr>
+    <tr><td>+ user namespace (chapter 4)</td>
+      <td><span class="pill g">a granted capability is scoped to the container's own userns — host-meaningless</span></td>
+      <td><span class="pill y">some filesystem/device operations still need real host privilege</span></td></tr>
+    <tr><td>+ seccomp / LSM (chapter 8)</td>
+      <td><span class="pill g">blocks the syscall itself, independent of whether the capability check would pass</span></td>
+      <td><span class="pill y">separate policy surface to author and keep in sync</span></td></tr>
+  </table>
+  <p>Read that table as layered defense, not a menu to pick one from: a hardened container typically stacks
+  every row from the second down — reduced capabilities, ideally inside a user namespace, with seccomp and an
+  LSM profile on top. Each layer catches what the one below it would have let through if misconfigured.</p>
+
+  <h3>Docker vs Podman: the capability layer specifically</h3>
+  <table class="cmp">
+    <tr><th>ASPECT</th><th class="eng-docker">DOCKER</th><th class="eng-podman">PODMAN</th></tr>
+    <tr><td>Default capability list</td><td>Same 14 as §5 (Docker's <code>oci-default</code> profile)</td><td>Same 14 as §5 (containers/common's <code>default.json</code>) — <b>identical set</b>, not a coincidence: both converged on the OCI-adjacent containers-community default</td></tr>
+    <tr><td>Grant/drop CLI</td><td><code>--cap-add=NAME</code> / <code>--cap-drop=NAME</code>, plus <code>--cap-drop=ALL</code></td><td>Identical flags, identical <code>ALL</code> keyword — Podman deliberately mirrors Docker's CLI surface here for drop-in compatibility</td></tr>
+    <tr><td>Effect of a granted capability</td><td>Meaningful in the <b>host's</b> user namespace by default (rootful daemon) unless you separately opt into <code>--userns-remap</code></td><td>In <b>rootless</b> mode (Podman's default posture), a granted capability is scoped to the container's private user namespace — <code>CAP_SYS_ADMIN</code> inside is not <code>CAP_SYS_ADMIN</code> on the host, a materially different threat model from Docker's rootful default</td></tr>
+    <tr><td>Where the default list is defined</td><td>Baked into <code>dockerd</code>/containerd's OCI spec generation</td><td>Sourced from the shared <code>containers/common</code> Go module, the same dependency CRI-O and Buildah use — one list, many tools</td></tr>
+  </table>
+  <p>The honest takeaway: at the "which 14 capabilities" question, Docker and Podman are not just similar —
+  they are the same, because both ultimately express the answer as an OCI-shaped
+  <code>process.capabilities</code> array (chapter 9) consumed by runc or crun. The genuine difference is not
+  the list; it's what a granted capability <i>means</i>, which depends entirely on whose user namespace the
+  process runs in — Podman's rootless default and Docker's rootful default answer that question differently
+  before capabilities even enter the picture.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE & ATTACK SURFACE</div>
+  <h2 class="sec">The cheapest check in the security stack — and the surface it still leaves</h2>
+  <p>Capability checks are, computationally, almost free. <code>capable(CAP_X)</code> compiles down to a single
+  bitmask test (<code>cap_raised()</code>, an inline AND against one 64-bit word) plus an LSM hook call that,
+  with no LSM capability module loaded, is a no-op. Compare that to the mandatory-access-control checks chapter
+  8 covers — SELinux and AppArmor evaluate a label or path against a loaded policy on every relevant operation —
+  and capabilities are by a wide margin the cheapest privilege gate in the entire container security stack. The
+  cost that matters here isn't runtime overhead; it's how much attack surface a given profile still exposes.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Reachable privileged operations by profile</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>extra caps via --cap-add</label><input type="range" id="as-slider" min="0" max="26" value="0" step="1"><span class="val" id="as-slider-val">0</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="as-base">baseline: Docker/Podman default (14)</button>
+        <button class="chip" id="as-priv">--privileged (all ~40 + no seccomp)</button>
+      </div>
+      <div class="chartbox"><canvas id="as-chart" width="740" height="260"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> capabilities granted</span>
+        <span><span style="color:var(--bad)">━</span> estimated privileged ops reachable</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="as-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>"Privileged ops reachable" is an illustrative per-capability weighting (most capabilities gate a small,
+    coherent handful of operations; <code>CAP_SYS_ADMIN</code> alone is weighted heavily per §6's list) — it is
+    a teaching approximation of relative blast radius, not a count anyone has published as a formal metric. The
+    shape is the point: adding capabilities back one at a time costs roughly linearly, until <code>CAP_SYS_ADMIN</code>
+    specifically is added, which jumps the curve disproportionately — exactly the asymmetry that makes it the
+    one capability every hardening guide singles out by name.</p>
+  </div>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Three times the capability boundary was the whole story</h2>
+
+  <h3>Incident 1: CVE-2022-0492 — release_agent + CAP_SYS_ADMIN</h3>
+  <p>cgroup v1's <code>release_agent</code> file — a hook the kernel runs (as root, in the host's initial
+  namespace) when a cgroup with notification enabled becomes empty — could be written and armed by any process
+  holding <code>CAP_SYS_ADMIN</code>, even inside a container, letting that process specify an arbitrary
+  host-executed command. Root cause analysis distills to one sentence: this is a host-wide root-execution
+  primitive gated behind a single capability bit. The reason it was a headline rather than routine noise is
+  precisely this chapter's default list — a container running Docker's or Podman's default 14 capabilities was
+  never exposed, because <code>CAP_SYS_ADMIN</code> is one of the ~26 dropped by default. Every real-world
+  exploitation required either <code>--privileged</code> or an explicit <code>--cap-add=SYS_ADMIN</code>, which
+  is exactly the deliberate, auditable decision §5's model is designed to force into the open.</p>
+
+  <h3>Incident 2: the 2014 "Shocker" container-breakout proof of concept</h3>
+  <p>A widely circulated 2014 write-up demonstrated escaping an early, less-hardened container configuration by
+  combining <code>CAP_MKNOD</code> (create a device node) with <code>CAP_DAC_OVERRIDE</code> (bypass file
+  permission checks): create a block-device node inside the container pointing at the host's underlying disk
+  device, then read it directly — a raw block read bypasses the mount namespace's view of the filesystem
+  entirely, since it never goes through a mount point at all. It remains one of the clearest illustrations that
+  capability grants must be reasoned about <i>in combination</i>, not one at a time — neither <code>CAP_MKNOD</code>
+  nor <code>CAP_DAC_OVERRIDE</code> alone is that dangerous; together, against a device node, they are a
+  namespace bypass. Both are still in the default 14 today, which is defensible only because default engine
+  configuration also denies raw device-node access through other layers (device cgroup controller policy,
+  chapter 5) — a reminder that the capability list is never the only control in force.</p>
+
+  <h3>Incident 3: CAP_NET_RAW and the case for dropping engine defaults anyway</h3>
+  <p><code>CAP_NET_RAW</code> is in the default 14 for a mundane reason — <code>ping</code> needs it — but it
+  also permits crafting and sniffing raw packets, including spoofed ARP frames, against any interface the
+  container's network namespace can see. On a shared bridge network (chapter 3), that is enough for one
+  container to spoof traffic toward a sibling container sharing the bridge. This is well-documented enough that
+  Kubernetes's <b>Restricted</b> Pod Security Standard requires every container to explicitly
+  <code>drop: ["ALL"]</code> and permits adding back only <code>NET_BIND_SERVICE</code> — deliberately stricter
+  than either engine's own default. The lesson generalizes: an engine's default profile is a reasonable
+  baseline for compatibility, not a security ceiling — production hardening regularly starts from
+  <code>--cap-drop=ALL</code> and adds back only what a specific workload has actually been shown to need.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend the default 14 at a whiteboard?</h2>
+  <p>Think before revealing — each answer targets the depth a Staff-level container security conversation expects.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: commoncap.c and an OCI bundle</h2>
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">linux/</span></div>
+<div>├── <span class="dir">include/uapi/linux/</span>capability.h <span class="fnote">— the CAP_* numbers, 0 through ~40</span></div>
+<div>├── <span class="dir">include/linux/</span>cred.h <span class="fnote">— struct cred: cap_permitted/effective/inheritable/bset/ambient</span></div>
+<div>├── <span class="dir">kernel/</span></div>
+<div>│   └── <span class="fhl">● capability.c</span> <span class="fnote">— sys_capget()/sys_capset(), prctl(PR_CAPBSET_*, PR_CAP_AMBIENT)</span></div>
+<div>├── <span class="dir">security/</span></div>
+<div>│   └── <span class="fhl">● commoncap.c</span> <span class="fnote">— cap_capable(), cap_bprm_creds_from_file(): the §8 formula, in C</span></div>
+<div><span class="dir">runc/libcontainer/</span></div>
+<div>└── <span class="fhl">● capabilities_linux.go</span> <span class="fnote">— reads config.json's process.capabilities, calls capset() before the container's PID 1 execve()s</span></div>
+  </div></div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>kernel/capability.c — capable(), simplified</span></div>
+    <pre><span class="k">bool</span> <span class="f">capable</span>(<span class="k">int</span> cap)
+{
+    <span class="k">return</span> <span class="f">ns_capable</span>(&amp;init_user_ns, cap);
+}
+
+<span class="k">bool</span> <span class="f">ns_capable</span>(<span class="k">struct</span> user_namespace *ns, <span class="k">int</span> cap)
+{
+    <span class="k">struct</span> cred *cred = current_cred();
+    <span class="k">if</span> (<span class="f">security_capable</span>(cred, ns, cap, CAP_OPT_NONE) != <span class="n">0</span>)
+        <span class="k">return</span> <span class="k">false</span>;          <span class="c">/* LSM hook chain, then... */</span>
+    <span class="k">return</span> <span class="f">cap_raised</span>(cred-&gt;cap_effective, cap); <span class="c">/* ...the actual bit test */</span>
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>security/commoncap.c — cap_bprm_creds_from_file(), simplified</span></div>
+    <pre><span class="c">/* Runs during execve(). Implements the exact §8 formula. */</span>
+<span class="k">int</span> <span class="f">cap_bprm_creds_from_file</span>(<span class="k">struct</span> linux_binprm *bprm, <span class="k">struct</span> file *file)
+{
+    kernel_cap_t new_permitted, p_ambient;
+    <span class="k">struct</span> cred *new = bprm-&gt;cred;
+    kernel_cap_t fP = <span class="f">get_file_caps_permitted</span>(file);
+    kernel_cap_t fI = <span class="f">get_file_caps_inheritable</span>(file);
+    <span class="k">bool</span> file_is_privileged = fP || fI || <span class="f">is_setuid_root</span>(file);
+
+    p_ambient = file_is_privileged ? <span class="f">CAP_EMPTY_SET</span>() : old-&gt;cap_ambient;
+
+    new_permitted = <span class="f">cap_intersect</span>(old-&gt;cap_inheritable, fI);
+    new_permitted = <span class="f">cap_combine</span>(new_permitted,
+                     <span class="f">cap_intersect</span>(fP, old-&gt;cap_bset));
+    new_permitted = <span class="f">cap_combine</span>(new_permitted, p_ambient);
+
+    new-&gt;cap_permitted   = new_permitted;
+    new-&gt;cap_effective   = <span class="f">get_file_caps_effective</span>(file) ? new_permitted : p_ambient;
+    new-&gt;cap_ambient     = p_ambient;
+    new-&gt;cap_inheritable = old-&gt;cap_inheritable;   <span class="c">/* unchanged */</span>
+    <span class="k">return</span> <span class="n">0</span>;
+}</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">JSON</span><span>OCI runtime spec — config.json's process.capabilities (real shape)</span></div>
+    <pre>{
+  <span class="t">"process"</span>: {
+    <span class="t">"capabilities"</span>: {
+      <span class="t">"bounding"</span>:    [<span class="s">"CAP_CHOWN"</span>, <span class="s">"CAP_DAC_OVERRIDE"</span>, <span class="s">"CAP_FOWNER"</span>, <span class="s">"CAP_FSETID"</span>,
+                     <span class="s">"CAP_KILL"</span>, <span class="s">"CAP_SETGID"</span>, <span class="s">"CAP_SETUID"</span>, <span class="s">"CAP_SETPCAP"</span>,
+                     <span class="s">"CAP_NET_BIND_SERVICE"</span>, <span class="s">"CAP_NET_RAW"</span>, <span class="s">"CAP_SYS_CHROOT"</span>,
+                     <span class="s">"CAP_MKNOD"</span>, <span class="s">"CAP_AUDIT_WRITE"</span>, <span class="s">"CAP_SETFCAP"</span>],
+      <span class="t">"effective"</span>:   [ <span class="c">/* same 14, by default */</span> ],
+      <span class="t">"inheritable"</span>: [ <span class="c">/* same 14, by default */</span> ],
+      <span class="t">"permitted"</span>:   [ <span class="c">/* same 14, by default */</span> ],
+      <span class="t">"ambient"</span>:     []
+    }
+  }
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. The bounding set only ever shrinks.</b> <code>PR_CAPBSET_DROP</code> has no inverse — once gone from
+    a process's bounding set, a capability cannot be regained by that process or any descendant, even via
+    <code>execve</code> of a file with file capabilities set. A one-way ratchet is a stronger guarantee than a
+    reversible flag precisely because no code path, buggy or malicious, can undo it. <b>2. Ambient capabilities
+    exist to solve one narrow problem, on purpose.</b> Before Linux 4.3, a non-root process could never retain a
+    capability across <code>execve()</code> unless the target file had capabilities set on it — painful for
+    container init systems and systemd services that want to drop to a non-root UID while keeping one specific
+    capability. Ambient sets exist for exactly that case and nothing broader. <b>3. Capabilities are expressed
+    identically by every OCI-compliant engine.</b> Docker and Podman both lower to the same five-array
+    <code>config.json</code> shape (chapter 9) before runc or crun ever runs — the capability model achieves
+    portability by being boring and literal, not by each engine reinventing a policy DSL.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain why — read them, they encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — execve() computes the new sets</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the steps in the order the kernel actually performs them during an execve() of a file with capabilities set. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The capability toggle board</h2>
+  <p>A live process with a configurable capability set. Toggle capabilities on and off, then try real commands
+  — <code>ping</code>, <code>mount</code>, <code>setuid</code>, and more — and watch exactly which ones start
+  returning <code>EPERM</code>. Load a preset to see Docker/Podman's default, <code>--privileged</code>, or a
+  fully hardened <code>--cap-drop=ALL</code> profile.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">capability board — PID 8842</span><span class="w-sub" id="sim-phase">14 / 40 HELD</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="sim-ctl" style="border:none;padding-top:0">
+            <div class="ctl-t">CAPABILITIES — CLICK TO TOGGLE</div>
+            <div class="bitrow" id="sim-caps"></div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">TRY A COMMAND</div>
+            <div class="cmdgrid" id="sim-cmds"></div>
+          </div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">PRESETS</div>
+            <div class="btns">
+              <button class="btn" id="sc-docker">Docker/Podman default</button>
+              <button class="btn danger" id="sc-priv">--privileged (ALL)</button>
+              <button class="btn warn" id="sc-none">--cap-drop=ALL</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-held">14</div><div class="cl">held</div></div>
+            <div class="scounter"><div class="cv" id="cnt-tried">0</div><div class="cl">attempts</div></div>
+            <div class="scounter"><div class="cv" id="cnt-blocked" style="color:var(--bad)">0</div><div class="cl">blocked</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Load the Docker/Podman default, then try every command — note exactly which two or three fail
+    (they need capabilities the default doesn't grant). <b>2.</b> Drop <code>CAP_NET_RAW</code> alone and retry
+    <code>ping</code> — real EPERM, real reason. <b>3.</b> Load <code>--cap-drop=ALL</code>, add back only
+    <code>CAP_NET_BIND_SERVICE</code>, and see how narrow a working profile can be. <b>4.</b> Load
+    <code>--privileged</code> and confirm every command succeeds — then ask yourself which of them your actual
+    workload needed.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 8: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer, then reveal.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 07 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now read a process's five capability sets from
+    <code>/proc/pid/status</code>, compute what survives an <code>execve()</code> by hand, and explain precisely
+    why <code>CAP_SYS_ADMIN</code> earned the nickname "the new root." Chapter 8 adds the layer that catches
+    what capabilities don't: <b>seccomp-bpf</b> filters the raw syscall itself, independent of whether a
+    capability check would have passed, and <b>AppArmor/SELinux</b> add mandatory access control on top —
+    Podman's SELinux-first defaults against Docker's AppArmor-first defaults, and why both engines converge on
+    the same shape of default seccomp profile.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <button class="btn" disabled title="Generated next">CTR-08: Seccomp & LSMs →</button>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1970s", l:"binary root", d:"<b>Unix's original model.</b> Every privileged operation — mount, reboot, raw sockets, changing any file's owner — checks one thing: is the caller's effective UID zero? There is no smaller unit of privilege than 'all of root.'" },
+  { yr:"1997", l:"POSIX.1e", d:"<b>The POSIX.1e capabilities draft is withdrawn</b> by the IEEE working group after years without consensus — but its bit layout and naming (CAP_CHOWN, CAP_NET_BIND_SERVICE, CAP_SYS_ADMIN…) become the de facto spec every later implementation, Linux included, copies wholesale." },
+  { yr:"1999", l:"Linux 2.2/2.4 internals", d:"<b>Linux implements per-thread capability sets internally</b> — task_struct gains cap_effective/cap_permitted fields — but without syscalls or tools to manage per-file grants, root at execve() still practically means 'has every capability,' so the binary model's problems persist in practice." },
+  { yr:"2008", l:"file capabilities (2.6.24)", d:"<b>File capabilities land.</b> setcap/getcap and the security.capability extended attribute let a single binary — /bin/ping, say — be granted exactly CAP_NET_RAW instead of the setuid-root bit, finally making 'one sliver of root' expressible without an all-or-nothing setuid grant." },
+  { yr:"2008", l:"bounding set (2.6.25)", d:"<b>The per-process capability bounding set arrives</b> via prctl(PR_CAPBSET_DROP) — a process can permanently shrink its own future ceiling. This one-way ratchet, invented years before Docker existed, becomes the exact mechanism container engines use to enforce 'this container can never regain CAP_SYS_ADMIN.'" },
+  { yr:"2013", l:"user namespaces (3.8)", d:"<b>Unprivileged user namespaces land.</b> Capabilities become namespace-relative — CAP_SYS_ADMIN evaluated inside a user namespace no longer automatically means CAP_SYS_ADMIN on the host. Chapter 4 covers this in depth; it is the missing piece that makes rootless container capabilities meaningfully safer than rootful ones." },
+  { yr:"2014", l:"Docker's default profile", d:"<b>Docker ships a curated default capability list instead of full root</b> for every container — codifying 'drop most, keep 14' as an industry default years before it was a security-conference talking point. Podman later adopts the identical list via the shared containers/common library." },
+  { yr:"2015", l:"ambient capabilities (4.3)", d:"<b>Ambient capabilities land</b>, motivated explicitly by container and systemd use cases: previously, a process dropping from root to a non-root UID lost all capabilities at the next execve() unless the target binary had file capabilities baked in. Ambient sets let a specific capability survive that transition on purpose." },
+  { yr:"2016", l:"OCI Runtime Spec", d:"<b>The OCI Runtime Spec standardizes the five-set model</b> as literal config.json arrays (bounding/effective/inheritable/permitted/ambient) — any compliant engine, Docker via runc or Podman via crun, must express capabilities in exactly this shape (chapter 9)." },
+  { yr:"2020", l:"chipping at SYS_ADMIN (5.8+)", d:"<b>CAP_BPF and CAP_PERFMON split out</b> of CAP_SYS_ADMIN's historical territory, followed by CAP_CHECKPOINT_RESTORE in 5.9 — a slow, ongoing admission that 'gate it behind SYS_ADMIN when unsure' accreted too much onto one bit for fifteen years." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===6 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[6].d;
+/* ============================================================
+   2. DECK: suser() → capable() (§5)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:220px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (a,b)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${a}${b}</div>`;
+  stepper("deckModel", [
+    { stage: box("BEFORE — ONE BIT", cell("mount() → if (!suser()) EPERM") + cell("reboot() → if (!suser()) EPERM") + cell("raw socket → if (!suser()) EACCES") + cell("chown-any-file → if (!suser()) EPERM") + cell("...~36 more check sites, same test", "#f25c54", "rgba(242,92,84,.08)")),
+      cap:`<b>Where we start.</b> Every one of roughly forty distinct privileged operations in the kernel funnels through the identical <code>euid==0</code> test. There is exactly one lever: grant the UID, or don't.` },
+    { stage: wrap(box("ASSIGN EACH OPERATION ITS OWN BIT", cell("mount() → bit 21 (CAP_SYS_ADMIN)","#60a5fa") + cell("reboot() → bit 22 (CAP_SYS_BOOT)","#60a5fa") + cell("raw socket → bit 13 (CAP_NET_RAW)","#60a5fa") + cell("chown-any-file → bit 0 (CAP_CHOWN)","#60a5fa")), box("ONE 64-BIT WORD PER PROCESS", cell("kernel_cap_t — ~40 bits assigned","#2dd4bf"))),
+      cap:`<b>The split.</b> Instead of one shared UID-zero test, each privileged-operation site gets its own numbered bit, and every process now carries a bitmask instead of relying purely on its UID.` },
+    { stage: box("EVERY CHECK SITE IS REWRITTEN", cell("mount() → if (!capable(CAP_SYS_ADMIN)) EPERM","#4ade80") + cell("reboot() → if (!capable(CAP_SYS_BOOT)) EPERM","#4ade80") + cell("raw socket → if (!capable(CAP_NET_RAW)) EACCES","#4ade80") + cell("chown-any-file → if (!capable(CAP_CHOWN)) EPERM","#4ade80")),
+      cap:`<b>capable() replaces suser().</b> Same call sites, same kernel functions guarding them — only the test changed, from "is UID zero" to "is this specific bit set in this process's effective capability set." Nothing about the surrounding code needed to change.` },
+    { stage: wrap(box("A PROCESS THAT NEEDS ONLY ONE THING", cell("CAP_NET_BIND_SERVICE: ON","#4ade80","rgba(74,222,128,.08)") + cell("everything else: OFF","#5b6475")), box("RESULT", cell("can bind port 80","#4ade80") + cell("cannot mount()","#f25c54") + cell("cannot reboot()","#f25c54") + cell("cannot load a kernel module","#f25c54"))),
+      cap:`<b>The payoff.</b> A process that only ever needed to bind a low port can now hold exactly that one bit — the other roughly thirty-nine remain off, enforced by the kernel at every one of those rewritten call sites. This is the entire mechanism behind a container's default capability profile.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: CAP_SYS_ADMIN grab bag (§6)
+   ============================================================ */
+(function(){
+  const item = (t,d) => `<div style="border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;font-family:var(--mono);font-size:11px;color:#c6cddb">${t}<span style="display:block;font-size:9.5px;color:var(--dim);margin-top:2px">${d}</span></div>`;
+  stepper("deckAdmin", [
+    { stage: item("mount() / umount2()","filesystem attach/detach — the operation the capability was originally created for"),
+      cap:`<b>The original job.</b> CAP_SYS_ADMIN's name literally means "system administration," and mount/umount is the canonical example — a coherent, single-purpose grant so far.` },
+    { stage: item("mount() / umount2()","original purpose") + item("pivot_root()","chapter 6's root-filesystem switch") + item("quotactl()","disk quota administration") + item("swapon() / swapoff()","swap space management"),
+      cap:`<b>Adjacent filesystem/storage operations accrete first.</b> Each addition is individually defensible — they're all "administration" in some sense — but the bit is no longer guarding one idea, it's guarding a category.` },
+    { stage: item("mount / pivot_root / quotactl / swap","storage, as before") + item("sethostname() / setdomainname()","chapter 2's UTS namespace territory") + item("various device ioctl()s","hardware-adjacent controls with no better home") + item("keyctl(KEYCTL_CHOWN/KEYCTL_SETPERM)","kernel keyring administration"),
+      cap:`<b>Unrelated subsystems join because there's nowhere better to put them.</b> Hostname changes have nothing to do with mounting a filesystem; keyring permissions have nothing to do with either. Each addition individually seemed reasonable at the time it was made.` },
+    { stage: item("everything above","~10 unrelated subsystems") + item("perf_event_open() (pre-5.8)","performance monitoring, now split into CAP_PERFMON") + item("BPF operations (pre-5.8)","now split into CAP_BPF") + item("~15-20 more scattered ioctls and syscalls","across networking, storage, and device subsystems"),
+      cap:`<b>By the mid-2010s, roughly thirty distinct, largely unrelated operations were reachable through one bit</b> — earning it the nickname "the new root." A process with CAP_SYS_ADMIN and nothing else is, for most practical attacker purposes, not meaningfully constrained. This is exactly why no container engine's default profile grants it.` }
+  ]);
+})();
+
+/* ============================================================
+   4. CAPABILITY SET EXPLORER (§7)
+   ============================================================ */
+const CAPSETS = {
+  bounding:{ n:"bounding (P_bnd)", f:"struct cred → cap_bset", r:"A ceiling, not a grant: the ultimate ceiling on which capabilities this process — or anything it ever execve()s — can acquire, ever again. Being in the bounding set does not mean the process can use a capability right now; it means the capability is not permanently forbidden.", l:"Inherited across fork() and execve() unchanged, except that prctl(PR_CAPBSET_DROP) can remove bits from it — a one-way ratchet for the life of the process and every descendant.", d:"On execve(): F(permitted) is masked by the bounding set before becoming part of the new permitted set — a file capability the bounding set doesn't allow is simply discarded. This is precisely how container engines guarantee a hardened container can never regain CAP_SYS_ADMIN even by execve()ing a binary with file capabilities set." },
+  permitted:{ n:"permitted (P_p)", f:"struct cred → cap_permitted", r:"The capabilities this process is allowed to use, whether or not they are currently active. A process can move a capability from permitted into effective (via capset()) without any privileged operation — the permission was already granted; the process is just switching it on.", l:"Computed fresh at every execve() by the §8 formula from the old process's inheritable/bounding sets and the new file's permitted/inheritable bits.", d:"On execve(): becomes (P(inheritable) & F(inheritable)) | (F(permitted) & P(bounding)) | new-ambient — the single most load-bearing line in the whole model." },
+  effective:{ n:"effective (P_e)", f:"struct cred → cap_effective", r:"What capable() actually tests. A capability sitting in permitted but not effective is a promise, not a power — the kernel checks this set, and only this set, when a privileged operation is attempted right now.", l:"A process can freely toggle bits between effective and permitted via capset() at any time (no privilege needed to lower or raise within what's already permitted) — many daemons drop most capabilities from effective at startup and raise one only for the brief window it's needed.", d:"On execve(): if the file has the 'effective' bit set in its file capabilities, the whole new permitted set becomes effective immediately; otherwise only the ambient set is effective and the rest sit in permitted, inert, until explicitly raised." },
+  inheritable:{ n:"inheritable (P_i)", f:"struct cred → cap_inheritable", r:"Capabilities a process is willing to hand down across execve() — but only if the target file's own inheritable set (a per-file, setcap-managed attribute) also names them. Both sides must agree.", l:"Unchanged by execve() itself (P'(inheritable) = P(inheritable)) — only capset() can modify it directly.", d:"Rarely used directly in container engines today; ambient capabilities (below) solve the same underlying problem — 'keep this capability after execve()' — without requiring every target binary to carry matching file capabilities." },
+  ambient:{ n:"ambient (P_a)", f:"struct cred → cap_ambient", r:"Added in Linux 4.3 (2015) specifically so a non-root process could drop from UID 0 to an unprivileged UID and still retain a named capability across execve(), without needing file capabilities baked into every binary it might run. A capability can only be raised into ambient if it is already in both permitted and inheritable.", l:"Cleared whenever permitted or inheritable loses the corresponding bit; otherwise preserved across execve() of a non-privileged file.", d:"On execve(): if the target file is 'privileged' (has any file capabilities, or is setuid/setgid), the ambient set is cleared entirely — ambient capabilities are only for execve()ing ordinary, unprivileged binaries." }
+};
+const csDetail = el("arch-detail");
+function showCapset(key){
+  const a = CAPSETS[key];
+  csDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">DEFINITION</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON execve()</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showCapset(c.dataset.p));
+showCapset("permitted");
+
+/* ============================================================
+   5. DECK: execve() capability computation (§8a)
+   ============================================================ */
+(function(){
+  const row = (t,c="#8b94a7",bg="transparent") => `<div style="border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin:5px 0;font-family:var(--mono);font-size:11px;color:${c};background:${bg}">${t}</div>`;
+  const col = (title, inner) => `<div style="flex:1;min-width:230px"><div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px;text-align:center">${title}</div>${inner}</div>`;
+  const wrap = (...cols)=>`<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">${cols.join("")}</div>`;
+  stepper("deckExec", [
+    { stage: wrap(col("BEFORE: shell, UID 0, Docker default", row("permitted = 14 default caps","#2dd4bf") + row("effective = same 14","#2dd4bf") + row("bounding = same 14","#2dd4bf") + row("ambient = {}")), col("TARGET FILE: /usr/sbin/nginx", row("no security.capability xattr","#5b6475") + row("not setuid — 'file is privileged' = false"))),
+      cap:`<b>Setup.</b> A shell with Docker's default 14-bit set calls execve() on an ordinary binary with no file capabilities of its own and no setuid bit — the common case for almost every process a container ever runs.` },
+    { stage: wrap(col("STEP 1 — ambient", row("file not privileged → P'(ambient) = P(ambient) = {}","#60a5fa"))),
+      cap:`<b>Ambient first.</b> Since the file isn't privileged, ambient just carries forward unchanged — here, empty, since nothing raised anything into it.` },
+    { stage: wrap(col("STEP 2 — permitted", row("(P(inheritable) & F(inheritable)) = {} & {} = {}") + row("| (F(permitted) & P(bounding)) = {} & 14-set = {}") + row("| P'(ambient) = {}") + row("= P'(permitted) = {}  ← EMPTY","#f25c54","rgba(242,92,84,.08)"))),
+      cap:`<b>The file grants nothing.</b> Because nginx's binary carries no file capabilities, F(permitted) is empty — the bounding set doesn't matter here, since intersecting anything with the empty set is still empty. The new process's permitted set collapses to empty.` },
+    { stage: wrap(col("STEP 3 — effective", row("F(effective) is false (no file caps) → P'(effective) = P'(ambient) = {}","#f25c54","rgba(242,92,84,.08)")), col("RESULT", row("nginx runs with ZERO capabilities","#f25c54") + row("relies purely on file permissions + its listening ports already being bound by root before dropping privilege", "#8b94a7"))),
+      cap:`<b>The counterintuitive result — and it's correct.</b> An ordinary binary execve()'d from a capable shell does not inherit the shell's capabilities unless they're explicitly threaded through inheritable+ambient. This is why real container images that need nginx to bind port 80 either start it as root before it drops privilege internally, or set <code>CAP_NET_BIND_SERVICE</code> as a file capability on the binary directly — 'the shell had it' is never enough on its own.` }
+  ]);
+})();
+
+/* ============================================================
+   6. CAPABILITY CALCULATOR (§8b)
+   ============================================================ */
+(function(){
+  const CAP_NAMES = ["CHOWN","DAC_OVERRIDE","FOWNER","FSETID","KILL","SETGID","SETUID","SETPCAP","NET_BIND_SERVICE","NET_RAW","SYS_CHROOT","MKNOD","AUDIT_WRITE","SETFCAP"];
+  const BOUND = [
+    { name:"empty (--cap-drop=ALL)", set:[] },
+    { name:"minimal (NET_BIND_SERVICE only)", set:["NET_BIND_SERVICE"] },
+    { name:"Docker default (14)", set:CAP_NAMES },
+    { name:"--privileged (~40, incl. SYS_ADMIN)", set:CAP_NAMES.concat(["SYS_ADMIN","SYS_MODULE","NET_ADMIN","SYS_PTRACE"]) }
+  ];
+  const FCAP = [
+    { name:"none", perm:[], eff:false },
+    { name:"CAP_NET_BIND_SERVICE (effective)", perm:["NET_BIND_SERVICE"], eff:true },
+    { name:"CAP_NET_BIND_SERVICE (not effective)", perm:["NET_BIND_SERVICE"], eff:false },
+    { name:"setuid-root (all F, effective)", perm:CAP_NAMES.concat(["SYS_ADMIN","SYS_MODULE","NET_ADMIN","SYS_PTRACE"]), eff:true }
+  ];
+  function render(){
+    const b = BOUND[+el("bound-slider").value];
+    const f = FCAP[+el("fcap-slider").value];
+    el("bound-val").textContent = b.name;
+    el("fcap-val").textContent = f.name;
+    const permitted = f.perm.filter(c => b.set.includes(c));
+    const effective = f.eff ? permitted : [];
+    const ALL = Array.from(new Set(b.set.concat(f.perm)));
+    el("capcalc-eff").innerHTML = ALL.map(c=>{
+      const on = effective.includes(c);
+      const danger = ["SYS_ADMIN","SYS_MODULE","NET_ADMIN","SYS_PTRACE"].includes(c);
+      return `<div class="bitcell ${on?"on":""} ${danger?"danger":""}">CAP_${c}</div>`;
+    }).join("") || `<div style="font-family:var(--mono);font-size:11px;color:var(--dim)">no capabilities in the resulting permitted set</div>`;
+    el("capcalc-note").innerHTML = `Resulting <b style="color:var(--pg)">effective</b> set after execve(): <b>${effective.length}</b> capabilit${effective.length===1?"y":"ies"}. ${f.eff ? "The file's 'effective' bit was set, so the whole computed permitted set activates immediately." : effective.length===0 ? "The file's 'effective' bit was NOT set (or there's no file capability) — anything landing in permitted stays inert until the process calls capset() itself." : ""} Highlighted in green above; capabilities highlighted in red are ones this chapter singles out as disproportionately dangerous.`;
+  }
+  el("bound-slider").oninput = render;
+  el("fcap-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. ATTACK SURFACE CHART (§10)
+   ============================================================ */
+(function(){
+  const WEIGHT = { base:1.4, sysadmin:11 };
+  let privileged = false;
+  const cv = el("as-chart"), ctx = cv.getContext("2d");
+  function ops(extra, priv){
+    if (priv) return { caps:41, opsN: 41*WEIGHT.base + WEIGHT.sysadmin*3 };
+    const caps = 14 + extra;
+    let opsN = 14*WEIGHT.base;
+    for (let i=0;i<extra;i++) opsN += (i===0 ? WEIGHT.sysadmin : WEIGHT.base);
+    return { caps, opsN };
+  }
+  function render(){
+    const extra = +el("as-slider").value;
+    el("as-slider-val").textContent = extra;
+    el("as-base").classList.toggle("on", extra===0 && !privileged);
+    el("as-priv").classList.toggle("on", privileged);
+    const W = cv.width, H = cv.height, PAD=36;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=0;x<=26;x++) xs.push(x);
+    const pts = xs.map(x=>ops(x, false));
+    const maxCaps = 41, maxOps = ops(0,true).opsN;
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [0,7,14,21,26].forEach(x=>{ const px = PAD + (x/26)*(W-PAD-16); ctx.beginPath(); ctx.moveTo(px,10); ctx.lineTo(px,H-20); ctx.stroke(); ctx.fillText("+"+x, px-8, H-6); });
+    function curve(get,max,color){
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const px=PAD+(x/26)*(W-PAD-16), py=H-24-(get(pts[i])/max)*(H-44); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+      ctx.stroke();
+    }
+    curve(p=>p.caps, maxCaps, "#2dd4bf");
+    curve(p=>p.opsN, maxOps, "#f25c54");
+    const cur = ops(extra, privileged);
+    const mx = privileged ? W-PAD-16+PAD : PAD+(extra/26)*(W-PAD-16);
+    ctx.strokeStyle="#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(mx,10); ctx.lineTo(mx,H-20); ctx.stroke(); ctx.setLineDash([]);
+    el("as-note").innerHTML = `Current selection: <b style="color:var(--pg)">${cur.caps}</b> capabilities granted, an illustrative <b style="color:var(--bad)">${Math.round(cur.opsN)}</b>-unit estimate of reachable privileged operations. ${privileged ? "--privileged grants essentially the full ~40-capability set AND disables the default seccomp filter (chapter 8) — the two together, not just the capability count, are why it's discouraged outside genuine edge cases (nested containers, direct hardware access)." : extra===0 ? "This is the Docker/Podman default: 14 capabilities, none of them able to reach the host kernel directly." : "Notice the curve's kink: the model treats the first capability added back as the most consequential (CAP_SYS_ADMIN is almost always the one hardening guides warn about specifically) — the marginal cost of the next twenty-five is comparatively flat."}`;
+  }
+  el("as-slider").oninput = render;
+  el("as-base").onclick = ()=>{ privileged=false; el("as-slider").value=0; render(); };
+  el("as-priv").onclick = ()=>{ privileged = !privileged; render(); };
+  render();
+})();
+</script>
+</body>
+</html>

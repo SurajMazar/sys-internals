@@ -1,0 +1,1705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTR-03 · Namespaces II: Network Namespaces & veth — Container Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#2dd4bf; --pg-dim:rgba(45,212,191,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa; --hblue:#3b9eff;
+    --docker:#2496ed; --podman:#892ca0;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(45,212,191,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--hblue));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(45,212,191,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* engine chips */
+  .eng{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;border-radius:999px;
+    padding:2px 9px;font-weight:650}
+  .eng.dk{color:var(--docker);background:rgba(36,150,237,.12);border:1px solid rgba(36,150,237,.35)}
+  .eng.pd{color:var(--podman);background:rgba(137,44,160,.12);border:1px solid rgba(137,44,160,.35)}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(45,212,191,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#06121f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* namespace/topology nodes */
+  .topo{display:flex;flex-direction:column;align-items:center;gap:10px}
+  .toporow{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+  .tbox{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:11px;padding:9px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative;text-align:center}
+  .tbox .sub{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .tbox.host{border-color:var(--hblue);color:var(--hblue)}
+  .tbox.ns{border-color:var(--pg);color:var(--pg)}
+  .tbox.veth{border-style:dashed;color:var(--warn);border-color:var(--warn)}
+  .tbox.bridge{border-color:var(--purple);color:var(--purple)}
+  .tbox.dead{opacity:.25;filter:grayscale(1)}
+  .tbox.up{box-shadow:0 0 14px rgba(74,222,128,.25);border-color:var(--ok);color:var(--ok)}
+  .tlink{width:2px;height:18px;background:var(--border-hi)}
+  .tlink.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .thlink{height:2px;width:38px;background:var(--border-hi);align-self:center}
+  .thlink.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(45,212,191,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* generic bar map (reused for cgroup-like visuals) */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(45,212,191,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(45,212,191,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#06121f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  /* inspector */
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .i-pid{color:var(--pg);font-weight:700}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--hblue));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-containers.html">← Container Internals</a>
+  <span class="crumb">CONTAINER INTERNALS · <b>CH 03 / 16</b> · Namespaces II</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Better Solution</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance & Security</a>
+  <a href="#s11"><span class="n">11</span>Production Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">CONTAINER INTERNALS · CHAPTER 03</div>
+  <h1>Namespaces II: Network<br><span class="grad">Namespaces & veth</span></h1>
+  <p class="lead">Chapter 2 gave a process its own view of PIDs, hostnames, mounts, and IPC objects. This chapter
+  gives it its own network stack — and then has to solve the problem that immediately creates: an isolated stack
+  can't talk to anything, including its own host. You will derive, from a bare <code>CLONE_NEWNET</code>, the
+  entire mechanism that makes <code>docker run -p 8080:80</code> or <code>podman run -p 8080:80</code> actually
+  work — veth pairs, Linux bridges, and iptables DNAT — with nothing left as "magic."</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Build a working container network by hand with <code>ip netns</code>, <code>ip link</code>, and a bridge — no engine involved.</div>
+    <div class="obj"><b>You will understand</b>Why a fresh network namespace can't even ping itself over Ethernet, and what a veth pair actually is.</div>
+    <div class="obj"><b>You will predict</b>Exactly which iptables rule makes a published port work, and why <code>ufw</code> can't see it.</div>
+    <div class="obj"><b>You will simulate</b>Wiring a container's netns to the internet, one syscall-equivalent step at a time.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">Isolation and connectivity are opposites, and a container needs both</h2>
+  <p class="lead">Chapter 2 isolated a process's view of the world: its own PID tree, its own hostname, its own
+  mount table, its own IPC namespace. Networking is the namespace where isolation is most obviously in tension
+  with the point of running the workload at all. A web server in a container that cannot accept a single inbound
+  TCP connection, or reach a database over the network, is isolated so thoroughly it is useless.</p>
+  <p>Unpack what "network isolation" has to mean for a container runtime to be usable in practice:</p>
+  <ul class="plain">
+    <li><b>Private address space.</b> Two containers on the same host must be able to both bind port 80 without
+      conflict — which is impossible if they share one network stack.</li>
+    <li><b>Private routing and firewall state.</b> A container's own <code>iptables</code>/<code>nftables</code> rules,
+      routing table, and ARP cache must not be the host's — otherwise one container's firewall change is every
+      container's firewall change.</li>
+    <li><b>Yet the host must still reach it,</b> and it must still reach the host and the internet — deliberately,
+      through a boundary the operator controls, not accidentally through shared kernel state.</li>
+    <li><b>The isolation must be real, not cosmetic.</b> <code>chroot</code>-style "just hide it" isn't available
+      for a network stack — sockets, routes, and interfaces are kernel objects with global names
+      (<code>eth0</code>, port 80) that two independent processes cannot share without collision.</li>
+  </ul>
+  <p>Linux's answer is the <b>network namespace</b> (<code>CLONE_NEWNET</code>, merged in kernel <b>2.6.29</b>,
+  2009 — notably four years <i>after</i> the mount namespace and years before it was production-hardened): give
+  each isolated context its own complete copy of every network-facing kernel data structure — interface list,
+  routing tables, ARP/neighbor tables, iptables/nftables rule sets, <code>/proc/net</code>, and its own socket
+  namespace so two namespaces can each own TCP port 80. The catch, and the entire subject of this chapter: a
+  <i>freshly created</i> network namespace is not connected to anything. Deriving how it gets connected — and
+  what that costs — is what <span class="eng dk">Docker</span>'s <code>docker0</code> bridge and
+  <span class="eng pd">Podman</span>'s netavark-managed bridges are both, at bottom, doing.</p>
+  <div class="callout">
+    <div class="co-t">WHY THIS MATTERS FOR THE REST OF THE COURSE</div>
+    <p>Every "container networking" feature you will ever configure — port publishing, user-defined bridge
+    networks, container-to-container DNS, <code>--network host</code>, service meshes sitting inside containers —
+    is built on exactly two primitives introduced in this chapter: <b>the network namespace</b> (the isolation
+    boundary) and <b>the veth pair</b> (the only way to cross it while keeping it a boundary). Chapter 13 goes
+    wide (CNI, netavark, macvlan, overlay networks); this chapter goes deep on the two things underneath all of
+    them. Chapter 4, next, revisits isolation from a different angle — who is allowed to create a network
+    namespace and configure it at all when the calling process isn't root on the host.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From one shared stack to per-namespace network state</h2>
+  <p>Network namespaces arrived later than you'd expect, and later than the other namespaces this course covers —
+  because virtualizing a network stack is a much bigger surface than virtualizing a PID table. Click through the
+  events that shaped the primitive containers now depend on.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — how netns and veth arrived</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · WHY VETH CAME FIRST</div>
+    <p>The veth driver (<code>drivers/net/veth.c</code>) actually predates full network-namespace support — it
+    landed in the 2.6.24-ish era of early namespace prototyping specifically <i>because</i> the kernel developers
+    knew that virtualizing the network stack would be worthless without a way to connect two of them. A namespace
+    that isolates but can never be wired to anything is a curiosity, not infrastructure. Design the boundary and
+    the bridge across it together — the same lesson recurs in every later chapter about attaching an isolated
+    thing to a host (overlayfs's lowerdir/upperdir split, chapter 6; the whole of chapter 13's networking models).</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: just call unshare(CLONE_NEWNET) and go</h2>
+  <p>Derive it honestly, the way you'd derive it at a whiteboard before reading any container-runtime source.
+  You know namespaces isolate kernel state (chapter 2). Networking is kernel state. So: create a network
+  namespace, exec the workload inside it, done?</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>naive_netns.c — the strawman, annotated</span></div>
+    <pre><span class="k">int</span> <span class="f">main</span>(<span class="k">void</span>)
+{
+    <span class="c">/* Peel this process into a brand-new, empty network namespace. */</span>
+    <span class="k">if</span> (<span class="f">unshare</span>(CLONE_NEWNET) == -<span class="n">1</span>) {
+        <span class="f">perror</span>(<span class="s">"unshare"</span>);
+        <span class="k">return</span> <span class="n">1</span>;
+    }
+
+    <span class="c">/* Surely the workload can now talk to the network? */</span>
+    <span class="f">execlp</span>(<span class="s">"curl"</span>, <span class="s">"curl"</span>, <span class="s">"-s"</span>, <span class="s">"http://example.com"</span>, <span class="t">NULL</span>);
+    <span class="f">perror</span>(<span class="s">"execlp"</span>);   <span class="c">/* we will get here */</span>
+    <span class="k">return</span> <span class="n">1</span>;
+}</pre>
+  </div>
+
+  <p>Run it and <code>curl</code> fails immediately with <code>Could not resolve host: example.com</code> or, with
+  DNS bypassed, <code>Network is unreachable</code>. Step through what the namespace actually contains the moment
+  it's created — this is not a bug in the naive program, it's the honest starting state of every network
+  namespace that has ever existed, including the one your container runtime creates for you:</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">What's inside a fresh network namespace</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">An empty network namespace is provably unreachable — quantified</h2>
+  <p>This isn't a configuration oversight to patch with a flag. Trace exactly what network namespace creation
+  copies versus what it deliberately leaves empty, per the kernel's <code>copy_net_ns()</code>
+  (<code>net/core/net_namespace.c</code>):</p>
+  <ul class="plain">
+    <li><b>Interfaces: only loopback, and it starts down.</b> <code>copy_net_ns()</code> calls
+      <code>loopback_dev</code> creation for the new struct <code>net</code>, but does <i>not</i> bring it up —
+      that's userspace's job (<code>ip link set lo up</code>), because bringing an interface up is a
+      configuration decision, not a namespace-creation side effect. No physical or virtual NIC is ever
+      auto-created in a new namespace; the kernel has no way to know which one you'd want, and giving it a real
+      NIC would mean stealing that NIC from every other namespace, including the host's.</li>
+    <li><b>Routing table: empty except a loopback route.</b> There is no default route, so any packet destined
+      off-loopback returns <code>ENETUNREACH</code> ("Network is unreachable") before a single byte leaves the
+      process — this is what the naive program actually hits.</li>
+    <li><b>ARP/neighbor table: empty.</b> Nothing to resolve to, because there is no L2 segment reachable yet.</li>
+    <li><b>iptables/nftables rules: independent, defaulting to ACCEPT-everything on the (nonexistent) traffic.</b>
+      A fresh namespace's firewall being wide open is irrelevant when there is no path for packets to travel.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS: ZERO REACHABLE HOSTS</div>
+    <p>Quantify the naive attempt's connectivity precisely: it can reach <b>exactly one address</b>,
+    <code>127.0.0.1</code>, and only <i>after</i> a second syscall the naive program never issued
+    (<code>ip link set lo up</code>, i.e. an <code>RTM_SETLINK</code> netlink message) — loopback is present but
+    administratively down at creation. Every other destination, including the namespace's own host machine one
+    <code>fork()</code> away, is unreachable — not slow, not filtered, <i>topologically absent</i>. There is no
+    tuning knob inside the namespace that fixes this: reachability has to be built from the outside, by something
+    with access to both namespaces at once.</p>
+  </div>
+  <p>So the missing piece is a bridge <i>between</i> the isolated namespace and the world outside it — one
+  endpoint that lives in each namespace and forwards frames across the boundary. Linux gives you exactly one
+  primitive purpose-built for that: the veth pair.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · BETTER SOLUTION</div>
+  <h2 class="sec">veth: two interfaces that are secretly one wire</h2>
+  <p>A <b>veth pair</b> (<code>ip link add veth-host type veth peer name veth-ctr</code>) creates two network
+  interfaces at once, permanently linked at the kernel level: whatever one transmits, the other receives, as if a
+  physical Ethernet cable connected two NICs. Nothing is copied or queued through userspace — the veth driver
+  (<code>drivers/net/veth.c</code>) hands an skb (socket buffer) directly from one interface's transmit path to
+  the peer's receive path inside the kernel. Critically, <b>each end of the pair can live in a different network
+  namespace</b> — that's the entire trick. Move one end into the container's namespace, leave the other in the
+  host's (or a bridge's) namespace, and you have a wire crossing the isolation boundary without breaking it: the
+  container still can't see the host's routes, ARP table, or other interfaces — it only sees its own end of one
+  cable.</p>
+  <p>Step through building connectivity from nothing, exactly as a container runtime's network setup code does it,
+  entirely with real <code>ip</code>/netlink operations:</p>
+
+  <div class="widget deck" id="deckVeth">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Building the wire, step by step</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE KEY INSIGHT</div>
+    <p>A veth pair only gives you a point-to-point link — good enough for exactly one container. The moment you
+    have <i>two</i> containers that both need to reach the internet and each other, point-to-point links stop
+    scaling: you'd need a full mesh of veth pairs, one per container-pair, and re-cabling every time a container
+    starts or stops. The fix borrows a decades-old networking answer: don't wire hosts to each other, wire them
+    all to a <b>switch</b>. Linux's software switch is the <b>bridge</b> device, and that's exactly what
+    <code>docker0</code> and Podman's netavark bridges are.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">One veth pair per container doesn't scale — and the bridge has its own bill</h2>
+  <p>Introducing a bridge fixes the N² cabling problem, but it isn't free, and understanding its costs up front
+  explains almost every default in <span class="eng dk">Docker</span>'s and <span class="eng pd">Podman</span>'s
+  networking stacks:</p>
+  <ul class="plain">
+    <li><b>The bridge is itself a Linux device with an IP</b> — it must own an address in the container subnet
+      (conventionally the <code>.1</code> address, e.g. <code>172.17.0.1</code>) to act as the containers'
+      default gateway. That's one more thing to allocate, track, and avoid colliding with existing networks —
+      the exact cause of the "Docker's 172.17.0.0/16 collides with our corporate VPN" incident in §11.</li>
+    <li><b>Every frame between containers now takes an extra hop through kernel bridge code</b> — L2 forwarding
+      table lookups, and, if <code>net.bridge.bridge-nf-call-iptables=1</code> (the default your container
+      runtime sets), a full netfilter/iptables traversal <i>per bridged frame</i>, not just per routed packet.
+      This is deliberate — it's what lets you firewall container-to-container traffic at all — but it is
+      measurable overhead versus a bare veth pair (§10 quantifies it).</li>
+    <li><b>Outbound-to-the-internet still doesn't work by itself.</b> The bridge only solves L2 reachability
+      between containers and the host. Containers' IPs (typically RFC1918 private addresses like
+      <code>172.17.0.2</code>) are not routable on the internet — something must rewrite the source address to
+      the host's routable IP. That something is <b>NAT via iptables MASQUERADE</b>, another piece of state the
+      runtime must install and keep correct.</li>
+    <li><b>Inbound is the mirror problem, worse.</b> A client outside the host has no route to
+      <code>172.17.0.2</code> at all. Publishing a port means installing a destination NAT (DNAT) rule that
+      rewrites "host IP, port 8080" to "container IP, port 80" — port publishing is not a runtime feature, it's
+      an iptables rule, and §8 shows you the exact one.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">THE HONEST ADMISSION</div>
+    <p>Every mainstream container network on a single host — <span class="eng dk">Docker</span>'s default bridge,
+    Docker user-defined bridge networks, and <span class="eng pd">Podman</span>'s netavark bridge — is this exact
+    stack: <b>netns + veth + Linux bridge + iptables/nftables NAT</b>. There is no fourth primitive. Everything
+    that looks different between the two engines (bridge naming, DNS resolution, per-network isolation defaults)
+    is policy layered on the same four mechanisms, and §9 makes the comparison precise rather than hand-wavy.</p>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The complete picture: netns, veth, bridge, NAT</h2>
+  <p>Click any component below to see exactly what it is, which namespace it lives in, and what breaks if it's
+  missing or misconfigured. This is the architecture underneath a default <code>docker run -p 8080:80 nginx</code>
+  or <code>podman run -p 8080:80 nginx</code> — the components differ in naming, not in kind, between the two
+  engines.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">HOST NETWORK NAMESPACE (PID 1's netns)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="hostif">physical NIC (eth0)</div>
+          <div class="acard" data-p="bridge">bridge (docker0 / podman0)</div>
+          <div class="acard" data-p="vethhost">veth-host (bridge port)</div>
+          <div class="acard" data-p="iptables">iptables/nftables NAT table</div>
+        </div>
+        <div class="arch-row-label">THE WIRE ACROSS THE BOUNDARY</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="pair">veth pair — one link object, two interfaces, two namespaces</div></div>
+        <div class="arch-row-label">CONTAINER NETWORK NAMESPACE</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="vethctr">veth-ctr (renamed eth0 inside)</div>
+          <div class="acard" data-p="lo">lo (loopback)</div>
+          <div class="acard" data-p="ctrroute">container's default route</div>
+        </div>
+        <div class="arch-row-label">NAME RESOLUTION (engine-managed)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="dns">embedded DNS server</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHO CREATES ALL OF THIS, AND WHEN?</div>
+    <p>Not <code>runc</code> or <code>crun</code>. The OCI runtime's job (chapter 9) is narrow: given
+    <code>config.json</code> naming a network namespace, call <code>clone()</code>/<code>setns()</code> to place
+    the container's process into it. The veth pair, bridge attachment, IP assignment, and iptables rules are
+    installed by a separate networking layer — <span class="eng dk">Docker</span>'s <code>libnetwork</code>
+    (bridge driver) or <span class="eng pd">Podman</span>'s <code>netavark</code> — invoked <i>after</i> the
+    namespace exists but <i>before</i> the container's main process starts, via the OCI runtime's hook mechanism.
+    §13 shows the exact source-level call sequence.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The real files, the real rules, the real numbers</h2>
+  <p>Three pieces: <b>(a)</b> the namespace + veth lifecycle in terms of real files and netlink operations,
+  <b>(b)</b> the bridge's forwarding behavior, <b>(c)</b> the exact iptables chain that makes a published port
+  work.</p>
+
+  <h3>(a) Namespace and interface state, byte for byte</h3>
+  <p>Every network namespace is addressable as a file, which is what lets tooling (and a container runtime)
+  operate on a namespace it didn't create in-process:</p>
+  <table class="cmp">
+    <tr><th>PATH</th><th>WHAT IT IS</th></tr>
+    <tr><td><code>/proc/&lt;pid&gt;/ns/net</code></td><td>A symlink whose inode number uniquely identifies the namespace; opening it gives an fd usable with <code>setns()</code>. This is how a container runtime "re-enters" a container's netns from outside, e.g. for <code>docker exec</code> networking diagnostics.</td></tr>
+    <tr><td><code>/var/run/netns/&lt;name&gt;</code></td><td>A bind-mount of a namespace's <code>/proc/&lt;pid&gt;/ns/net</code> onto a stable path, created by <code>ip netns add</code>, so the namespace survives the process that created it — this is exactly how you can build and inspect a namespace by hand with no container running at all.</td></tr>
+    <tr><td><code>/sys/class/net/&lt;iface&gt;</code></td><td>Per-interface kernel object; <code>/sys/class/net/veth0/ifindex</code>, <code>/carrier</code>, <code>/operstate</code> reflect real-time link state (operstate flips to <code>up</code> only once both peers are up and administratively enabled).</td></tr>
+    <tr><td><code>/proc/net/dev</code></td><td>Per-namespace interface counters — <code>rx_bytes</code>/<code>tx_bytes</code>/<code>rx_dropped</code>, distinct per namespace, which is exactly what lets a container's <code>ifconfig</code> show only its own traffic.</td></tr>
+    <tr><td><code>/proc/sys/net/ipv4/ip_forward</code></td><td>Must be <code>1</code> in the namespace that owns the bridge (the host) for it to route/forward packets between the bridge and the physical NIC — both Docker and Podman set this on the host at daemon/first-run time.</td></tr>
+    <tr><td><code>/proc/sys/net/bridge/bridge-nf-call-iptables</code></td><td>When <code>1</code>, bridged (L2) frames are also passed through the iptables/netfilter hooks — required for container-to-container firewalling and for DNAT to work on traffic that never leaves the bridge.</td></tr>
+  </table>
+
+  <p>Interface and namespace creation happen through <b>netlink</b> (<code>AF_NETLINK</code>, protocol
+  <code>NETLINK_ROUTE</code>), not ioctls — every <code>ip link</code>/<code>ip netns</code> command you'd type by
+  hand compiles down to an <code>RTM_NEWLINK</code>/<code>RTM_SETLINK</code>/<code>RTM_NEWNETNS</code> message
+  sent over a netlink socket. Drag the sliders below to see the exact sequence of netlink operations scale with
+  how many containers you attach to one bridge, and watch where the cost actually lives:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Netlink operations per container attach</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>containers to attach</label><input type="range" id="nl-n" min="1" max="200" value="8" step="1"><span class="val" id="nl-n-val">8</span></div>
+      <div class="slider-row"><label>iptables rules per container</label><input type="range" id="nl-r" min="1" max="6" value="2" step="1"><span class="val" id="nl-r-val">2</span></div>
+      <div class="memlegend" id="nl-legend"></div>
+      <div class="memmap" id="nl-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="nl-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY THIS SHOWS UP IN PRODUCTION AT SCALE</div>
+    <p>Each container attach is a fixed handful of netlink calls (create veth pair, move one end into the netns,
+    rename it, assign an IP, add a default route, attach the host end to the bridge) plus one or more iptables
+    rule insertions. Both scale linearly per container — but iptables rule <i>evaluation</i> is a linear scan of
+    the chain per packet by default, so a host running hundreds of containers with per-container DNAT/isolation
+    rules pays a real per-packet cost that grows with container count. This is the concrete, measurable reason
+    <code>nftables</code> (hashed rule sets, used by newer Docker/Podman iptables backends) and eBPF-based
+    dataplanes exist — same architecture, faster rule lookup.</p>
+  </div>
+
+  <h3>(b) The bridge: a real, if simple, Ethernet switch</h3>
+  <p>The Linux bridge (<code>net/bridge/</code>) is not a NAT device and does not route — it operates at L2,
+  maintaining a forwarding database (FDB) of MAC-address-to-port mappings learned by inspecting source addresses
+  on incoming frames, exactly like a physical switch. <code>bridge fdb show</code> lists it. A frame destined for
+  an unknown MAC is flooded to every port except the one it arrived on; once the bridge learns where a MAC lives,
+  traffic to it is forwarded to that single port only. This is why two containers on the same bridge can reach
+  each other directly, at full L2 speed, with zero NAT involved — NAT only enters the picture when traffic needs
+  to cross into or out of the bridge's subnet.</p>
+
+  <h3>(c) Port publishing: the exact iptables chain</h3>
+  <p>Step through what actually happens, packet by packet, when an external client connects to a published port
+  — this is the mechanism that both engines implement, with no meaningful behavioral difference at this layer:</p>
+
+  <div class="widget deck" id="deckDnat">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Anatomy of a published port</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout bad">
+    <div class="co-t">THE FOOTGUN THIS EXPLAINS</div>
+    <p>Because DNAT happens in the <code>PREROUTING</code> chain — evaluated <i>before</i> most host firewall
+    tools' rules, which typically live in the <code>INPUT</code> chain or a separate <code>ufw</code>-managed
+    table — a container engine's port-publishing rule can make a container reachable from the internet
+    <b>even when a host firewall tool reports the port as blocked</b>. The firewall tool isn't lying about its
+    own rules; it simply never gets a vote, because the packet was already redirected to a bridge/veth
+    destination before <code>INPUT</code> chain processing would apply. §11 covers the real-world fallout of this
+    exact ordering.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">Docker's libnetwork vs Podman's netavark, layer by layer</h2>
+  <p>Same four primitives underneath (netns, veth, bridge, iptables/nftables NAT) — different default policy on
+  top. Read the identical rows as confirmation there's no real difference to manufacture; read the different rows
+  as places an operator's mental model needs to fork:</p>
+  <table class="cmp">
+    <tr><th>LAYER</th><th><span class="eng dk">DOCKER</span></th><th><span class="eng pd">PODMAN</span></th></tr>
+    <tr><td>Isolation primitive</td><td colspan="2">Identical: network namespace, kernel feature, no engine-specific behavior.</td></tr>
+    <tr><td>Cross-namespace link</td><td colspan="2">Identical: a veth pair, one end per namespace, created via netlink.</td></tr>
+    <tr><td>L2 switch</td><td colspan="2">Identical primitive (Linux bridge device); different default bridge name and IPAM defaults.</td></tr>
+    <tr><td>Default bridge</td><td><code>docker0</code>, one shared bridge for all containers unless a user-defined network is created, subnet historically <code>172.17.0.0/16</code></td>
+      <td>No single shared default — <b>every</b> Podman network (including the implicit default, <code>podman</code>/<code>podman0</code>) is created the same way a Docker user-defined network is, each getting its own bridge and subnet from a configurable pool.</td></tr>
+    <tr><td>Networking backend</td><td><code>libnetwork</code>'s bridge driver (Go, in-process with <code>dockerd</code>), historically the CNM (Container Network Model)</td>
+      <td><code>netavark</code> (Rust binary, invoked per-operation — consistent with Podman's fork-exec, no-daemon model from chapter 12) — replaced the CNI plugin chain Podman used before v4.0</td></tr>
+    <tr><td>Container DNS</td><td>Embedded DNS server at <code>127.0.0.11</code> inside each container's resolv.conf, resolving other containers by name on the same user-defined network</td>
+      <td><code>aardvark-dns</code>, a small authoritative DNS server netavark launches per network, same practical effect (name-based service discovery) via a different, independently-maintained implementation</td></tr>
+    <tr><td>Rootful default reachability</td><td colspan="2">Identical: bridge + veth + iptables MASQUERADE/DNAT, full kernel-native throughput.</td></tr>
+    <tr><td>Rootless default</td><td>Docker rootless mode exists but is not the default install; when used, networking falls back to a userspace stack (<code>slirp4netns</code> historically, sometimes VPNKit)</td>
+      <td>Rootless is the <b>default</b> posture; without <code>CAP_NET_ADMIN</code> in the host namespace a real bridge can't be created, so networking defaults to <code>slirp4netns</code> or the newer, faster <code>pasta</code> (chapter 13 covers both in depth)</td></tr>
+    <tr><td>Port publishing mechanism</td><td>iptables/nftables DNAT rule in a Docker-managed chain; a legacy userland <code>docker-proxy</code> process can also relay traffic for edge cases (multicast, some IPv6 setups) but is DNAT-only by default on modern versions</td>
+      <td>iptables/nftables DNAT rule inserted by netavark; rootless port publishing instead flows through the userspace <code>slirp4netns</code>/<code>pasta</code> proxy, since there's no real bridge to DNAT into</td></tr>
+    <tr><td>Inter-container isolation policy</td><td>Containers on the same default bridge can reach each other by IP unless <code>--icc=false</code> is set at daemon level; user-defined bridges add DNS-based discovery</td>
+      <td>Similar per-network reachability; because every network already gets its own bridge (no single shared default), accidental cross-project reachability is structurally less likely without extra configuration</td></tr>
+  </table>
+  <p>Read this table as more evidence for chapter 12's central claim: the daemon/daemonless split explains almost
+  every remaining difference. <code>libnetwork</code> is a library linked into the long-lived <code>dockerd</code>,
+  which is why Docker's default bridge is a single long-lived shared resource. <code>netavark</code> is a
+  short-lived binary invoked per network operation, harmonizing naturally with "every Podman network behaves like
+  a Docker user-defined network" — there's no persistent daemon state to special-case a "default."</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE & SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">What isolation costs, and what it exposes</h2>
+  <p>Performance first. A veth pair itself is close to free — it's a pointer hand-off inside the kernel with no
+  copy. The costs accumulate in what surrounds it:</p>
+  <ul class="plain">
+    <li><b>Bridge + NAT (rootful default):</b> near-native throughput — typically 90–98% of host-network
+      throughput on a 10G+ NIC — because packets still traverse real kernel network-stack code paths, just with
+      one extra L2 hop and a conntrack lookup for established NAT flows.</li>
+    <li><b><code>--network host</code> (no namespace at all):</b> literally 100% by definition — zero isolation,
+      the container's process binds host sockets directly, which is precisely why it's a deliberate opt-out with
+      real security consequences, not a free lunch.</li>
+    <li><b>Rootless via <code>slirp4netns</code>:</b> a userspace TCP/IP stack reading/writing a TUN device — every
+      packet crosses the kernel/userspace boundary twice more than the bridge path, often costing <b>50–70%</b> of
+      throughput versus rootful bridge networking on older setups, and adding real, measurable per-packet latency.</li>
+    <li><b>Rootless via <code>pasta</code> (Podman's newer default on supporting systems):</b> avoids a full
+      userspace TCP stack by translating packets at the socket layer instead of emulating a NIC end to end,
+      closing most of the gap back to near-native — the concrete architectural reason it's replacing
+      <code>slirp4netns</code> as the default.</li>
+  </ul>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Relative throughput by network mode</span><span class="w-sub">MODEL, SEE CALLOUT</span></div>
+    <div class="w-body">
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">■</span> throughput, % of bare host networking</span>
+        <span><span style="color:var(--bad)">■</span> added per-packet latency (relative)</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px">Bars are an analytic sketch shaped to match
+      published <code>slirp4netns</code>/<code>pasta</code> and Docker bridge benchmarks — the point is the
+      <i>ordering and rough magnitude</i>, not a substitute for measuring your own kernel, NIC, and MTU.</p>
+    </div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Outbound NAT: conntrack table & ephemeral port exhaustion</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>containers behind this host IP</label><input type="range" id="ct-c" min="1" max="500" value="40" step="1"><span class="val" id="ct-c-val">40</span></div>
+      <div class="slider-row"><label>concurrent outbound conns / container</label><input type="range" id="ct-k" min="1" max="2000" value="50" step="1"><span class="val" id="ct-k-val">50</span></div>
+      <div class="memlegend" id="ct-legend"></div>
+      <div class="memmap" id="ct-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="ct-note"></p>
+    </div>
+  </div>
+
+  <p>Security surface, in the same order the mechanism was introduced:</p>
+  <ul class="plain">
+    <li><b>Network namespace boundary:</b> genuinely strong — a process cannot see or affect another namespace's
+      sockets, routes, or firewall rules without an explicit fd (<code>setns()</code>) or a wired link (veth) into
+      it. This is a real kernel-enforced boundary, not policy.</li>
+    <li><b>The bridge is a shared L2 segment</b> — and shared L2 segments have always been vulnerable to classic
+      L2 attacks: ARP spoofing, and — the real CVE covered in §11 — spoofed IPv6 Router Advertisements from one
+      container redirecting another container's default route. Putting multiple tenants' containers on one
+      bridge without additional controls reintroduces problems the networking world solved (badly) decades ago
+      with VLANs and port security.</li>
+    <li><b>iptables/nftables NAT and DNAT rules are host-wide, ordering-sensitive state</b> — a container engine
+      inserting rules ahead of a firewall tool's own chain is, from a security-review standpoint, a privileged
+      write to shared kernel state, exactly the kind of thing chapter 7's capability model (<code>CAP_NET_ADMIN</code>,
+      <code>CAP_NET_RAW</code>) exists to gate.</li>
+    <li><b>Rootless networking's smaller attack surface:</b> because <code>slirp4netns</code>/<code>pasta</code>
+      run as an unprivileged process and never touch the host's real interfaces or global iptables rules, a
+      compromised rootless container's networking blast radius is architecturally smaller — it can't rewrite
+      host NAT rules it never had permission to write in the first place. This is chapter 4's rootless story
+      showing up concretely in the networking layer.</li>
+  </ul>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Three incidents this chapter's mechanism explains completely</h2>
+
+  <h3>Incident 1: "Docker bypasses my firewall" (moby/moby#4737, still relevant a decade later)</h3>
+  <p>Operators enable <code>ufw</code> or a hand-rolled <code>iptables</code> policy, block inbound traffic to a
+  port, then run a container publishing that exact port with <code>-p</code> — and traffic gets through anyway.
+  §8(c) is the entire explanation: Docker (and Podman, identically) install DNAT rules in the
+  <code>PREROUTING</code> chain, which the kernel evaluates before <code>ufw</code>'s rules in <code>INPUT</code>
+  even see the packet — because a DNAT'd packet is, by the time <code>INPUT</code> would apply, already destined
+  for a bridge interface and a container IP, following a completely different netfilter path
+  (<code>FORWARD</code>, not <code>INPUT</code>). This is not a bug being silently tolerated; it is documented,
+  debated for years, and the practical fix is operating at the level the engine actually operates at —
+  engine-native network policies, or firewalling at a perimeter the container host doesn't control iptables for
+  (a cloud security group, a separate firewall appliance) — rather than assuming host-level firewall tools see
+  every packet.</p>
+
+  <h3>Incident 2: CVE-2020-13401 — spoofed IPv6 Router Advertisements between containers</h3>
+  <p>Docker's user-defined bridge networks enable IPv6 by configuration in some setups without also enabling the
+  bridge-level protections that would prevent one container from sending Router Advertisement (RA) or Neighbor
+  Discovery Protocol traffic to another. Because the bridge is a genuine shared L2 segment (§10), a malicious or
+  compromised container on the same bridge network could send crafted ICMPv6 RA messages, causing sibling
+  containers to install a bogus default gateway or route — a textbook L2 man-in-the-middle, executed entirely
+  through the mechanism this chapter derived, with no exploit of the namespace or veth code itself. The fix
+  (RA-guard-equivalent bridge configuration, disabling unneeded IPv6 router-solicitation acceptance on container
+  interfaces) is a policy patch on top of the same architecture, not a redesign — confirming that the primitive
+  is sound and the exposure was in default configuration.</p>
+
+  <h3>Incident 3: "The container platform can't reach the VPN" — the 172.17.0.0/16 collision</h3>
+  <p>Docker's historically fixed default bridge subnet, <code>172.17.0.0/16</code>, and similarly-sized default
+  pools used by other engines, silently collide with corporate networks or VPN-assigned CIDRs that also live in
+  RFC1918 space. When that happens, the host's routing table has to choose between "route to the Docker bridge"
+  and "route to the VPN," and whichever route is more specific or installed later wins — silently breaking either
+  container networking or VPN connectivity, often intermittently as VPN routes come and go. This isn't a defect
+  in veth or bridge mechanics; it's the operational cost of §6's observation that the bridge needs a real,
+  globally-unique-enough subnet, and a fixed default can't know what else is on your network. Both engines now
+  support configuring the default subnet/pool explicitly for exactly this reason — the fix is operational
+  awareness of a namespace/bridge design decision, not a networking bug.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this mechanism at a whiteboard?</h2>
+  <p>Think before revealing — these track what a Staff-level infra interview or a genuine on-call postmortem
+  would actually probe.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: CNI's bridge plugin and runc's network setup</h2>
+  <p>Where the mechanism actually lives across the stack, from the kernel driver up to the plugin a container
+  runtime invokes. Files marked <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">linux/net/</span></div>
+<div>├── <span class="dir">core/</span><span class="fhl">● net_namespace.c</span> <span class="fnote">— copy_net_ns(): what a new netns gets (loopback only) and what it doesn't</span></div>
+<div>├── <span class="dir">bridge/</span>br_fdb.c, br_forward.c <span class="fnote">— the forwarding database and L2 switch logic §8(b) describes</span></div>
+<div><span class="dir">linux/drivers/net/</span></div>
+<div>└── <span class="fhl">● veth.c</span> <span class="fnote">— veth_xmit(): hands an skb straight to the peer's receive path, no copy</span></div>
+<div><span class="dir">github.com/containernetworking/plugins/</span> <span class="fnote">— the CNI bridge plugin (used by Podman pre-netavark, and structurally identical to what netavark replaced)</span></div>
+<div>└── <span class="dir">plugins/main/bridge/</span><span class="fhl">● bridge.go</span> <span class="fnote">— cmdAdd(): create bridge if missing, create veth pair, move one end into the target netns, IPAM-assign an address</span></div>
+<div><span class="dir">github.com/moby/moby/libnetwork/drivers/bridge/</span></div>
+<div>└── <span class="fhl">● bridge_linux.go</span> <span class="fnote">— Docker's bridge driver: CreateNetwork(), CreateEndpoint(), Join() — same four primitives, different call shape</span></div>
+<div><span class="dir">github.com/containers/netavark/src/</span></div>
+<div>└── <span class="fhl">● network/core_utils.rs, commands/setup.rs</span> <span class="fnote">— netavark's per-invocation setup: parses a JSON config, does the same veth+bridge+iptables work as a short-lived Rust binary</span></div>
+  </div></div>
+
+  <p>First, the shape of what any network plugin must implement — CNI's contract, in the plugin binary's
+  entrypoint, simplified but structurally faithful:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>bridge.go — cmdAdd(), the CNI ADD operation</span></div>
+    <pre><span class="k">func</span> <span class="f">cmdAdd</span>(args *skel.CmdArgs) <span class="k">error</span> {
+    n, cniVersion, err := <span class="f">loadNetConf</span>(args.StdinData)  <span class="c">// bridge name, subnet, MTU</span>
+
+    <span class="c">// 1. Ensure the bridge exists on the HOST side (idempotent).</span>
+    br, err := <span class="f">setupBridge</span>(n)                        <span class="c">// netlink.LinkAdd(&Bridge{...})</span>
+
+    <span class="c">// 2. Open the container's netns by the path the runtime handed us
+    //    (e.g. /proc/&lt;pid&gt;/ns/net) — this is the file from §8(a).</span>
+    netns, err := ns.<span class="f">GetNS</span>(args.Netns)
+
+    <span class="c">// 3. Create the veth pair, then move ONE end into that netns and
+    //    rename it (conventionally to "eth0" from the container's view).</span>
+    hostIface, contIface, err := <span class="f">setupVeth</span>(netns, br, args.IfName, n.MTU)
+
+    <span class="c">// 4. Ask the configured IPAM plugin (host-local, dhcp, etc.) for an
+    //    address, then assign it and a default route INSIDE the netns.</span>
+    result, err := ipam.<span class="f">ExecAdd</span>(n.IPAM.Type, args.StdinData)
+    err = netns.<span class="f">Do</span>(<span class="k">func</span>(_ ns.NetNS) <span class="k">error</span> {
+        <span class="k">return</span> ipam.<span class="f">ConfigureIface</span>(args.IfName, result)
+    })
+
+    <span class="k">return</span> <span class="f">types.PrintResult</span>(result, cniVersion)
+}</pre>
+  </div>
+
+  <p>Second, the netavark shape — same four steps, expressed as a short-lived process instead of a library call
+  inside a daemon, which is the whole of chapter 12's architectural thesis showing up here:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Rust</span><span>netavark — setup.rs, simplified but structurally faithful</span></div>
+    <pre><span class="k">pub fn</span> <span class="f">setup</span>(&self, netns_path: &str) -> NetavarkResult&lt;()&gt; {
+    <span class="c">// Parse the JSON network config netavark was invoked with —
+    // there is no long-lived daemon holding this state between calls.</span>
+    <span class="k">let</span> config = <span class="f">parse_network_config</span>(&self.input_file)?;
+
+    <span class="c">// Create (or reuse) the per-network bridge on the host — every
+    // netavark network gets its own, per §9's table.</span>
+    <span class="k">let</span> bridge = <span class="f">get_or_create_bridge</span>(&config.bridge_name, &config.subnet)?;
+
+    <span class="c">// Same veth-pair-then-move-one-end operation as the Go plugin,
+    // via the `netlink` Rust crate wrapping the identical RTM_NEWLINK
+    // and RTM_SETNS netlink messages.</span>
+    <span class="k">let</span> (host_veth, container_veth) =
+        <span class="f">create_veth_pair</span>(&bridge, netns_path, &config.container_iface)?;
+
+    <span class="c">// Install the DNAT/MASQUERADE rules for this container directly —
+    // netavark owns nftables/iptables plumbing itself; no libnetwork.</span>
+    <span class="f">configure_nat_and_port_forwarding</span>(&config, &host_veth)?;
+
+    <span class="c">// Register the container's name + IP with aardvark-dns so sibling
+    // containers on this network can resolve it (§9's DNS row).</span>
+    <span class="f">register_with_aardvark</span>(&config)?;
+    Ok(())
+}</pre>
+  </div>
+
+  <p>Third, the exact netfilter rule both stacks converge on when a port is published — hand-writeable, and worth
+  typing once so it stops being a black box:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">iptables</span><span>the DNAT rule a published port actually installs</span></div>
+    <pre><span class="c"># container has address 172.17.0.2, listens on 80;
+# host publishes it as 0.0.0.0:8080 -&gt; 172.17.0.2:80</span>
+<span class="f">iptables</span> -t nat -A DOCKER \
+  -d 0/0 -p tcp --dport 8080 \
+  -j DNAT --to-destination 172.17.0.2:80
+
+<span class="c"># and the corollary that makes the REPLY path work: traffic FROM
+# the container back to the internet gets the host's routable
+# source address, or the reply would never find its way home.</span>
+<span class="f">iptables</span> -t nat -A POSTROUTING \
+  -s 172.17.0.0/16 ! -o docker0 \
+  -j MASQUERADE</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY — TWO CHOICES TO STEAL</div>
+    <p><b>1. Separate the isolation primitive from the policy engine.</b> The kernel's network namespace and veth
+    driver know nothing about bridges, DNS, or Docker/Podman — they're generic. Both engines build
+    container-specific policy (naming, DNS, port publishing) as a layer entirely in userspace on top of generic
+    kernel primitives, which is exactly why two independently-developed engines converge on the same four
+    mechanisms: there was only ever one sane way to use them. <b>2. Do the networking setup between namespace
+    creation and process start, as a hook — not inside the runtime.</b> This keeps <code>runc</code>/<code>crun</code>
+    genuinely runtime-agnostic (chapter 9): they don't need to know what a bridge is, only that "run this
+    executable with this netns path" is a valid pre-start action, which is also what lets entirely different
+    networking stacks (CNI, netavark, Cilium's eBPF dataplane) plug into the same OCI runtimes unmodified.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — wiring a container's network from scratch</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the events in the order they occur, from an empty netns
+      to a curl succeeding through a published port. Then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">Wire a container's netns to the internet, live</h2>
+  <p>Everything from this chapter, buildable in order. Start from an empty network namespace and take each step
+  yourself: create the veth pair, move one end in, attach the host end to a bridge, assign an IP, bring links up,
+  add NAT, and finally publish a port — then run <code>curl</code> from an external client and watch it succeed
+  only once every step is done, and fail with the exact real error at every earlier stage.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">netns wiring bench</span><span class="w-sub" id="sim-phase">STEP 0 / 7</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="topo" id="sim-topo"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">BUILD, IN ORDER</div>
+            <div class="btns">
+              <button class="btn" id="sc-veth">1. create veth pair</button>
+              <button class="btn" id="sc-move">2. move veth-ctr into netns</button>
+              <button class="btn" id="sc-attach">3. attach veth-host to bridge</button>
+              <button class="btn" id="sc-ip">4. assign IP + route</button>
+              <button class="btn" id="sc-up">5. bring links up</button>
+              <button class="btn" id="sc-nat">6. add MASQUERADE</button>
+              <button class="btn good" id="sc-pub">7. publish port 8080→80</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">TEST</div>
+            <div class="btns">
+              <button class="btn" id="sc-curl-out">curl example.com (outbound)</button>
+              <button class="btn" id="sc-curl-in">curl host:8080 (inbound)</button>
+              <button class="btn danger" id="sc-reset">↺ reset to empty netns</button>
+            </div>
+          </div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">INSPECTOR</div>
+            <div style="color:var(--dim)">build steps in order, then test…</div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-steps">0</div><div class="cl">steps done</div></div>
+            <div class="scounter"><div class="cv" id="cnt-out">0</div><div class="cl">curls out ok</div></div>
+            <div class="scounter"><div class="cv" id="cnt-in">0</div><div class="cl">curls in ok</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Try outbound curl at step 0 — read the exact <code>ENETUNREACH</code>-flavored message.
+    <b>2.</b> Do steps 1–5 but skip step 6 (NAT) — outbound still fails even though the link is up end to end;
+    confirm you understand why routability ≠ link connectivity. <b>3.</b> Do everything except step 7 and try the
+    inbound curl — see exactly what's missing. <b>4.</b> Reset and do steps out of order (e.g. try step 4 before
+    step 2) — the simulator refuses and tells you the real dependency, same as the kernel would.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 4: three questions, no options</h2>
+  <p>These have no multiple choice. Formulate a full answer in your head (or out loud — it's better), <i>then</i>
+  reveal. If any reveal surprises you, re-run the relevant simulator experiment.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 03 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now build a container's entire network path by hand —
+    namespace, veth pair, bridge, NAT, published port — and explain precisely why each layer exists. Everything
+    in this chapter assumed you're running as <code>root</code> on the host: creating a bridge, moving a veth end
+    into another namespace, and inserting iptables rules all require <code>CAP_NET_ADMIN</code> in the host's
+    namespace. Chapter 4 asks the question this chapter quietly deferred: what does an <b>unprivileged user</b>
+    get to do at all, and how does a user namespace let root-inside-a-container be nobody-in-particular
+    outside it — the piece that makes rootless Podman's <code>slirp4netns</code>/<code>pasta</code> fallback from
+    §9 and §10 a necessity rather than a preference?</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <a class="btn" href="ctr-04.html" style="text-decoration:none;display:inline-flex;align-items:center">CTR-04: User Namespaces & Rootless →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+/* generic reveal cards (interview / knowledge-check) */
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"1999", l:"veth prototype", d:"<b>Early veth-like virtual Ethernet work</b> begins circulating in kernel networking discussions as researchers explore virtualized network stacks for early container-like projects (Linux-VServer, OpenVZ) — years before mainline network namespaces exist to plug it into." },
+  { yr:"2002", l:"VServer/OpenVZ", d:"<b>Out-of-tree virtualization projects</b> (Linux-VServer, later OpenVZ) ship their own ad-hoc network isolation, each with incompatible, non-upstream code — a fragmentation problem that upstream namespace work is explicitly trying to end." },
+  { yr:"2007–08", l:"netns lands (2.6.24-ish)", d:"<b>Early network-namespace infrastructure merges</b>, alongside the generalized veth driver (<code>drivers/net/veth.c</code>) purpose-built to cross the new boundary — the two are developed together because an isolation primitive with no way to connect across it is useless, exactly this chapter's §2 thesis." },
+  { yr:"2009", l:"CLONE_NEWNET (2.6.29)", d:"<b>Network namespaces are considered feature-complete</b> for general use in kernel 2.6.29, four years after the mount namespace (2.4.19, 2002) and roughly contemporaneous with the other namespace types this course studies. Networking took longest because it's the largest surface: routing tables, netfilter state, sockets, and every protocol's per-namespace bookkeeping all had to be virtualized correctly." },
+  { yr:"2013", l:"Docker + docker0", d:"<b>Docker's initial release</b> wraps this exact stack — netns, veth, a bridge it names <code>docker0</code>, and iptables NAT — into a single <code>docker run</code> command. Nothing here is a new kernel primitive; Docker's contribution (as chapter 1 established generally) is automating and packaging plumbing that previously required hand-typed <code>ip</code> commands." },
+  { yr:"2016", l:"CNI 0.1 / libnetwork CNM", d:"<b>Two competing network plugin models solidify:</b> Docker's libnetwork formalizes the Container Network Model (CNM); the rest of the ecosystem (rkt, and soon Kubernetes) standardizes on the Container Network Interface (CNI), a simpler JSON-config-and-exec-a-binary contract. Podman later adopts CNI, then eventually its own netavark." },
+  { yr:"2020", l:"CVE-2020-13401", d:"<b>The IPv6 Router Advertisement spoofing CVE</b> (§11) is disclosed — a reminder that the bridge, being a genuine shared L2 segment, inherits every classic L2 attack, decades after those attacks were first documented against physical switches." },
+  { yr:"2021→", l:"netavark + pasta", d:"<b>Podman replaces its CNI plugin chain with netavark</b> (Rust, purpose-built, no external plugin binaries to shell out to) starting around v4.0, and increasingly defaults rootless networking to <code>pasta</code> over the slower <code>slirp4netns</code> — both covered in full in chapter 13, foreshadowed by §9–10 here." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: what's inside a fresh netns (§3)
+   ============================================================ */
+stepper("deckNaive", [
+  { stage:`<div class="topo">
+      <div class="tbox ns up">lo<span class="sub">present, but DOWN</span></div>
+    </div>`,
+    cap:`<b>The moment <code>unshare(CLONE_NEWNET)</code> returns.</b> <code>copy_net_ns()</code> gave this namespace exactly one interface: loopback — and it is administratively down. No route table entries beyond a stub for <code>127.0.0.0/8</code>, no ARP entries, no other NICs.` },
+  { stage:`<div class="topo">
+      <div class="tbox ns dead">eth0? <span class="sub">does not exist</span></div>
+    </div>`,
+    cap:`<b>There is no eth0, no wlan0, nothing.</b> The kernel never auto-creates or "lends" a physical/virtual NIC into a new namespace — doing so would mean revoking it from wherever it currently lives. Getting any non-loopback interface into this namespace requires an explicit, separate action from outside it.` },
+  { stage:`<div class="topo">
+      <div class="tbox ns">routing table<span class="sub">empty (+ loopback stub)</span></div>
+    </div>`,
+    cap:`<b>curl's actual failure mode.</b> With no default route, the kernel returns <code>ENETUNREACH</code> the instant a socket tries to send off-loopback — before any DNS lookup even completes over the wire. This is why the naive program fails immediately, not slowly: there's no packet to time out, just an immediate, correct kernel refusal.` },
+  { stage:`<div class="topo">
+      <div class="tbox ns dead">reachable hosts: 1 (127.0.0.1, once lo is up)</div>
+    </div>`,
+    cap:`<b>Verdict.</b> Isolation: total and correct — that was the point. Connectivity: zero, and zero is not a defect to patch inside the namespace; nothing inside it can fix a problem that's fundamentally about crossing its boundary. §5 builds the wire.` }
+]);
+
+/* ============================================================
+   3. DECK: building the wire (§5)
+   ============================================================ */
+stepper("deckVeth", [
+  { stage:`<div class="topo">
+      <div class="toporow">
+        <div class="tbox host">HOST netns</div>
+      </div>
+    </div>`,
+    cap:`<b>Starting point.</b> Host namespace only. Container namespace exists (from §3) but has no non-loopback interface. Nothing links them yet.` },
+  { stage:`<div class="topo">
+      <div class="toporow">
+        <div class="tbox veth up">veth-host</div>
+        <div class="thlink on"></div>
+        <div class="tbox veth up">veth-ctr</div>
+      </div>
+    </div>`,
+    cap:`<b><code>ip link add veth-host type veth peer name veth-ctr</code>.</b> One netlink <code>RTM_NEWLINK</code> call creates BOTH ends atomically, permanently paired at the driver level — whatever one transmits, the other receives. Right now both ends still live in the host namespace.` },
+  { stage:`<div class="topo">
+      <div class="toporow"><div class="tbox host">HOST netns<span class="sub">veth-host</span></div></div>
+      <div class="tlink on"></div>
+      <div class="toporow"><div class="tbox ns">CONTAINER netns<span class="sub">veth-ctr (moved in)</span></div></div>
+    </div>`,
+    cap:`<b><code>ip link set veth-ctr netns &lt;pid&gt;</code>.</b> One <code>RTM_NEWLINK</code> with an <code>IFLA_NET_NS_PID</code> attribute moves veth-ctr's entire kernel object into the target namespace. The wire now genuinely crosses the isolation boundary — one end per namespace, still one link.` },
+  { stage:`<div class="topo">
+      <div class="toporow"><div class="tbox host">HOST netns<span class="sub">veth-host — no IP yet</span></div></div>
+      <div class="tlink on"></div>
+      <div class="toporow"><div class="tbox ns">CONTAINER netns<span class="sub">veth-ctr → renamed eth0, 172.17.0.2/16</span></div></div>
+    </div>`,
+    cap:`<b>Inside the container's netns: <code>ip addr add 172.17.0.2/16 dev eth0; ip route add default via 172.17.0.1</code>.</b> Two more netlink calls give the container a usable address and a default route pointed at where the bridge (not yet built) will live.` },
+  { stage:`<div class="topo">
+      <div class="toporow"><div class="tbox host up">veth-host<span class="sub">UP</span></div></div>
+      <div class="tlink on"></div>
+      <div class="toporow"><div class="tbox ns up">eth0<span class="sub">UP, 172.17.0.2/16</span></div></div>
+    </div>`,
+    cap:`<b><code>ip link set veth-host up</code> (host) and <code>ip link set eth0 up</code> (container).</b> Both ends administratively up. <code>/sys/class/net/veth-host/operstate</code> now reads <code>up</code>. Two containers wired this way could ping each other directly — but this is still one private wire, not a network.` }
+]);
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  hostif: { name:"physical NIC (eth0/ens160)", file:"host network namespace", body:"The host's real, physical or hypervisor-provided interface. Never moved into a container's namespace directly (that's what a raw <code>--network none</code> + manual passthrough or <code>macvlan</code>, chapter 13, is for) — it stays with the host and reaches the outside world on the host's behalf via NAT." },
+  bridge: { name:"bridge — docker0 / podman0", file:"net/bridge/, host namespace", body:"A software L2 switch. Owns an IP (the containers' default gateway, e.g. 172.17.0.1). Every container's veth-host end plugs in here as a bridge 'port.' Learns MAC→port mappings dynamically (§8b); does not itself do NAT or routing." },
+  vethhost: { name:"veth-host", file:"drivers/net/veth.c, host namespace", body:"The host-side end of one container's veth pair, attached to the bridge as a port. From the bridge's perspective this is indistinguishable from a physical switch port with one device plugged in." },
+  iptables: { name:"iptables/nftables NAT table", file:"net/netfilter/, host namespace", body:"Holds the MASQUERADE rule (rewrites container source IPs to the host's routable address for outbound traffic) and any DNAT rules for published ports (§8c). Evaluated in PREROUTING/POSTROUTING — a different path than a host firewall tool's INPUT chain, which is exactly §11 incident 1." },
+  pair: { name:"the veth pair", file:"one kernel link object, two namespaces", body:"Not two separate devices that happen to be connected — one link object the kernel tracks as a pair, created and destroyed together (deleting either end deletes both). This is the only thing in the entire architecture that structurally crosses the namespace boundary." },
+  vethctr: { name:"veth-ctr (seen inside as eth0)", file:"container network namespace", body:"The container-side end, moved into the container's netns and conventionally renamed to eth0 so the workload sees an ordinary-looking interface with no idea it's one leg of a host-side bridge port." },
+  lo: { name:"lo (loopback)", file:"container network namespace", body:"Present from namespace creation (§3) but administratively down until userspace brings it up — most container runtimes do this as one of the first setup steps precisely because so much software assumes loopback just works." },
+  ctrroute: { name:"container's default route", file:"container network namespace routing table", body:"Points at the bridge's IP (e.g. 172.17.0.1) as the gateway for anything outside the container's own /16 or /24 — installed alongside the container's own address, both from outside the namespace via netlink before the workload's process even starts." },
+  dns: { name:"embedded DNS server", file:"dockerd (127.0.0.11) or aardvark-dns (per-network)", body:"Not a kernel feature — a userspace resolver the engine points each container's /etc/resolv.conf at, so container names resolve to their current IP on a shared user-defined network. Entirely orthogonal to the netns/veth/bridge mechanism; it rides on top of it." }
+};
+const archDetail = el("arch-detail");
+document.querySelectorAll(".acard").forEach(card=>{
+  card.onclick = ()=>{
+    document.querySelectorAll(".acard").forEach(c=>c.classList.remove("sel"));
+    card.classList.add("sel");
+    const a = ARCH[card.dataset.p];
+    archDetail.innerHTML = `<div class="ad-name">${a.name}</div><div class="ad-file">${a.file}</div><p>${a.body}</p>`;
+  };
+});
+archDetail.innerHTML = `<div class="ad-name">${ARCH.pair.name}</div><div class="ad-file">${ARCH.pair.file}</div><p>${ARCH.pair.body}</p>`;
+document.querySelector('.acard[data-p="pair"]').classList.add("sel");
+
+/* ============================================================
+   5. SLIDER WIDGET: netlink ops per attach (§8a)
+   ============================================================ */
+(function(){
+  const legend = el("nl-legend"), map = el("nl-map"), note = el("nl-note");
+  const nSlider = el("nl-n"), rSlider = el("nl-r");
+  const OPS_PER_CONTAINER = 6; // create pair, move, rename, addr, route, bridge-attach
+  function render(){
+    const n = +nSlider.value, r = +rSlider.value;
+    el("nl-n-val").textContent = n;
+    el("nl-r-val").textContent = r;
+    const netlinkOps = n * OPS_PER_CONTAINER;
+    const iptOps = n * r;
+    const total = netlinkOps + iptOps;
+    const nlPct = Math.round(netlinkOps/total*100);
+    const ipPct = 100 - nlPct;
+    legend.innerHTML = `<span><span class="sw" style="background:var(--pg)"></span>netlink ops (setup, one-time): ${netlinkOps}</span>
+      <span><span class="sw" style="background:var(--warn)"></span>iptables rules installed: ${iptOps}</span>`;
+    map.innerHTML = `<div class="seg" style="width:${nlPct}%;background:var(--pg)">${netlinkOps} netlink</div>
+      <div class="seg" style="width:${ipPct}%;background:var(--warn)">${iptOps} rules</div>`;
+    note.textContent = n > 100
+      ? `At ${n} containers, the DNAT/isolation chain has grown to ${iptOps} rules that a naive linear iptables backend scans per relevant packet — this is the regime where nftables' hashed rule sets or an eBPF dataplane stop being an optimization and start being necessary.`
+      : `${n} container(s) → ${netlinkOps} one-time netlink setup calls (paid once, at attach time) and ${iptOps} iptables rules (paid on every relevant packet's chain traversal, for the rules' lifetime).`;
+  }
+  nSlider.oninput = render; rSlider.oninput = render;
+  render();
+})();
+
+/* ============================================================
+   5b. SLIDER WIDGET: conntrack / ephemeral port exhaustion (§10)
+   ============================================================ */
+(function(){
+  const cSlider = el("ct-c"), kSlider = el("ct-k");
+  if (!cSlider || !kSlider) return;
+  const legend = el("ct-legend"), map = el("ct-map"), note = el("ct-note");
+  const EPHEMERAL_RANGE = 28232; // default Linux ip_local_port_range 32768-60999-ish usable span, one MASQUERADE IP
+  function render(){
+    const c = +cSlider.value, k = +kSlider.value;
+    el("ct-c-val").textContent = c;
+    el("ct-k-val").textContent = k;
+    const totalFlows = c * k;
+    const pct = Math.min(100, Math.round(totalFlows/EPHEMERAL_RANGE*100));
+    const over = totalFlows > EPHEMERAL_RANGE;
+    legend.innerHTML = `<span><span class="sw" style="background:${over?'var(--bad)':'var(--pg)'}"></span>simultaneous SNAT'd flows: ${totalFlows.toLocaleString()}</span>
+      <span><span class="sw" style="background:var(--border-hi)"></span>ephemeral port range on the host IP: ~${EPHEMERAL_RANGE.toLocaleString()}</span>`;
+    map.innerHTML = `<div class="seg" style="width:${pct}%;background:${over?'var(--bad)':'var(--pg)'}">${pct}%</div>`;
+    note.textContent = over
+      ? `Over capacity: ${totalFlows.toLocaleString()} simultaneous outbound flows through one MASQUERADE'd host IP exceed the ~${EPHEMERAL_RANGE.toLocaleString()}-port ephemeral range the kernel can allocate for SNAT — new outbound connections start failing with EADDRNOTAVAIL/connection timeouts even though every container-side mechanism from §5–§8 is working correctly. This is the real production failure mode behind "random outbound connection failures under load" tickets, and the fix is architectural (multiple NAT source IPs, or moving hot outbound paths to host networking), not a bigger conntrack table.`
+      : `${totalFlows.toLocaleString()} simultaneous flows uses ${pct}% of one host IP's ephemeral port budget for SNAT. Every one of these flows also occupies a conntrack table entry (net.netfilter.nf_conntrack_max, commonly 262144 by default) — the port range in practice becomes the binding constraint long before the conntrack table itself does on a single-IP host.`;
+  }
+  cSlider.oninput = render; kSlider.oninput = render;
+  render();
+})();
+
+/* ============================================================
+   6. DECK: port publishing DNAT walkthrough (§8c)
+   ============================================================ */
+stepper("deckDnat", [
+  { stage:`<div class="topo"><div class="tbox host">client → host:8080<span class="sub">SYN arrives on eth0</span></div></div>`,
+    cap:`<b>An external client connects to the host's IP on port 8080.</b> The packet arrives on the host's real NIC, destined for an address and port the host itself is not listening on — nothing is bound to 8080 on the host.` },
+  { stage:`<div class="topo"><div class="tbox host">PREROUTING chain<span class="sub">nat table, evaluated first</span></div></div>`,
+    cap:`<b>netfilter's PREROUTING hook fires before routing decisions are made.</b> This is the earliest possible point to rewrite a packet's destination — and it runs before a host firewall tool's INPUT-chain rules would ever see this packet, which is exactly §11's incident 1.` },
+  { stage:`<div class="topo"><div class="tbox veth up">DNAT applied<span class="sub">dst 172.17.0.2:80</span></div></div>`,
+    cap:`<b>The engine-installed rule matches</b> (<code>--dport 8080</code>) and rewrites the destination to the container's private IP and real port: <code>-j DNAT --to-destination 172.17.0.2:80</code>. The packet is now addressed to something that only exists on the bridge.` },
+  { stage:`<div class="topo"><div class="toporow"><div class="tbox bridge up">bridge</div><div class="thlink on"></div><div class="tbox ns up">container:80</div></div></div>`,
+    cap:`<b>Routing now sends the rewritten packet out via the bridge</b> — through the FORWARD chain (not INPUT, confirming §11's incident), across the veth pair, into the container's namespace, to whatever is actually listening on port 80 inside it.` },
+  { stage:`<div class="topo"><div class="tbox host up">reply: SNAT unwinds automatically<span class="sub">conntrack remembers</span></div></div>`,
+    cap:`<b>The reply doesn't need a mirrored manual rule.</b> Netfilter's connection tracking (<code>conntrack</code>) recorded the DNAT transformation and automatically reverses it for return traffic in this flow, so the client sees replies from host:8080, never from 172.17.0.2 directly — one rule, both directions, for the lifetime of the connection.` }
+]);
+
+/* ============================================================
+   7. PERF CHART (§10) — relative throughput / latency by mode
+   ============================================================ */
+(function(){
+  const c = el("perf-chart");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  const modes = [
+    { l:"host networking", tp:100, lat:5 },
+    { l:"bridge + veth (rootful)", tp:94, lat:15 },
+    { l:"macvlan", tp:97, lat:8 },
+    { l:"pasta (rootless)", tp:82, lat:28 },
+    { l:"slirp4netns (rootless)", tp:48, lat:70 }
+  ];
+  function draw(){
+    const W = c.width, H = c.height;
+    ctx.clearRect(0,0,W,H);
+    const padL = 150, padR = 30, padT = 20, padB = 30;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    const barH = plotH / modes.length - 14;
+    ctx.strokeStyle = "#1c2330"; ctx.lineWidth = 1;
+    for (let g=0; g<=100; g+=25){
+      const x = padL + (g/100)*plotW;
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H-padB); ctx.stroke();
+      ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.textAlign="center";
+      ctx.fillText(g+"%", x, H-padB+16);
+    }
+    modes.forEach((m,i)=>{
+      const y = padT + i*(plotH/modes.length) + 7;
+      ctx.fillStyle = "#c6cddb"; ctx.font = "11px monospace"; ctx.textAlign = "right";
+      ctx.fillText(m.l, padL-10, y+barH/2+4);
+      // throughput bar
+      const tpW = (m.tp/100)*plotW;
+      ctx.fillStyle = "#2dd4bf"; ctx.fillRect(padL, y, tpW, barH*0.55);
+      ctx.fillStyle = "#06121f"; ctx.font="10px monospace"; ctx.textAlign="left";
+      ctx.fillText(m.tp+"%", padL+tpW+4>padL+plotW-30?padL+tpW-34:padL+tpW+4, y+barH*0.55/2+3, );
+      // latency bar (relative, scaled to max 100 for display, using lat as % of a 100ms reference axis)
+      const latW = Math.min(100, m.lat)/100*plotW;
+      ctx.fillStyle = "#f25c54"; ctx.fillRect(padL, y+barH*0.62, latW, barH*0.38);
+    });
+  }
+  draw();
+})();
+
+/* ============================================================
+   8. INTERVIEW QUESTIONS (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"A freshly unshare()'d network namespace can't even ping 127.0.0.1. Why, and what's the one command that fixes just that?", hint:"created vs. up are different things",
+    a:"copy_net_ns() creates the loopback interface but does not bring it up — administrative state (up/down) is a separate, deliberate userspace decision, not a side effect of namespace creation. `ip link set lo up` (one RTM_SETLINK netlink call) is the fix; nothing else in the namespace needs to change for loopback specifically. Every other interface has to be created and moved in from outside — loopback is the only interface the kernel gives you for free, and even it isn't enabled by default." },
+  { lvl:"SENIOR", q:"Explain, precisely, why a Linux bridge is not a NAT device and does not perform routing, and what that implies about when NAT actually has to happen.", hint:"L2 vs L3",
+    a:"A bridge operates at layer 2: it forwards Ethernet frames based on a learned MAC-address-to-port table (the FDB), exactly like a physical switch, and never inspects or rewrites IP headers. Two containers on the same bridge reach each other via pure L2 forwarding with no NAT involved at all. NAT only becomes necessary the moment traffic needs to cross the bridge's subnet boundary — to the host's routable network or the internet — because private container IPs (RFC1918) aren't valid source addresses out there. That's why MASQUERADE lives in POSTROUTING (an L3/NAT-table hook), not in the bridge code itself." },
+  { lvl:"STAFF", q:"A host runs ufw with a rule blocking inbound 8080, yet `docker run -p 8080:80` still makes the container reachable from the internet. Diagnose the mechanism, not just the symptom.", hint:"which netfilter chain fires first?",
+    a:"Docker's DNAT rule lives in the nat table's PREROUTING chain, which netfilter evaluates before routing decisions are made — and before the packet would ever reach the filter table's INPUT chain that ufw manages. Once DNAT rewrites the destination to the container's IP, the packet is routed via FORWARD to the bridge, not via INPUT to the host stack, so ufw's INPUT rule literally never gets a chance to evaluate this packet. This is documented, long-standing behavior (moby/moby#4737), identical under Podman/netavark since it's the same netfilter chain ordering, not an engine bug — the practical fix is firewalling at a layer the container engine doesn't own (a cloud security group, a separate appliance) or using the engine's own network policy features." },
+  { lvl:"STAFF", q:"Design review: someone proposes putting three different customers' containers on one shared Docker bridge network to save IP address space. What do you flag?", hint:"what does 'shared bridge' actually mean at L2?",
+    a:"A shared bridge is a genuine shared L2 broadcast domain — every container on it can send ARP/NDP traffic, including spoofed Router Advertisements (the CVE-2020-13401 pattern from §11), to every other container on it, unless additional controls (per-port isolation, RA-guard equivalents, or simply separate bridges/networks per tenant) are layered on top. The IP-space savings don't justify reintroducing decades-old shared-L2-segment attack surface between mutually untrusting workloads; the standard mitigation is one bridge/network per trust boundary, which is also each engine's default posture for user-defined networks." },
+  { lvl:"STAFF", q:"Why does the OCI runtime (runc/crun) not create the veth pair or configure the bridge itself, and what would break if it did?", hint:"who needs to stay generic?",
+    a:"The OCI runtime's contract is narrow and intentionally network-agnostic: given a namespace path in config.json, place the container's process into it. Networking setup (veth creation, bridge attachment, IPAM, iptables) runs as a separate step — a prestart/createRuntime hook — invoked by whatever network plugin the higher-level engine chooses (libnetwork's bridge driver, netavark, a CNI plugin, or an entirely different dataplane like Cilium's eBPF). If the runtime hard-coded bridge logic, every alternative networking model would require forking or patching the runtime itself, defeating the entire point of a shared, pluggable OCI Runtime Spec (chapter 9)." },
+  { lvl:"PRINCIPAL", q:"Compare the throughput and security profile of rootful bridge networking vs. rootless slirp4netns vs. rootless pasta, and explain the engineering reason pasta exists at all.", hint:"where does the packet cross the user/kernel boundary, and how many times?",
+    a:"Rootful bridge+veth: packets stay entirely in kernel space end to end (skb hand-off in veth, kernel bridge forwarding, kernel netfilter NAT) — near-native throughput, but requires CAP_NET_ADMIN in the host namespace to set up, meaning a compromised container's networking blast radius includes host-wide NAT/bridge state if that capability leaks. slirp4netns: runs as an unprivileged process emulating a full NIC and TCP/IP stack in userspace over a TUN device — every packet crosses the kernel/userspace boundary an extra time in each direction versus the bridge path, which is why it's measurably slower (often 50%+ throughput loss) but also why its blast radius is small (it never touches host-wide state). pasta was built specifically to close that performance gap without giving up the security posture: instead of emulating an entire NIC, it translates at the socket/packet level with far fewer userspace round-trips, landing much closer to native throughput while remaining an unprivileged process with no access to host iptables or bridges — a genuine engineering advance, not just a rename." },
+  { lvl:"PRINCIPAL", q:"You're asked to justify, to a security-conscious platform team, why 'the container network stack' isn't a single audit surface but at least four independent ones. Name them and what auditing each buys.", hint:"namespace, wire, switch, NAT/firewall are separable",
+    a:"(1) The network namespace itself — kernel-enforced isolation of routing/ARP/socket state; auditing here means trusting copy_net_ns() and setns() permission checks (gated by CAP_SYS_ADMIN, tightened further by user namespaces in chapter 4). (2) The veth driver — a narrow, well-reviewed piece of kernel code whose only job is an skb hand-off; small surface, rarely the source of incidents. (3) The bridge — a shared L2 segment with real attack surface (ARP/RA spoofing, §11), auditable via bridge/VLAN isolation policy independent of the other three layers. (4) iptables/nftables NAT and DNAT rule installation — host-wide, ordering-sensitive, privileged state whose insertion order (relative to a firewall tool's own chains) has caused real production incidents. Treating these as one opaque 'networking' box hides that most real-world exposure concentrates in layers 3 and 4, which are userspace policy on top of solid kernel primitives — the fix is almost never 'don't use containers,' it's 'review bridge topology and rule ordering.'" }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"Immediately after unshare(CLONE_NEWNET), what can the calling process reach over the network?",
+    opts:[ "The host's other interfaces, since the mapping is inherited",
+           "Nothing except 127.0.0.1, and only after loopback is brought up",
+           "Any address the host itself could reach, since routing tables are shared by default",
+           "Only other processes that also called unshare(CLONE_NEWNET)" ],
+    a:1,
+    why:"copy_net_ns() gives the new namespace exactly one interface — loopback — and it starts administratively down. There is no default route, no other interfaces, and no inherited reachability to anything the host can reach; that has to be built explicitly with a veth pair and further configuration. Option A confuses namespace CREATION with namespace INHERITANCE of routes (there is none); option D imagines cross-namespace discovery that doesn't exist." },
+  { q:"What, precisely, is a veth pair?",
+    opts:[ "Two independent virtual NICs that happen to share a MAC address prefix",
+           "One kernel link object exposing two interfaces, where whatever one transmits the other receives directly",
+           "A userspace proxy process that copies packets between two namespaces",
+           "A special case of a Linux bridge with exactly two ports" ],
+    a:1,
+    why:"veth is one link object created atomically by a single netlink call, tracked as a pair by the kernel (deleting one end deletes both). The veth driver hands an skb straight from one end's transmit path to the other's receive path with no copy and no userspace involvement — it's the opposite of a proxy process, and it isn't a bridge (a bridge is a separate L2 forwarding device you can optionally attach a veth end to)." },
+  { q:"Which of these is NOT something the Linux bridge device does?",
+    opts:[ "Learn MAC-address-to-port mappings by inspecting incoming frames", "Flood frames for unknown destination MACs to all ports except the ingress port",
+           "Rewrite source or destination IP addresses (NAT)", "Forward Ethernet frames between attached ports at layer 2" ],
+    a:2,
+    why:"The bridge operates purely at L2 — MAC learning, flooding for unknown destinations, and L2 forwarding are exactly its job. It never inspects or rewrites IP headers; that's the netfilter NAT table's job (MASQUERADE/DNAT), a completely separate subsystem that only gets involved when traffic crosses the bridge's subnet boundary." },
+  { q:"An external client connects to a published port. Which netfilter chain does the DNAT rule live in, and why does that matter for host firewall tools like ufw?",
+    opts:[ "INPUT — so ufw and Docker's rule race for the same chain, ufw usually winning",
+           "OUTPUT — because the container's reply is what gets rewritten, not the request",
+           "PREROUTING — evaluated before routing decisions, so the packet is redirected to the bridge/FORWARD path before ufw's INPUT rules would ever see it",
+           "There is no dedicated chain; the container's own iptables inside its netns handles it" ],
+    a:2,
+    why:"DNAT rules for published ports live in PREROUTING, the earliest netfilter hook, which runs before the routing decision that would otherwise send the packet to INPUT. Once DNAT'd, the packet's destination is a container/bridge address, so it's routed via FORWARD, a chain most host firewall tools don't manage — which is exactly why ufw can report a port as blocked while it's actually reachable (§11)." },
+  { q:"Why does rootless container networking typically require slirp4netns or pasta instead of a real bridge?",
+    opts:[ "Bridges are deprecated in favor of userspace networking on modern kernels",
+           "Creating a bridge and moving a veth end into another namespace requires CAP_NET_ADMIN in the host namespace, which an unprivileged user doesn't have",
+           "Rootless containers don't support Ethernet, only IP-layer tunnels",
+           "slirp4netns and pasta are faster than a kernel bridge, so they're used even when root is available" ],
+    a:1,
+    why:"Bridges are very much not deprecated — they're the rootful default for exactly this chapter's reasons. The real constraint is capability: building a bridge, attaching a veth end to it, and installing host-wide iptables rules are all privileged operations gated by CAP_NET_ADMIN (and root) in the HOST namespace. An unprivileged user can create their OWN network namespace (that doesn't require host privilege) but can't wire it into the host's real network the normal way — so rootless tooling falls back to a userspace TCP/IP translator that needs no host-side privilege at all. Chapter 4 explains the capability/user-namespace mechanics behind this in full." },
+  { q:"Two containers are attached to the same bridge and can already reach each other by IP with zero NAT rules involved. Why does this work with no DNAT/MASQUERADE at all?",
+    opts:[ "The bridge silently performs NAT between same-subnet peers",
+           "Because both containers' IPs are in the same L2/L3 segment the bridge switches, so ordinary L2 forwarding delivers the frames — NAT is only needed when crossing the subnet boundary",
+           "Docker/Podman insert an implicit ACCEPT-all NAT rule for intra-bridge traffic",
+           "It doesn't actually work without --icc=true being set explicitly" ],
+    a:1,
+    why:"Both containers sit on the same subnet the bridge switches at L2 — ordinary MAC learning and frame forwarding gets a packet from one to the other with no IP rewriting needed, the same way two machines plugged into the same physical switch don't need NAT to talk to each other. NAT exists specifically to solve the 'private IP isn't routable outside this segment' problem, which doesn't arise for same-segment traffic. (--icc controls whether that traffic is ALLOWED, via filter-table rules, not whether NAT is needed for it to be POSSIBLE.)" }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; the bridge would be proud.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5 and §8's decks, then the simulator — the model clicks fast once you wire it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "unshare(CLONE_NEWNET): namespace created, only lo present and down",
+    "ip link add veth-host type veth peer name veth-ctr (host namespace)",
+    "ip link set veth-ctr netns <pid>: one end moved into the container's netns",
+    "Inside the netns: rename to eth0, assign 172.17.0.2/16, add default route via bridge IP",
+    "Bring both veth ends and lo up (link state UP end to end)",
+    "ip link set veth-host master docker0: host end attached to the bridge as a port",
+    "iptables -t nat -A POSTROUTING ... -j MASQUERADE: outbound traffic becomes routable",
+    "iptables -t nat -A DOCKER ... -j DNAT --to-destination 172.17.0.2:80: port published, inbound curl succeeds"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real build order</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 4 will show that creating a network namespace as an unprivileged user is allowed, but wiring it into the host's real network is not, unless the caller has CAP_NET_ADMIN in the host's namespace. Predict: what does a user namespace have to do to make 'root inside the container creates the bridge' meaningfully different from 'a real host-root process creates the bridge'?",
+    a:"A user namespace can map a container-internal UID 0 to an unprivileged host UID, so capabilities the container process holds (including CAP_NET_ADMIN) are only effective INSIDE that user namespace's scope — they don't grant any privilege over the host's real network namespace, interfaces, or iptables rules. That's precisely why 'root in the container' can create bridges and veths inside namespaces it fully owns, yet still can't touch the host's actual network stack — the capability is real but its blast radius is bounded by which namespace it's evaluated against, which is chapter 4's whole mechanism." },
+  { lvl:"THINK", q:"Given this chapter's DNAT mechanism, predict what changes about port publishing when a container runs rootless with slirp4netns/pasta instead of a real bridge — and why the runtime can't just install the same iptables DNAT rule.",
+    a:"Rootless mode never gets a real veth end attached to the host's actual network stack — the 'network' the container sees is emulated in userspace by slirp4netns/pasta, which the calling user process owns entirely. The runtime can't install a host-wide iptables DNAT rule because it never has CAP_NET_ADMIN over the host namespace to begin with; instead the userspace proxy itself listens on the host port and forwards accepted connections into the emulated network, achieving the same visible effect (host:PORT reaches the container) through an entirely different, unprivileged mechanism." },
+  { lvl:"THINK", q:"Design exercise: you're asked to add a 'network policy' feature — allow container A to reach container B on port 5432 only, deny everything else between them. Using only this chapter's primitives (no service mesh), sketch how you'd implement it.",
+    a:"Since A and B share one bridge (an L2 segment with no policy of its own), enforcement has to happen in netfilter, not the bridge: install filter-table rules matching on the containers' assigned IPs (or, more robustly, on the specific veth interface names, which are stable per-container) that ACCEPT tcp/5432 between A's and B's addresses and DROP everything else between them, inserted in the FORWARD chain (since bridged/routed inter-container traffic passes through it, confirmed by bridge-nf-call-iptables from §8a). This is exactly the mechanism real container network-policy engines (Cilium, Calico, even Docker's --icc controls) build on — the primitives from this chapter, with a policy engine generating and maintaining the rules instead of a human typing them." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const S = {
+    veth:false, moved:false, attached:false, ip:false, up:false, nat:false, pub:false,
+    outCurls:0, inCurls:0
+  };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 90) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function stepsDone(){ return [S.veth,S.moved,S.attached,S.ip,S.up,S.nat,S.pub].filter(Boolean).length; }
+  function render(){
+    el("sim-phase").textContent = `STEP ${stepsDone()} / 7`;
+    el("cnt-steps").textContent = stepsDone();
+    el("cnt-out").textContent = S.outCurls;
+    el("cnt-in").textContent = S.inCurls;
+    const rows = [];
+    rows.push(`<div class="toporow"><div class="tbox host ${S.veth?"up":""}">HOST netns<span class="sub">${S.attached?"veth-host — attached to bridge":S.veth?"veth-host — unattached":"(no veth yet)"}</span></div>${S.attached?'<div class="tbox bridge up">bridge (docker0)</div>':""}</div>`);
+    rows.push(`<div class="tlink ${S.veth?"on":""}"></div>`);
+    rows.push(`<div class="toporow"><div class="tbox ns ${S.up?"up":""} ${S.moved?"":"dead"}">CONTAINER netns<span class="sub">${S.moved?(S.ip?"eth0, 172.17.0.2/16":"eth0, no IP yet"):"veth-ctr not moved in"}</span></div></div>`);
+    rows.push(`<div class="toporow" style="margin-top:8px"><div class="tbox ${S.nat?"up":"dead"}" style="border-color:${S.nat?"var(--ok)":"var(--border-hi)"}">MASQUERADE ${S.nat?"installed":"missing"}</div><div class="tbox ${S.pub?"up":"dead"}" style="border-color:${S.pub?"var(--ok)":"var(--border-hi)"}">DNAT 8080→80 ${S.pub?"installed":"missing"}</div></div>`);
+    el("sim-topo").innerHTML = rows.join("");
+    ["sc-veth","sc-move","sc-attach","sc-ip","sc-up","sc-nat","sc-pub"].forEach(id=>{ el(id).classList.remove("primary"); });
+  }
+  function need(cond, msg){ if(!cond){ log("FATAL", msg); return false; } return true; }
+
+  el("sc-veth").onclick = ()=>{
+    if (S.veth){ log("WARN","veth pair already exists"); return; }
+    S.veth = true;
+    log("LOG","ip link add veth-host type veth peer name veth-ctr");
+    log("OK","RTM_NEWLINK ok — one link object, two interfaces, both currently in the host namespace");
+    render();
+  };
+  el("sc-move").onclick = ()=>{
+    if (!need(S.veth, "RTNETLINK answers: No such device — create the veth pair first (step 1)")) return;
+    if (S.moved){ log("WARN","veth-ctr already moved"); return; }
+    S.moved = true;
+    log("LOG","ip link set veth-ctr netns <container-pid>");
+    log("OK","veth-ctr now lives in the container's network namespace, renamed eth0");
+    render();
+  };
+  el("sc-attach").onclick = ()=>{
+    if (!need(S.veth, "no veth-host to attach — create the veth pair first (step 1)")) return;
+    if (S.attached){ log("WARN","already attached to the bridge"); return; }
+    S.attached = true;
+    log("LOG","ip link set veth-host master docker0");
+    log("OK","veth-host is now a bridge port — L2 reachable from every other container on this bridge");
+    render();
+  };
+  el("sc-ip").onclick = ()=>{
+    if (!need(S.moved, "eth0 does not exist in the container namespace yet — move the veth in first (step 2)")) return;
+    if (S.ip){ log("WARN","address already assigned"); return; }
+    S.ip = true;
+    log("LOG","ip addr add 172.17.0.2/16 dev eth0 && ip route add default via 172.17.0.1");
+    log("OK","container has an address and a default route pointed at the (not-yet-attached) bridge gateway");
+    render();
+  };
+  el("sc-up").onclick = ()=>{
+    if (!need(S.moved, "nothing to bring up — move the veth in first (step 2)")) return;
+    if (S.up){ log("WARN","links already up"); return; }
+    S.up = true;
+    log("LOG","ip link set veth-host up && ip link set eth0 up (in netns) && ip link set lo up (in netns)");
+    log("OK","operstate: up, end to end");
+    render();
+  };
+  el("sc-nat").onclick = ()=>{
+    if (!need(S.attached, "nothing to MASQUERADE through — attach the bridge first (step 3)")) return;
+    if (S.nat){ log("WARN","MASQUERADE rule already present"); return; }
+    S.nat = true;
+    log("LOG","iptables -t nat -A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE");
+    log("OK","outbound traffic will now get the host's routable source address");
+    render();
+  };
+  el("sc-pub").onclick = ()=>{
+    if (!need(S.attached, "nothing to DNAT into — attach the bridge first (step 3)")) return;
+    if (S.pub){ log("WARN","port already published"); return; }
+    S.pub = true;
+    log("LOG","iptables -t nat -A DOCKER -d 0/0 -p tcp --dport 8080 -j DNAT --to-destination 172.17.0.2:80");
+    log("OK","port 8080 on the host now maps to port 80 in the container");
+    render();
+  };
+  el("sc-curl-out").onclick = ()=>{
+    if (!S.veth || !S.moved || !S.up){ log("FATAL","curl: (7) Failed to connect: Network is unreachable — no working link out of the namespace yet"); return; }
+    if (!S.ip){ log("FATAL","curl: (7) Failed to connect: Network is unreachable — interface is up but has no address/route"); return; }
+    if (!S.attached){ log("FATAL","curl: (7) Failed to connect: Network is unreachable — veth-host isn't attached to anything, the route points at a dead end"); return; }
+    if (!S.nat){ log("FATAL","curl: connect: Network is unreachable — reachable as far as the host, but no MASQUERADE means return traffic can never find its way back to a private, non-routable source IP"); return; }
+    S.outCurls++;
+    log("OK","curl: HTTP/1.1 200 OK — outbound path complete: netns → veth → bridge → MASQUERADE → internet");
+    render();
+  };
+  el("sc-curl-in").onclick = ()=>{
+    if (!S.pub){ log("FATAL","curl: (7) Failed to connect to host port 8080: Connection refused — nothing is DNAT'ing that port anywhere"); return; }
+    if (!S.up || !S.attached){ log("FATAL","DNAT rule exists but the path is incomplete — bring links up and attach the bridge first"); return; }
+    S.inCurls++;
+    log("OK","curl http://host:8080 → HTTP/1.1 200 OK — PREROUTING DNAT'd to 172.17.0.2:80, delivered via bridge + veth");
+    render();
+  };
+  el("sc-reset").onclick = ()=>{
+    Object.assign(S, { veth:false, moved:false, attached:false, ip:false, up:false, nat:false, pub:false });
+    log("WARN","torn down — back to an empty network namespace with only a down loopback interface");
+    render();
+  };
+
+  log("OK","empty network namespace ready — only lo, and it's down");
+  log("HINT","Try curl (outbound) right now — see the exact failure — then build steps 1→7 in order.");
+  render();
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["ctr-03"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#2dd4bf"><a class="cn-btn" href="ctr-02.html"><span>←</span><span><span class="cn-lbl">PREV · CH 02</span><span class="cn-ttl">Namespaces I: PID, UTS, Mount & IPC</span></span></a><div class="cn-mid"><a class="cn-home" href="course-containers.html">☰ Container Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="ctr-01.html">CH 01 · Genesis: From chroot to the OCI Spec</option><option value="ctr-02.html">CH 02 · Namespaces I: PID, UTS, Mount & IPC</option><option value="ctr-03.html" selected>CH 03 · Namespaces II: Network Namespaces & veth</option><option value="ctr-04.html">CH 04 · User Namespaces: Rootless Containers</option><option value="ctr-05.html">CH 05 · cgroups v2: The Unified Resource Hierarchy</option><option value="ctr-06.html">CH 06 · The Root Filesystem: pivot_root & OverlayFS</option><option value="ctr-07.html">CH 07 · Capabilities: Splitting Root Into 40 Pieces</option><option value="ctr-08.html">CH 08 · Seccomp & LSMs: Filtering the Syscall Surface</option><option value="ctr-09.html">CH 09 · The OCI Runtime Spec: runc, crun & config.json</option><option value="ctr-10.html">CH 10 · Container Images: Layers, Manifests & Content Addressing</option><option value="ctr-11.html">CH 11 · Registries: The Distribution Spec, Push/Pull & Auth</option><option value="ctr-12.html">CH 12 · Architecture Showdown: Docker's Daemon vs Podman's Fork-Exec Model</option><option value="ctr-13.html">CH 13 · Networking: Bridges, CNI & libnetwork</option><option value="ctr-14.html">CH 14 · Pods & systemd: Podman's Pod Model and Quadlets</option><option value="ctr-15.html">CH 15 · Production Incidents: Real Container Escapes & CVEs</option><option value="ctr-16.html">CH 16 · Capstone: Build a Container Runtime From Scratch</option></select><span class="cn-prog">03 / 16</span></div><a class="cn-btn" href="ctr-04.html"><span><span class="cn-lbl">NEXT · CH 04</span><span class="cn-ttl">User Namespaces: Rootless Containers</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>
