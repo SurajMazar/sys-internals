@@ -532,6 +532,59 @@ body{padding-bottom:64px}
     26 others — including all of the ones that can reach the host kernel or hardware directly — is dropped
     before your container's first instruction runs.</p>
   </div>
+
+  <h3>All 41 bits, precisely — not just the 14 that survive</h3>
+  <p>"About forty capabilities" is doing a lot of work in this chapter's title, so make it exact. Linux
+  <code>&lt;linux/capability.h&gt;</code> currently defines capabilities numbered 0 through 40 — 41 distinct
+  bits, growing slowly as CAP_SYS_ADMIN sheds responsibility (§6). The table below is the complete list, in
+  kernel bit order, with the precise operation each one gates and whether Docker's and Podman's identical
+  default profile includes it. Skim it once for shape — dense storage/network/device clusters, and a long
+  tail of narrow, single-purpose bits — then use it as a reference for the rest of the chapter.</p>
+  <table class="cmp">
+    <tr><th>#</th><th>CAPABILITY</th><th>PRECISELY WHAT IT GATES</th><th>DEFAULT</th></tr>
+    <tr><td>0</td><td>CAP_CHOWN</td><td>Bypass ownership checks for <code>chown(2)</code>/<code>fchown(2)</code> — change any file's UID/GID, not just files you own.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>1</td><td>CAP_DAC_OVERRIDE</td><td>Bypass file read/write/execute permission checks entirely (DAC = discretionary access control) — the single broadest "ignore the mode bits" grant.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>2</td><td>CAP_DAC_READ_SEARCH</td><td>Bypass file-read and directory read/execute checks specifically (a narrower cousin of DAC_OVERRIDE); also needed for <code>open_by_handle_at(2)</code>.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>3</td><td>CAP_FOWNER</td><td>Bypass checks that normally require your UID to match the file owner — <code>chmod</code>, <code>utime</code>, extended attributes — for operations DAC_OVERRIDE/DAC_READ_SEARCH don't already cover.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>4</td><td>CAP_FSETID</td><td>Don't clear setuid/setgid bits when a privileged process modifies a file; set the setgid bit on a file whose group doesn't match the caller's.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>5</td><td>CAP_KILL</td><td>Send signals via <code>kill(2)</code> to processes you don't own — needed by init-style PID-1 processes reaping and signaling children of other UIDs.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>6</td><td>CAP_SETGID</td><td>Arbitrary manipulation of process GIDs and the supplementary group list; forge GID over a Unix socket's peer credentials; write a user namespace's <code>gid_map</code>.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>7</td><td>CAP_SETUID</td><td>Arbitrary manipulation of process UIDs (<code>setuid</code>/<code>setreuid</code>/<code>setresuid</code>); forge UID over a Unix socket's peer credentials — what lets a container's init drop from root to an app UID.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>8</td><td>CAP_SETPCAP</td><td>Add capabilities from your own bounding set into your own inheritable set, and shrink your own bounding set — the capability that lets a process manage <i>its own future</i> capability ceiling.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>9</td><td>CAP_LINUX_IMMUTABLE</td><td>Set the ext2/3/4-family <code>FS_APPEND_FL</code>/<code>FS_IMMUTABLE_FL</code> inode flags — <code>chattr +a</code>/<code>+i</code>.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>10</td><td>CAP_NET_BIND_SERVICE</td><td>Bind a socket to a privileged port, &lt;1024 — the one bit nginx/Apache/sshd actually need.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>11</td><td>CAP_NET_BROADCAST</td><td>Reserved for socket broadcast/multicast permission checks; unused by the current kernel — currently a no-op capability kept for ABI stability.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>12</td><td>CAP_NET_ADMIN</td><td>Broad network administration: interface up/down and address changes, IP routing table edits, netfilter/firewall rule changes, promiscuous mode, most privileged socket options.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>13</td><td>CAP_NET_RAW</td><td>Open raw and packet sockets (craft/sniff arbitrary frames); bind to a non-local address for transparent proxying — what <code>ping</code> actually needs (§11 incident 3 covers its double edge).</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>14</td><td>CAP_IPC_LOCK</td><td>Lock memory against swap — <code>mlock</code>/<code>mlockall</code>, <code>mmap(MAP_LOCKED)</code>, <code>shmctl(SHM_LOCK)</code>. Databases that refuse to let credential pages hit swap need this.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>15</td><td>CAP_IPC_OWNER</td><td>Bypass permission checks on System V IPC objects (message queues, semaphores, shared memory) you don't own.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>16</td><td>CAP_SYS_MODULE</td><td>Load and unload kernel modules — <code>init_module(2)</code>/<code>finit_module(2)</code>/<code>delete_module(2)</code>. As host-kernel-code-execution as a capability gets.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>17</td><td>CAP_SYS_RAWIO</td><td>Raw I/O — <code>iopl(2)</code>/<code>ioperm(2)</code>, direct access to <code>/dev/mem</code> and <code>/dev/kmem</code>, assorted device-specific raw ioctls.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>18</td><td>CAP_SYS_CHROOT</td><td>Call <code>chroot(2)</code>; also gates entering an existing mount namespace via <code>setns(2)</code> on some kernel versions.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>19</td><td>CAP_SYS_PTRACE</td><td>Trace or inspect any process via <code>ptrace(2)</code> regardless of owner — read another user's memory, single-step their code, read their <code>/proc/[pid]</code> entries.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>20</td><td>CAP_SYS_PACCT</td><td>Enable/disable BSD-style process accounting via <code>acct(2)</code>.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>21</td><td>CAP_SYS_ADMIN</td><td>The historical catch-all this chapter's §6 exists to explain — <code>mount()</code>, <code>pivot_root()</code>, <code>quotactl()</code>, hostname changes, keyring administration, and roughly two dozen otherwise-homeless operations.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>22</td><td>CAP_SYS_BOOT</td><td><code>reboot(2)</code> and <code>kexec_load(2)</code> — halt, power off, or hot-swap the running kernel.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>23</td><td>CAP_SYS_NICE</td><td>Raise your own or another process's scheduling priority/nice value or real-time policy; set another process's CPU affinity; set I/O scheduling class via <code>ioprio_set(2)</code>.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>24</td><td>CAP_SYS_RESOURCE</td><td>Override resource limits (raise a hard <code>RLIMIT_*</code>), use the ext2/3/4 reserved-blocks percentage, override filesystem quotas.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>25</td><td>CAP_SYS_TIME</td><td>Set the system clock — <code>settimeofday(2)</code>, <code>clock_settime(2)</code>, <code>adjtimex(2)</code>. Shared across every namespace unless a dedicated time namespace is used.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>26</td><td>CAP_SYS_TTY_CONFIG</td><td><code>vhangup(2)</code> and related tty-layer configuration operations.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>27</td><td>CAP_MKNOD</td><td>Create device nodes and FIFOs via <code>mknod(2)</code> — the capability behind §11 incident 2's block-device escape technique.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>28</td><td>CAP_LEASE</td><td>Take an <code>fcntl(F_SETLEASE)</code> lease on a file you don't own.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>29</td><td>CAP_AUDIT_WRITE</td><td>Write records into the kernel's audit log — needed by login/session-tracking daemons that want to log without full audit-control power.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>30</td><td>CAP_AUDIT_CONTROL</td><td>Enable/disable kernel auditing wholesale and change its filter rule set.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>31</td><td>CAP_SETFCAP</td><td>Set file capabilities on a binary — literally what <code>setcap(8)</code> calls (the <code>setxattr("security.capability")</code> from §8c). Needed to grant other files capabilities from inside a build stage.</td><td><span class="pill g">IN</span></td></tr>
+    <tr><td>32</td><td>CAP_MAC_OVERRIDE</td><td>Override a loaded Mandatory Access Control policy (chiefly meaningful to Smack; SELinux and AppArmor implement their own separate LSM hooks rather than consulting this bit — chapter 8).</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>33</td><td>CAP_MAC_ADMIN</td><td>Change MAC policy/configuration itself (again, chiefly a Smack-era capability).</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>34</td><td>CAP_SYSLOG</td><td>Privileged <code>syslog(2)</code> operations, and — when <code>kptr_restrict</code> is enabled — the ability to see real kernel pointer addresses in <code>/proc</code> that are otherwise hashed out.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>35</td><td>CAP_WAKE_ALARM</td><td>Arm a timer (<code>CLOCK_REALTIME_ALARM</code>/<code>CLOCK_BOOTTIME_ALARM</code>) that can wake a suspended system.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>36</td><td>CAP_BLOCK_SUSPEND</td><td>Use mechanisms that can block system suspend outright — e.g. <code>epoll</code> with <code>EPOLLWAKEUP</code>.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>37</td><td>CAP_AUDIT_READ</td><td>Read the audit log via a multicast netlink socket, without needing AUDIT_CONTROL's write/configure power.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>38</td><td>CAP_PERFMON</td><td>Use performance-monitoring facilities, chiefly <code>perf_event_open(2)</code> — split out of CAP_SYS_ADMIN in kernel 5.8 specifically so profilers no longer need "almost root" (§6).</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>39</td><td>CAP_BPF</td><td>Load and manage most privileged BPF programs and maps via <code>bpf(2)</code> — also split out of CAP_SYS_ADMIN in 5.8; some BPF program types additionally require CAP_PERFMON or CAP_NET_ADMIN alongside it.</td><td><span class="pill b">out</span></td></tr>
+    <tr><td>40</td><td>CAP_CHECKPOINT_RESTORE</td><td>Checkpoint/restore-specific operations (e.g. writing <code>/proc/sys/kernel/ns_last_pid</code> to control the next allocated PID) without needing the whole of CAP_SYS_ADMIN — added in 5.9, driven directly by CRIU's needs.</td><td><span class="pill b">out</span></td></tr>
+  </table>
+  <p style="font-size:12.5px;color:var(--dim)">14 <span class="pill g" style="vertical-align:middle">IN</span> the default profile, 27 <span class="pill b" style="vertical-align:middle">out</span> — 14/41 ≈ 34%, which is the real denominator behind the "40" this chapter's title rounds to; CAP_NET_BROADCAST (11) is a defined but currently inert bit, kept only for numbering stability.</p>
 </section>
 
 <!-- ================= S6 STILL COSTS ================= -->
@@ -553,6 +606,27 @@ body{padding-bottom:64px}
       <div class="deck-dots"></div>
       <button class="btn primary next">Next →</button>
     </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">A WORKED EXAMPLE — WHAT "ALMOST ROOT" MEANS IN ONE SITTING</div>
+    <p>Take a process that holds exactly one non-default capability, <code>CAP_SYS_ADMIN</code>, and nothing
+    else — no <code>CAP_SYS_MODULE</code>, no <code>CAP_SYS_PTRACE</code>, no <code>CAP_NET_ADMIN</code>. In a
+    single sitting, without ever touching another bit, that process can: <b>(1)</b> <code>mount()</code> a
+    fresh <code>tmpfs</code> or bind-mount any path it can already read over any other path, including
+    shadowing a binary the host trusts; <b>(2)</b> <code>pivot_root()</code> into a different filesystem view
+    entirely (chapter 6); <b>(3)</b> mount <code>cgroupfs</code> itself and write to a v1
+    <code>release_agent</code> file, arming host-executed code the moment a cgroup empties out — exactly §11's
+    CVE-2022-0492; <b>(4)</b> call <code>setns(2)</code> to join another process's mount namespace, given a
+    file descriptor to it; <b>(5)</b> issue <code>keyctl(KEYCTL_CHOWN)</code>/<code>keyctl(KEYCTL_SETPERM)</code>
+    to reassign ownership of kernel keyring entries it doesn't own; <b>(6)</b> call <code>quotactl()</code> to
+    rewrite another user's disk quota; <b>(7)</b> flip <code>sethostname()</code>/<code>setdomainname()</code>
+    for the whole UTS namespace; and, on kernels before 5.8, <b>(8)</b> attach performance-monitoring probes via
+    <code>perf_event_open()</code> and load BPF programs — both since carved into their own bits precisely
+    because they didn't belong bundled with the rest of this list. None of these eight is individually
+    "CAP_SYS_MODULE-load-a-rootkit" dangerous. Together, reachable from one bit, they are enough to remount the
+    world the rest of the process sees, which is the entire reason hardening guides single this bit out by name
+    rather than treating it as one more line in a table.</p>
   </div>
 
   <p>Three other costs compound the CAP_SYS_ADMIN problem:</p>
@@ -802,6 +876,30 @@ P'(bounding)    = P(bounding)             <span class="c">/* only prctl(PR_CAPBS
   than either engine's own default. The lesson generalizes: an engine's default profile is a reasonable
   baseline for compatibility, not a security ceiling — production hardening regularly starts from
   <code>--cap-drop=ALL</code> and adds back only what a specific workload has actually been shown to need.</p>
+
+  <h3>Incident 4: the self-inflicted grant — securityContext.capabilities.add: ["SYS_ADMIN"]</h3>
+  <p>Nothing above requires <code>--privileged</code> to be dangerous — a scoped, seemingly-reasonable
+  capability addition is enough on its own, and the pattern recurs constantly in Kubernetes manifests. A
+  recurring real-world shape: a workload legitimately needs to perform a FUSE mount inside its own container
+  (<code>gcsfuse</code>, <code>s3fs</code>, a CI runner mounting a build cache) and the manifest author, wanting
+  to avoid the much louder <code>privileged: true</code> flag, instead writes exactly one line:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">YAML</span><span>the line that undoes every other hardening setting in the pod spec</span></div>
+    <pre>securityContext:
+  <span class="k">privileged</span>: <span class="n">false</span>          <span class="c"># looks hardened...</span>
+  <span class="k">capabilities</span>:
+    <span class="k">add</span>: [<span class="s">"SYS_ADMIN"</span>]      <span class="c"># ...isn't. this one line re-opens §6's entire grab bag.</span></pre>
+  </div>
+  <p>The consequence is not hypothetical: a container with <code>CAP_SYS_ADMIN</code> and nothing else can
+  still perform the exact <code>cgroup v1 release_agent</code> sequence behind CVE-2022-0492 (incident 1) —
+  mount its own cgroupfs view, write to <code>release_agent</code>, arm a host-executed command — with
+  <code>privileged</code> reading <code>false</code> the entire time in every audit dashboard and
+  <code>kubectl describe</code> output that only checks that one field. This is precisely why the CIS Kubernetes
+  Benchmark and Kubernetes's own Restricted Pod Security Standard don't special-case <code>SYS_ADMIN</code> —
+  they forbid <i>any</i> addition to the default-dropped set, full stop, because a scanner that only flags
+  <code>privileged: true</code> misses this pattern entirely. The honest fix for the FUSE use case is almost
+  never "add SYS_ADMIN back" — it's running the mount from a sidecar with a narrowly scoped, audited exception,
+  or moving to a CSI driver that performs the mount outside any application container's namespace altogether.</p>
 </section>
 
 <!-- ================= S12 INTERVIEW ================= -->
@@ -868,6 +966,72 @@ P'(bounding)    = P(bounding)             <span class="c">/* only prctl(PR_CAPBS
     new-&gt;cap_inheritable = old-&gt;cap_inheritable;   <span class="c">/* unchanged */</span>
     <span class="k">return</span> <span class="n">0</span>;
 }</pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">C</span><span>libcap — the real cap_set_proc() call shape a hardening tool actually makes</span></div>
+    <pre><span class="c">/* the userspace side of §8c's capset(2) — this is what setcap(8), capsh(1),</span>
+<span class="c">   and most Go/Python capability libraries wrap under the hood */</span>
+<span class="k">int</span> <span class="f">drop_to_one_capability</span>(<span class="k">void</span>)
+{
+    cap_t caps = <span class="f">cap_get_proc</span>();              <span class="c">/* read this thread's current 3 sets */</span>
+    <span class="k">const</span> cap_value_t keep[] = { CAP_NET_BIND_SERVICE };
+
+    <span class="f">cap_clear</span>(caps);                          <span class="c">/* zero permitted, effective, inheritable */</span>
+    <span class="f">cap_set_flag</span>(caps, CAP_PERMITTED,   <span class="n">1</span>, keep, CAP_SET);
+    <span class="f">cap_set_flag</span>(caps, CAP_EFFECTIVE,   <span class="n">1</span>, keep, CAP_SET);
+    <span class="f">cap_set_flag</span>(caps, CAP_INHERITABLE, <span class="n">1</span>, keep, CAP_SET);
+
+    <span class="k">if</span> (<span class="f">cap_set_proc</span>(caps) != <span class="n">0</span>)        <span class="c">/* → sys_capset(2), installs the new cred */</span>
+        <span class="k">return</span> -<span class="n">1</span>;
+
+    <span class="c">/* still must raise it into ambient to survive execve() of a non-privileged file (§7) */</span>
+    <span class="k">if</span> (<span class="f">prctl</span>(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BIND_SERVICE, <span class="n">0</span>, <span class="n">0</span>) != <span class="n">0</span>)
+        <span class="k">return</span> -<span class="n">1</span>;
+
+    <span class="f">cap_free</span>(caps);
+    <span class="k">return</span> <span class="n">0</span>;
+}
+
+<span class="c">/* the one-way ratchet from §8c: this can only ever be called with a capability</span>
+<span class="c">   THIS process currently holds in its bounding set — it never grows the set back */</span>
+<span class="k">for</span> (<span class="k">int</span> cap = <span class="n">0</span>; cap &lt;= CAP_LAST_CAP; cap++)
+    <span class="k">if</span> (cap != CAP_NET_BIND_SERVICE)
+        <span class="f">prctl</span>(PR_CAPBSET_DROP, cap, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>);   <span class="c">/* shrink bounding, one bit at a time */</span></pre>
+  </div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>runc/libcontainer/capabilities — the same operation, as the runtime actually performs it</span></div>
+    <pre><span class="c">// simplified from libcontainer/capabilities/capabilities_linux.go — runc calls this</span>
+<span class="c">// once, from inside the container's own PID 1, immediately before its execve()</span>
+<span class="k">func</span> <span class="f">dropBoundingSet</span>(keep []capability.Cap) <span class="k">error</span> {
+    pid, err := capability.<span class="f">NewPid2</span>(<span class="n">0</span>)              <span class="c">// operate on self ("pid 0")</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+    <span class="k">if</span> err := pid.<span class="f">Load</span>(); err != <span class="k">nil</span> { <span class="k">return</span> err }  <span class="c">// capget(2) under the hood</span>
+
+    pid.<span class="f">Clear</span>(capability.BOUNDING)
+    pid.<span class="f">Set</span>(capability.BOUNDING, keep...)
+
+    <span class="k">for</span> _, c := <span class="k">range</span> capability.<span class="f">List</span>() {
+        <span class="k">if</span> !<span class="f">contains</span>(keep, c) {
+            <span class="k">if</span> err := unix.<span class="f">Prctl</span>(unix.PR_CAPBSET_DROP, uintptr(c), <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>); err != <span class="k">nil</span> {
+                <span class="k">return</span> err    <span class="c">// PR_CAPBSET_DROP, one bit per call — no batch form exists</span>
+            }
+        }
+    }
+    <span class="k">return</span> pid.<span class="f">Apply</span>(capability.CAPS)         <span class="c">// capset(2) — commits permitted/effective/inheritable</span>
+}</pre>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">WHY THIS RUNS BEFORE execve(), NOT AFTER</div>
+    <p>runc's own process — the one that read <code>config.json</code>, called <code>clone()</code>/<code>unshare()</code>
+    for the namespaces, and is about to become the container's PID 1 — performs this capability drop on
+    <i>itself</i>, in the child, strictly before calling <code>execve()</code> on the configured entrypoint. Doing
+    it any later would mean the entrypoint briefly runs with runc's own (potentially broader, host-side) capability
+    set intact; doing it via a separate helper process invites exactly the kind of file-descriptor/PID race that
+    made CVE-2019-5736 possible (chapter 15) — the drop has to happen in the same process image that becomes the
+    workload, with no window in between.</p>
   </div>
 
   <div class="codeblock">
@@ -1009,237 +1173,6 @@ P'(bounding)    = P(bounding)             <span class="c">/* only prctl(PR_CAPBS
 </section>
 
 </main>
-<script>
-"use strict";
-/* ============================================================
-   0. GENERIC MACHINERY
-   ============================================================ */
-function el(id){ return document.getElementById(id); }
-
-function stepper(rootId, steps){
-  const root = el(rootId);
-  const stage = root.querySelector(".deck-stage");
-  const cap = root.querySelector(".deck-cap");
-  const dots = root.querySelector(".deck-dots");
-  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
-  let i = -1;
-  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
-    d.onclick=()=>go(k); dots.appendChild(d); });
-  function go(k){
-    k = Math.max(0, Math.min(steps.length-1, k));
-    if (k === i) return;
-    i = k;
-    stage.classList.remove("in");
-    setTimeout(()=>{
-      stage.innerHTML = steps[i].stage;
-      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
-      stage.classList.add("in");
-      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
-      prev.disabled = i===0; next.disabled = i===steps.length-1;
-      if (steps[i].onshow) steps[i].onshow(stage);
-    }, 120);
-  }
-  prev.onclick = ()=>go(i-1);
-  next.onclick = ()=>go(i+1);
-  go(0);
-}
-
-function qaCards(rootId, items){
-  const root = el(rootId);
-  items.forEach(it=>{
-    const d = document.createElement("div");
-    d.className = "qa";
-    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
-      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
-      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
-    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
-    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
-    root.appendChild(d);
-  });
-}
-
-/* ============================================================
-   1. TIMELINE (§2)
-   ============================================================ */
-const TL = [
-  { yr:"1970s", l:"binary root", d:"<b>Unix's original model.</b> Every privileged operation — mount, reboot, raw sockets, changing any file's owner — checks one thing: is the caller's effective UID zero? There is no smaller unit of privilege than 'all of root.'" },
-  { yr:"1997", l:"POSIX.1e", d:"<b>The POSIX.1e capabilities draft is withdrawn</b> by the IEEE working group after years without consensus — but its bit layout and naming (CAP_CHOWN, CAP_NET_BIND_SERVICE, CAP_SYS_ADMIN…) become the de facto spec every later implementation, Linux included, copies wholesale." },
-  { yr:"1999", l:"Linux 2.2/2.4 internals", d:"<b>Linux implements per-thread capability sets internally</b> — task_struct gains cap_effective/cap_permitted fields — but without syscalls or tools to manage per-file grants, root at execve() still practically means 'has every capability,' so the binary model's problems persist in practice." },
-  { yr:"2008", l:"file capabilities (2.6.24)", d:"<b>File capabilities land.</b> setcap/getcap and the security.capability extended attribute let a single binary — /bin/ping, say — be granted exactly CAP_NET_RAW instead of the setuid-root bit, finally making 'one sliver of root' expressible without an all-or-nothing setuid grant." },
-  { yr:"2008", l:"bounding set (2.6.25)", d:"<b>The per-process capability bounding set arrives</b> via prctl(PR_CAPBSET_DROP) — a process can permanently shrink its own future ceiling. This one-way ratchet, invented years before Docker existed, becomes the exact mechanism container engines use to enforce 'this container can never regain CAP_SYS_ADMIN.'" },
-  { yr:"2013", l:"user namespaces (3.8)", d:"<b>Unprivileged user namespaces land.</b> Capabilities become namespace-relative — CAP_SYS_ADMIN evaluated inside a user namespace no longer automatically means CAP_SYS_ADMIN on the host. Chapter 4 covers this in depth; it is the missing piece that makes rootless container capabilities meaningfully safer than rootful ones." },
-  { yr:"2014", l:"Docker's default profile", d:"<b>Docker ships a curated default capability list instead of full root</b> for every container — codifying 'drop most, keep 14' as an industry default years before it was a security-conference talking point. Podman later adopts the identical list via the shared containers/common library." },
-  { yr:"2015", l:"ambient capabilities (4.3)", d:"<b>Ambient capabilities land</b>, motivated explicitly by container and systemd use cases: previously, a process dropping from root to a non-root UID lost all capabilities at the next execve() unless the target binary had file capabilities baked in. Ambient sets let a specific capability survive that transition on purpose." },
-  { yr:"2016", l:"OCI Runtime Spec", d:"<b>The OCI Runtime Spec standardizes the five-set model</b> as literal config.json arrays (bounding/effective/inheritable/permitted/ambient) — any compliant engine, Docker via runc or Podman via crun, must express capabilities in exactly this shape (chapter 9)." },
-  { yr:"2020", l:"chipping at SYS_ADMIN (5.8+)", d:"<b>CAP_BPF and CAP_PERFMON split out</b> of CAP_SYS_ADMIN's historical territory, followed by CAP_CHECKPOINT_RESTORE in 5.9 — a slow, ongoing admission that 'gate it behind SYS_ADMIN when unsure' accreted too much onto one bit for fifteen years." }
-];
-const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
-TL.forEach((t,i)=>{
-  const item = document.createElement("div");
-  item.className = "tl-item" + (i===6 ? " on" : "");
-  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
-  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
-  tlTrack.appendChild(item);
-});
-tlDetail.innerHTML = TL[6].d;
-/* ============================================================
-   2. DECK: suser() → capable() (§5)
-   ============================================================ */
-(function(){
-  const box = (t, inner, style="") =>
-    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:220px;${style}">
-     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
-  const cell = (t, c="#8b94a7", bg="transparent") =>
-    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
-  const wrap = (a,b)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${a}${b}</div>`;
-  stepper("deckModel", [
-    { stage: box("BEFORE — ONE BIT", cell("mount() → if (!suser()) EPERM") + cell("reboot() → if (!suser()) EPERM") + cell("raw socket → if (!suser()) EACCES") + cell("chown-any-file → if (!suser()) EPERM") + cell("...~36 more check sites, same test", "#f25c54", "rgba(242,92,84,.08)")),
-      cap:`<b>Where we start.</b> Every one of roughly forty distinct privileged operations in the kernel funnels through the identical <code>euid==0</code> test. There is exactly one lever: grant the UID, or don't.` },
-    { stage: wrap(box("ASSIGN EACH OPERATION ITS OWN BIT", cell("mount() → bit 21 (CAP_SYS_ADMIN)","#60a5fa") + cell("reboot() → bit 22 (CAP_SYS_BOOT)","#60a5fa") + cell("raw socket → bit 13 (CAP_NET_RAW)","#60a5fa") + cell("chown-any-file → bit 0 (CAP_CHOWN)","#60a5fa")), box("ONE 64-BIT WORD PER PROCESS", cell("kernel_cap_t — ~40 bits assigned","#2dd4bf"))),
-      cap:`<b>The split.</b> Instead of one shared UID-zero test, each privileged-operation site gets its own numbered bit, and every process now carries a bitmask instead of relying purely on its UID.` },
-    { stage: box("EVERY CHECK SITE IS REWRITTEN", cell("mount() → if (!capable(CAP_SYS_ADMIN)) EPERM","#4ade80") + cell("reboot() → if (!capable(CAP_SYS_BOOT)) EPERM","#4ade80") + cell("raw socket → if (!capable(CAP_NET_RAW)) EACCES","#4ade80") + cell("chown-any-file → if (!capable(CAP_CHOWN)) EPERM","#4ade80")),
-      cap:`<b>capable() replaces suser().</b> Same call sites, same kernel functions guarding them — only the test changed, from "is UID zero" to "is this specific bit set in this process's effective capability set." Nothing about the surrounding code needed to change.` },
-    { stage: wrap(box("A PROCESS THAT NEEDS ONLY ONE THING", cell("CAP_NET_BIND_SERVICE: ON","#4ade80","rgba(74,222,128,.08)") + cell("everything else: OFF","#5b6475")), box("RESULT", cell("can bind port 80","#4ade80") + cell("cannot mount()","#f25c54") + cell("cannot reboot()","#f25c54") + cell("cannot load a kernel module","#f25c54"))),
-      cap:`<b>The payoff.</b> A process that only ever needed to bind a low port can now hold exactly that one bit — the other roughly thirty-nine remain off, enforced by the kernel at every one of those rewritten call sites. This is the entire mechanism behind a container's default capability profile.` }
-  ]);
-})();
-
-/* ============================================================
-   3. DECK: CAP_SYS_ADMIN grab bag (§6)
-   ============================================================ */
-(function(){
-  const item = (t,d) => `<div style="border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;font-family:var(--mono);font-size:11px;color:#c6cddb">${t}<span style="display:block;font-size:9.5px;color:var(--dim);margin-top:2px">${d}</span></div>`;
-  stepper("deckAdmin", [
-    { stage: item("mount() / umount2()","filesystem attach/detach — the operation the capability was originally created for"),
-      cap:`<b>The original job.</b> CAP_SYS_ADMIN's name literally means "system administration," and mount/umount is the canonical example — a coherent, single-purpose grant so far.` },
-    { stage: item("mount() / umount2()","original purpose") + item("pivot_root()","chapter 6's root-filesystem switch") + item("quotactl()","disk quota administration") + item("swapon() / swapoff()","swap space management"),
-      cap:`<b>Adjacent filesystem/storage operations accrete first.</b> Each addition is individually defensible — they're all "administration" in some sense — but the bit is no longer guarding one idea, it's guarding a category.` },
-    { stage: item("mount / pivot_root / quotactl / swap","storage, as before") + item("sethostname() / setdomainname()","chapter 2's UTS namespace territory") + item("various device ioctl()s","hardware-adjacent controls with no better home") + item("keyctl(KEYCTL_CHOWN/KEYCTL_SETPERM)","kernel keyring administration"),
-      cap:`<b>Unrelated subsystems join because there's nowhere better to put them.</b> Hostname changes have nothing to do with mounting a filesystem; keyring permissions have nothing to do with either. Each addition individually seemed reasonable at the time it was made.` },
-    { stage: item("everything above","~10 unrelated subsystems") + item("perf_event_open() (pre-5.8)","performance monitoring, now split into CAP_PERFMON") + item("BPF operations (pre-5.8)","now split into CAP_BPF") + item("~15-20 more scattered ioctls and syscalls","across networking, storage, and device subsystems"),
-      cap:`<b>By the mid-2010s, roughly thirty distinct, largely unrelated operations were reachable through one bit</b> — earning it the nickname "the new root." A process with CAP_SYS_ADMIN and nothing else is, for most practical attacker purposes, not meaningfully constrained. This is exactly why no container engine's default profile grants it.` }
-  ]);
-})();
-
-/* ============================================================
-   4. CAPABILITY SET EXPLORER (§7)
-   ============================================================ */
-const CAPSETS = {
-  bounding:{ n:"bounding (P_bnd)", f:"struct cred → cap_bset", r:"A ceiling, not a grant: the ultimate ceiling on which capabilities this process — or anything it ever execve()s — can acquire, ever again. Being in the bounding set does not mean the process can use a capability right now; it means the capability is not permanently forbidden.", l:"Inherited across fork() and execve() unchanged, except that prctl(PR_CAPBSET_DROP) can remove bits from it — a one-way ratchet for the life of the process and every descendant.", d:"On execve(): F(permitted) is masked by the bounding set before becoming part of the new permitted set — a file capability the bounding set doesn't allow is simply discarded. This is precisely how container engines guarantee a hardened container can never regain CAP_SYS_ADMIN even by execve()ing a binary with file capabilities set." },
-  permitted:{ n:"permitted (P_p)", f:"struct cred → cap_permitted", r:"The capabilities this process is allowed to use, whether or not they are currently active. A process can move a capability from permitted into effective (via capset()) without any privileged operation — the permission was already granted; the process is just switching it on.", l:"Computed fresh at every execve() by the §8 formula from the old process's inheritable/bounding sets and the new file's permitted/inheritable bits.", d:"On execve(): becomes (P(inheritable) & F(inheritable)) | (F(permitted) & P(bounding)) | new-ambient — the single most load-bearing line in the whole model." },
-  effective:{ n:"effective (P_e)", f:"struct cred → cap_effective", r:"What capable() actually tests. A capability sitting in permitted but not effective is a promise, not a power — the kernel checks this set, and only this set, when a privileged operation is attempted right now.", l:"A process can freely toggle bits between effective and permitted via capset() at any time (no privilege needed to lower or raise within what's already permitted) — many daemons drop most capabilities from effective at startup and raise one only for the brief window it's needed.", d:"On execve(): if the file has the 'effective' bit set in its file capabilities, the whole new permitted set becomes effective immediately; otherwise only the ambient set is effective and the rest sit in permitted, inert, until explicitly raised." },
-  inheritable:{ n:"inheritable (P_i)", f:"struct cred → cap_inheritable", r:"Capabilities a process is willing to hand down across execve() — but only if the target file's own inheritable set (a per-file, setcap-managed attribute) also names them. Both sides must agree.", l:"Unchanged by execve() itself (P'(inheritable) = P(inheritable)) — only capset() can modify it directly.", d:"Rarely used directly in container engines today; ambient capabilities (below) solve the same underlying problem — 'keep this capability after execve()' — without requiring every target binary to carry matching file capabilities." },
-  ambient:{ n:"ambient (P_a)", f:"struct cred → cap_ambient", r:"Added in Linux 4.3 (2015) specifically so a non-root process could drop from UID 0 to an unprivileged UID and still retain a named capability across execve(), without needing file capabilities baked into every binary it might run. A capability can only be raised into ambient if it is already in both permitted and inheritable.", l:"Cleared whenever permitted or inheritable loses the corresponding bit; otherwise preserved across execve() of a non-privileged file.", d:"On execve(): if the target file is 'privileged' (has any file capabilities, or is setuid/setgid), the ambient set is cleared entirely — ambient capabilities are only for execve()ing ordinary, unprivileged binaries." }
-};
-const csDetail = el("arch-detail");
-function showCapset(key){
-  const a = CAPSETS[key];
-  csDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
-    <div class="ad-sec">DEFINITION</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">ON execve()</div>${a.d}`;
-  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
-}
-document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showCapset(c.dataset.p));
-showCapset("permitted");
-
-/* ============================================================
-   5. DECK: execve() capability computation (§8a)
-   ============================================================ */
-(function(){
-  const row = (t,c="#8b94a7",bg="transparent") => `<div style="border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin:5px 0;font-family:var(--mono);font-size:11px;color:${c};background:${bg}">${t}</div>`;
-  const col = (title, inner) => `<div style="flex:1;min-width:230px"><div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px;text-align:center">${title}</div>${inner}</div>`;
-  const wrap = (...cols)=>`<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">${cols.join("")}</div>`;
-  stepper("deckExec", [
-    { stage: wrap(col("BEFORE: shell, UID 0, Docker default", row("permitted = 14 default caps","#2dd4bf") + row("effective = same 14","#2dd4bf") + row("bounding = same 14","#2dd4bf") + row("ambient = {}")), col("TARGET FILE: /usr/sbin/nginx", row("no security.capability xattr","#5b6475") + row("not setuid — 'file is privileged' = false"))),
-      cap:`<b>Setup.</b> A shell with Docker's default 14-bit set calls execve() on an ordinary binary with no file capabilities of its own and no setuid bit — the common case for almost every process a container ever runs.` },
-    { stage: wrap(col("STEP 1 — ambient", row("file not privileged → P'(ambient) = P(ambient) = {}","#60a5fa"))),
-      cap:`<b>Ambient first.</b> Since the file isn't privileged, ambient just carries forward unchanged — here, empty, since nothing raised anything into it.` },
-    { stage: wrap(col("STEP 2 — permitted", row("(P(inheritable) & F(inheritable)) = {} & {} = {}") + row("| (F(permitted) & P(bounding)) = {} & 14-set = {}") + row("| P'(ambient) = {}") + row("= P'(permitted) = {}  ← EMPTY","#f25c54","rgba(242,92,84,.08)"))),
-      cap:`<b>The file grants nothing.</b> Because nginx's binary carries no file capabilities, F(permitted) is empty — the bounding set doesn't matter here, since intersecting anything with the empty set is still empty. The new process's permitted set collapses to empty.` },
-    { stage: wrap(col("STEP 3 — effective", row("F(effective) is false (no file caps) → P'(effective) = P'(ambient) = {}","#f25c54","rgba(242,92,84,.08)")), col("RESULT", row("nginx runs with ZERO capabilities","#f25c54") + row("relies purely on file permissions + its listening ports already being bound by root before dropping privilege", "#8b94a7"))),
-      cap:`<b>The counterintuitive result — and it's correct.</b> An ordinary binary execve()'d from a capable shell does not inherit the shell's capabilities unless they're explicitly threaded through inheritable+ambient. This is why real container images that need nginx to bind port 80 either start it as root before it drops privilege internally, or set <code>CAP_NET_BIND_SERVICE</code> as a file capability on the binary directly — 'the shell had it' is never enough on its own.` }
-  ]);
-})();
-
-/* ============================================================
-   6. CAPABILITY CALCULATOR (§8b)
-   ============================================================ */
-(function(){
-  const CAP_NAMES = ["CHOWN","DAC_OVERRIDE","FOWNER","FSETID","KILL","SETGID","SETUID","SETPCAP","NET_BIND_SERVICE","NET_RAW","SYS_CHROOT","MKNOD","AUDIT_WRITE","SETFCAP"];
-  const BOUND = [
-    { name:"empty (--cap-drop=ALL)", set:[] },
-    { name:"minimal (NET_BIND_SERVICE only)", set:["NET_BIND_SERVICE"] },
-    { name:"Docker default (14)", set:CAP_NAMES },
-    { name:"--privileged (~40, incl. SYS_ADMIN)", set:CAP_NAMES.concat(["SYS_ADMIN","SYS_MODULE","NET_ADMIN","SYS_PTRACE"]) }
-  ];
-  const FCAP = [
-    { name:"none", perm:[], eff:false },
-    { name:"CAP_NET_BIND_SERVICE (effective)", perm:["NET_BIND_SERVICE"], eff:true },
-    { name:"CAP_NET_BIND_SERVICE (not effective)", perm:["NET_BIND_SERVICE"], eff:false },
-    { name:"setuid-root (all F, effective)", perm:CAP_NAMES.concat(["SYS_ADMIN","SYS_MODULE","NET_ADMIN","SYS_PTRACE"]), eff:true }
-  ];
-  function render(){
-    const b = BOUND[+el("bound-slider").value];
-    const f = FCAP[+el("fcap-slider").value];
-    el("bound-val").textContent = b.name;
-    el("fcap-val").textContent = f.name;
-    const permitted = f.perm.filter(c => b.set.includes(c));
-    const effective = f.eff ? permitted : [];
-    const ALL = Array.from(new Set(b.set.concat(f.perm)));
-    el("capcalc-eff").innerHTML = ALL.map(c=>{
-      const on = effective.includes(c);
-      const danger = ["SYS_ADMIN","SYS_MODULE","NET_ADMIN","SYS_PTRACE"].includes(c);
-      return `<div class="bitcell ${on?"on":""} ${danger?"danger":""}">CAP_${c}</div>`;
-    }).join("") || `<div style="font-family:var(--mono);font-size:11px;color:var(--dim)">no capabilities in the resulting permitted set</div>`;
-    el("capcalc-note").innerHTML = `Resulting <b style="color:var(--pg)">effective</b> set after execve(): <b>${effective.length}</b> capabilit${effective.length===1?"y":"ies"}. ${f.eff ? "The file's 'effective' bit was set, so the whole computed permitted set activates immediately." : effective.length===0 ? "The file's 'effective' bit was NOT set (or there's no file capability) — anything landing in permitted stays inert until the process calls capset() itself." : ""} Highlighted in green above; capabilities highlighted in red are ones this chapter singles out as disproportionately dangerous.`;
-  }
-  el("bound-slider").oninput = render;
-  el("fcap-slider").oninput = render;
-  render();
-})();
-
-/* ============================================================
-   7. ATTACK SURFACE CHART (§10)
-   ============================================================ */
-(function(){
-  const WEIGHT = { base:1.4, sysadmin:11 };
-  let privileged = false;
-  const cv = el("as-chart"), ctx = cv.getContext("2d");
-  function ops(extra, priv){
-    if (priv) return { caps:41, opsN: 41*WEIGHT.base + WEIGHT.sysadmin*3 };
-    const caps = 14 + extra;
-    let opsN = 14*WEIGHT.base;
-    for (let i=0;i<extra;i++) opsN += (i===0 ? WEIGHT.sysadmin : WEIGHT.base);
-    return { caps, opsN };
-  }
-  function render(){
-    const extra = +el("as-slider").value;
-    el("as-slider-val").textContent = extra;
-    el("as-base").classList.toggle("on", extra===0 && !privileged);
-    el("as-priv").classList.toggle("on", privileged);
-    const W = cv.width, H = cv.height, PAD=36;
-    ctx.clearRect(0,0,W,H);
-    const xs = []; for (let x=0;x<=26;x++) xs.push(x);
-    const pts = xs.map(x=>ops(x, false));
-    const maxCaps = 41, maxOps = ops(0,true).opsN;
-    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
-    [0,7,14,21,26].forEach(x=>{ const px = PAD + (x/26)*(W-PAD-16); ctx.beginPath(); ctx.moveTo(px,10); ctx.lineTo(px,H-20); ctx.stroke(); ctx.fillText("+"+x, px-8, H-6); });
-    function curve(get,max,color){
-      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
-      xs.forEach((x,i)=>{ const px=PAD+(x/26)*(W-PAD-16), py=H-24-(get(pts[i])/max)*(H-44); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
-      ctx.stroke();
-    }
-    curve(p=>p.caps, maxCaps, "#2dd4bf");
-    curve(p=>p.opsN, maxOps, "#f25c54");
-    const cur = ops(extra, privileged);
-    const mx = privileged ? W-PAD-16+PAD : PAD+(extra/26)*(W-PAD-16);
-    ctx.strokeStyle="#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(mx,10); ctx.lineTo(mx,H-20); ctx.stroke(); ctx.setLineDash([]);
-    el("as-note").innerHTML = `Current selection: <b style="color:var(--pg)">${cur.caps}</b> capabilities granted, an illustrative <b style="color:var(--bad)">${Math.round(cur.opsN)}</b>-unit estimate of reachable privileged operations. ${privileged ? "--privileged grants essentially the full ~40-capability set AND disables the default seccomp filter (chapter 8) — the two together, not just the capability count, are why it's discouraged outside genuine edge cases (nested containers, direct hardware access)." : extra===0 ? "This is the Docker/Podman default: 14 capabilities, none of them able to reach the host kernel directly." : "Notice the curve's kink: the model treats the first capability added back as the most consequential (CAP_SYS_ADMIN is almost always the one hardening guides warn about specifically) — the marginal cost of the next twenty-five is comparatively flat."}`;
-  }
-  el("as-slider").oninput = render;
-  el("as-base").onclick = ()=>{ privileged=false; el("as-slider").value=0; render(); };
-  el("as-priv").onclick = ()=>{ privileged = !privileged; render(); };
-  render();
-})();
-</script>
+<div id="chapnav" style="--cn-accent:#2dd4bf"><a class="cn-btn" href="ctr-06.html"><span>←</span><span><span class="cn-lbl">PREV · CH 06</span><span class="cn-ttl">The Root Filesystem: pivot_root & OverlayFS</span></span></a><div class="cn-mid"><a class="cn-home" href="course-containers.html">☰ Container Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="ctr-01.html">CH 01 · Genesis: From chroot to the OCI Spec</option><option value="ctr-02.html">CH 02 · Namespaces I: PID, UTS, Mount & IPC</option><option value="ctr-03.html">CH 03 · Namespaces II: Network Namespaces & veth</option><option value="ctr-04.html">CH 04 · User Namespaces: Rootless Containers</option><option value="ctr-05.html">CH 05 · cgroups v2: The Unified Resource Hierarchy</option><option value="ctr-06.html">CH 06 · The Root Filesystem: pivot_root & OverlayFS</option><option value="ctr-07.html" selected>CH 07 · Capabilities: Splitting Root Into 40 Pieces</option><option value="ctr-08.html">CH 08 · Seccomp & LSMs: Filtering the Syscall Surface</option><option value="ctr-09.html">CH 09 · The OCI Runtime Spec: runc, crun & config.json</option><option value="ctr-10.html">CH 10 · Container Images: Layers, Manifests & Content Addressing</option><option value="ctr-11.html">CH 11 · Registries: The Distribution Spec, Push/Pull & Auth</option><option value="ctr-12.html">CH 12 · Architecture Showdown: Docker's Daemon vs Podman's Fork-Exec Model</option><option value="ctr-13.html">CH 13 · Networking: Bridges, CNI & libnetwork</option><option value="ctr-14.html">CH 14 · Pods & systemd: Podman's Pod Model and Quadlets</option><option value="ctr-15.html">CH 15 · Production Incidents: Real Container Escapes & CVEs</option><option value="ctr-16.html">CH 16 · Capstone: Build a Container Runtime From Scratch</option></select><span class="cn-prog">07 / 16</span></div><a class="cn-btn" href="ctr-08.html"><span><span class="cn-lbl">NEXT · CH 08</span><span class="cn-ttl">Seccomp & LSMs: Filtering the Syscall Surface</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
 </body>
 </html>
