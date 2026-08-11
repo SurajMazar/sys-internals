@@ -946,5 +946,909 @@ kubectl delete configmap -n shop hello-world-greeting</pre></div>
 </section>
 
 </main>
+<script>
+"use strict";
+function el(id){ return document.getElementById(id); }
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const cb = (lang,label,code) =>
+  `<div class="codeblock"><div class="cb-head"><span class="lang">${lang}</span><span>${label||""}</span>`+
+  `<span class="sp"></span><button class="copybtn">copy</button></div><pre>${esc(code)}</pre></div>`;
+const tm = (label,out) => `<div class="term"><div class="t-head">${label}</div><pre>${out}</pre></div>`;
+const p  = t => `<p>${t}</p>`;
+const h4 = t => `<h4>${t}</h4>`;
+const co = (cls,title,text) => `<div class="callout ${cls}"><div class="co-t">${title}</div><p>${text}</p></div>`;
+
+/* ================= EXPERIMENTS ================= */
+const EXPERIMENTS = [
+
+/* ---------- BEGINNER x6 ---------- */
+{ tier:"BEGINNER", t:"Watch the ReplicaSet controller replace a Pod you kill", ch:"CH 02", chf:"k8s-02.html",
+  body:
+  p(`The Deployment from orientation already manages three <code>web</code> Pods through a ReplicaSet. Kill one directly and watch what replaces it — and how fast.`)+
+  cb("bash","",`kubectl get pods -l app=web -o wide
+kubectl get rs -l app=web`)+
+  tm("EXPECTED — one ReplicaSet owns three Pods",`NAME                  DESIRED   CURRENT   READY   AGE
+<b>web-7d9c8f6b8        3         3         3       4m</b>`)+
+  cb("bash","delete one Pod directly — not the Deployment, not the ReplicaSet",`POD=$(kubectl get pods -l app=web -o jsonpath='{.items[0].metadata.name}')
+kubectl delete pod $POD
+kubectl get pods -l app=web -w`)+
+  tm("EXPECTED — a replacement appears within 1-2s, new name, new IP",`web-7d9c8f6b8-2klqz   1/1     Terminating         0     5m
+<b>web-7d9c8f6b8-9zqxr   0/1     ContainerCreating   0     1s</b>
+web-7d9c8f6b8-9zqxr   1/1     Running             0     3s`)+
+  cb("bash","confirm the ReplicaSet's own Events — it never dropped below desired",`kubectl describe rs -l app=web | grep -A3 Events`)+
+  tm("EXPECTED",`Normal  SuccessfulCreate  replicaset-controller  Created pod: <b>web-7d9c8f6b8-9zqxr</b>`)+
+  p(`Nothing you did touched the ReplicaSet object. It noticed the Pod count drop from 3 to 2 on its own and created exactly one replacement — this is the reconciliation loop, not a restart.`),
+  proves:`A ReplicaSet is a controller running <b>compare-and-converge</b>, not a supervisor restarting a specific process (ch.2). It watches Pod count against <code>spec.replicas</code> and creates or deletes Pods to match — the killed Pod's identity is gone forever; a brand-new Pod object fills the gap.` },
+
+{ tier:"BEGINNER", t:"Tune a rolling update and read the maxSurge/maxUnavailable arithmetic", ch:"CH 02", chf:"k8s-02.html",
+  body:
+  p(`Roll the image forward and watch the two counters that govern every rolling update: how many extra Pods it's allowed to create, and how many it's allowed to take down.`)+
+  cb("bash","",`kubectl set image deployment/web nginx=nginx:1.27-alpine
+kubectl rollout status deployment/web`)+
+  tm("EXPECTED",`Waiting for deployment "web" rollout to finish: 1 out of 3 new replicas have been updated...
+<b>deployment "web" successfully rolled out</b>`)+
+  cb("bash","watch the two ReplicaSets trade places",`kubectl get rs -l app=web -w`)+
+  tm("EXPECTED — old RS scales down exactly as new RS scales up",`NAME             DESIRED   CURRENT   READY
+web-7d9c8f6b8    <b>2</b>         2         2
+web-6f9b7d5c9a   <b>2</b>         2         1
+web-7d9c8f6b8    1         1         1
+web-6f9b7d5c9a   3         3         3`)+
+  cb("bash","make the surge/unavailable math explicit",`kubectl patch deployment web -p '{"spec":{"strategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0}}}}'
+kubectl set image deployment/web nginx=nginx:1.26-alpine
+kubectl get rs -l app=web -w`)+
+  p(`With <code>maxUnavailable: 0</code> the count of Ready Pods can never drop below 3 — the new ReplicaSet must scale to 4 (the surge) before the old one loses its first replica.`)+
+  cb("bash","revision history and rollback",`kubectl rollout history deployment/web
+kubectl rollout undo deployment/web
+kubectl rollout status deployment/web`),
+  proves:`maxSurge and maxUnavailable are literal arithmetic against <code>spec.replicas</code>, evaluated on every reconcile tick (ch.2) — <code>maxUnavailable: 0</code> is why a correctly configured rolling update never drops capacity, and <code>rollout undo</code> works because every revision is a retained ReplicaSet, not a diff.` },
+
+{ tier:"BEGINNER", t:"Cross a Service, kill the Pod behind it, watch kube-proxy and CoreDNS reroute", ch:"CH 03", chf:"k8s-03.html",
+  body:
+  p(`Expose the Deployment, resolve it by name from another Pod, then remove the specific Pod that request landed on and prove the Service didn't notice at the client's level.`)+
+  cb("bash","",`kubectl expose deployment web --port=80 --name=web-svc
+kubectl get svc web-svc
+kubectl get endpoints web-svc`)+
+  tm("EXPECTED — one ClusterIP, three endpoints",`NAME      TYPE        CLUSTER-IP     PORT(S)
+web-svc   ClusterIP   10.96.142.7    80/TCP
+
+NAME      ENDPOINTS
+<b>web-svc   10.244.1.5:80,10.244.2.7:80,10.244.2.8:80</b>`)+
+  cb("bash","resolve it by name, then hit it, from inside the cluster",`kubectl run tester --image=busybox:1.36 --restart=Never -it --rm -- \\
+  sh -c "nslookup web-svc; wget -qO- web-svc"`)+
+  tm("EXPECTED — CoreDNS resolves the name to the ClusterIP above",`Name:   web-svc.default.svc.cluster.local
+Address: <b>10.96.142.7</b>
+
+&lt;html&gt;... nginx welcome page ...&lt;/html&gt;`)+
+  cb("bash","now kill the specific Pod behind one endpoint",`POD=$(kubectl get pods -l app=web -o jsonpath='{.items[0].metadata.name}')
+kubectl delete pod $POD
+kubectl get endpoints web-svc -w`)+
+  tm("EXPECTED — the dead IP drops out, the new Pod's IP appears within seconds",`ENDPOINTS
+10.244.1.5:80,10.244.2.7:80,10.244.2.8:80
+<b>10.244.2.7:80,10.244.2.8:80</b>                          (briefly down to 2)
+<b>10.244.1.9:80,10.244.2.7:80,10.244.2.8:80</b>            (replacement Pod joined)`)+
+  p(`Re-run the wget loop during the gap — it never errors, because kube-proxy's rules only ever point at whatever the Endpoints object currently lists.`),
+  proves:`A Service has no IP-level identity of its own — kube-proxy programs iptables/IPVS rules straight from the Endpoints controller's list of currently-Ready Pod IPs (ch.3). CoreDNS resolves the stable name once; kube-proxy re-balances to whichever Pods are actually alive on every packet after that.` },
+
+{ tier:"BEGINNER", t:"Decode a Secret, then prove RBAC — not base64 — is the real boundary", ch:"CH 04", chf:"k8s-04.html",
+  body:
+  p(`Create a Secret, decode it in one command to see exactly how weak base64 alone is, then build the RBAC objects that are the actual access control.`)+
+  cb("bash","",`kubectl create secret generic db-cred \\
+  --from-literal=username=admin --from-literal=password=s3cr3t-p4ss`)+
+  cb("bash","decode it — no key, no auth, just base64",`kubectl get secret db-cred -o jsonpath='{.data.password}' | base64 -d; echo`)+
+  tm("EXPECTED",`<b>s3cr3t-p4ss</b>`)+
+  p(`Anyone who can <code>kubectl get secret</code> this object has the plaintext. That's the entire threat model this experiment exists to make visceral.`)+
+  cb("bash","build the real boundary: a ServiceAccount scoped to exactly two verbs",`kubectl create serviceaccount readonly-sa
+kubectl create role secret-reader --verb=get,list --resource=secrets
+kubectl create rolebinding readonly-binding \\
+  --role=secret-reader --serviceaccount=default:readonly-sa`)+
+  cb("bash","prove the scope with the authorizer itself, not a guess",`kubectl auth can-i get secrets --as=system:serviceaccount:default:readonly-sa
+kubectl auth can-i delete secrets --as=system:serviceaccount:default:readonly-sa
+kubectl auth can-i get pods --as=system:serviceaccount:default:readonly-sa`)+
+  tm("EXPECTED — exactly get/list on secrets, nothing else",`yes
+<b>no</b>
+<b>no</b>`),
+  proves:`base64 is an encoding scheme with a public, reversible alphabet — anyone with API-server read access has the plaintext, full stop (ch.4). The actual boundary is whoever the API server's RBAC authorizer lets call <code>get</code>/<code>list</code> on that object, which is exactly what <code>kubectl auth can-i</code> queries.` },
+
+{ tier:"BEGINNER", t:"Watch an emptyDir volume die with its Pod, not the node", ch:"CH 04", chf:"k8s-04.html",
+  body:
+  p(`Write a file into an emptyDir volume, delete the Pod, recreate an identical Pod, and check whether the file survived.`)+
+  cb("yaml","scratch.yaml",`apiVersion: v1
+kind: Pod
+metadata:
+  name: scratch
+spec:
+  containers:
+  - name: box
+    image: busybox:1.36
+    command: ["sh","-c","echo hello > /data/f.txt; sleep 3600"]
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    emptyDir: {}`)+
+  cb("bash","",`kubectl apply -f scratch.yaml
+kubectl wait --for=condition=Ready pod/scratch --timeout=30s
+kubectl exec scratch -- cat /data/f.txt`)+
+  tm("EXPECTED",`<b>hello</b>`)+
+  cb("bash","delete the Pod, then recreate the identical object",`kubectl delete pod scratch
+kubectl apply -f scratch.yaml
+kubectl wait --for=condition=Ready pod/scratch --timeout=30s
+kubectl exec scratch -- cat /data/f.txt`)+
+  tm("EXPECTED — the file is gone; this is a brand-new empty volume",`cat: can't open '/data/f.txt': <b>No such file or directory</b>`)+
+  p(`Even if the replacement Pod lands on the exact same node, its emptyDir is freshly allocated — the directory the old Pod wrote to was removed with it.`),
+  proves:`emptyDir's storage is allocated in the kubelet's per-Pod sandbox directory and is deleted the moment that specific Pod object is deleted, regardless of which node it lands on next (ch.4). It survives a container restart inside the same Pod; it never survives the Pod itself being replaced — that guarantee only exists for PersistentVolumes (ch.11).` },
+
+{ tier:"BEGINNER", t:"Watch kubectl apply compute its three-way merge, live", ch:"CH 05", chf:"k8s-05.html",
+  body:
+  p(`Apply a manifest, inspect the annotation it silently writes, then remove a field from the manifest and watch <code>apply</code> actually delete it — something <code>create</code>/<code>replace</code> alone cannot reason about.`)+
+  cb("yaml","web-min.yaml",`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-min
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: web-min}}
+  template:
+    metadata: {labels: {app: web-min}}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        env:
+        - name: MODE
+          value: "a"`)+
+  cb("bash","",`kubectl apply -f web-min.yaml
+kubectl get deployment web-min -o yaml | grep -A2 last-applied-configuration`)+
+  tm("EXPECTED — your exact submitted manifest, stored as an annotation",`kubectl.kubernetes.io/last-applied-configuration: <b>'{"apiVersion":"apps/v1",...,"MODE","value":"a"...}'</b>`)+
+  cb("bash","remove the env var from the file entirely, then apply again",`sed -i.bak '/MODE/,+1d' web-min.yaml
+kubectl apply -f web-min.yaml
+kubectl get deployment web-min -o jsonpath='{.spec.template.spec.containers[0].env}'; echo`)+
+  tm("EXPECTED — apply actually REMOVES the field because it vanished from your intent",`<b>(empty — the env var is gone)</b>`)+
+  p(`<code>kubectl replace</code> has no memory of what you didn't mention — hand it a manifest missing a field you meant to keep, and it silently drops that field too, indistinguishable from you deleting it on purpose. <code>apply</code>'s three-way diff is what tells "I removed this" apart from "I never knew about this."`),
+  proves:`<code>kubectl apply</code> diffs three things — the <code>last-applied-configuration</code> annotation (what you asked for last time), the live object (what's actually running), and your new manifest — and removes only fields that disappeared from your intent (ch.5). <code>replace</code> has none of that memory; it simply overwrites with whatever you hand it.` },
+
+/* ---------- INTERMEDIATE x9 ---------- */
+{ tier:"INTERMEDIATE", t:"Read etcd's own registry keys — and confirm nothing but the API server does", ch:"CH 07", chf:"k8s-07.html",
+  body:
+  p(`Every object you've created so far lives in etcd as a key under <code>/registry/...</code>. Read one directly, using etcd's own client, from inside its own static Pod.`)+
+  cb("bash","",`kubectl get pods -n kube-system -l component=etcd
+ETCD=$(kubectl get pods -n kube-system -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+echo $ETCD`)+
+  cb("bash","",`kubectl exec -n kube-system $ETCD -- sh -c '
+  ETCDCTL_API=3 etcdctl \\
+    --cacert=/etc/kubernetes/pki/etcd/ca.crt \\
+    --cert=/etc/kubernetes/pki/etcd/server.crt \\
+    --key=/etc/kubernetes/pki/etcd/server.key \\
+    get /registry/deployments/default/web-min
+'`)+
+  tm("EXPECTED — the key path is plaintext, the value is protobuf",`/registry/deployments/default/web-min
+(binary protobuf bytes — unprintable, and not JSON; this is the actual on-disk encoding)`)+
+  cb("bash","list every key under one prefix — this IS the registry's shape",`kubectl exec -n kube-system $ETCD -- sh -c '
+  ETCDCTL_API=3 etcdctl --cacert=/etc/kubernetes/pki/etcd/ca.crt \\
+    --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key \\
+    get /registry/pods/default/ --prefix --keys-only
+'`)+
+  tm("EXPECTED — one key per Pod, path encodes resource/namespace/name",`/registry/pods/default/<b>web-7d9c8f6b8-abc12</b>
+/registry/pods/default/<b>web-7d9c8f6b8-def34</b>
+/registry/pods/default/<b>scratch</b>`)+
+  cb("bash","confirm the single-member Raft view on a kind cluster",`kubectl exec -n kube-system $ETCD -- sh -c '
+  ETCDCTL_API=3 etcdctl --cacert=/etc/kubernetes/pki/etcd/ca.crt \\
+    --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key \\
+    member list -w table
+'`)+
+  tm("EXPECTED — one member, marked leader",`ID         STATUS   NAME                IS LEADER
+<b>a1b2c3d4   started  lab-control-plane   true</b>`)+
+  p(`Nothing else in this lab has talked to etcd's client port. The API server is deliberately the only other holder of etcd's client certificate anywhere in the cluster.`),
+  proves:`etcd's key layout is literally <code>/registry/&lt;resource&gt;/&lt;namespace&gt;/&lt;name&gt;</code>, and it is the only stateful component in the entire control plane (ch.6, ch.7). The API server is the sole holder of etcd's client certs — no controller, no kubelet, and no kubectl invocation elsewhere in this lab ever reaches etcd directly.` },
+
+{ tier:"INTERMEDIATE", t:"Taint a node, deploy without a toleration, read the FailedScheduling reason verbatim", ch:"CH 08", chf:"k8s-08.html",
+  body:
+  p(`The scheduler's filter phase eliminates nodes before scoring ever runs. Force a filter rejection and read its exact, specific message.`)+
+  cb("bash","",`kubectl taint nodes lab-worker2 dedicated=gpu:NoSchedule
+kubectl describe node lab-worker2 | grep Taints`)+
+  tm("EXPECTED",`Taints:             <b>dedicated=gpu:NoSchedule</b>`)+
+  cb("bash","force a Pod onto the tainted node with a nodeSelector, no toleration",`kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata: {name: untolerated}
+spec:
+  nodeSelector: {kubernetes.io/hostname: lab-worker2}
+  containers:
+  - {name: box, image: busybox:1.36, command: ["sleep","3600"]}
+EOF
+kubectl get pod untolerated -w`)+
+  tm("EXPECTED — stuck Pending",`NAME          READY   STATUS    RESTARTS   AGE
+untolerated   <b>0/1     Pending</b>   0          8s`)+
+  cb("bash","read the exact reason — never guess it",`kubectl describe pod untolerated | grep -A5 Events`)+
+  tm("EXPECTED — the filter phase's own message, verbatim",`Events:
+  Type     Reason            From               Message
+  ----     ------            ----               -------
+  Warning  FailedScheduling  default-scheduler  <b>0/3 nodes are available: 1 node(s) had untolerated taint {dedicated: gpu}, 2 node(s) didn't match Pod's node affinity/selector.</b>`)+
+  cb("bash","add the matching toleration and watch it schedule",`kubectl delete pod untolerated
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata: {name: tolerated}
+spec:
+  nodeSelector: {kubernetes.io/hostname: lab-worker2}
+  tolerations:
+  - {key: dedicated, operator: Equal, value: gpu, effect: NoSchedule}
+  containers:
+  - {name: box, image: busybox:1.36, command: ["sleep","3600"]}
+EOF
+kubectl get pod tolerated -o wide`)+
+  cb("bash","clean up the taint",`kubectl taint nodes lab-worker2 dedicated=gpu:NoSchedule-`),
+  proves:`A taint is a hard filter-phase rejection, not a scoring penalty — a Pod without a matching <code>toleration</code> is eliminated from consideration on that node entirely, before scoring plugins ever run (ch.8). <code>FailedScheduling</code>'s message enumerates every node and every reason it was cut, which is why reading it verbatim beats guessing every time.` },
+
+{ tier:"INTERMEDIATE", t:"Overcommit a node's requests and read \"Insufficient cpu\" on an idle cluster", ch:"CH 08", chf:"k8s-08.html",
+  body:
+  p(`The scheduler bin-packs strictly on <code>requests</code>, never on a node's actual live usage. Prove it by requesting more CPU than any single node has allocatable, with the node sitting almost entirely idle.`)+
+  cb("bash","",`kubectl describe nodes | grep -A5 "Allocated resources"`)+
+  cb("bash","request more CPU than any single node in a 3-node kind cluster has",`kubectl run hog --image=busybox:1.36 --restart=Never --requests=cpu=100 --command -- sleep 3600
+kubectl get pod hog -w`)+
+  tm("EXPECTED — Pending, forever, on an otherwise idle cluster",`hog   <b>0/1     Pending</b>   0          6s`)+
+  cb("bash","read the reason",`kubectl describe pod hog | grep -A3 Events`)+
+  tm("EXPECTED",`Warning  FailedScheduling  default-scheduler  <b>0/3 nodes are available: 3 Insufficient cpu.</b>`)+
+  cb("bash","confirm the node's ACTUAL usage is nowhere near its allocatable capacity",`kubectl describe node lab-worker | grep -A5 "Allocated resources"`)+
+  p(`The node can be at 2% real CPU utilization and this Pod will never schedule — the scheduler's arithmetic only ever sees <code>requests</code>, and 100 full CPUs is more than any single node in this cluster has to give.`)+
+  cb("bash","clean up",`kubectl delete pod hog`),
+  proves:`Scheduling is entirely a <code>requests</code>-vs-<code>allocatable</code> sum per node, computed before a single container starts (ch.8) — actual usage is a scheduler input in exactly zero cases. This is also why a request set far below real usage over-packs a node: the scheduler thinks there's room that isn't actually there once every Pod is busy at once.` },
+
+{ tier:"INTERMEDIATE", t:"Watch the reconciliation loop's own primitive: resourceVersion and a watch stream", ch:"CH 09", chf:"k8s-09.html",
+  body:
+  p(`Every controller in Kubernetes is built on the same primitive: a <code>watch</code> that streams changes, keyed by a monotonically increasing <code>resourceVersion</code>. See it directly, then remove the controller that consumes it and watch reconciliation visibly stop.`)+
+  cb("bash","",`kubectl get deployment web -o jsonpath='{.metadata.resourceVersion}'; echo
+kubectl scale deployment web --replicas=4
+kubectl get deployment web -o jsonpath='{.metadata.resourceVersion}'; echo`)+
+  tm("EXPECTED — the version strictly increases on every write, never on a read",`<b>128442</b>
+<b>128507</b>`)+
+  cb("bash","stop the controller that actually reconciles Deployments, and prove reconciliation itself pauses",`docker exec lab-control-plane sh -c "mv /etc/kubernetes/manifests/kube-controller-manager.yaml /tmp/"
+sleep 5
+POD=$(kubectl get pods -l app=web -o jsonpath='{.items[0].metadata.name}')
+kubectl delete pod $POD
+kubectl get pods -l app=web -w`)+
+  tm("EXPECTED — the Pod count drops and STAYS dropped; nothing replaces it",`web-...-9zk2p   1/1   Terminating   0     40s
+<b>(no replacement appears — controller-manager is not running to reconcile the ReplicaSet)</b>`)+
+  cb("bash","restore it — reconciliation resumes on its own",`docker exec lab-control-plane sh -c "mv /tmp/kube-controller-manager.yaml /etc/kubernetes/manifests/"
+kubectl get pods -l app=web -w`)+
+  tm("EXPECTED — within seconds, the missing replica appears",`<b>web-...-p8x3q   0/1   ContainerCreating   0   2s</b>`),
+  proves:`The watch API streams every change keyed by <code>resourceVersion</code>, and every built-in controller — the ReplicaSet controller included — is exactly an informer consuming that stream plus a workqueue plus a reconcile function (ch.9). Removing kube-controller-manager doesn't touch the API server or etcd at all; it just proves that reconciliation is that one component's job, and nobody else's.` },
+
+{ tier:"INTERMEDIATE", t:"DaemonSet, Job and CronJob: three controllers, three completion models", ch:"CH 09", chf:"k8s-09.html",
+  body:
+  p(`Deploy one of each non-Deployment workload type and watch each one's controller enforce a completely different notion of "done."`)+
+  cb("yaml","node-agent.yaml (DaemonSet)",`apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: node-agent}
+spec:
+  selector: {matchLabels: {app: node-agent}}
+  template:
+    metadata: {labels: {app: node-agent}}
+    spec:
+      containers:
+      - {name: agent, image: busybox:1.36, command: ["sleep","3600"]}`)+
+  cb("bash","",`kubectl apply -f node-agent.yaml
+kubectl get pods -l app=node-agent -o wide`)+
+  tm("EXPECTED — exactly one Pod per node, automatically, no replicas field anywhere",`NAME               NODE
+node-agent-4kd2p   lab-control-plane
+node-agent-9zx1q   lab-worker
+node-agent-p7m3s   lab-worker2`)+
+  cb("yaml","batch-job.yaml (Job)",`apiVersion: batch/v1
+kind: Job
+metadata: {name: batch-job}
+spec:
+  completions: 5
+  parallelism: 2
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - {name: work, image: busybox:1.36, command: ["sh","-c","echo done; exit 0"]}`)+
+  cb("bash","",`kubectl apply -f batch-job.yaml
+kubectl get job batch-job -w`)+
+  tm("EXPECTED — COMPLETIONS climbs to 5/5 then the controller stops creating Pods",`NAME        COMPLETIONS   DURATION
+batch-job   2/5           4s
+batch-job   4/5           7s
+<b>batch-job   5/5           9s</b>`)+
+  cb("yaml","nightly.yaml (CronJob)",`apiVersion: batch/v1
+kind: CronJob
+metadata: {name: nightly}
+spec:
+  schedule: "*/2 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - {name: work, image: busybox:1.36, command: ["date"]}`)+
+  cb("bash","",`kubectl apply -f nightly.yaml
+kubectl get jobs -w`)+
+  tm("EXPECTED — a new, independent Job object created each tick",`NAME                    COMPLETIONS   AGE
+nightly-<b>28934810</b>       1/1           1m
+nightly-<b>28934812</b>       0/1           0s   (new tick, new Job)`)+
+  p(`None of these three ever touched a ReplicaSet. Each is reconciled by its own controller in kube-controller-manager, watching its own resource type, with its own definition of the desired end state.`)+
+  cb("bash","clean up",`kubectl delete daemonset node-agent
+kubectl delete job batch-job
+kubectl delete cronjob nightly`),
+  proves:`DaemonSet's controller reconciles against the node list, not a replica count — one Pod per matching node, node additions included (ch.9). Job's controller tracks <code>spec.completions</code> against successful terminations and retries up to <code>backoffLimit</code>. CronJob's controller creates an entirely new Job object from a template on each scheduled tick — three distinct reconciliation targets, the same underlying loop pattern.` },
+
+{ tier:"INTERMEDIATE", t:"Prove kindnet ignores NetworkPolicy, then swap in a CNI that enforces it", ch:"CH 10", chf:"k8s-10.html",
+  body:
+  p(`Apply a deny-all NetworkPolicy against kindnet first and prove it does nothing — then recreate the cluster with Calico and prove the identical policy actually blocks traffic.`)+
+  cb("bash","apply against the DEFAULT CNI (kindnet) — this will silently do nothing",`kubectl create namespace netpol-test
+kubectl run web --image=nginx:alpine -n netpol-test --labels=app=web --port=80 --expose
+kubectl apply -n netpol-test -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: deny-all}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+EOF
+kubectl run tester -n netpol-test --image=busybox:1.36 --restart=Never -it --rm -- wget -qO- --timeout=3 web`)+
+  tm("EXPECTED — the request SUCCEEDS despite a deny-all policy",`<b>&lt;!DOCTYPE html&gt;... nginx welcome page ...</b>   (the policy did nothing at all)`)+
+  cb("bash","recreate the cluster with Calico as the CNI",`kind delete cluster --name lab
+cat <<'EOF' > kind-config-calico.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: lab
+networking:
+  disableDefaultCNI: true
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
+EOF
+kind create cluster --name lab --config kind-config-calico.yaml
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+kubectl -n kube-system rollout status daemonset/calico-node --timeout=180s`)+
+  cb("bash","recreate the exact same test, same policy",`kubectl create namespace netpol-test
+kubectl run web --image=nginx:alpine -n netpol-test --labels=app=web --port=80 --expose
+kubectl apply -n netpol-test -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: deny-all}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+EOF
+kubectl run tester -n netpol-test --image=busybox:1.36 --restart=Never -it --rm -- wget -qO- --timeout=3 web`)+
+  tm("EXPECTED — this time it actually blocks",`wget: download timed out
+<b>(connection never established — Calico's node agent is now programming the deny rule)</b>`),
+  proves:`NetworkPolicy is an API object the API server happily stores and validates regardless of enforcement — actually blocking a packet is entirely the CNI plugin's job (ch.10). kindnet implements basic Pod networking only and has no policy engine; Calico ships one, and swapping the CNI at cluster-creation time is the only way to add that capability after the fact.` },
+
+{ tier:"INTERMEDIATE", t:"Dynamic provisioning: watch a StorageClass turn a PVC into a real volume via CSI", ch:"CH 11", chf:"k8s-11.html",
+  body:
+  p(`kind ships a CSI driver (<code>rancher.io/local-path</code>) as its default StorageClass. Declare a claim with no PersistentVolume pre-created and watch the provisioning events fire in order.`)+
+  cb("bash","",`kubectl get storageclass`)+
+  tm("EXPECTED",`NAME                 PROVISIONER             DEFAULT
+<b>standard (default)   rancher.io/local-path</b>`)+
+  cb("yaml","claim.yaml",`apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data-claim}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}`)+
+  cb("bash","",`kubectl apply -f claim.yaml
+kubectl get pvc data-claim -w`)+
+  tm("EXPECTED — Pending until a Pod actually uses it (WaitForFirstConsumer), then Bound",`NAME          STATUS
+data-claim    <b>Pending</b>
+
+# after a Pod mounts it:
+data-claim    <b>Bound</b>     pvc-a1b2c3d4`)+
+  cb("yaml","consumer.yaml — the Pod that triggers binding",`apiVersion: v1
+kind: Pod
+metadata: {name: consumer}
+spec:
+  containers:
+  - name: box
+    image: busybox:1.36
+    command: ["sh","-c","echo hi > /data/f.txt; sleep 3600"]
+    volumeMounts: [{name: data, mountPath: /data}]
+  volumes:
+  - name: data
+    persistentVolumeClaim: {claimName: data-claim}`)+
+  cb("bash","apply it and read the exact provisioning sequence from Events",`kubectl apply -f consumer.yaml
+kubectl describe pvc data-claim | grep -A6 Events`)+
+  tm("EXPECTED — the real CSI call sequence, one event per phase",`Normal  Provisioning          external-provisioner  <b>External provisioner is provisioning volume</b>
+Normal  ProvisioningSucceeded external-provisioner  <b>Successfully provisioned volume pvc-a1b2c3d4</b>
+Normal  Scheduled             default-scheduler      Successfully assigned...`)+
+  p(`<code>WaitForFirstConsumer</code> is why the PVC sat Pending — the provisioner deliberately waits until it knows which node the Pod lands on, so the volume is provisioned topology-aware rather than possibly on the wrong node.`),
+  proves:`PVC/PV is a supply/demand match brokered by the StorageClass's <code>provisioner</code> field, and CSI is the plugin boundary underneath it — <code>CreateVolume</code>, then <code>ControllerPublishVolume</code>, then <code>NodeStageVolume</code>/<code>NodePublishVolume</code> as the Pod actually schedules (ch.11). <code>volumeBindingMode: WaitForFirstConsumer</code> exists specifically to make that provisioning topology-aware.` },
+
+{ tier:"INTERMEDIATE", t:"Give a StatefulSet's replicas a stable identity that survives being killed", ch:"CH 11", chf:"k8s-11.html",
+  body:
+  p(`Deploy a 3-replica StatefulSet, write a distinct file into each replica's own volume, then kill one and confirm the replacement gets its predecessor's exact name, network identity, and volume back.`)+
+  cb("yaml","db.yaml",`apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: db}
+spec:
+  serviceName: db
+  replicas: 3
+  selector: {matchLabels: {app: db}}
+  template:
+    metadata: {labels: {app: db}}
+    spec:
+      containers:
+      - name: box
+        image: busybox:1.36
+        command: ["sh","-c","echo I am $HOSTNAME > /data/identity; sleep 3600"]
+        volumeMounts: [{name: data, mountPath: /data}]
+  volumeClaimTemplates:
+  - metadata: {name: data}
+    spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 512Mi}}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: db}
+spec: {clusterIP: None, selector: {app: db}, ports: [{port: 80}]}`)+
+  cb("bash","",`kubectl apply -f db.yaml
+kubectl get pods -l app=db
+kubectl get pvc -l app=db`)+
+  tm("EXPECTED — ordinal names, one PVC per ordinal",`NAME    READY   STATUS
+<b>db-0</b>    1/1     Running
+<b>db-1</b>    1/1     Running
+<b>db-2</b>    1/1     Running
+
+NAME          STATUS   VOLUME
+data-db-0     Bound    pvc-...
+data-db-1     Bound    pvc-...
+data-db-2     Bound    pvc-...`)+
+  cb("bash","kill db-1 specifically and watch what comes back",`kubectl delete pod db-1
+kubectl get pods -l app=db -w`)+
+  tm("EXPECTED — the replacement is named db-1 again, not a random suffix",`db-1   1/1   Terminating
+<b>db-1   0/1   ContainerCreating</b>   (same ordinal, reused)
+db-1   1/1   Running`)+
+  cb("bash","confirm it reattached the SAME volume, not a fresh one",`kubectl exec db-1 -- cat /data/identity`)+
+  tm("EXPECTED — the original file db-1 wrote before it was killed",`<b>I am db-1</b>`),
+  proves:`A StatefulSet's controller assigns ordinal identities (<code>db-0</code>, <code>db-1</code>...) and a matching stable DNS name per ordinal via the headless Service, and its <code>volumeClaimTemplates</code> provision one PVC per ordinal that is reattached to whichever Pod currently holds that ordinal (ch.11) — precisely the guarantee a Deployment's fungible, interchangeable Pods do not offer.` },
+
+{ tier:"INTERMEDIATE", t:"Install metrics-server and watch HPA compute a real desired-replica count", ch:"CH 12", chf:"k8s-12.html",
+  body:
+  p(`HPA's control loop needs real metrics, and on kind that means metrics-server plus one documented, local-only workaround for self-signed kubelet certs.`)+
+  cb("bash","",`kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system --type=json \\
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+kubectl -n kube-system rollout status deployment/metrics-server
+kubectl top nodes`)+
+  tm("EXPECTED",`NAME                 CPU(cores)   MEMORY(bytes)
+lab-control-plane    89m          412Mi
+lab-worker           34m          201Mi
+lab-worker2          31m          198Mi`)+
+  cb("bash","set a request so percent-of-request is meaningful, then autoscale",`kubectl set resources deployment web --requests=cpu=50m,memory=32Mi
+kubectl autoscale deployment web --cpu-percent=50 --min=2 --max=8
+kubectl get hpa web -w`)+
+  cb("bash","generate real load from another terminal",`for i in 1 2 3 4; do
+  kubectl run loadgen-$i --image=busybox:1.36 --restart=Never -- \\
+    sh -c 'while true; do wget -q -O- http://web-svc >/dev/null; done' &
+done`)+
+  tm("EXPECTED — TARGETS climbs, REPLICAS climbs, then both settle back down",`NAME   REFERENCE       TARGETS    MINPODS   MAXPODS   REPLICAS
+web    Deployment/web  9%/50%     2         8         2
+web    Deployment/web  <b>212%/50%</b>   2         8         2
+web    Deployment/web  118%/50%   2         8         <b>5</b>
+web    Deployment/web  41%/50%    2         8         <b>5</b>`)+
+  cb("bash","stop the load and watch it scale back down",`for i in 1 2 3 4; do kubectl delete pod loadgen-$i; done
+kubectl get hpa web -w`),
+  proves:`HPA's controller polls metrics-server on a fixed interval, computes <code>desiredReplicas = ceil(currentReplicas &times; currentMetricValue / targetMetricValue)</code>, and only acts once the result differs from the current count by more than its tolerance (ch.12) — the scale-down direction additionally waits out a stabilization window specifically to avoid flapping on a momentary dip.` },
+
+/* ---------- ADVANCED x5 ---------- */
+{ tier:"ADVANCED", t:"Scope a ServiceAccount to exactly two verbs on one resource, then prove the anti-pattern", ch:"CH 13", chf:"k8s-13.html",
+  body:
+  p(`Build the tightest RBAC binding that still does its job, prove it with the authorizer itself, then look at the shape of the shortcut you should never reach for instead.`)+
+  cb("bash","",`kubectl create namespace rbac-test
+kubectl create serviceaccount deployer -n rbac-test
+kubectl create role deploy-only -n rbac-test \\
+  --verb=get,list,create,update --resource=deployments
+kubectl create rolebinding deploy-only-binding -n rbac-test \\
+  --role=deploy-only --serviceaccount=rbac-test:deployer`)+
+  cb("bash","prove exactly what it can and cannot do",`kubectl auth can-i create deployments -n rbac-test --as=system:serviceaccount:rbac-test:deployer
+kubectl auth can-i delete deployments -n rbac-test --as=system:serviceaccount:rbac-test:deployer
+kubectl auth can-i get secrets -n rbac-test --as=system:serviceaccount:rbac-test:deployer
+kubectl auth can-i create deployments -n default --as=system:serviceaccount:rbac-test:deployer`)+
+  tm("EXPECTED — yes only where explicitly granted, no everywhere else, including other namespaces",`yes
+<b>no</b>
+<b>no</b>
+<b>no</b>   (a Role is namespace-scoped; the same name in a different namespace grants nothing)`)+
+  cb("bash","the anti-pattern — do NOT apply this, just look at its shape",`kubectl create clusterrolebinding dangerous --clusterrole=cluster-admin \\
+  --serviceaccount=rbac-test:deployer --dry-run=client -o yaml`)+
+  p(`<code>cluster-admin</code> is unlimited verbs on every resource, cluster-wide — not "very permissive RBAC," but the exact thing this experiment exists to help you avoid reaching for out of convenience.`)+
+  cb("bash","clean up",`kubectl delete namespace rbac-test`),
+  proves:`RBAC is evaluated as a strict allow-list by the API server's authorizer stage, after authentication and before admission (ch.13) — a Role only grants inside its own namespace, and <code>kubectl auth can-i --as=</code> queries that exact authorizer decision rather than trusting what a RoleBinding's YAML merely claims to intend.` },
+
+{ tier:"ADVANCED", t:"Register your own CRD, validated by its own OpenAPI schema", ch:"CH 09", chf:"k8s-09.html",
+  body:
+  p(`A CustomResourceDefinition is what turns arbitrary YAML into a real, schema-validated, API-server-native resource — this exact CRD is what Build Project 3 later wires a real controller onto.`)+
+  cb("yaml","greetingconfig-crd.yaml",`apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: greetingconfigs.lab.example.com
+spec:
+  group: lab.example.com
+  scope: Namespaced
+  names: {plural: greetingconfigs, singular: greetingconfig, kind: GreetingConfig}
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required: [name]
+            properties:
+              name: {type: string}
+              message: {type: string, default: "hello"}`)+
+  cb("bash","",`kubectl apply -f greetingconfig-crd.yaml
+kubectl get crd greetingconfigs.lab.example.com
+kubectl api-resources | grep greetingconfig`)+
+  tm("EXPECTED — it is now a first-class API resource, indistinguishable from a built-in one to kubectl",`NAME              SHORTNAMES   APIVERSION            NAMESPACED   KIND
+<b>greetingconfigs</b>                lab.example.com/v1   true         GreetingConfig`)+
+  cb("bash","the schema actually validates — this must be rejected",`kubectl apply -f - <<'EOF'
+apiVersion: lab.example.com/v1
+kind: GreetingConfig
+metadata: {name: bad}
+spec: {message: "no name field"}
+EOF`)+
+  tm("EXPECTED — rejected at the API server, before etcd ever sees it",`error: <b>GreetingConfig.lab.example.com "bad" is invalid: spec.name: Required value</b>`)+
+  cb("bash","a valid one is accepted and the default fills in",`kubectl apply -f - <<'EOF'
+apiVersion: lab.example.com/v1
+kind: GreetingConfig
+metadata: {name: hello-world}
+spec: {name: world}
+EOF
+kubectl get greetingconfig hello-world -o jsonpath='{.spec.message}'; echo`)+
+  tm("EXPECTED — the schema default, not empty",`<b>hello</b>`),
+  proves:`A CRD registers a new resource type directly with the API server's own OpenAPI-based validation, admission, and storage machinery — nothing about how it's validated or stored differs from a built-in type once registered (ch.9). By itself a CRD is just schema-validated storage; Build Project 3 is what turns it into an Operator by attaching a reconciliation loop.` },
+
+{ tier:"ADVANCED", t:"Install an admission webhook, then break it and watch fail-open vs fail-closed diverge", ch:"CH 13", chf:"k8s-13.html",
+  body:
+  p(`Admission control runs after authorization, before persistence — a webhook here can reject an otherwise perfectly authorized request. Configure one pointed at an unreachable backend on purpose, then watch <code>failurePolicy</code> decide what happens to every matching request.`)+
+  cb("bash","a Service with NO backing Pods — the webhook will be unreachable by construction",`kubectl create namespace webhook-demo
+kubectl create service clusterip deny-hook -n webhook-demo --tcp=443:443`)+
+  cb("yaml","deny-hook.yaml — fails closed",`apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata: {name: deny-hook}
+webhooks:
+- name: deny-hook.webhook-demo.svc
+  clientConfig:
+    service: {name: deny-hook, namespace: webhook-demo, path: "/validate"}
+    caBundle: ""
+  rules:
+  - {apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["pods"]}
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  timeoutSeconds: 3
+  failurePolicy: Fail`)+
+  cb("bash","",`kubectl apply -f deny-hook.yaml
+kubectl run should-block --image=busybox:1.36 --restart=Never --command -- sleep 3600`)+
+  tm("EXPECTED — failurePolicy: Fail rejects the request rather than silently letting it through",`Error from server: Internal error occurred: <b>failed calling webhook "deny-hook.webhook-demo.svc": ... connection refused</b>`)+
+  cb("bash","flip the policy and repeat the identical request",`kubectl patch validatingwebhookconfiguration deny-hook \\
+  --type=json -p='[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Ignore"}]'
+kubectl run should-pass --image=busybox:1.36 --restart=Never --command -- sleep 3600
+kubectl get pod should-pass`)+
+  tm("EXPECTED — the same unreachable webhook, but now the request is admitted anyway",`NAME          READY   STATUS
+<b>should-pass   1/1     Running</b>   (created despite the webhook never running)`)+
+  cb("bash","clean up",`kubectl delete validatingwebhookconfiguration deny-hook
+kubectl delete namespace webhook-demo
+kubectl delete pod should-pass`),
+  proves:`Admission control is a mutating-then-validating webhook chain that runs strictly after authentication and RBAC authorization, before the object is ever written to etcd (ch.13). <code>failurePolicy: Fail</code> treats a broken or unreachable webhook as a hard rejection of every matching request; <code>Ignore</code> treats the exact same failure as permission to proceed — the same outage produces opposite cluster behavior depending on one field.` },
+
+{ tier:"ADVANCED", t:"ResourceQuota, LimitRange, and a PriorityClass eviction you cause on purpose", ch:"CH 14", chf:"k8s-14.html",
+  body:
+  p(`Namespaces are an API-level boundary, not a kernel one — prove the governance layer that actually constrains what a namespace's Pods can consume, then force a real preemption on the cluster.`)+
+  cb("yaml","governance.yaml",`apiVersion: v1
+kind: ResourceQuota
+metadata: {name: team-quota}
+spec:
+  hard: {requests.cpu: "1", requests.memory: 1Gi, pods: "5"}
+---
+apiVersion: v1
+kind: LimitRange
+metadata: {name: team-limits}
+spec:
+  limits:
+  - type: Container
+    default: {cpu: 200m, memory: 128Mi}
+    defaultRequest: {cpu: 100m, memory: 64Mi}`)+
+  cb("bash","",`kubectl create namespace governance
+kubectl apply -n governance -f governance.yaml
+kubectl run over-quota -n governance --image=busybox:1.36 --restart=Never --requests=cpu=2 --command -- sleep 3600`)+
+  tm("EXPECTED — rejected at admission, before the Pod is ever created",`Error from server (Forbidden): <b>exceeded quota: team-quota, requested: requests.cpu=2, used: requests.cpu=0, limited: requests.cpu=1</b>`)+
+  cb("bash","a Pod with no resources set at all — LimitRange fills the gap",`kubectl run defaulted -n governance --image=busybox:1.36 --restart=Never --command -- sleep 3600
+kubectl get pod defaulted -n governance -o jsonpath='{.spec.containers[0].resources}'; echo`)+
+  tm("EXPECTED — the LimitRange's defaults, not empty",`<b>{"limits":{"cpu":"200m","memory":"128Mi"},"requests":{"cpu":"100m","memory":"64Mi"}}</b>`)+
+  cb("bash","fill the cluster with low-priority Pods, then force a preemption",`kubectl create priorityclass low --value=100
+kubectl create priorityclass high --value=1000
+for i in $(seq 1 6); do
+  kubectl run filler-$i --image=busybox:1.36 --restart=Never \\
+    --requests=cpu=900m --overrides='{"spec":{"priorityClassName":"low"}}' \\
+    --command -- sleep 3600
+done
+kubectl run urgent --image=busybox:1.36 --restart=Never \\
+  --requests=cpu=900m --overrides='{"spec":{"priorityClassName":"high"}}' \\
+  --command -- sleep 3600
+kubectl get events --field-selector reason=Preempted`)+
+  tm("EXPECTED — the scheduler evicts a low-priority filler to make room",`<b>Preempted   Preempted by default/urgent on node lab-worker</b>`),
+  proves:`ResourceQuota enforces an aggregate cap per namespace at admission time, and LimitRange injects per-container defaults when a Pod omits them — both act before the scheduler ever sees the Pod (ch.14). PriorityClass-driven preemption is the scheduler's own fallback when no node fits: it selects and evicts the lowest-priority victim it can find rather than leaving the higher-priority Pod Pending.` },
+
+{ tier:"ADVANCED", t:"Cause a cluster outage yourself — fill a node's disk, then kill the control plane — and recover", ch:"CH 16", chf:"k8s-16.html",
+  body:
+  p(`The last experiment: degrade the cluster in two different, real ways and bring it back, watching exactly which parts keep working while each piece is down.`)+
+  cb("bash","exhaust a worker node's disk and watch DiskPressure evict Pods",`docker exec lab-worker sh -c "dd if=/dev/zero of=/pressure.fill bs=1M count=9000"
+kubectl get nodes -w`)+
+  tm("EXPECTED — the node reports the condition",`NAME          STATUS                     ROLES
+<b>lab-worker    Ready,DiskPressure</b>       &lt;none&gt;`)+
+  cb("bash","confirm via describe, then release the pressure",`kubectl describe node lab-worker | grep -A2 DiskPressure
+docker exec lab-worker rm /pressure.fill
+kubectl get nodes -w`)+
+  tm("EXPECTED — DiskPressure clears once kubelet re-evaluates",`DiskPressure   True    KubeletHasDiskPressure   <b>kubelet has disk pressure</b>`)+
+  cb("bash","now the bigger one: kill the API server container, keep the data plane's traffic flowing",`docker exec lab-control-plane sh -c "mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/"
+sleep 5
+kubectl get pods`)+
+  tm("EXPECTED — kubectl itself is dead",`<b>Unable to connect to the server: dial tcp ...: connect: connection refused</b>`)+
+  cb("bash","prove an already-running Pod keeps serving traffic with zero control plane running",`kubectl port-forward deployment/web 8080:80 &
+sleep 1
+curl -s --max-time 3 http://localhost:8080/`)+
+  p(`The already-running <code>web</code> Pods have live containers under containerd, already scheduled, already networked. None of that depends on the API server continuing to exist for one more second — only <i>new</i> decisions do. (If the port-forward itself was established before the outage, it keeps working; establishing a brand-new one requires the API server to be back.)`)+
+  cb("bash","restore the API server",`docker exec lab-control-plane sh -c "mv /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/"
+sleep 15
+kubectl get nodes`)+
+  tm("EXPECTED — control plane back, everything reconciles from wherever it actually was",`NAME                 STATUS   ROLES
+lab-control-plane    Ready    control-plane
+lab-worker           Ready    &lt;none&gt;
+lab-worker2          Ready    &lt;none&gt;`)+
+  co("bad","WHY THIS SEQUENCE, IN THIS ORDER",`Disk pressure is a data-plane failure the control plane detects and reacts to. Killing the API server is a control-plane failure the data plane doesn't even notice in real time. Running both back to back is the fastest way to feel the actual dependency direction between the two halves of Kubernetes — most people assume it runs the other way.`),
+  proves:`The control plane and data plane fail independently and asymmetrically (ch.6, ch.16): a kubelet-managed container that's already running has no ongoing runtime dependency on the API server, while every <i>new</i> scheduling decision, watch, or reconcile is dead in the water the instant it's unreachable. DiskPressure's eviction path is the kubelet's own node-pressure controller acting entirely locally, using only signals a running control plane happens to also read.` }
+
+];
+
+/* ---------- render experiments ---------- */
+const LSK = "sysinternals-lab-k8s";
+let labState = {}; try { labState = JSON.parse(localStorage.getItem(LSK)) || {}; } catch(e){}
+const saveLab = () => localStorage.setItem(LSK, JSON.stringify(labState));
+const CHK = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#07090d" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
+const tierPill = t => t==="BEGINNER" ? "g" : (t==="INTERMEDIATE" ? "y" : "b");
+
+const expRoot = el("experiments");
+EXPERIMENTS.forEach((x,i)=>{
+  const key="exp"+(i+1);
+  const d=document.createElement("div");
+  d.className="exp"+(labState[key]?" done":"");
+  d.innerHTML=`<div class="e-head"><div class="e-chk">${CHK}</div>
+      <div class="e-t"><span class="e-n"><span class="pill ${tierPill(x.tier)}">${x.tier}</span>EXPERIMENT ${String(i+1).padStart(2,"0")}</span>
+        <div class="e-title">${x.t}</div></div>
+      <a class="e-ch" href="${x.chf}">${x.ch} ↗</a></div>
+    <div class="e-body">${x.body}</div>
+    <div class="e-proves"><b>What this proves.</b> ${x.proves}</div>`;
+  d.querySelector(".e-chk").onclick=()=>{
+    if(labState[key]) delete labState[key]; else labState[key]=true;
+    d.classList.toggle("done",!!labState[key]); saveLab(); updateProgress();
+  };
+  expRoot.appendChild(d);
+});
+function updateProgress(){
+  const done=EXPERIMENTS.filter((_,i)=>labState["exp"+(i+1)]).length, n=EXPERIMENTS.length, C=2*Math.PI*22;
+  el("prog-n").textContent=done+" / "+n;
+  el("prog-ring").style.strokeDashoffset=C*(1-done/n);
+}
+updateProgress();
+el("prog-reset").onclick=()=>{
+  labState={}; saveLab();
+  document.querySelectorAll(".exp").forEach(e=>e.classList.remove("done"));
+  document.querySelectorAll(".checkitem").forEach(e=>e.classList.remove("on"));
+  updateProgress();
+};
+
+/* ---------- copy buttons ---------- */
+function bindCopy(){
+  document.querySelectorAll(".codeblock").forEach(b=>{
+    const btn=b.querySelector(".copybtn");
+    if(!btn||btn.dataset.bound) return;
+    btn.dataset.bound="1";
+    btn.onclick=()=>{
+      const txt=b.querySelector("pre").innerText;
+      const ok=()=>{ btn.textContent="copied"; btn.classList.add("done");
+        setTimeout(()=>{btn.textContent="copy";btn.classList.remove("done");},1400); };
+      const fb=()=>{ const ta=document.createElement("textarea"); ta.value=txt;
+        ta.style.cssText="position:fixed;opacity:0"; document.body.appendChild(ta); ta.select();
+        try{ document.execCommand("copy"); ok(); }catch(e){ btn.textContent="press ⌘C"; }
+        document.body.removeChild(ta); };
+      if(navigator.clipboard?.writeText) navigator.clipboard.writeText(txt).then(ok,fb); else fb();
+    };
+  });
+}
+bindCopy();
+
+/* ---------- resource request/limit calculator ---------- */
+(function(){
+  const ids=["calc-avgcpu","calc-peakcpu","calc-avgmem","calc-peakmem","calc-pattern","calc-crit","calc-onlylimits"];
+  function gen(){
+    const avgcpu=+el("calc-avgcpu").value, peakcpu=+el("calc-peakcpu").value,
+          avgmem=+el("calc-avgmem").value, peakmem=+el("calc-peakmem").value,
+          pattern=el("calc-pattern").value, crit=el("calc-crit").value,
+          onlylimits=el("calc-onlylimits").value==="yes";
+    el("calc-avgcpu-v").textContent=avgcpu+"m";
+    el("calc-peakcpu-v").textContent=peakcpu+"m";
+    el("calc-avgmem-v").textContent=avgmem+"Mi";
+    el("calc-peakmem-v").textContent=peakmem+"Mi";
+
+    const memHeadroom = pattern==="steady"?1.2:(pattern==="bursty"?1.4:1.6);
+    const cpuLimitFactor = pattern==="steady"?1.2:(pattern==="bursty"?1.5:2.0);
+
+    const cpuRequest = avgcpu;
+    const memRequest = Math.round(avgmem*1.1);
+    const memLimit = Math.round(peakmem*memHeadroom);
+    const cpuLimit = crit==="latency" ? null : Math.round(peakcpu*cpuLimitFactor);
+
+    const L=[];
+    L.push(`# --- ${pattern} usage, ${crit==="latency"?"latency-sensitive":"batch/throughput-tolerant"} ---`);
+    L.push(`resources:`);
+    if(!onlylimits){
+      L.push(`  requests:`);
+      L.push(`    cpu: "${cpuRequest}m"              # = real steady-state avg (scheduler bin-packs on this, ch.8)`);
+      L.push(`    memory: "${memRequest}Mi"`);
+    }
+    L.push(`  limits:`);
+    if(cpuLimit!==null){
+      L.push(`    cpu: "${cpuLimit}m"              # ${cpuLimitFactor}x peak — CFS throttles in 100ms windows past this`);
+    } else {
+      L.push(`    # cpu: omitted — latency-sensitive; CFS throttling hurts p99 more than an occasional burst`);
+    }
+    L.push(`    memory: "${memLimit}Mi"            # ${memHeadroom}x peak — exceeding this is an OOMKill (137), not a slowdown`);
+    if(onlylimits){
+      L.push(``);
+      L.push(`# NOTE: no requests set above -> Kubernetes silently sets requests = limits.`);
+      L.push(`# This Pod now reserves its FULL limit's worth of node capacity even if it`);
+      L.push(`# typically uses a fraction of that (bin-packing density destroyed).`);
+    }
+    el("calc-out").textContent=L.join("\n");
+
+    const n=[];
+    if(onlylimits) n.push(`<b style="color:var(--warn)">Limits with no requests:</b> the request silently defaults to equal the limit — you are reserving ${cpuLimit??peakcpu}m/${memLimit}Mi per Pod on paper even during idle periods.`);
+    if(crit==="latency" && cpuLimit===null) n.push(`Latency-sensitive with no CPU limit is intentional: a limit here means periodic CFS throttling, which shows up as p99 spikes unrelated to real contention.`);
+    if(pattern==="spiky") n.push(`Spiky pattern: ${memHeadroom}x headroom on the memory limit assumes peaks are genuinely rare — if they're frequent, treat this as the new average and re-run the calculator.`);
+    if(memRequest>=memLimit) n.push(`<b style="color:var(--bad)">Memory request is not below its limit</b> — this Pod's request should always leave room under the limit or the limit is providing no protection.`);
+    el("calc-notes").innerHTML = n.length ? "⚠ "+n.join("<br>⚠ ") : "";
+    bindCopy();
+  }
+  ids.forEach(i=>{ el(i).oninput=gen; el(i).onchange=gen; });
+  gen();
+})();
+
+/* ---------- capabilities ---------- */
+const CAPS=[
+ "Explain why a ReplicaSet's reconciliation loop replaces a killed Pod instead of restarting it",
+ "Compute maxSurge/maxUnavailable arithmetic for a rolling update and defend the numbers",
+ "Trace a Service through kube-proxy's rules down to a live Pod endpoint",
+ "Show that base64 is encoding, not encryption, and name the actual RBAC boundary",
+ "Read a FailedScheduling reason verbatim and know whether it's a taint, an affinity rule, or a resource shortage",
+ "Explain why the scheduler bin-packs on requests, never on live usage",
+ "Read etcd's own registry keys directly and explain why only the API server may",
+ "Describe the watch + informer + workqueue pattern every built-in controller uses",
+ "Explain why NetworkPolicy enforcement is the CNI's job, not the API server's",
+ "Trace a PVC through StorageClass provisioning to the real CSI call sequence",
+ "Explain why a StatefulSet's ordinal identity and per-replica PVC survive a Pod being killed",
+ "Derive HPA's desired-replica formula and predict what a load spike will do to it",
+ "Scope a ServiceAccount to two verbs and prove it with kubectl auth can-i, not a guess",
+ "Explain the exact difference failurePolicy: Fail vs Ignore makes when a webhook is unreachable",
+ "Diagnose Pending and CrashLoopBackOff from first principles using kubectl describe's Events section",
+ "Restore a cluster from an etcd snapshot and explain why it's the only truly stateful recovery in Kubernetes"
+];
+(function(){
+  const r=el("capabilities");
+  CAPS.forEach((c,i)=>{
+    const k="cap"+i;
+    const d=document.createElement("div");
+    d.className="checkitem"+(labState[k]?" on":"");
+    d.innerHTML=`<div class="ci-b">${CHK}</div><div>${c}</div>`;
+    d.querySelector(".ci-b").onclick=()=>{
+      if(labState[k]) delete labState[k]; else labState[k]=true;
+      d.classList.toggle("on",!!labState[k]); saveLab();
+    };
+    r.appendChild(d);
+  });
+})();
+
+/* ---------- cheatsheet ---------- */
+const CHEAT=[
+ ["setup","kind create cluster --name lab --config kind-config.yaml","Create the 3-node lab cluster"],
+ ["setup","kind delete cluster --name lab","Full teardown"],
+ ["setup","kind load docker-image <image>:<tag> --name lab","Load a locally-built image into every kind node"],
+ ["setup","kubectl cluster-info --context kind-lab","Confirm the control plane is reachable"],
+ ["setup","kubectl config current-context","Which cluster kubectl is actually pointed at"],
+ ["setup","minikube start --driver=docker --nodes=3","Alternative: a 3-node minikube cluster"],
+ ["setup","minikube dashboard","minikube's built-in web UI — kind has no equivalent"],
+ ["core","kubectl get pods -o wide","Pods plus the node each landed on"],
+ ["core","kubectl describe pod <pod>","The single most useful debugging command — read Events first"],
+ ["core","kubectl logs <pod> -p","Previous container instance's logs — the crash itself"],
+ ["core","kubectl exec -it <pod> -- sh","A shell inside a running container"],
+ ["core","kubectl port-forward deployment/web 8080:80","Reach a Pod's port with no Service involved"],
+ ["core","kubectl apply -f -","Declarative create/update from stdin, three-way merge"],
+ ["core","kubectl get deployment web -o yaml | grep last-applied-configuration","See apply's own diffing memory"],
+ ["rollout","kubectl set image deployment/web nginx=nginx:1.27-alpine","Trigger a rolling update"],
+ ["rollout","kubectl rollout status deployment/web","Watch a rollout to completion"],
+ ["rollout","kubectl rollout undo deployment/web","Roll back to the previous revision"],
+ ["rollout","kubectl scale deployment web --replicas=4","Change desired replica count directly"],
+ ["service","kubectl expose deployment web --port=80","Create a ClusterIP Service for a Deployment"],
+ ["service","kubectl get endpoints <svc>","The live list kube-proxy actually routes to"],
+ ["service","kubectl get pods -l <selector> --show-labels","Confirm a selector really matches"],
+ ["secret","kubectl get secret <s> -o jsonpath='{.data.<k>}' | base64 -d","Decode a Secret value"],
+ ["secret","kubectl create secret docker-registry regcred ...","A registry pull secret"],
+ ["rbac","kubectl create role <r> --verb=get,list --resource=secrets","Namespace-scoped permission set"],
+ ["rbac","kubectl create rolebinding <b> --role=<r> --serviceaccount=ns:sa","Bind a Role to a ServiceAccount"],
+ ["rbac","kubectl auth can-i get secrets --as=system:serviceaccount:ns:sa","Ask the REAL authorizer, don't guess"],
+ ["scheduling","kubectl taint nodes <node> key=value:NoSchedule","Repel Pods without a matching toleration"],
+ ["scheduling","kubectl describe node <node> | grep Taints","Read a node's current taints"],
+ ["scheduling","kubectl describe nodes | grep -A5 'Allocated resources'","Requests vs allocatable, per node"],
+ ["scheduling","kubectl get pod <pod> -o wide","Confirm which node a Pod actually landed on"],
+ ["etcd","kubectl exec -n kube-system <etcd-pod> -- etcdctl get /registry/... --prefix","Read the registry directly"],
+ ["etcd","etcdctl snapshot save <file>","Take a backup while etcd is healthy"],
+ ["etcd","etcdctl snapshot restore <file> --data-dir=<new>","Restore into a FRESH data directory, never live"],
+ ["etcd","etcdctl endpoint health","Confirm etcd is actually serving"],
+ ["storage","kubectl get storageclass","Which provisioner is default"],
+ ["storage","kubectl get pvc -w","Watch a claim go Pending -> Bound"],
+ ["storage","kubectl describe pvc <name> | grep -A6 Events","The real CSI call sequence"],
+ ["networking","kubectl apply -f networkpolicy.yaml","Store the object — enforcement is the CNI's job, not this command's"],
+ ["networking","kubectl logs -n kube-system -l k8s-app=kube-proxy","kube-proxy's own errors"],
+ ["autoscale","kubectl autoscale deployment web --cpu-percent=50 --min=2 --max=8","Create an HPA"],
+ ["autoscale","kubectl get hpa web -w","Watch TARGETS and REPLICAS live"],
+ ["autoscale","kubectl top nodes","Requires metrics-server; real usage, not requests"],
+ ["runbook","kubectl cordon <node>","Mark unschedulable without touching running Pods"],
+ ["runbook","kubectl drain <node> --ignore-daemonsets --delete-emptydir-data","Evict everything, respecting PDBs"],
+ ["runbook","kubectl uncordon <node>","Allow scheduling again"],
+ ["runbook","kubectl get pdb","Check ALLOWED DISRUPTIONS before a drain hangs"],
+ ["runbook","kubectl get events --field-selector reason=Preempted","Find scheduler preemption decisions"],
+ ["admission","kubectl apply -f validatingwebhookconfiguration.yaml","Register an admission webhook"],
+ ["admission","kubectl patch validatingwebhookconfiguration <n> --type=json -p=...","Flip failurePolicy live"],
+ ["quota","kubectl create namespace <ns> && kubectl apply -f resourcequota.yaml","Cap aggregate namespace consumption"],
+ ["quota","kubectl create priorityclass <name> --value=<n>","Define a preemption priority tier"]
+];
+(function(){
+  const list=el("cheat-list"), q=el("cheat-q");
+  el("cheat-count").textContent=CHEAT.length+" COMMANDS";
+  function render(f){
+    f=(f||"").trim().toLowerCase();
+    const rows=CHEAT.filter(r=>!f||(r[0]+" "+r[1]+" "+r[2]).toLowerCase().includes(f));
+    let out="",cat=null;
+    rows.forEach(r=>{
+      if(r[0]!==cat){ cat=r[0]; out+=`<div class="cheat-cat">${cat.toUpperCase()}</div>`; }
+      out+=`<div class="cheat-row"><div class="cc">${esc(r[1])}</div><div class="cd">${r[2]}</div></div>`;
+    });
+    list.innerHTML=out||`<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">No match.</div>`;
+  }
+  q.oninput=()=>render(q.value); render("");
+})();
+
+/* ---------- chrome ---------- */
+addEventListener("scroll",()=>{
+  const h=document.documentElement;
+  el("readbar").style.width=(h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+},{passive:true});
+const tocLinks=[...document.querySelectorAll("#toc a")];
+const secs=tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy=new IntersectionObserver(es=>es.forEach(e=>{
+  const i=secs.indexOf(e.target); if(i<0) return;
+  if(e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); }
+}),{rootMargin:"-20% 0px -65% 0px"});
+secs.forEach(s=>s&&spy.observe(s));
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur=tocLinks.findIndex(l=>l.classList.contains("active"));
+  if(e.key==="j"){ const n=secs[Math.min(cur+1,secs.length-1)]; n&&n.scrollIntoView({behavior:"smooth"}); }
+  else if(e.key==="k"){ const p=secs[Math.max(cur-1,0)]; p&&p.scrollIntoView({behavior:"smooth"}); }
+  else if(e.key==="g") scrollTo({top:0,behavior:"smooth"});
+});
+el("mark-done").onclick=()=>{
+  const K="sysinternals-progress-v1";
+  let p={}; try{ p=JSON.parse(localStorage.getItem(K))||{}; }catch(_){}
+  p["k8s-lab"]=true; localStorage.setItem(K,JSON.stringify(p));
+  el("mark-done").textContent="✓ Lab complete — saved"; el("mark-done").disabled=true;
+};
+</script>
 </body>
 </html>
