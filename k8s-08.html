@@ -1,0 +1,1795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8S-08 · The Scheduler: Filtering, Scoring & Binding — Kubernetes Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#326ce5; --pg-dim:rgba(50,108,229,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(50,108,229,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(50,108,229,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:#c6cddb;font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:#c6cddb;font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:#c6cddb}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(50,108,229,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#04101f}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* generic node/queue boxes for decks */
+  .stacks{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .stackcol{flex:1;min-width:230px;max-width:330px}
+  .stackcol .sc-t{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px;text-align:center}
+  .frame{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:8px 12px;margin-bottom:6px;
+    font-family:var(--mono);font-size:11.5px;animation:framein .35s ease both}
+  .frame .ff{color:#82aaff}
+  .frame .fl{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .frame.hot{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(50,108,229,.15)}
+  .frame.dead{opacity:.35;text-decoration:line-through}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+
+  .ptree{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .pnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:10px;padding:8px 14px;
+    font-family:var(--mono);font-size:11.5px;transition:all .3s;position:relative}
+  .pnode .sub{display:block;font-size:9.5px;color:var(--dim)}
+  .pnode.pm{border-color:var(--pg);color:var(--pg)}
+  .pnode.crash{border-color:var(--bad);background:rgba(242,92,84,.12);color:var(--bad);animation:shake .4s}
+  .pnode.sigq{border-color:var(--warn);background:rgba(255,159,67,.1);color:var(--warn)}
+  .pnode.gone{opacity:.22;filter:grayscale(1)}
+  .pnode.new{border-color:var(--ok);color:var(--ok)}
+  .prow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(50,108,229,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:#c6cddb;min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* generic bar visualization (allocatable budget, memory map style) */
+  .memmap{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-hi);margin:14px 0 6px}
+  .memmap .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+    color:#04121f;font-weight:700;transition:width .4s cubic-bezier(.22,1,.36,1);overflow:hidden;white-space:nowrap;min-width:2px}
+  .memlegend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:6px}
+  .memlegend .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:#c6cddb;vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(50,108,229,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:#c6cddb}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(50,108,229,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:#c6cddb;transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:#c6cddb}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:#c6cddb}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#04101f;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#04101f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#04101f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:#c6cddb;border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:#c6cddb}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- tier badge ---------- */
+  .tierbadge{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;
+    color:#22d3ee;border:1px solid rgba(34,211,238,.35);background:rgba(34,211,238,.08);border-radius:999px;
+    padding:4px 12px;letter-spacing:.14em;margin-bottom:10px}
+  .tierbadge .tb-dot{width:6px;height:6px;border-radius:50%;background:#22d3ee;box-shadow:0 0 8px #22d3ee}
+
+  /* ---------- SCHEDULER SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 300px;min-height:560px}
+  @media(max-width:900px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:900px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .podbox{background:#0a0d13;border:1px solid var(--border);border-radius:10px;padding:10px 12px;
+    font-family:var(--mono);font-size:11px;line-height:1.65;color:#9fd0ff;margin-bottom:6px}
+  .podbox .pb-k{color:#5f6b7f}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+
+  .sched-nodes{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+  .nodecard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:10px 12px;
+    font-family:var(--mono);font-size:11px;transition:all .3s;position:relative}
+  .nodecard .nc-name{font-size:12.5px;color:var(--text);font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+  .nodecard .nc-status{font-size:9px;padding:1.5px 7px;border-radius:6px;font-weight:700;letter-spacing:.05em;color:var(--dim);background:var(--bg-2)}
+  .nodecard.pass .nc-status{color:var(--ok);background:rgba(74,222,128,.1)}
+  .nodecard.fail .nc-status{color:var(--bad);background:rgba(242,92,84,.1)}
+  .nodecard.win .nc-status{color:var(--pg);background:rgba(50,108,229,.18)}
+  .nodecard.pass{border-color:rgba(74,222,128,.4)}
+  .nodecard.fail{border-color:rgba(242,92,84,.35);opacity:.62}
+  .nodecard.win{border-color:var(--pg);background:var(--pg-dim);box-shadow:0 0 18px rgba(50,108,229,.25);opacity:1}
+  .nodecard .nc-row{display:flex;justify-content:space-between;margin:2px 0;color:var(--muted);font-size:10.5px}
+  .nodecard .nc-reason{margin-top:6px;color:var(--bad);font-size:9.8px;line-height:1.45}
+  .nodecard .nc-score{margin-top:8px}
+  .nodecard .nc-score .nc-slabel{display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted);margin-bottom:3px}
+  .nc-scorebar{height:6px;border-radius:3px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .nc-scorefill{height:100%;background:var(--pg);width:0%;transition:width .5s ease}
+  .nc-tag{display:inline-block;font-size:8.7px;border-radius:5px;padding:0 5px;margin:1px 3px 0 0}
+  .nc-tag.taint{color:var(--warn);border:1px solid rgba(255,159,67,.4)}
+  .nc-tag.label{color:var(--purple);border:1px solid rgba(167,139,250,.4)}
+
+  /* log console */
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.6px;line-height:1.72;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer nav */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),#22d3ee);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-kubernetes.html">← Kubernetes Internals</a>
+  <span class="crumb">KUBERNETES INTERNALS · <b>CH 08 / 18</b> · THE SCHEDULER</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Filter, Then Score</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Costs</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance &amp; Security</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Source Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">KUBERNETES INTERNALS · CHAPTER 08</div>
+  <div class="tierbadge"><span class="tb-dot"></span>INTERMEDIATE</div>
+  <h1>The Scheduler: Filtering,<br><span class="grad">Scoring &amp; Binding</span></h1>
+  <p class="lead">Every Pod that has ever run in a Kubernetes cluster was assigned to exactly one node by a single
+  component making one decision, twice: first <i>which nodes could possibly run this</i> (a hard filter), then
+  <i>which of those is actually best</i> (a weighted score). This chapter derives that two-phase design from
+  first principles, walks the real scheduling-framework extension points a Pod passes through, and ends with a
+  simulator that runs the actual arithmetic — not a cartoon of it — against six candidate nodes.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Trace a Pod from Pending through Filter, Score, and Bind to a specific node, naming the real extension point at each step.</div>
+    <div class="obj"><b>You will understand</b>Why bin-packing and spreading cannot both be maximized by one score, and how the framework's weighted sum resolves that anyway.</div>
+    <div class="obj"><b>You will predict</b>Which of several candidate nodes a stated scoring strategy will pick, by computing the real formula by hand.</div>
+    <div class="obj"><b>You will simulate</b>A Pod spec against six real nodes, running genuine filter and score passes to watch the scheduler's own math choose the winner.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 01 · THE PROBLEM</div>
+  <h2 class="sec">One decision, thousands of times a day, with no do-over</h2>
+  <p class="lead">By chapter 6 you know the control plane's shape: the API server as the single source of truth,
+  etcd underneath it, and a scheduler that watches for Pods with no <code>.spec.nodeName</code> set. This chapter
+  is about exactly what happens between "a Pod exists with nowhere to run" and "a Pod is bound to a specific node."
+  That decision looks simple from the outside — pick a node — and is genuinely hard once you unpack what it must
+  satisfy simultaneously.</p>
+  <p>Unpack it into five pulling-apart requirements:</p>
+  <ul class="plain">
+    <li><b>Feasibility, not just availability.</b> A node with free CPU is not automatically a legal home — it might
+      carry a <code>NoSchedule</code> taint reserving it for another team, lack a label the Pod's
+      <code>nodeAffinity</code> requires, or already be marked unschedulable. Placing a Pod somewhere it cannot
+      legally or physically run is worse than not scheduling it at all — the kubelet will simply refuse it (or
+      worse, the Pod will run somewhere it was never supposed to).</li>
+    <li><b>Optimization among the feasible set.</b> Usually more than one node qualifies. "Best" is not a fact —
+      it depends on whether the operator wants to <b>pack</b> workloads tightly (fewer nodes running, lower cloud
+      bill, easier scale-down) or <b>spread</b> them thinly (survive a node failure, avoid noisy-neighbor
+      contention). These two goals actively conflict, and a scheduler has to pick a stance.</li>
+    <li><b>Freshness under constant churn.</b> Every scheduling decision anywhere in the cluster changes every
+      node's free capacity. A scheduler that decides against state that is even a few hundred milliseconds stale
+      risks recommending a node that another decision already filled.</li>
+    <li><b>No double-booking.</b> Two Pods must never be simultaneously convinced they own the same slice of a
+      node's CPU and memory — that is a correctness bug, not a performance one.</li>
+    <li><b>Throughput under load.</b> A cluster autoscaling event or a large Deployment rollout can produce
+      hundreds of pending Pods at once. One Pod with an impossible-to-satisfy constraint (say, a typo'd node
+      selector) must not stall the queue behind it.</li>
+  </ul>
+  <p>The kube-scheduler's answer is a strict two-stage pipeline — <b>filter, then score</b> — implemented as a
+  pluggable framework, backed by an internal cache that trades a little staleness for a lot of throughput, and
+  finished off with an intentionally asynchronous bind. This chapter derives that shape, in that order, and then
+  follows one concrete Pod through it.</p>
+  <div class="callout">
+    <div class="co-t">WHERE THIS SITS IN THE COURSE</div>
+    <p>Chapter 6 showed you the scheduler as one box in the control-plane diagram. Chapter 9 will show you that
+    <i>nothing</i> the scheduler decides is permanent — controllers continuously reconcile desired vs. observed
+    state, and a scheduling decision is just one more piece of observed state that a controller might act on
+    later (for example, if the bound Pod never becomes <code>Ready</code>). Everything in this chapter answers
+    "where," never "how many" or "keep it running" — those are chapter 9's job.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 02 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a hardcoded two-list scheduler to a pluggable framework</h2>
+  <p>The general shape — check feasibility, then rank the survivors — is not a Kubernetes invention. Click through
+  the timeline: it traces the scheduler's own lineage, from the Borg paper that inspired it to the 2020
+  rewrite that still governs every cluster you operate today.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — the scheduler's own history</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · THE BORG PAPER'S DIRECT FINGERPRINT</div>
+    <p>Google's 2015 EuroSys paper "Large-scale cluster management at Google with Borg" describes Borg's scheduler
+    as running <i>feasibility checking</i> first, then <i>scoring</i> the feasible machines — the exact two-phase
+    shape this chapter derives. Several of Kubernetes' founding engineers had worked on Borg or its sibling Omega;
+    the two-phase design wasn't rediscovered independently, it was carried over on day one, in the same way the
+    postmaster/backend split you saw in the PostgreSQL course wasn't invented in a vacuum either — proven shapes
+    get reused.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 03 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: hand a Pod to the next free-looking node</h2>
+  <p>Derive it honestly. Before predicates and priorities existed as a concept, imagine you had to write the
+  simplest possible placer yourself. You have a list of nodes; a Pod needs a home; assign it to the next node in
+  the list and move on.</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">bash</span><span>naive_scheduler.sh — the strawman, annotated</span></div>
+    <pre><span class="c"># poll for unscheduled Pods, round-robin them across nodes,</span>
+<span class="c"># with NO check of capacity, taints, or affinity</span>
+i=0
+nodes=($(<span class="f">kubectl</span> get nodes -o name))
+
+<span class="k">while</span> <span class="f">true</span>; <span class="k">do</span>
+  pod=$(<span class="f">kubectl</span> get pods --field-selector=spec.nodeName= \
+          -o jsonpath=<span class="s">'{.items[0].metadata.name}'</span>)
+  <span class="k">if</span> [ -n <span class="s">"$pod"</span> ]; <span class="k">then</span>
+    node=${nodes[$(( i % ${#nodes[@]} ))]}       <span class="c"># just... the next one</span>
+    <span class="f">kubectl</span> patch pod <span class="s">"$pod"</span> --subresource=status \
+      --patch <span class="s">"{\"spec\":{\"nodeName\":\"$node\"}}"</span>   <span class="c"># no capacity check!</span>
+    i=$(( i + 1 ))
+  <span class="k">fi</span>
+  <span class="f">sleep</span> 1
+<span class="k">done</span></pre>
+  </div>
+
+  <p>This is not a strawman built to be laughed at — it is exactly where you should start. It solves the actual
+  minimum problem ("every Pod eventually gets a <code>nodeName</code>") with the least code possible, and for a
+  homogeneous cluster running identically-sized workloads with no isolation requirements at all, it would even
+  work passably. Watch it fail once those assumptions break.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">The round-robin placer under real constraints</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 04 · WHY IT FAILS</div>
+  <h2 class="sec">Round-robin ignores exactly the facts that matter, quantified</h2>
+  <p>Three concrete failure modes, each with real numbers, because "it doesn't check capacity" undersells how
+  fast this goes wrong:</p>
+  <ul class="plain">
+    <li><b>Silent overcommit on requests.</b> A 4-node cluster, 8 vCPU / 32&nbsp;Gi each = 32 vCPU / 128&nbsp;Gi total
+      capacity. A Deployment scales to 100 replicas, each requesting 1 vCPU / 2&nbsp;Gi. Round-robin lands 25 Pods per
+      node: <b>25 vCPU requested against 8 vCPU capacity — 312% oversubscribed</b>, before a single Pod has done any
+      real work. Nothing checked this at placement time, so nothing rejects it: the kubelet dutifully tries to admit
+      all 25, the kernel's CFS scheduler time-slices the CPU thin enough that every Pod's actual throughput
+      collapses, and once real memory usage (not just requests) exceeds 32&nbsp;Gi, the kernel's OOM killer starts
+      picking victims essentially at random.</li>
+    <li><b>Taint-blindness is a policy violation, not just a resource problem.</b> Say one node in that cluster
+      carries <code>dedicated=gpu:NoSchedule</code> because it has an attached GPU reserved for an ML team.
+      Round-robin does not know taints exist. One in four Pods lands there anyway, consuming CPU/memory the GPU
+      team's actual workload needed, and — depending on what's running — potentially reading memory alongside a
+      workload it was never meant to share a node with. This is a security and capacity-planning failure wearing
+      a scheduling bug's clothes.</li>
+    <li><b>No notion of "better."</b> Even when every node has room, round-robin cannot express "pack these three
+      batch jobs onto one already-busy node so the other three can scale to zero" or "spread these five replicas
+      across three availability zones so a zone outage takes at most two." There is no score, so there is no
+      way to encode an objective at all — every placement is equally arbitrary.</li>
+  </ul>
+  <div class="callout bad">
+    <div class="co-t">THE PATTERN</div>
+    <p>Every one of these failures has the same root cause: <b>the naive placer only ever asks "is there a next
+    node," never "can this node legally and physically host this Pod, and if several can, which one should."</b>
+    Those are two different questions with two different cost profiles — one is a hard yes/no per node, the other
+    is a ranking across survivors — and conflating them is exactly what round-robin does. Split them, and you have
+    the real scheduler's shape.</p>
+  </div>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 05 · FILTER, THEN SCORE</div>
+  <h2 class="sec">Deriving the two-phase pipeline</h2>
+  <p>Step through the derivation the way Borg's designers (and later, Kubernetes') actually reasoned about it:
+  first fix correctness, then, only among correct choices, optimize.</p>
+
+  <div class="widget deck" id="deckDerive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">From round-robin to filter + score</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE KEY INSIGHT</div>
+    <p>Filtering and scoring are not two flavors of the same check — they are <b>different kinds of question with
+    different failure semantics</b>. A filter is a boolean veto: any single failing filter plugin removes a node
+    from consideration, full stop, no partial credit. A score is a continuum: every surviving node gets ranked,
+    and "worst surviving node" is still a legal, if suboptimal, choice. Conflating them — letting a soft preference
+    accidentally behave like a hard requirement, or vice versa — is one of the most common real-world Kubernetes
+    misconfigurations (an operator writes <code>preferredDuringSchedulingIgnoredDuringExecution</code> when they
+    meant <code>requiredDuringSchedulingIgnoredDuringExecution</code>, and wonders why Pods land somewhere
+    "wrong" instead of staying Pending).</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL COSTS ================= -->
+<section id="s6">
+  <div class="arc">ARC 06 · WHY THAT STILL COSTS</div>
+  <h2 class="sec">Filter-then-score is correct — it is not free</h2>
+  <p>Three costs the two-phase design does not eliminate, each of which shows up as a real operational concern at
+  scale:</p>
+  <ul class="plain">
+    <li><b>Scoring every feasible node doesn't scale linearly forever.</b> At 50 nodes, scoring all of them per
+      pending Pod is trivial. At 5,000 nodes with thousands of Pods arriving from a large rollout, scoring
+      <i>every</i> feasible node for <i>every</i> Pod is wasted work the moment you already have several
+      good-enough candidates. The scheduler's actual answer — an adaptive <code>percentageOfNodesToScore</code> —
+      is explored with real numbers in §10; the short version is it trades a small chance of missing the
+      global optimum for a large win in decision latency.</li>
+    <li><b>The scheduler decides against a cache, not live truth.</b> To avoid hitting the API server (and,
+      transitively, etcd) on every single filter check, the scheduler keeps its own in-memory
+      <code>NodeInfo</code> snapshot, refreshed from the same watch mechanism chapter 7 covered. Binding is then
+      deliberately <i>asynchronous</i> — the scheduler "assumes" a Pod is placed in its cache and moves on to the
+      next Pod immediately, rather than blocking the whole pipeline on a network round trip to the API server.
+      That asynchrony is what makes throughput possible, and it is exactly what creates the race window
+      §11 examines under a real incident pattern.</li>
+    <li><b>Preemption — the escape hatch for "nothing fits" — is another full pass, and it can cascade.</b> When
+      zero nodes survive filtering, the scheduler doesn't just give up: its <code>PostFilter</code> stage asks
+      "if I evicted some lower-priority Pod, would this Pod then fit?" Answering that means re-running filter
+      logic against hypothetical states, one candidate victim (or victim set) at a time — itself another
+      filter-shaped computation layered on top of the first one, gated by whether evicting the victim would
+      violate its PodDisruptionBudget.</li>
+  </ul>
+
+  <p>Watch the first cost directly. Drag the cluster size and see how the fraction of nodes actually scored for a
+  typical Pod shrinks — this is the real <code>percentageOfNodesToScore</code> heuristic, not a metaphor:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Adaptive node scoring at scale</span><span class="w-sub">DRAG</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>cluster size (nodes)</label><input type="range" id="pns-slider" min="10" max="5000" value="100" step="10"><span class="val" id="pns-val">100</span></div>
+      <div class="memmap" id="pns-map"></div>
+      <div class="memlegend" id="pns-legend"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="pns-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 07 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The scheduling framework: extension points, mapped</h2>
+  <p>Since the 1.19 GA of KEP-624, everything the scheduler does — including every "built-in" behavior — is a
+  plugin registered at one or more named extension points. Click any stage below to see its role, which default
+  plugins implement it, and what happens if it rejects the Pod.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Scheduling framework explorer</span><span class="w-sub">CLICK ANY STAGE</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">QUEUEING</div>
+        <div class="arch-grid"><div class="acard" data-p="queuesort">QueueSort</div></div>
+        <div class="arch-row-label">SUPPORTING STATE (consulted by every stage)</div>
+        <div class="arch-grid"><div class="acard shmcard" data-p="cache">scheduler cache &amp; snapshot — one NodeInfo per node, refreshed from watches, frozen per cycle</div></div>
+        <div class="arch-row-label">PRE-DECISION</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="prefilter">PreFilter</div>
+          <div class="acard" data-p="filter">Filter</div>
+          <div class="acard" data-p="postfilter">PostFilter</div>
+        </div>
+        <div class="arch-row-label">SCORING</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="prescore">PreScore</div>
+          <div class="acard" data-p="score">Score + NormalizeScore</div>
+        </div>
+        <div class="arch-row-label">COMMIT</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="reserve">Reserve</div>
+          <div class="acard" data-p="permit">Permit</div>
+          <div class="acard" data-p="prebind">PreBind</div>
+          <div class="acard" data-p="bind">Bind</div>
+          <div class="acard" data-p="postbind">PostBind</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY A FRAMEWORK, NOT A FUNCTION</div>
+    <p>Before KEP-624, "predicates" and "priorities" were hardcoded lists inside the scheduler binary — adding one
+    meant patching and recompiling <code>kube-scheduler</code> itself, which is exactly why <b>scheduler
+    extenders</b> (webhook callouts, §9) existed as a workaround. The framework turned every stage — including the
+    built-ins — into the same plugin interface, so a cluster operator who needs custom placement logic implements
+    <code>Filter</code>/<code>Score</code>/etc. against a stable Go interface and compiles it into their own
+    scheduler binary (or the community's <code>scheduler-plugins</code> repository), instead of forking
+    <code>kube-scheduler</code> or paying a network round trip per decision.</p>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 08 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">One scheduling cycle, followed end to end</h2>
+  <p>Now the mechanism at the level you'd need to reason about a stuck Pod. Two pieces: <b>(a)</b> a single Pod's
+  trip through every extension point from §7, with a concrete example, and <b>(b)</b> the resource arithmetic —
+  requests, limits, and <code>Allocatable</code> — that Filter and Score actually compute over.</p>
+
+  <h3>(a) A concrete Pod's scheduling cycle</h3>
+  <p>Take a Pod requesting <code>cpu: 2</code>, <code>memory: 4Gi</code>, tolerating nothing extra, and requiring
+  <code>disktype=ssd</code> via <code>nodeAffinity</code>. Step through what the scheduler actually does with it,
+  extension point by extension point:</p>
+
+  <div class="widget deck" id="deckCycle">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">One Pod, one scheduling cycle</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>(b) Requests, limits, and what "fits" actually means</h3>
+  <p>The Filter phase's <code>NodeResourcesFit</code> plugin never compares a Pod against a node's raw hardware
+  capacity — it compares against <code>Allocatable</code>, which is capacity minus what the platform has
+  deliberately carved out for itself:</p>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">formula</span><span>kubelet's Node.Status.Allocatable</span></div>
+    <pre>Allocatable = <span class="f">NodeCapacity</span> - <span class="n">kube-reserved</span> - <span class="n">system-reserved</span> - <span class="n">eviction-hard threshold</span></pre>
+  </div>
+  <p><code>kube-reserved</code> protects the kubelet, container runtime, and node-level Kubernetes daemons;
+  <code>system-reserved</code> protects sshd, systemd, and the rest of the OS; the eviction-hard threshold
+  (default <code>memory.available&lt;100Mi</code>, tunable) is capacity the kubelet holds back so it can evict
+  Pods gracefully <i>before</i> the kernel's OOM killer has to. Drag the sliders and watch how much of an 8-vCPU
+  / 32-Gi node is actually schedulable — and separately, watch what happens when a Pod's <b>limit</b> (not its
+  request) is pushed past what's physically left, which the scheduler never checks at all:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Allocatable budget &amp; the request/limit gap</span><span class="w-sub">DRAG SLIDERS</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>node capacity (vCPU)</label><input type="range" id="cap-slider" min="2" max="64" value="8" step="2"><span class="val" id="cap-val">8 vCPU</span></div>
+      <div class="slider-row"><label>kube-reserved</label><input type="range" id="kr-slider" min="0" max="20" value="6" step="1"><span class="val" id="kr-val">6%</span></div>
+      <div class="slider-row"><label>system-reserved</label><input type="range" id="sr-slider" min="0" max="20" value="4" step="1"><span class="val" id="sr-val">4%</span></div>
+      <div class="slider-row"><label>eviction-hard reserve</label><input type="range" id="ev-slider" min="0" max="15" value="5" step="1"><span class="val" id="ev-val">5%</span></div>
+      <div class="slider-row"><label>Pod cpu request × count</label><input type="range" id="pr-slider" min="1" max="20" value="3" step="1"><span class="val" id="pr-val">3 × 2 vCPU</span></div>
+      <div class="memlegend" id="budget-legend"></div>
+      <div class="memmap" id="budget-map"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="budget-note"></p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="co-t">THE GAP THE SCHEDULER LEAVES OPEN, ON PURPOSE</div>
+    <p><code>NodeResourcesFit</code> sums <b>requests</b> against <code>Allocatable</code> — it never looks at
+    <b>limits</b>. That is a deliberate design choice, not an oversight: requests are the guaranteed reservation
+    a Pod is promised, and limits are a per-container ceiling the kubelet enforces via cgroups (chapter 2 of the
+    Container Internals course covers the cgroup mechanics; this course does not re-derive them). Kubernetes
+    explicitly allows <code>sum(limits) &gt; Allocatable</code> — that's how "burstable" QoS Pods share slack
+    capacity — but it means a node that passed every filter check can still hit real memory pressure if enough
+    Pods burst simultaneously. §10 and §11 both return to exactly this gap.</p>
+  </div>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 09 · TRADEOFFS</div>
+  <h2 class="sec">The same placement problem, five ways</h2>
+  <p>"Use a custom scheduler" is not one option — it is a spectrum, and each point on it prices extensibility
+  against operational simplicity differently:</p>
+  <table class="cmp">
+    <tr><th>APPROACH</th><th>HOW IT PLUGS IN</th><th>WHAT YOU BUY</th><th>WHAT YOU PAY</th></tr>
+    <tr><td>Default kube-scheduler</td><td>In-tree plugins, no changes</td>
+      <td><span class="pill g">zero ops overhead</span> <span class="pill g">battle-tested</span></td>
+      <td><span class="pill b">only the built-in objectives</span></td></tr>
+    <tr><td>Scheduler extender</td><td>HTTP webhook called at Filter/Score/Bind</td>
+      <td><span class="pill g">no scheduler fork</span> <span class="pill g">any language, any process</span></td>
+      <td><span class="pill b">a network round trip per extension call</span> <span class="pill y">deprecated in spirit — the framework superseded it</span></td></tr>
+    <tr><td>Custom in-tree plugin</td><td>Implement the framework's Go interfaces, compile your own scheduler binary</td>
+      <td><span class="pill g">near-zero overhead</span> <span class="pill g">full lifecycle access (Reserve/Permit/etc.)</span></td>
+      <td><span class="pill b">Go required</span> <span class="pill b">you own the binary's build &amp; upgrade path</span></td></tr>
+    <tr><td>Multiple schedulers (<code>schedulerName</code>)</td><td>Run a second scheduler process alongside the default, Pods opt in</td>
+      <td><span class="pill g">isolate risky logic from the default path</span></td>
+      <td><span class="pill b">must partition nodes (labels/taints) or both schedulers race for the same capacity</span></td></tr>
+    <tr><td>Batch/gang schedulers (Kueue, Volcano)</td><td>Built as framework plugins or a coordinating extra control loop</td>
+      <td><span class="pill g">gang scheduling, queueing &amp; quota for ML/batch jobs</span></td>
+      <td><span class="pill b">another control-plane component to run and upgrade in lockstep</span></td></tr>
+  </table>
+  <p>Read this table the way you read chapter 1's process-model comparison: there is no dominant strategy, only
+  different placements of the same underlying cost — someone pays for extensibility, either in operational
+  surface area (run more components) or in engineering effort (write and maintain Go plugins).</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 10 · PERFORMANCE &amp; SECURITY CHARACTERISTICS</div>
+  <h2 class="sec">Numbers you can predict before you hit 5,000 nodes</h2>
+  <p>Complexity, stated precisely: filtering one Pod costs roughly <b>O(nodes × filter-plugins)</b> — each plugin
+  is typically O(1) per node (a label comparison, a taint scan, an arithmetic check). Scoring costs
+  <b>O(scored-nodes × score-plugins)</b>, where <code>scored-nodes</code> is the piece the scheduler can shrink.</p>
+  <ul class="plain">
+    <li><b>percentageOfNodesToScore.</b> Clusters at or below 50 nodes score every feasible node (100%). Above 50,
+      the default adaptive percentage shrinks roughly linearly with cluster size down to a floor of <b>5%</b> —
+      so a 5,000-node cluster scores on the order of a few hundred nodes per decision, not five thousand, once
+      "enough" feasible candidates have been found. This is a genuine accuracy-for-latency trade: the chosen node
+      is "good," not provably globally optimal.</li>
+    <li><b>Default pod density:</b> kubelet's <code>--max-pods</code> defaults to <b>110 Pods per node</b> — a
+      real ceiling the scheduler's Filter phase respects (a node at 110 Pods fails every subsequent Pod on a
+      dedicated <code>NodeResourcesFit</code>-adjacent check, regardless of remaining CPU/memory).</li>
+    <li><b>The documented cluster envelope:</b> Kubernetes' own scalability thresholds target up to
+      <b>5,000 nodes and 150,000 Pods</b> per cluster as a supported SLO boundary — well past that, cluster
+      federation or multi-cluster patterns (chapter 17) become the answer, not scheduler tuning alone.</li>
+    <li><b>etcd's shape still matters here.</b> Chapter 7 covered etcd's recommended &lt;1.5&nbsp;KB per key and
+      multi-GB total-size ceiling; every Bind is a write through the API server into etcd, so etcd's own latency
+      envelope is a hard floor under the scheduler's throughput no plugin tuning can remove.</li>
+  </ul>
+  <p>Drag the cluster size and toggle the adaptive heuristic to see the shape of the trade:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Scheduling latency vs. cluster size</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>cluster size (nodes)</label><input type="range" id="perf-nodes" min="10" max="5000" value="200" step="10"><span class="val" id="perf-nodes-val">200</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="perf-adaptive">adaptive percentageOfNodesToScore</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> decision latency (relative)</span>
+        <span><span style="color:var(--bad)">━</span> nodes actually scored (relative)</span>
+        <span><span style="color:var(--warn)">┆</span> your setting</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curves are an analytic sketch — latency roughly proportional to nodes scored, with a fixed per-Pod
+    overhead floor — shaped to match the documented behavior of the adaptive heuristic. Real clusters bend earlier
+    or later depending on plugin mix, API server load, and etcd latency; treat this as intuition-building, not a
+    capacity-planning tool.</p>
+  </div>
+  <h3>Security characteristics</h3>
+  <p>The scheduler is a high-privilege component by necessity: writing <code>pod.spec.nodeName</code> via the
+  <code>pods/binding</code> subresource is, in the default RBAC bindings, restricted to the
+  <code>system:kube-scheduler</code> identity precisely because <i>where</i> a Pod lands can matter for security —
+  a Pod that lands on a node holding another tenant's secrets-bearing workload, or a node with elevated host
+  access, can matter even if the Pod itself looks innocuous (chapter 13 covers the full RBAC/admission pipeline
+  this identity flows through; one cross-reference sentence is enough here). A compromised custom scheduler with
+  binding rights is therefore a node-placement attack primitive, not just an availability risk — which is exactly
+  why the "multiple schedulers" tradeoff row in §9 calls out node partitioning as a requirement, not a nicety.</p>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 11 · REAL-WORLD INCIDENTS</div>
+  <h2 class="sec">Three ways scheduling breaks in production</h2>
+
+  <h3>Incident 1: scheduler throughput collapses at extreme node counts</h3>
+  <p>OpenAI's publicly documented work scaling Kubernetes clusters to roughly 7,500 nodes (their 2021 engineering
+  blog on running large ML training clusters) is a direct, real case study in exactly the tradeoff §10 models:
+  at that scale, naive full-node scoring and control-plane request volume both become bottlenecks, and the
+  documented levers are the same ones this chapter names — tuning <code>percentageOfNodesToScore</code>, watching
+  API server and etcd request latency as leading indicators, and, where the workload allows it, using
+  <code>nodeSelector</code>/affinity to shrink the feasible set the scheduler has to reason about per Pod in the
+  first place. The lesson generalizes: scheduler tuning is not a "set once" default, it is a knob you revisit as
+  cluster size crosses documented thresholds.</p>
+
+  <h3>Incident 2: the assume-cache race — a Pod briefly "scheduled" twice</h3>
+  <p>Because Bind is asynchronous (§6), the scheduler's internal cache marks a node's resources as consumed the
+  moment it <i>decides</i>, not the moment the API server confirms the write. Under API server or etcd latency —
+  a genuinely documented operational condition, not a hypothetical — two back-to-back scheduling cycles can both
+  compute a stale, still-fits view of the same node before either Bind call lands, assume the Pod is placed, and
+  race to bind two Pods against resources that only exist once. The actual failure mode operators see is not
+  silent corruption: the second Bind either succeeds (temporarily oversubscribing the node until the kubelet or
+  the next reconciliation notices) or is rejected, and the losing Pod is requeued and re-scheduled — cheap, but
+  visible as a brief flap between <code>Pending</code> and a bound state in cluster events. Recognizing the
+  mechanism (optimistic concurrency, not a bug) is what lets you stop chasing it as a mystery and instead watch
+  API server/etcd latency as the actual root cause.</p>
+
+  <h3>Incident 3: preemption thrash in mixed-priority, multi-tenant clusters</h3>
+  <p>A common, well-documented operational pattern in clusters mixing latency-sensitive services with
+  high-<code>PriorityClass</code> batch or ML training jobs: the batch scheduler keeps submitting large jobs at
+  high priority, each triggering <code>DefaultPreemption</code> to evict lower-priority service Pods to make
+  room, and the evicted services churn (restart, re-warm caches, briefly fail readiness) faster than they can
+  stabilize. The fix path is exactly the vocabulary this chapter introduced: non-preempting
+  <code>PriorityClass</code> (<code>preemptionPolicy: Never</code>, GA since 1.24) for jobs that should queue
+  rather than evict, PodDisruptionBudgets on the latency-sensitive services so preemption respects a minimum
+  available count, and — often the real fix — separate node pools via taints so batch and serving workloads
+  never compete for the same feasible set at all.</p>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 12 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <p>Think before you reveal — these are calibrated to what a Staff-level Kubernetes platform interview actually
+  probes.</p>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 SOURCE ================= -->
+<section id="s13">
+  <div class="arc">ARC 13 · SOURCE CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the real thing: <code>pkg/scheduler</code></h2>
+  <p>Where everything from this chapter lives in <code>kubernetes/kubernetes</code>. Files marked
+  <span style="color:var(--warn)">●</span> are this chapter's core reading.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">pkg/scheduler/</span></div>
+<div>├── <span class="fhl">● schedule_one.go</span> <span class="fnote">— ScheduleOne(): the per-Pod cycle; pop queue → filter → score → assume → async bind</span></div>
+<div>├── <span class="dir">framework/</span></div>
+<div>│   ├── <span class="fhl">● interface.go</span> <span class="fnote">— Plugin, FilterPlugin, ScorePlugin, PreFilterPlugin… every extension point's Go interface</span></div>
+<div>│   ├── <span class="dir">runtime/</span>framework.go <span class="fnote">— RunFilterPlugins(), RunScorePlugins(): iterates registered plugins, short-circuits on first Filter failure</span></div>
+<div>│   ├── <span class="dir">plugins/</span></div>
+<div>│   │   ├── <span class="fhl">● noderesources/fit.go</span> <span class="fnote">— NodeResourcesFit: the Filter + Score plugin from §8</span></div>
+<div>│   │   ├── <span class="fhl">● tainttoleration/taint_toleration.go</span> <span class="fnote">— TaintToleration Filter plugin</span></div>
+<div>│   │   ├── nodeaffinity/node_affinity.go <span class="fnote">— NodeAffinity Filter + Score plugin</span></div>
+<div>│   │   ├── interpodaffinity/ <span class="fnote">— Pod-to-Pod affinity/anti-affinity Filter + Score</span></div>
+<div>│   │   ├── podtopologyspread/ <span class="fnote">— even-distribution constraints across a topology key</span></div>
+<div>│   │   ├── volumebinding/ <span class="fnote">— PreFilter/PreBind: only relevant to storage-backed Pods (chapter 11)</span></div>
+<div>│   │   ├── <span class="fhl">● defaultpreemption/default_preemption.go</span> <span class="fnote">— PostFilter: the preemption logic from §6</span></div>
+<div>│   │   └── defaultbinder/default_binder.go <span class="fnote">— Bind: the actual POST to the pods/binding subresource</span></div>
+<div>├── <span class="dir">internal/</span></div>
+<div>│   ├── <span class="fhl">● cache/cache.go</span> <span class="fnote">— the scheduler's Snapshot()/AssumePod(): the "assume cache" from §6 and §11</span></div>
+<div>│   └── queue/scheduling_queue.go <span class="fnote">— PriorityQueue: active, backoff, and unschedulable sub-queues (QueueSort lives here)</span></div>
+  </div></div>
+
+  <p>Four functions, simplified from the real 1.28+ source but faithful in structure and naming. First, the
+  per-Pod cycle's shape:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>schedule_one.go — ScheduleOne(), the parts that matter</span></div>
+    <pre><span class="k">func</span> (sched *<span class="t">Scheduler</span>) <span class="f">ScheduleOne</span>(ctx <span class="t">context</span>.<span class="t">Context</span>) {
+    pod := sched.NextPod()                    <span class="c">// pop from the priority queue (QueueSort)</span>
+
+    <span class="c">// PreFilter: run once per cycle, not once per node — plugins</span>
+    <span class="c">// precompute pod-level state (e.g. total requested resources)</span>
+    state := <span class="f">framework.NewCycleState</span>()
+    sched.Framework.<span class="f">RunPreFilterPlugins</span>(ctx, state, pod)
+
+    feasible, diagnosis := sched.<span class="f">findNodesThatFitPod</span>(ctx, state, pod)  <span class="c">// Filter</span>
+
+    <span class="k">if</span> len(feasible) == <span class="n">0</span> {
+        <span class="c">// PostFilter: is there a Pod we could evict to make room?</span>
+        sched.Framework.<span class="f">RunPostFilterPlugins</span>(ctx, state, pod, diagnosis)
+        <span class="k">return</span>   <span class="c">// Pod stays Pending either way this cycle</span>
+    }
+
+    <span class="c">// PreScore + Score + NormalizeScore, then a weighted sum per plugin</span>
+    scoredNodes := sched.<span class="f">prioritizeNodes</span>(ctx, state, pod, feasible)
+    host := sched.<span class="f">selectHost</span>(scoredNodes)               <span class="c">// highest weighted score wins</span>
+
+    <span class="c">// Reserve + Permit run synchronously; Bind does NOT —</span>
+    <span class="c">// assume() marks the cache as consumed, then binding is a goroutine</span>
+    sched.Cache.<span class="f">AssumePod</span>(pod)
+    <span class="k">go</span> sched.<span class="f">bind</span>(ctx, pod, host)     <span class="c">// PreBind → Bind → PostBind, off the hot path</span>
+}</pre>
+  </div>
+
+  <p>The plugin doing the arithmetic from §8(b):</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>framework/plugins/noderesources/fit.go — Filter() + Score()</span></div>
+    <pre><span class="k">func</span> (f *<span class="t">Fit</span>) <span class="f">Filter</span>(ctx <span class="t">context</span>.<span class="t">Context</span>, state *<span class="t">CycleState</span>, pod *<span class="t">v1</span>.<span class="t">Pod</span>, nodeInfo *<span class="t">NodeInfo</span>) *<span class="t">Status</span> {
+    requested := <span class="f">sumContainerRequests</span>(pod)             <span class="c">// cpu, memory, ephemeral-storage…</span>
+    allocatable := nodeInfo.Allocatable                       <span class="c">// §8(b)'s formula, already computed</span>
+    used := nodeInfo.Requested                                <span class="c">// sum of already-bound Pods' requests</span>
+
+    <span class="k">for</span> _, r := <span class="k">range</span> []<span class="t">Resource</span>{CPU, Memory} {
+        <span class="k">if</span> used[r]+requested[r] &gt; allocatable[r] {
+            <span class="k">return</span> <span class="f">Unschedulable</span>(<span class="s">"Insufficient %s"</span>, r)   <span class="c">// hard veto, no partial credit</span>
+        }
+    }
+    <span class="k">return</span> <span class="f">Success</span>()
+}
+
+<span class="k">func</span> (f *<span class="t">Fit</span>) <span class="f">Score</span>(ctx <span class="t">context</span>.<span class="t">Context</span>, state *<span class="t">CycleState</span>, pod *<span class="t">v1</span>.<span class="t">Pod</span>, nodeName <span class="k">string</span>) (<span class="k">int64</span>, *<span class="t">Status</span>) {
+    <span class="c">// LeastAllocated (default): reward nodes with MORE headroom left over.</span>
+    <span class="c">// MostAllocated: reward nodes with LESS headroom — bin-packing.</span>
+    frac := (used[r] + requested[r]) / allocatable[r]
+    <span class="k">if</span> f.ScoringStrategy == LeastAllocated {
+        <span class="k">return</span> <span class="k">int64</span>((<span class="n">1.0</span> - frac) * <span class="t">MaxNodeScore</span>), <span class="f">Success</span>()   <span class="c">// MaxNodeScore = 100</span>
+    }
+    <span class="k">return</span> <span class="k">int64</span>(frac * <span class="t">MaxNodeScore</span>), <span class="f">Success</span>()
+}</pre>
+  </div>
+
+  <p>The taint check that eliminates a node outright:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">Go</span><span>framework/plugins/tainttoleration/taint_toleration.go — Filter()</span></div>
+    <pre><span class="k">func</span> (pl *<span class="t">TaintToleration</span>) <span class="f">Filter</span>(ctx <span class="t">context</span>.<span class="t">Context</span>, _ *<span class="t">CycleState</span>, pod *<span class="t">v1</span>.<span class="t">Pod</span>, nodeInfo *<span class="t">NodeInfo</span>) *<span class="t">Status</span> {
+    <span class="k">for</span> _, taint := <span class="k">range</span> nodeInfo.Node().Spec.Taints {
+        <span class="k">if</span> taint.Effect != <span class="t">NoSchedule</span> &amp;&amp; taint.Effect != <span class="t">NoExecute</span> {
+            <span class="k">continue</span>   <span class="c">// PreferNoSchedule only affects Score, never Filter</span>
+        }
+        <span class="k">if</span> !<span class="f">tolerationsTolerateTaint</span>(pod.Spec.Tolerations, &amp;taint) {
+            <span class="k">return</span> <span class="f">UnschedulableAndUnresolvable</span>(<span class="s">"node has untolerated taint {%s: %s}"</span>, taint.Key, taint.Value)
+        }
+    }
+    <span class="k">return</span> <span class="f">Success</span>()
+}</pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY — THREE CHOICES TO STEAL</div>
+    <p><b>1. Filters are pure boolean vetoes with no shared mutable state across nodes.</b> That is what makes them
+    trivially parallelizable — <code>RunFilterPlugins</code> can (and does) evaluate multiple nodes concurrently,
+    because no filter's answer for node A depends on what happened for node B. <b>2. Scores are normalized to a
+    fixed 0–100 range before combination.</b> This lets the framework combine wildly different plugins — a resource
+    ratio, a label match, a topology-spread deviation — with one honest weighted sum, instead of every plugin
+    author inventing an incompatible scale. <b>3. Assume-then-async-bind decouples decision speed from network
+    speed.</b> The main scheduling loop's throughput is bounded by CPU (filter/score math), not by API server round
+    trips — the same "don't let a slow I/O operation block the supervisor" instinct chapter 1 of the PostgreSQL
+    course applied to authentication happening in a forked child, not the postmaster.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <p>Six questions, then a sequencing challenge. Wrong answers explain <i>why</i> they're wrong — read them, they
+  encode the chapter.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — one scheduling cycle</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the extension points in the order a successfully-bound
+      Pod passes through them, then check.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 15 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The scheduler, live: filter, score, bind</h2>
+  <p>Six real candidate nodes, a Pod spec you control. Every run below performs the actual arithmetic from §8: the
+  Filter pass evaluates real resource sufficiency, real taint/toleration matching, and real required-affinity
+  label matching against each node; the Score pass computes a real <code>NodeResourcesFit</code>
+  LeastAllocated/MostAllocated formula plus a real preferred-affinity bonus, then a weighted sum picks the winner.
+  Nothing here is decorative — change the sliders and the winner changes because the math changed.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">kube-scheduler — one Pod, six nodes</span><span class="w-sub" id="sim-phase">READY</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div class="sched-nodes" id="sim-nodes"></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">POD SPEC</div>
+            <div class="podbox" id="sim-podbox"></div>
+            <div class="slider-row" style="margin:6px 0"><label style="min-width:0;flex:1">cpu request</label><span class="val" id="pd-cpu-val" style="min-width:56px">2 vCPU</span></div>
+            <input type="range" id="pd-cpu" min="0.5" max="4" value="2" step="0.5" style="width:100%;accent-color:var(--pg)">
+            <div class="slider-row" style="margin:6px 0"><label style="min-width:0;flex:1">memory request</label><span class="val" id="pd-mem-val" style="min-width:56px">4 Gi</span></div>
+            <input type="range" id="pd-mem" min="1" max="8" value="4" step="1" style="width:100%;accent-color:var(--pg)">
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">CONSTRAINTS</div>
+            <div class="btns">
+              <button class="chip" id="chip-tol">toleration: dedicated=infra</button>
+              <button class="chip on" id="chip-ssd">require: disktype=ssd</button>
+              <button class="chip" id="chip-zone">prefer: zone=us-east-1a</button>
+              <button class="chip" id="chip-strategy">strategy: LeastAllocated</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">RUN</div>
+            <div class="btns">
+              <button class="btn primary" id="sim-run">▶ run scheduling cycle</button>
+              <button class="btn" id="sim-reroll">🎲 reroll cluster load</button>
+              <button class="btn" id="sim-reset">↺ reset nodes</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-cycles">0</div><div class="cl">cycles</div></div>
+            <div class="scounter"><div class="cv" id="cnt-filtered">0</div><div class="cl">filtered</div></div>
+            <div class="scounter"><div class="cv" id="cnt-binds">0</div><div class="cl">binds</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Run with defaults — watch <code>node-b-1</code> get filtered for insufficient CPU and
+    <code>node-c-1</code>/<code>node-d-1</code> get filtered for an untolerated taint, then read the two survivors'
+    real scores. <b>2.</b> Turn the toleration chip ON — <code>node-d-1</code> now survives Filter; does it win
+    Score? <b>3.</b> Flip the strategy chip to MostAllocated with everything else at default — the winner changes
+    from the most-idle survivor to the most-utilized one; that's bin-packing vs. spreading, computed, not asserted.
+    <b>4.</b> Turn ON the zone preference — watch a soft preference outweigh a resource-fit advantage in the
+    final weighted score. <b>5.</b> Push the memory-request slider to 8 Gi and re-run — watch the survivor set
+    shrink further.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 9: three questions, no options</h2>
+  <p>No multiple choice. Formulate a full answer in your head, <i>then</i> reveal. Chapter 9 is entirely about
+  what happens after this chapter's decision is made.</p>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 08 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now trace a Pod through every real scheduling-framework
+    extension point, compute a genuine filter/score decision by hand, and explain exactly why bin-packing and
+    spreading are a choice, not a default. Chapter 9 picks up the instant after Bind: controllers and the
+    reconciliation loop that notices when what actually happened — a Pod that never became Ready, a replica that
+    disappeared — doesn't match what was desired, and converges the two without anyone calling a function
+    named "fix it."</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <button class="btn" disabled title="Generated next">K8S-09: Controllers &amp; the Reconciliation Loop →</button>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+/* stepper deck engine */
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2003–13", l:"Borg", d:"<b>Google's internal Borg scheduler.</b> The 2015 EuroSys paper describing it (published after Kubernetes existed, but describing a system running since the mid-2000s) documents a scheduler that runs <i>feasibility checking</i> first — which machines can even run this task — then <i>scoring</i> the survivors. Several Kubernetes founders had built or operated Borg or its sibling Omega; the two-phase shape arrived as inherited wisdom, not a fresh invention." },
+  { yr:"2014", l:"v1.0 predicates & priorities", d:"<b>kube-scheduler ships with hardcoded 'predicates' and 'priorities.'</b> Predicates are boolean feasibility functions (PodFitsResources, PodToleratesNodeTaints); priorities are scoring functions (LeastRequestedPriority, BalancedResourceAllocation) combined by a fixed weighted sum. Both lists live inside the scheduler binary — adding one means patching Kubernetes itself." },
+  { yr:"2015–16", l:"Scheduler extenders", d:"<b>Extenders introduce the first extension point that isn't a code change.</b> An extender is an HTTP webhook the scheduler calls at Filter and/or Prioritize time, letting an external process veto nodes or add scores without forking the binary — at the cost of a network round trip per call, on the hot path, for every Pod." },
+  { yr:"2017", l:"Multiple schedulers GA", d:"<b>pod.spec.schedulerName becomes a stable, documented field.</b> Any number of scheduler processes can now watch for Pods naming them and compete (in practice, partition) for placement decisions — the prerequisite for today's batch schedulers like Kueue and Volcano running alongside the default." },
+  { yr:"2018", l:"KEP-624 proposed", d:"<b>The Scheduling Framework KEP is written.</b> Its thesis: predicates and priorities should be replaced with named extension points (QueueSort, PreFilter, Filter, PostFilter, PreScore, Score, Reserve, Permit, PreBind, Bind, PostBind) and every built-in behavior — no exceptions — should be an ordinary plugin implementing the same Go interfaces a cluster operator could implement." },
+  { yr:"1.15 (2019)", l:"Framework alpha", d:"<b>The scheduling framework ships as alpha.</b> The old predicate/priority code paths and the new plugin-based framework coexist while the community migrates every built-in behavior (resource fit, taints, affinity, topology spread) into the new plugin shape one at a time." },
+  { yr:"1.19 (2020)", l:"Framework GA", d:"<b>Scheduling Framework reaches general availability</b> and becomes the <i>only</i> in-tree scheduling implementation — predicate/priority terminology is retired from the codebase. This is the architecture this chapter describes; if you've read <code>kube-scheduler</code> source from after this release, everything in §7's explorer is what you saw." },
+  { yr:"1.24 (2022)", l:"Non-preempting priority GA", d:"<b>preemptionPolicy: Never graduates to GA.</b> A high-PriorityClass Pod can now be marked to queue rather than evict lower-priority Pods when nothing fits — a direct, versioned response to the preemption-thrash pattern §11 documents in production clusters." },
+  { yr:"2023→", l:"Dynamic Resource Allocation", d:"<b>DRA (KEP-3063) moves through alpha toward GA.</b> A new resource model for GPUs, FPGAs, and other specialized hardware that requests can't express well as flat quantities — implemented, tellingly, as new PreFilter/Filter/Reserve scheduler plugins rather than a scheduler rewrite, which is the framework doing exactly the job KEP-624 designed it for." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===0 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[0].d;
+
+/* ============================================================
+   2. DECK: naive round-robin placer (§3)
+   ============================================================ */
+(function(){
+  const box = (t, inner, style="") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;flex:1;min-width:150px;${style}">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  const cell = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border);border-radius:7px;padding:5px 8px;margin:4px 0;font-family:var(--mono);font-size:10.5px;color:${c};background:${bg}">${t}</div>`;
+  const wrap = (...xs)=>`<div style="display:flex;gap:14px;flex-wrap:wrap">${xs.join("")}</div>`;
+  stepper("deckNaive", [
+    { stage: wrap(
+        box("4 NODES, IDENTICAL SIZE", cell("node-1: 8 vCPU / 32Gi") + cell("node-2: 8 vCPU / 32Gi") + cell("node-3: 8 vCPU / 32Gi") + cell("node-4: 8 vCPU / 32Gi")),
+        box("QUEUE", cell("pod-01 … pod-08", "#4ade80"))),
+      cap:`<b>Light load, homogeneous cluster.</b> 8 Pods, 4 nodes, round-robin lands 2 each. Every node has ample room. This is the regime where round-robin looks completely fine — which is exactly why it's a tempting first cut.` },
+    { stage: wrap(
+        box("SAME 4 NODES — 100 REPLICAS LATER", cell("node-1: 25 Pods × 1 vCPU req = 25 vCPU requested / 8 vCPU capacity","#f25c54","rgba(242,92,84,.1)") + cell("node-2: same","#f25c54","rgba(242,92,84,.1)") + cell("node-3: same","#f25c54","rgba(242,92,84,.1)") + cell("node-4: same","#f25c54","rgba(242,92,84,.1)")),
+        box("RESULT", cell("312% oversubscribed on requests, on every node, simultaneously","#f25c54"))),
+      cap:`<b>Scale a Deployment to 100 replicas.</b> Round-robin has no concept of "this node is full" — it just continues counting. Every node ends up promised more CPU than it has. Nothing rejected this at placement time because nothing checked.` },
+    { stage: wrap(
+        box("NODE-3 HAS A TAINT", cell("dedicated=gpu:NoSchedule — reserved for the ML team's GPU workload", "#ff9f43")),
+        box("ROUND-ROBIN DOESN'T KNOW TAINTS EXIST", cell("pod-03 lands on node-3 anyway", "#f25c54","rgba(242,92,84,.1)"))),
+      cap:`<b>Add one tainted node.</b> A taint is a policy statement — "don't put ordinary workloads here" — and round-robin has no code path that even reads <code>node.spec.taints</code>. One in four Pods lands on reserved capacity, silently violating the reservation.` },
+    { stage: wrap(box("VERDICT", cell("Correctness: fails silently under load","#f25c54") + cell("Policy compliance: fails — taints are invisible to it","#f25c54") + cell("Optimization: undefined — there is no scoring concept at all","#ff9f43"))),
+      cap:`<b>Three independent failure modes, one root cause.</b> Round-robin conflates "is there a next node" with "is this node legal and best." §5 splits those into two explicit, ordered phases.` }
+  ]);
+})();
+
+/* ============================================================
+   3. DECK: deriving filter + score (§5)
+   ============================================================ */
+(function(){
+  const step = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:10px;padding:9px 13px;margin:6px 0;font-family:var(--mono);font-size:11.5px;color:${c};background:${bg}">${t}</div>`;
+  stepper("deckDerive", [
+    { stage: step("① check: does the node have enough free CPU/memory for the request?", "#60a5fa"),
+      cap:`<b>Fix the loudest failure first: capacity.</b> Before anything else, a placement must not promise resources that don't exist. This alone would have stopped §4's 312% overcommit.` },
+    { stage: step("① capacity check", "#60a5fa") + step("② check: does the node's taints match the Pod's tolerations? does a required nodeAffinity label match?", "#60a5fa"),
+      cap:`<b>Add the policy checks.</b> Capacity and legality are both hard yes/no questions with the same shape — "reject this node outright, or don't." Bundle them: this bundle is the <b>Filter</b> phase, Borg's "feasibility checking" by another name.` },
+    { stage: step("Filter: capacity + taints + affinity → survivors: {node-A, node-C, node-E}", "#4ade80") + step("③ among survivors, which is 'best'? Best for what — packing, or spreading?", "#ff9f43"),
+      cap:`<b>Filtering alone doesn't choose.</b> It narrows the field, but "pick any survivor" throws away information — some survivors have far more headroom than others, or sit in a different zone. You need a second, different kind of function: one that ranks rather than vetoes.` },
+    { stage: step("Score: rank survivors 0–100 by a stated objective (e.g. LeastAllocated = reward headroom)", "#326ce5") + step("Bind: highest-scoring survivor wins, POST to pods/binding", "#326ce5"),
+      cap:`<b>Score, then bind.</b> The objective must be stated explicitly (§8 shows the real formula) — there is no context-free 'best.' Once ranked, binding is a single deterministic pick: highest weighted score. This two-phase shape — hard filter, then explicit-objective score — is the entire architecture §7 formalizes into a plugin framework.` }
+  ]);
+})();
+
+/* ============================================================
+   4. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  queuesort:{ n:"QueueSort", f:"internal/queue/scheduling_queue.go", r:"Orders the head of the pending-Pod priority queue — by default, higher .spec.priority first, then earliest creation timestamp. Determines which Pod's scheduling cycle runs next, nothing about which node it gets.", l:"Runs once per Pod pop, before any node is examined.", d:"A misbehaving QueueSort plugin can starve low-priority Pods indefinitely — it's the one extension point with cluster-wide fairness implications by itself." },
+  cache:{ n:"scheduler cache & snapshot", f:"internal/cache/cache.go", r:"Maintains one NodeInfo per node (capacity, allocatable, currently-requested resources, running Pods) built from the same watch mechanism chapter 7 covered, and a frozen Snapshot() taken once per scheduling cycle so Filter/Score see one consistent view even while the cache keeps updating live in the background.", l:"Updated continuously by Pod/Node watch events; the AssumePod() call from §6/§8 mutates it optimistically the instant a Bind decision is made, before the API server confirms it.", d:"Its staleness — bounded but nonzero — is the entire mechanism behind §11's assume-cache race incident." },
+  prefilter:{ n:"PreFilter", f:"framework/plugins/*/*.go (PreFilter methods)", r:"Runs once per Pod, before any node is checked, so plugins can precompute pod-level state once instead of recomputing it inside every per-node Filter call — e.g. NodeResourcesFit sums the Pod's total requested resources here, once.", l:"One call per scheduling cycle.", d:"A PreFilter failure (e.g. the Pod itself is malformed) skips Filter entirely — cheaper than discovering the same problem N times, once per node." },
+  filter:{ n:"Filter", f:"framework/plugins/noderesources/fit.go · tainttoleration/ · nodeaffinity/ · podtopologyspread/", r:"The hard-veto stage from §5/§8: NodeResourcesFit (capacity), TaintToleration (policy), NodeAffinity (required node labels), InterPodAffinity, PodTopologySpread (hard spread constraints), VolumeBinding (storage topology), NodeUnschedulable/NodeName/NodePorts. Any single plugin returning Unschedulable removes the node — short-circuits immediately, doesn't run remaining Filter plugins for that node.", l:"Runs per candidate node; nodes can be evaluated concurrently since no filter's result depends on another node's.", d:"Zero surviving nodes triggers PostFilter, not an immediate failure — the scheduler tries to make room before giving up." },
+  postfilter:{ n:"PostFilter", f:"framework/plugins/defaultpreemption/default_preemption.go", r:"Runs only when Filter eliminates every node. DefaultPreemption asks, per candidate victim: 'if I evicted this lower-priority Pod (and its PodDisruptionBudget allows it), would the pending Pod then pass Filter?' If yes, the pending Pod is 'nominated' for that node and the victim is evicted; the pending Pod is rescheduled on a future cycle once the victim is actually gone.", l:"Conditional — only on a zero-survivor Filter result.", d:"If no eviction would help, the Pod simply stays Pending with an Unschedulable condition and an explanatory Event — no crash, no retry storm, just a wait for cluster state to change." },
+  prescore:{ n:"PreScore", f:"framework/plugins/*/*.go (PreScore methods)", r:"Like PreFilter but for the Score phase — precomputes shared state once across all surviving nodes (e.g. PodTopologySpread precomputes the current distribution of matching Pods across the topology key before scoring each node against it).", l:"One call per cycle, after Filter, before Score.", d:"Skipping this would mean redoing the same aggregate computation once per surviving node — usually a small cost, but it compounds at 5,000 feasible nodes." },
+  score:{ n:"Score + NormalizeScore", f:"framework/plugins/noderesources/fit.go (Score) · framework/runtime/framework.go (weighted combination)", r:"Each Score plugin returns a raw per-node value; NormalizeScore rescales every plugin's raw range to a common 0–100 band so plugins with different natural scales (a resource ratio vs. a label match) can be compared. The framework then computes final = Σ(pluginScore × pluginWeight) / Σ(weights) per node — the real, documented combination method §8's simulator implements.", l:"Runs per surviving node, per Score plugin.", d:"A plugin that fails at Score (rare — it's arithmetic, not a veto) drops that node from ranking, treated conservatively as unschedulable for this cycle." },
+  reserve:{ n:"Reserve", f:"framework/plugins/volumebinding/ (and others with claimed external state)", r:"Runs immediately after a winner is picked, synchronously, before the cache is marked assumed. Plugins that claimed some external resource during scoring (e.g. a specific PersistentVolume) reserve it here so a concurrent scheduling cycle for a different Pod can't also claim it.", l:"Synchronous, on the winning node only.", d:"A Reserve failure triggers Unreserve on every plugin that already reserved something for this Pod — a rollback, not a partial commit." },
+  permit:{ n:"Permit", f:"framework/plugins/*/*.go (Permit methods) — the extension point gang-schedulers use", r:"Can approve, deny, or — uniquely among extension points — WAIT (with a timeout) before letting a Pod proceed to Bind. This is exactly how gang-scheduling frameworks (Kueue, Volcano, Coscheduling) hold every member of a job's Pod group until all of them are ready to bind together.", l:"Synchronous; a Wait can pause a specific Pod's cycle for up to a configured timeout without blocking other Pods' cycles.", d:"A timed-out Wait is treated as a Deny — the Pod's reservation is rolled back exactly like a Reserve failure." },
+  prebind:{ n:"PreBind", f:"framework/plugins/volumebinding/ (PreBind)", r:"Last chance to do work that must complete before the node commitment is real — the canonical example is VolumeBinding actually provisioning/attaching a PersistentVolume (chapter 11's CSI territory) so the kubelet has something to mount the instant it sees the binding.", l:"Synchronous, runs on the async bind goroutine, before Bind itself.", d:"A PreBind failure aborts the bind and unwinds Reserve — the Pod goes back to Pending, not to a half-bound state." },
+  bind:{ n:"Bind", f:"framework/plugins/defaultbinder/default_binder.go", r:"The actual write: POST to /api/v1/namespaces/{ns}/pods/{name}/binding, setting pod.spec.nodeName. This is the single moment a Pod's placement becomes real, durable, API-server-confirmed truth — everything before this was the scheduler's own opinion.", l:"One call, on the async bind goroutine.", d:"Bind failure (e.g. a resourceVersion conflict from a concurrent decision, §11) rolls back the assumed cache entry and requeues the Pod for another cycle — cheap and automatic." },
+  postbind:{ n:"PostBind", f:"framework/plugins/*/*.go (PostBind methods)", r:"Fire-and-forget cleanup hooks after a confirmed successful Bind — e.g. metrics emission, logging. Cannot fail the scheduling decision; the Pod is already bound by the time this runs.", l:"Runs once, after Bind succeeds.", d:"A PostBind panic is isolated per plugin and does not unwind the (already-committed) bind." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">TIMING</div>${a.l}<div class="ad-sec">ON FAILURE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("filter");
+
+/* ============================================================
+   5. DECK: one Pod's cycle, concretely (§8a)
+   ============================================================ */
+(function(){
+  const row = (t, c="#8b94a7", bg="transparent") =>
+    `<div style="border:1px solid var(--border-hi);border-radius:9px;padding:8px 12px;margin:5px 0;font-family:var(--mono);font-size:11px;color:${c};background:${bg}">${t}</div>`;
+  const box = (t, inner) => `<div style="border:1px solid var(--border-hi);border-radius:11px;padding:10px;margin-bottom:8px">
+     <div style="font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-bottom:7px">${t}</div>${inner}</div>`;
+  stepper("deckCycle", [
+    { stage: box("THE POD", row("web-6b9f8d7c9d-4x2p1  ·  requests: cpu=2, memory=4Gi  ·  requires: disktype=ssd", "#9fd0ff")) + box("QUEUESORT", row("popped from the active queue — default priority, oldest first", "#4ade80")),
+      cap:`<b>QueueSort → the cycle begins.</b> This Pod has no special PriorityClass, so it's ordered by creation time among equal-priority peers. It's now the only Pod this cycle reasons about.` },
+    { stage: box("PREFILTER", row("NodeResourcesFit precomputes: total requested = {cpu:2, memory:4Gi}", "#60a5fa") + row("NodeAffinity precomputes: required term = disktype=ssd", "#60a5fa")),
+      cap:`<b>PreFilter runs once, not per node.</b> Both plugins that will do per-node work in a moment first compute what they need to compare against, a single time.` },
+    { stage: box("FILTER — 6 candidate nodes", row("node-a-1: PASS", "#4ade80") + row("node-b-1: FAIL — insufficient cpu (0.5 free, needs 2)", "#f25c54") + row("node-c-1: FAIL — untolerated taint dedicated=gpu:NoSchedule", "#f25c54") + row("node-d-1: FAIL — untolerated taint dedicated=infra:NoSchedule", "#f25c54") + row("node-e-1: PASS", "#4ade80") + row("node-f-1: FAIL — required affinity disktype=ssd not satisfied (hdd)", "#f25c54")),
+      cap:`<b>Filter eliminates 4 of 6, independently, in parallel.</b> Each rejection reason is a distinct plugin's hard veto — this is the exact aggregation kubectl shows you in a Pod's Events as "0/6 nodes are available: …" when nothing survives. Here, two do.` },
+    { stage: box("SCORE — 2 survivors, LeastAllocated strategy", row("node-a-1: cpu 50.0 · mem 62.5 → resource 56.25 → final 56.25", "#c6cddb") + row("node-e-1: cpu 62.5 · mem 75.0 → resource 68.75 → final 68.75", "#4ade80")),
+      cap:`<b>Score ranks the survivors.</b> node-e-1 has more headroom after this Pod would land on it, so LeastAllocated rewards it with a higher score. This is the exact formula §8's simulator runs live — swap the strategy or add a zone preference there and watch the winner change.` },
+    { stage: box("RESERVE → PERMIT → PREBIND → BIND", row("no external claims to reserve (no PV involved)", "#8b94a7") + row("no gang-scheduling Permit gate registered", "#8b94a7") + row("no volume to pre-provision", "#8b94a7") + row("POST /api/v1/namespaces/default/pods/web-…/binding {nodeName: node-e-1}", "#326ce5")),
+      cap:`<b>The commit stages, mostly no-ops for this simple Pod.</b> A storage-backed StatefulSet Pod (chapter 11) would do real work in Reserve/PreBind; this one sails through to the one stage that always matters: Bind, the actual write.` },
+    { stage: box("POSTBIND → KUBELET TAKES OVER", row("node-e-1's kubelet observes the new binding via its own Pod watch", "#4ade80") + row("kubelet: pull image → create sandbox (CRI) → start containers", "#4ade80") + row("this chapter's job is done — chapter 9 watches what happens next", "#a78bfa")),
+      cap:`<b>The scheduler's involvement ends here.</b> It never talks to the kubelet directly — the kubelet is just another watcher of the API server, and the instant it sees <code>spec.nodeName</code> set to itself, it takes over via the CRI boundary (chapter 6 introduced this; the Container Internals course covers what's below it). If this container crash-loops, that's chapter 9's reconciliation loop noticing, not this one.` }
+  ]);
+})();
+
+/* ============================================================
+   6. SLIDER: adaptive percentageOfNodesToScore (§6)
+   ============================================================ */
+(function(){
+  function pctScored(n){
+    if (n <= 50) return 100;
+    return Math.max(5, 50 - (n - 50) / 125);
+  }
+  function render(){
+    const n = +el("pns-slider").value;
+    el("pns-val").textContent = n;
+    const pct = pctScored(n);
+    const scored = Math.round(n * pct / 100);
+    const skipped = n - scored;
+    el("pns-map").innerHTML =
+      `<div class="seg" style="background:#326ce5;width:${pct}%">${scored} scored</div>` +
+      `<div class="seg" style="background:#2a3446;color:#8b94a7;width:${100-pct}%">${skipped} skipped</div>`;
+    el("pns-legend").innerHTML = `<span><span class="sw" style="background:#326ce5"></span>nodes actually scored</span><span><span class="sw" style="background:#2a3446"></span>nodes never scored this cycle</span>`;
+    el("pns-note").innerHTML = n <= 50
+      ? `At <b>${n}</b> nodes (≤ 50), the scheduler scores <b style="color:var(--pg)">100%</b> — every feasible node is ranked. There's no scaling problem yet to trade away.`
+      : `At <b>${n}</b> nodes, the adaptive heuristic scores roughly <b style="color:var(--pg)">${pct.toFixed(1)}%</b> — about <b>${scored}</b> nodes — before stopping, once enough feasible candidates have been examined. The remaining <b>${skipped}</b> feasible nodes are never even considered for scoring this cycle. This is a real, documented trade: at 5,000 nodes the floor is 5%, ~250 nodes scored per decision instead of 5,000.`;
+  }
+  el("pns-slider").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   7. SLIDER: allocatable budget (§8b)
+   ============================================================ */
+(function(){
+  function render(){
+    const cap = +el("cap-slider").value;
+    const kr = +el("kr-slider").value;
+    const sr = +el("sr-slider").value;
+    const ev = +el("ev-slider").value;
+    const podCount = +el("pr-slider").value;
+    const podReq = 2; // fixed 2 vCPU per pod in this illustration
+    el("cap-val").textContent = cap + " vCPU";
+    el("kr-val").textContent = kr + "%";
+    el("sr-val").textContent = sr + "%";
+    el("ev-val").textContent = ev + "%";
+    el("pr-val").textContent = podCount + " × " + podReq + " vCPU";
+
+    const kubeReserved = cap * kr / 100;
+    const sysReserved = cap * sr / 100;
+    const evictionReserve = cap * ev / 100;
+    const allocatable = Math.max(0, cap - kubeReserved - sysReserved - evictionReserve);
+    const requested = podCount * podReq;
+    const fits = requested <= allocatable;
+
+    const segs = [
+      ["allocatable (schedulable)", allocatable, "#326ce5"],
+      ["kube-reserved", kubeReserved, "#a78bfa"],
+      ["system-reserved", sysReserved, "#ff9f43"],
+      ["eviction-hard reserve", evictionReserve, "#f25c54"]
+    ];
+    el("budget-map").innerHTML = segs.map(([n,v,c])=>
+      `<div class="seg" style="background:${c};width:${Math.max(2,(v/cap*100)).toFixed(2)}%" title="${n}: ${v.toFixed(2)} vCPU">${v>=0.3?v.toFixed(1):""}</div>`).join("");
+    el("budget-legend").innerHTML = segs.map(([n,v,c])=>`<span><span class="sw" style="background:${c}"></span>${n}</span>`).join("");
+    el("budget-note").innerHTML = `Capacity <b>${cap} vCPU</b> → Allocatable <b style="color:var(--pg)">${allocatable.toFixed(2)} vCPU</b>
+      (${(allocatable/cap*100).toFixed(0)}% of raw capacity). ${podCount} Pods × ${podReq} vCPU request = <b>${requested} vCPU</b> requested —
+      ${fits ? `<span style="color:var(--ok)">fits, Filter passes</span> (${(allocatable-requested).toFixed(2)} vCPU of headroom left).`
+             : `<span style="color:var(--bad)">does NOT fit — NodeResourcesFit's Filter rejects this node</span> (short by ${(requested-allocatable).toFixed(2)} vCPU).`}
+      Remember: this is all computed on <b>requests</b>. If each of these Pods also carries a <code>limit</code> of, say, 4 vCPU, the sum of limits (${podCount*4} vCPU)
+      can exceed Allocatable entirely legally — the scheduler never checks it, and real contention only shows up if every Pod bursts to its limit at once.`;
+  }
+  ["cap-slider","kr-slider","sr-slider","ev-slider","pr-slider"].forEach(id=> el(id).oninput = render);
+  render();
+})();
+
+/* ============================================================
+   8. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let adaptive = true;
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function pctScored(n){
+    if (n <= 50) return 1;
+    return Math.max(.05, .5 - (n - 50) / 12500 * 10); // matches the §6 heuristic shape
+  }
+  function model(n, adaptive){
+    const pct = adaptive ? pctScored(n) : 1;
+    const scored = n * pct;
+    const latency = 4 + scored * 0.018; // fixed overhead + linear scan cost
+    return { scored, latency, pct };
+  }
+  function render(){
+    const N = +el("perf-nodes").value;
+    el("perf-nodes-val").textContent = N;
+    el("perf-adaptive").classList.toggle("on", adaptive);
+    const W = cv.width, H = cv.height, PAD = 34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=10; x<=5000; x*=1.08) xs.push(Math.round(x));
+    let maxLat=0, maxScored=0;
+    const pts = xs.map(n=>{ const m = model(n, adaptive); maxLat=Math.max(maxLat,m.latency); maxScored=Math.max(maxScored,m.scored); return m; });
+    const X = n => PAD + (Math.log10(n)/Math.log10(5000)) * (W-PAD-12);
+    ctx.strokeStyle = "#1c2330"; ctx.fillStyle = "#5b6475"; ctx.font = "10px monospace"; ctx.lineWidth = 1;
+    [10,100,1000,5000].forEach(n=>{ ctx.beginPath(); ctx.moveTo(X(n),10); ctx.lineTo(X(n),H-20); ctx.stroke(); ctx.fillText(n, X(n)-10, H-6); });
+    function curve(get, max, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      xs.forEach((n,i)=>{ const y = H-24 - (get(pts[i])/max)*(H-44); i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y); });
+      ctx.stroke();
+    }
+    curve(m=>m.latency, maxLat, "#326ce5");
+    curve(m=>m.scored, maxScored, "#f25c54");
+    ctx.strokeStyle = "#ff9f43"; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(X(N),10); ctx.lineTo(X(N),H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(N, adaptive);
+    el("perf-note").innerHTML = `At <b>${N}</b> nodes${adaptive?" with the adaptive heuristic":" scoring every feasible node"}: roughly
+      <b style="color:var(--bad)">${Math.round(here.scored)}</b> nodes scored per decision (${(here.pct*100).toFixed(1)}%), relative decision latency
+      <b style="color:var(--pg)">${here.latency.toFixed(1)}</b> (model units). ${adaptive ? "Toggle off to see the cost of scoring every feasible node unconditionally — latency keeps climbing past the point the adaptive heuristic caps it." : "Toggle on to see the adaptive heuristic flatten the latency curve past ~50 nodes by capping how much gets scored."}`;
+  }
+  el("perf-nodes").oninput = render;
+  el("perf-adaptive").onclick = ()=>{ adaptive = !adaptive; render(); };
+  render();
+})();
+
+/* ============================================================
+   9. INTERVIEW QA (§12)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Walk through everything that happens, plugin by plugin, when a Pod requests more memory than any node in the cluster has free.", hint:"Filter → PostFilter → what does the Pod's status say?",
+    a:"PreFilter computes the Pod's total requested resources once. Filter runs NodeResourcesFit against every node; each one fails with 'Insufficient memory' since none has enough free (used+requested exceeds Allocatable everywhere) — zero survivors. PostFilter's DefaultPreemption then asks, per candidate node, whether evicting some lower-priority Pod would free enough memory; if the answer is no everywhere (e.g. even the biggest Pod on the biggest node isn't enough, or eviction would violate a PodDisruptionBudget), no nomination happens. The Pod stays Pending with condition Unschedulable and an Event message enumerating why each node failed. It is retried on future cycles — whenever cluster state changes (a Pod completes, a node is added) — not abandoned." },
+  { lvl:"SENIOR", q:"Why does the scheduler filter on requests, not limits, and what real failure mode does that create?", hint:"who enforces limits, and when?",
+    a:"Requests are the reservation the scheduler is responsible for guaranteeing exists — summing them against Allocatable is how it avoids promising the same CPU/memory to two Pods. Limits are a per-container ceiling the kubelet enforces at runtime via cgroups; they're a burst allowance, not a placement guarantee, and Kubernetes explicitly permits sum(limits) > Allocatable so 'Burstable' QoS Pods can share slack capacity. The failure mode: a node that passed every Filter check can still experience real memory pressure if enough co-located Pods burst toward their limits simultaneously — the scheduler never promised that couldn't happen, only that the *requested* baseline fits." },
+  { lvl:"STAFF", q:"A Pod is Pending with '0/50 nodes are available: 45 node(s) had taint {dedicated: batch}, that the pod didn't tolerate, 5 Insufficient cpu.' Diagnose the two independent problems and the fix for each.", hint:"two separate Filter plugins failed, for two separate reasons",
+    a:"Two unrelated Filter plugins are rejecting disjoint sets of nodes: TaintToleration rejects 45 nodes reserved for a batch/ML pool via a taint the Pod doesn't tolerate — either this Pod genuinely shouldn't run there (leave it) or it should, and needs a matching toleration added. Separately, NodeResourcesFit rejects the remaining 5 general-purpose nodes for lacking free CPU — that's either a scheduling/bin-packing problem on those 5 (check what's already running) or a capacity problem needing either a smaller request, evicting/moving other workloads, or scaling the node pool (chapter 12). Fixing only one still leaves the Pod Pending." },
+  { lvl:"STAFF", q:"Explain the scheduler's 'assume cache' and why Bind is asynchronous. What race does that create, and how is the blast radius bounded?", hint:"what does AssumePod() commit to, and when does the API server actually agree?",
+    a:"The moment the scheduler picks a winning node, it calls AssumePod() to mark that node's cached NodeInfo as already consuming the Pod's requested resources — before the API server has confirmed anything — then binds asynchronously on a separate goroutine so the main scheduling loop's throughput isn't bounded by a network round trip. Under API server/etcd latency, two overlapping cycles can both see a stale 'still fits' view of the same node and both assume it, racing to Bind. The blast radius is bounded because Bind itself is a single atomic write: the losing Bind call fails (a conflict), the scheduler unwinds that Pod's assumed cache entry, and requeues it for another cycle — visible as a brief flap, not silent double-provisioning or data corruption." },
+  { lvl:"STAFF", q:"Design a GPU-topology-aware scheduling extension without forking kube-scheduler. Which extension points do you implement, and why those specifically?", hint:"one hard constraint, one ranking objective",
+    a:"Implement a Filter plugin that reads each node's advertised GPU count/topology (surfaced via the device plugin framework) and rejects nodes without a free GPU of the required type or NUMA-adjacent placement — a hard constraint, correctly modeled as Filter, not Score. Implement a paired Score plugin that ranks survivors by GPU packing density — e.g. prefer nodes with fewer free GPUs remaining, to consolidate fragmentation onto fewer machines and keep whole nodes free for the next multi-GPU job — a soft objective, correctly modeled as Score. Compile both into a custom scheduler binary (or contribute to the community's scheduler-plugins repository) rather than an extender, since this needs to run in-process at framework speed rather than pay a webhook round trip per node." },
+  { lvl:"PRINCIPAL", q:"Steelman running two schedulers (default + a custom batch scheduler) in one cluster versus a single scheduler with every objective expressed as plugins. Which fails more gracefully at 3am?", hint:"who owns which nodes, and what happens when one binary has a bug?",
+    a:"Two schedulers: a bug in the custom batch scheduler's binary can only ever misplace batch Pods on the node pool it's been partitioned to (via taints/labels) — the default scheduler's correctness for every other workload is untouched, and you can kill -9 the batch scheduler process entirely with zero impact on serving traffic. One scheduler, many plugins: a single binary means one crash or one bad deploy affects every Pod in the cluster, but you avoid the operational overhead of two control-plane components, two upgrade cadences, and the discipline required to actually keep node partitioning airtight (a labeling mistake lets both schedulers compete for the same node). At 3am, the two-scheduler model's blast-radius containment usually wins — the same 'process isolation over shared-fate efficiency' argument the PostgreSQL course makes about crash containment, applied to control-plane processes instead of query backends." },
+  { lvl:"PRINCIPAL", q:"You need Pods placed for both cost (bin-packing) and availability (spreading across zones) at the same time. How do the built-in plugins express both simultaneously, and what's the actual tie-break math?", hint:"one plugin per objective, then the framework's weighted sum",
+    a:"Configure NodeResourcesFit with the MostAllocated scoring strategy (rewards consolidating onto already-utilized nodes — cost) alongside PodTopologySpread's soft (preferredDuringScheduling) constraints keyed on a zone label (rewards distributing replicas evenly — availability). Both are ordinary Score plugins; the framework normalizes each to 0–100 and combines them as a weighted sum, final = Σ(pluginScore × weight)/Σ(weight), per surviving node. The tie-break is whichever objective's weight you set higher in the KubeSchedulerConfiguration — there is no free lunch: a node that's a perfect fit for cost might score lower on spread if its zone is already crowded, and the configured weights are the explicit, auditable statement of which objective wins when they disagree." }
+]);
+
+/* ============================================================
+   10. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A Pod tolerates {key: 'dedicated', value: 'gpu', effect: 'NoSchedule'}. A node has taint {key: 'dedicated', value: 'infra', effect: 'NoSchedule'}. What happens during Filter?",
+    opts:[ "The Pod schedules there because the key 'dedicated' matches",
+           "The node is filtered out — the value doesn't match, so the taint isn't tolerated",
+           "PreferNoSchedule taints are always ignored, so this one is too",
+           "Tolerations only apply to NoExecute, not NoSchedule" ],
+    a:1,
+    why:"Tolerating a taint requires matching key AND value (unless the toleration uses operator: Exists) AND effect. Here the values differ ('gpu' tolerated vs 'infra' present), so TaintToleration's Filter rejects the node with UnschedulableAndUnresolvable. Option A ignores that value must match too; C confuses NoSchedule (a real hard constraint) with PreferNoSchedule (a soft one, §7); D is simply false — NoSchedule absolutely requires toleration to pass Filter." },
+  { q:"Under the LeastAllocated scoring strategy, which surviving node wins, all else equal?",
+    opts:[ "The node with the most already-used resources — bin-packing",
+           "The node with the most free resources after this Pod lands — spreading",
+           "Whichever node sorts first alphabetically",
+           "The node with the fewest labels" ],
+    a:1,
+    why:"LeastAllocated's scorer is proportional to (1 − (used+requested)/allocatable) — it's HIGHEST when the least of the node's capacity would be used, i.e. the most headroom remains. That's a spreading tendency: pods spread toward the emptiest nodes. MostAllocated inverts this for bin-packing. A describes MostAllocated, not LeastAllocated; C and D aren't inputs to any real scoring plugin." },
+  { q:"A 5,000-node cluster uses default settings. Roughly how many nodes get scored for a typical pending Pod?",
+    opts:[ "All 5,000 — Score always runs cluster-wide",
+           "A shrinking adaptive percentage, floored at 5% (~250 nodes)",
+           "Exactly 50, regardless of cluster size",
+           "Only nodes in the Pod's own namespace" ],
+    a:1,
+    why:"percentageOfNodesToScore scores 100% of feasible nodes at or below 50 nodes, then shrinks the percentage roughly linearly as cluster size grows, floored at 5%. At 5,000 nodes that floor means on the order of a few hundred nodes are scored per decision, not the full feasible set — §6 and §10 both model this directly. Namespaces (D) have nothing to do with node scoring; nodes aren't namespaced." },
+  { q:"Which extension point lets a gang-scheduling framework (e.g. Kueue) hold a Pod until enough of its job's peers are also ready to bind together?",
+    opts:[ "Filter", "Score", "Permit", "PostBind" ],
+    a:2,
+    why:"Permit is the one extension point that can respond with Wait (up to a timeout), pausing that specific Pod's progression to Bind without blocking other Pods' cycles — exactly the primitive gang scheduling needs to hold every member of a group until the whole group can bind. Filter and Score have already run by this point and can only veto or rank, not pause; PostBind runs after a bind is already committed, too late to coordinate a group." },
+  { q:"A node has 32Gi allocatable. Ten Pods, each requesting 2Gi with a 6Gi limit, are scheduled there (20Gi requested total, 60Gi of limits total). What's guaranteed?",
+    opts:[ "Nothing bad can happen — limits prevent any overcommit",
+           "The sum of limits (60Gi) can never actually be exceeded on this node",
+           "The scheduler would have refused this configuration",
+           "The node can experience real memory pressure despite fitting on requests, because the summed limits (60Gi) exceed its 32Gi capacity" ],
+    a:3,
+    why:"The scheduler only checks requests (20Gi ≤ 32Gi — fits, Filter passes) and never sums limits, which are enforced by the kubelet/cgroups at runtime, not at placement time. If enough of these ten Pods burst toward their 6Gi limit simultaneously, the node can genuinely run out of physical memory even though every individual Pod is behaving within its own limit — that's the request/limit gap §8(b) and §11 both name explicitly. Nothing about this configuration is invalid or refused; it's a legal, common 'Burstable' QoS pattern that simply carries real risk." },
+  { q:"kill -9 the default kube-scheduler process. What happens to Pods already Running on nodes?",
+    opts:[ "They are all evicted — the scheduler owns their lifecycle",
+           "Nothing — the scheduler only participates in placement decisions, not in keeping Pods running",
+           "They freeze in place until the scheduler restarts",
+           "The kubelet immediately reschedules them itself" ],
+    a:1,
+    why:"The scheduler's entire job is answering 'where should this new Pod go' — once a Pod is Bound, its ongoing lifecycle (restarts, health, keeping it running on that node) is entirely the kubelet's responsibility, which has no dependency on the scheduler being alive. Killing the scheduler only stops NEW Pods from getting a nodeName assigned; they queue as Pending until it (or a replacement, since kube-scheduler itself typically runs with leader election across replicas) comes back. This is the same 'decoupled from what it decided' property chapter 9 leans on hard: the scheduler decides once, then gets out of the way." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless — you could review this plugin's PR.":correct>=4?"solid; skim the explanations you missed.":"re-run §5 and §8's decks, then try the simulator's experiments — the math clicks fast once you run it yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "QueueSort: Pod popped from the priority queue",
+    "PreFilter: pod-level state precomputed once",
+    "Filter: every candidate node checked against hard constraints",
+    "PreScore: shared state precomputed once across survivors",
+    "Score + NormalizeScore: survivors ranked 0–100, weighted sum combines plugins",
+    "Reserve: any externally-claimed resources (e.g. a PV) are reserved",
+    "Permit: plugins approve, deny, or hold the pod (gang scheduling)",
+    "Bind: POST to pods/binding — spec.nodeName becomes durable truth",
+    "PostBind: cleanup hooks fire; the kubelet takes over from here"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real cycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check (§16) */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"The scheduler successfully Binds a Pod to node-e-1. Thirty seconds later, node-e-1's kubelet reports the container crash-looping and never becomes Ready. Predict: who notices this, and does the scheduler get involved again?",
+    a:"The scheduler never gets involved again for this specific Pod object — its job ended at Bind. What notices is a controller (chapter 9): if this Pod belongs to a ReplicaSet, the ReplicaSet's reconciliation loop compares desired replica count against observed Ready Pods, and if the crash-looping Pod's owning controller decides to replace it (e.g. after a Deployment's Pod eventually gets deleted), a brand NEW Pod object is created with no nodeName — and THAT new Pod goes through this entire chapter's pipeline again, independently, possibly landing somewhere else entirely. The scheduler is stateless with respect to any individual Pod's outcome; it only ever answers the question once, at creation." },
+  { lvl:"THINK", q:"A CRD-based Operator wants custom placement logic — say, 'never put two replicas of this database on the same rack.' Based on this chapter's extension points, sketch how it hooks in without forking kube-scheduler, and predict how the Operator's own reconciliation loop (chapter 9) would need to cooperate with whatever the scheduler decides.",
+    a:"The Operator's placement rule is a hard constraint, so it belongs in a Filter plugin (compiled into a custom scheduler binary, or expressed as a PodAntiAffinity term against a rack topology label using the built-in InterPodAffinity plugin — no custom code needed if the constraint fits that shape). Either way, the scheduler makes the placement decision once. The Operator's own reconciliation loop then has a narrower job: watch the resulting Pods' actual node assignments (observed state) and, if it ever detects a violation it didn't expect — say, a manual kubectl edit forced two replicas onto the same rack — decide whether to evict and let the constraint re-apply on a fresh scheduling cycle. The two systems don't share code; they cooperate by having the controller treat the scheduler's decisions as just another piece of observed state to reconcile against." },
+  { lvl:"THINK", q:"Predict: why must a controller's reconciliation loop (chapter 9) be safe to run repeatedly against the same state — and how does that relate to the fact that a scheduling decision, once Bound, is never silently 'undone' by the scheduler itself?",
+    a:"Because the scheduler makes an irreversible, one-shot decision per Pod object and then disappears from that Pod's story, any correction to a bad outcome (wrong node, crashed container, violated constraint) has to come from something that keeps watching and keeps re-evaluating — which only works safely if re-evaluating the same already-correct state is a no-op. A reconciliation loop that wasn't idempotent could, for example, keep deleting and recreating a perfectly healthy Pod just because it ran twice. This is the exact property — level-triggered, safe to re-run, converges rather than executes a one-time command — that chapter 9 builds the entire controller pattern around, and it's the direct answer to a design constraint this chapter's scheduler imposes: nobody else gets to 'edit' a Bind decision, only replace the Pod object and let scheduling run fresh." }
+]);
+
+/* ============================================================
+   11. SIMULATOR (§15) — the flagship: real filter + score
+   ============================================================ */
+(function(){
+  const NODES_BASE = [
+    { id:"node-a-1", cpuCap:8,  memCap:32, cpuUsed:2,   memUsed:8,  taints:[], labels:{disktype:"ssd", zone:"us-east-1a"} },
+    { id:"node-b-1", cpuCap:4,  memCap:16, cpuUsed:3.5, memUsed:15, taints:[], labels:{disktype:"ssd", zone:"us-east-1b"} },
+    { id:"node-c-1", cpuCap:16, memCap:64, cpuUsed:4,   memUsed:16, taints:[{key:"dedicated",value:"gpu",effect:"NoSchedule"}], labels:{disktype:"ssd", zone:"us-east-1b"} },
+    { id:"node-d-1", cpuCap:8,  memCap:32, cpuUsed:6,   memUsed:20, taints:[{key:"dedicated",value:"infra",effect:"NoSchedule"}], labels:{disktype:"hdd", zone:"us-east-1a"} },
+    { id:"node-e-1", cpuCap:8,  memCap:32, cpuUsed:1,   memUsed:4,  taints:[], labels:{disktype:"ssd", zone:"us-east-1b"} },
+    { id:"node-f-1", cpuCap:4,  memCap:16, cpuUsed:0.5, memUsed:2,  taints:[], labels:{disktype:"hdd", zone:"us-east-1c"} }
+  ];
+  let NODES = NODES_BASE.map(n=>({...n, taints:n.taints.slice(), labels:{...n.labels}}));
+
+  /* ---- pure scheduling functions: real filter + real score ---- */
+  function getPod(){
+    return {
+      cpuReq: +el("pd-cpu").value,
+      memReq: +el("pd-mem").value,
+      tolerationOn: el("chip-tol").classList.contains("on"),
+      requireSSD: el("chip-ssd").classList.contains("on"),
+      preferZone: el("chip-zone").classList.contains("on"),
+      strategy: el("chip-strategy").textContent.includes("Most") ? "most" : "least"
+    };
+  }
+  function filterNode(pod, node){
+    const reasons = [];
+    const availCpu = node.cpuCap - node.cpuUsed;
+    const availMem = node.memCap - node.memUsed;
+    if (pod.cpuReq > availCpu) reasons.push(`insufficient cpu — needs ${pod.cpuReq} vCPU, only ${availCpu.toFixed(1)} free of ${node.cpuCap}`);
+    if (pod.memReq > availMem) reasons.push(`insufficient memory — needs ${pod.memReq}Gi, only ${availMem.toFixed(1)}Gi free of ${node.memCap}Gi`);
+    node.taints.forEach(t=>{
+      const tolerated = pod.tolerationOn && t.key==="dedicated" && t.value==="infra" && t.effect==="NoSchedule";
+      if (!tolerated) reasons.push(`untolerated taint ${t.key}=${t.value}:${t.effect}`);
+    });
+    if (pod.requireSSD && node.labels.disktype !== "ssd") reasons.push(`required node affinity disktype=ssd not satisfied (node has disktype=${node.labels.disktype})`);
+    return reasons;
+  }
+  function scoreNode(pod, node){
+    const cpuFrac = (node.cpuUsed + pod.cpuReq) / node.cpuCap;
+    const memFrac = (node.memUsed + pod.memReq) / node.memCap;
+    let cpuScore, memScore;
+    if (pod.strategy === "least"){ cpuScore = (1 - cpuFrac) * 100; memScore = (1 - memFrac) * 100; }
+    else { cpuScore = cpuFrac * 100; memScore = memFrac * 100; }
+    const resourceScore = (cpuScore + memScore) / 2;
+    const affinityMatch = pod.preferZone && node.labels.zone === "us-east-1a";
+    const affinityScore = affinityMatch ? 100 : 0;
+    const weightRes = 1, weightAff = pod.preferZone ? 1 : 0;
+    const final = (resourceScore * weightRes + affinityScore * weightAff) / (weightRes + weightAff);
+    return { cpuScore, memScore, resourceScore, affinityScore, final };
+  }
+
+  const S = { running:false, cycles:0, filtered:0, binds:0, lastResult:null };
+  const logEl = el("sim-log");
+  function log(lv, msg){
+    const d = document.createElement("div");
+    d.className = "lv-"+lv;
+    d.textContent = (lv==="OK"||lv==="HINT" ? "" : lv+":  ") + msg;
+    logEl.appendChild(d);
+    while (logEl.children.length > 120) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function renderPodBox(pod){
+    el("sim-podbox").innerHTML =
+      `<span class="pb-k">resources:</span><br>&nbsp;&nbsp;requests: {cpu: ${pod.cpuReq}, memory: ${pod.memReq}Gi}<br>` +
+      `<span class="pb-k">tolerations:</span> ${pod.tolerationOn ? "[dedicated=infra:NoSchedule]" : "[]"}<br>` +
+      `<span class="pb-k">nodeAffinity (required):</span> ${pod.requireSSD ? "disktype=ssd" : "none"}<br>` +
+      `<span class="pb-k">nodeAffinity (preferred):</span> ${pod.preferZone ? "zone=us-east-1a" : "none"}`;
+  }
+
+  function renderNodes(phase, filterResults, scores, winnerId){
+    el("sim-nodes").innerHTML = NODES.map(n=>{
+      let cls = "";
+      if (filterResults && filterResults[n.id]) cls = filterResults[n.id].length ? "fail" : "pass";
+      if (winnerId === n.id) cls = "win";
+      const status = winnerId === n.id ? "WINNER" : cls==="pass" ? "PASS" : cls==="fail" ? "FAIL" : "—";
+      const avail = `${(n.cpuCap-n.cpuUsed).toFixed(1)}/${n.cpuCap} vCPU  ·  ${(n.memCap-n.memUsed).toFixed(1)}/${n.memCap}Gi`;
+      const tags = n.taints.map(t=>`<span class="nc-tag taint">${t.key}=${t.value}:${t.effect}</span>`).join("")
+                 + `<span class="nc-tag label">disktype=${n.labels.disktype}</span><span class="nc-tag label">zone=${n.labels.zone}</span>`;
+      let reasonHtml = "", scoreHtml = "";
+      if (filterResults && filterResults[n.id] && filterResults[n.id].length){
+        reasonHtml = `<div class="nc-reason">✗ ${filterResults[n.id].join("<br>✗ ")}</div>`;
+      }
+      if (scores && scores[n.id]){
+        const sc = scores[n.id];
+        scoreHtml = `<div class="nc-score">
+          <div class="nc-slabel"><span>cpu ${sc.cpuScore.toFixed(1)} · mem ${sc.memScore.toFixed(1)}${sc.affinityScore?` · affinity ${sc.affinityScore}`:""}</span><span>${sc.final.toFixed(1)}</span></div>
+          <div class="nc-scorebar"><div class="nc-scorefill" style="width:${sc.final}%"></div></div>
+        </div>`;
+      }
+      return `<div class="nodecard ${cls}">
+        <div class="nc-name">${n.id}<span class="nc-status">${status}</span></div>
+        <div class="nc-row"><span>free</span><span>${avail}</span></div>
+        <div style="margin-top:4px">${tags}</div>
+        ${reasonHtml}${scoreHtml}
+      </div>`;
+    }).join("");
+  }
+
+  function renderCounters(){
+    el("cnt-cycles").textContent = S.cycles;
+    el("cnt-filtered").textContent = S.filtered;
+    el("cnt-binds").textContent = S.binds;
+  }
+
+  function runScheduler(){
+    if (S.running) return;
+    S.running = true;
+    el("sim-run").disabled = true;
+    const pod = getPod();
+    renderPodBox(pod);
+    S.cycles++;
+    log("LOG", `scheduling cycle #${S.cycles} started for pod default/web-6b9f8d7c9d-4x2p1 (cpu=${pod.cpuReq}, memory=${pod.memReq}Gi)`);
+    el("sim-phase").textContent = "FILTER"; el("sim-phase").style.color = "var(--warn)";
+    renderNodes("filter", null, null, null);
+
+    const order = NODES.slice();
+    const filterResults = {};
+    let i = 0;
+    function stepFilter(){
+      if (i >= order.length){ afterFilter(); return; }
+      const n = order[i++];
+      const reasons = filterNode(pod, n);
+      filterResults[n.id] = reasons;
+      log(reasons.length ? "WARN" : "OK", `Filter → ${n.id}: ${reasons.length ? "FAIL — " + reasons.join("; ") : "PASS"}`);
+      renderNodes("filter", filterResults, null, null);
+      setTimeout(stepFilter, 220);
+    }
+    stepFilter();
+
+    function afterFilter(){
+      const survivors = order.filter(n => filterResults[n.id].length === 0);
+      S.filtered += (order.length - survivors.length);
+      renderCounters();
+      if (!survivors.length){
+        log("FATAL", "0/6 nodes are available — pod remains Pending; PostFilter (DefaultPreemption) found no eviction that would help");
+        el("sim-phase").textContent = "PENDING"; el("sim-phase").style.color = "var(--bad)";
+        S.running = false; el("sim-run").disabled = false;
+        return;
+      }
+      el("sim-phase").textContent = "SCORE"; el("sim-phase").style.color = "var(--pg)";
+      const strategyLabel = pod.strategy === "least" ? "LeastAllocated" : "MostAllocated";
+      log("LOG", `${survivors.length} node(s) survived Filter — Score phase (strategy: ${strategyLabel}${pod.preferZone ? " + zone preference" : ""})`);
+      const scores = {};
+      survivors.forEach(n => { scores[n.id] = scoreNode(pod, n); });
+      renderNodes("score", filterResults, scores, null);
+      survivors.forEach(n => {
+        const sc = scores[n.id];
+        log("LOG", `Score → ${n.id}: cpu=${sc.cpuScore.toFixed(1)} mem=${sc.memScore.toFixed(1)} resource=${sc.resourceScore.toFixed(1)}${pod.preferZone ? ` affinity=${sc.affinityScore}` : ""} → final=${sc.final.toFixed(1)}`);
+      });
+      setTimeout(()=>afterScore(survivors, scores), 900);
+    }
+
+    function afterScore(survivors, scores){
+      const winner = survivors.slice().sort((a,b)=> scores[b.id].final - scores[a.id].final)[0];
+      el("sim-phase").textContent = "BIND"; el("sim-phase").style.color = "var(--ok)";
+      log("OK", `winner: ${winner.id} (final score ${scores[winner.id].final.toFixed(1)}) — POST /api/v1/namespaces/default/pods/web-6b9f8d7c9d-4x2p1/binding {nodeName: "${winner.id}"}`);
+      log("LOG", `${winner.id}'s kubelet observes the binding via its own watch and takes over — image pull, sandbox creation, container start (chapter 9 picks up from here)`);
+      renderNodes("bind", filterResults, scores, winner.id);
+      S.binds++;
+      S.lastResult = { pod, filterResults, scores, winner };
+      renderCounters();
+      S.running = false; el("sim-run").disabled = false;
+    }
+  }
+
+  function resetNodes(){
+    NODES = NODES_BASE.map(n=>({...n, taints:n.taints.slice(), labels:{...n.labels}}));
+    log("LOG", "cluster load reset to baseline");
+    renderNodes("idle", null, null, null);
+  }
+  function rerollLoad(){
+    NODES.forEach(n=>{
+      n.cpuUsed = +(n.cpuCap * (0.1 + Math.random()*0.75)).toFixed(2);
+      n.memUsed = +(n.memCap * (0.1 + Math.random()*0.75)).toFixed(2);
+    });
+    log("LOG", "cluster load rerolled — each node's used cpu/memory randomized 10–85% of capacity");
+    renderNodes("idle", null, null, null);
+  }
+
+  el("pd-cpu").oninput = e=>{ el("pd-cpu-val").textContent = (+e.target.value) + " vCPU"; };
+  el("pd-mem").oninput = e=>{ el("pd-mem-val").textContent = (+e.target.value) + " Gi"; };
+  el("chip-tol").onclick = e=>{ e.target.classList.toggle("on"); };
+  el("chip-ssd").onclick = e=>{ e.target.classList.toggle("on"); };
+  el("chip-zone").onclick = e=>{ e.target.classList.toggle("on"); };
+  el("chip-strategy").onclick = e=>{
+    const most = e.target.textContent.includes("Most");
+    e.target.textContent = "strategy: " + (most ? "LeastAllocated" : "MostAllocated");
+  };
+  el("sim-run").onclick = runScheduler;
+  el("sim-reroll").onclick = rerollLoad;
+  el("sim-reset").onclick = resetNodes;
+
+  renderPodBox(getPod());
+  renderNodes("idle", null, null, null);
+  renderCounters();
+  log("OK", "scheduler ready — 6 candidate nodes loaded");
+  log("HINT", "Try: run with defaults, then flip the strategy chip and re-run to watch the winner change.");
+})();
+
+/* ============================================================
+   12. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["k8s-08"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#326ce5"><a class="cn-btn" href="k8s-07.html"><span>←</span><span><span class="cn-lbl">PREV · CH 07</span><span class="cn-ttl">etcd Internals</span></span></a><div class="cn-mid"><a class="cn-home" href="course-kubernetes.html">☰ Kubernetes Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="k8s-01.html">CH 01 · Genesis: Why Orchestration</option><option value="k8s-02.html">CH 02 · Core Objects: Pods, ReplicaSets &amp; Deployments</option><option value="k8s-03.html">CH 03 · Services &amp; Networking Basics</option><option value="k8s-04.html">CH 04 · Config &amp; Storage Basics: ConfigMaps, Secrets, Volumes</option><option value="k8s-05.html">CH 05 · The Declarative Model: kubectl, YAML &amp; the API</option><option value="k8s-06.html">CH 06 · The Control Plane Architecture</option><option value="k8s-07.html">CH 07 · etcd Internals</option><option value="k8s-08.html" selected>CH 08 · The Scheduler: Filtering, Scoring &amp; Binding</option><option value="k8s-09.html">CH 09 · Controllers &amp; the Reconciliation Loop</option><option value="k8s-10.html">CH 10 · Networking Deep Dive: CNI, Services &amp; Ingress</option><option value="k8s-11.html">CH 11 · Storage Internals: PV, PVC, StorageClasses &amp; CSI</option><option value="k8s-12.html">CH 12 · Scaling: HPA, VPA &amp; the Cluster Autoscaler</option><option value="k8s-13.html">CH 13 · Security: RBAC, Admission Control &amp; Pod Security</option><option value="k8s-14.html">CH 14 · Multi-Tenancy &amp; Resource Governance</option><option value="k8s-15.html">CH 15 · Observability: Metrics, Logs &amp; the Events Pipeline</option><option value="k8s-16.html">CH 16 · Production Incidents: Real Kubernetes Outages &amp; CVEs</option><option value="k8s-17.html">CH 17 · Advanced Scheduling &amp; Multi-Cluster</option><option value="k8s-18.html">CH 18 · Capstone: Build a Mini Kubernetes Control Plane From Scratch</option></select><span class="cn-prog">08 / 18</span></div><a class="cn-btn" href="k8s-09.html"><span><span class="cn-lbl">NEXT · CH 09</span><span class="cn-ttl">Controllers &amp; the Reconciliation Loop</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>
