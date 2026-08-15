@@ -21,7 +21,20 @@ function chrome(activeKey){
            .map(c=>`<a class="tl${c.key===activeKey?" on":""}" href="${COURSE_PAGE[c.key]}">${c.short || c.name}</a>`).join("") +
     `<span class="sp"></span><div class="searchbtn" id="searchbtn">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-      Search <span class="kbd">/</span></div></div>`);
+      Search <span class="kbd">/</span></div>
+      <button id="theme-toggle" title="Toggle light / dark" aria-label="Toggle light and dark theme">☀️</button></div>`);
+
+  (function themeInit(){
+    const KEY = "sysinternals-theme", btn = $("theme-toggle");
+    const sync = () => { btn.textContent = document.documentElement.getAttribute("data-theme") === "light" ? "🌙" : "☀️"; };
+    sync();
+    btn.onclick = () => {
+      const light = document.documentElement.getAttribute("data-theme") === "light";
+      if (light) { document.documentElement.removeAttribute("data-theme"); localStorage.setItem(KEY, "dark"); }
+      else { document.documentElement.setAttribute("data-theme", "light"); localStorage.setItem(KEY, "light"); }
+      sync();
+    };
+  })();
   document.body.insertAdjacentHTML("beforeend",
     `<div id="search-overlay"><div class="search-box">
       <input id="search-input" type="text" placeholder="Search chapters…" autocomplete="off">
