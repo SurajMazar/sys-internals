@@ -185,6 +185,26 @@ COURSES = {
         "Performance & Real-World Rust",
         "Tauri Architecture: The Webview Bridge",
         "Capstone: Build a Real Tauri Desktop App"]},
+ "uber": {
+  "name":"Uber Engineering Internals","page":"course-uber.html","accent":"#06c167","prefix":"uber-",
+  "ch":["Genesis: The Marketplace Matching Problem",
+        "Geospatial Indexing: From Geohash to H3",
+        "Real-Time Location Ingestion at Scale",
+        "The Dispatch Problem: Matching Riders to Drivers",
+        "ETA & Routing",
+        "Surge Pricing: Dynamic Pricing Under Real-Time Supply and Demand",
+        "Trip Lifecycle State Machines",
+        "From Monolith to Microservices",
+        "RPC & Service Mesh at Scale",
+        "The Event Backbone: Streaming at Uber Scale",
+        "Observability at Scale: M3 & Distributed Tracing",
+        "Deployment & Scheduling: Peloton and the Internal PaaS",
+        "The API Gateway & the Mobile Edge",
+        "Why Postgres Was Abandoned: The MySQL Migration",
+        "Schemaless: A Scalable Datastore on Sharded MySQL",
+        "Docstore: The Next-Generation Distributed Database",
+        "Sharding, Replication & Multi-Region Strategy",
+        "Capstone: Design Uber's Backend End to End"]},
 }
 
 NAV_CSS = """
