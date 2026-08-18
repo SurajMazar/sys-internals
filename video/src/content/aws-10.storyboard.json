@@ -1,0 +1,241 @@
+{
+  "chapter": "aws-10",
+  "title": "Serverless: Lambda, API Gateway & Step Functions",
+  "voice": "af_heart",
+  "scenes": [
+    {
+      "id": "intro",
+      "type": "ChapterIntro",
+      "narration": "Almost every serverless scenario question on either exam is a disguised elimination question — the scenario gives you a duration, a trigger, and a failure-handling requirement, and three of the four answer choices quietly fail one of those three tests. This chapter is about the numbers and the wiring that let you eliminate wrong answers in seconds: Lambda's hard timeout ceiling, what a cold start actually is, which trigger gives you a synchronous, asynchronous, or poll-based invocation, and why chaining Lambda functions together by hand stops working the moment retries and branching enter the picture.",
+      "props": {
+        "kicker": "AWS CERTIFICATION PREP · CHAPTER 10",
+        "title": "Serverless: Lambda, A P I Gateway & Step Functions",
+        "facts": [
+          { "label": "Lambda's hard ceiling", "value": "900 seconds (15 minutes) maximum timeout — no exceptions, no quota increase" },
+          { "label": "API Gateway's independent ceiling", "value": "REST API integration timeout capped at 29 seconds, regardless of the Lambda's own timeout" }
+        ]
+      }
+    },
+    {
+      "id": "wrong-instinct",
+      "type": "ConceptScene",
+      "narration": "Here's the instinct almost everyone arrives with, because it's exactly how you'd prototype this by hand. A scenario describes an order pipeline — validate, charge the card, reserve inventory, ship, notify — with retries and a rollback if payment fails. The tempting wrong answer has one Lambda function synchronously call the next, which calls the next, with retry logic hand-written inside each function using the SDK. A close cousin: a job clearly runs longer than a few minutes, so the tempting fix is just raising the Lambda timeout, as if it were a dial you could turn indefinitely instead of a hard wall.",
+      "props": {
+        "kicker": "THE INSTINCT TO AVOID",
+        "heading": "\"Just have the functions call each other\"",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "Lambda A synchronously invokes B, which invokes C, which invokes D — retry loops hand-written with the SDK.",
+          "A long-running batch job or transcode step: the fix reached for is simply raising the Lambda timeout.",
+          "Both instincts treat Lambda invocations like free function calls inside one program — they aren't."
+        ]
+      }
+    },
+    {
+      "id": "timeout-wall",
+      "type": "ConceptScene",
+      "narration": "Start with the number that rules out the raise-the-timeout instinct outright. A Lambda function's maximum timeout is nine hundred seconds — fifteen minutes — full stop. There's no configuration, no support ticket, no quota increase that raises it. If a workload can run past fifteen minutes under any realistic condition, Lambda is not a legal answer for that step. And a second, completely independent ceiling sits in front of it whenever the trigger is A P I Gateway: a REST API's integration timeout caps at twenty nine seconds, no matter what you set the backing Lambda's own timeout to. A function configured for fifteen minutes behind that same REST API still gets its client connection killed at twenty nine seconds — the exam loves pairing these two numbers to see if you only check one.",
+      "props": {
+        "kicker": "THE FIRST HARD CEILING",
+        "heading": "900 seconds, and a second ceiling in front of it",
+        "tone": "warn",
+        "variant": "steps",
+        "steps": [
+          "Lambda's max timeout is 900 seconds (15 min) — fixed, unconfigurable, no quota increase exists.",
+          "Any step that can run past 15 minutes disqualifies Lambda for that step, full stop.",
+          "API Gateway REST API adds a second, independent 29-second integration timeout.",
+          "The two limits are independent — a 900s Lambda behind a REST API still dies at 29s."
+        ]
+      }
+    },
+    {
+      "id": "cold-starts",
+      "type": "ConceptScene",
+      "narration": "The other mechanism the exam expects you to know cold: what a cold start actually is. It's the delay when Lambda has to initialize a brand new execution environment — download your code, start the runtime, run anything outside your handler — before it can run your function for the first time on that environment. A warm, reused environment skips all of that. For a latency-sensitive synchronous path, like an A P I Gateway-fronted checkout function a user is actively waiting on, the real fix is provisioned concurrency: a pool of environments AWS keeps pre-initialized and warm for you. It's a capacity you explicitly pay for, not a free default — reach for it specifically when a scenario states a strict, consistent latency requirement, not just 'sometimes slow.'",
+      "props": {
+        "kicker": "THE SECOND MECHANISM",
+        "heading": "Cold starts, and the one real fix",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "A cold start = initializing a fresh execution environment before your handler can run for the first time.",
+          "Provisioned concurrency keeps a pool of environments pre-warmed — eliminating cold starts for that capacity.",
+          "It's a paid, explicit capacity setting, not a free default — the signal is a hard, stated latency SLA."
+        ]
+      }
+    },
+    {
+      "id": "invocation-models",
+      "type": "ArchitectureDiagram",
+      "narration": "Every trigger the exam tests maps to one of three invocation models, and that model decides how you handle failures. A P I Gateway is synchronous — the caller waits, and errors surface directly as an HTTP status. S3 event notifications and S N S are asynchronous — the publisher doesn't wait, Lambda queues the event and retries internally, and you configure a destination or dead-letter queue to catch what never succeeds. DynamoDB Streams and S Q S are poll-based, using Lambda's own event source mapping to read batches — and here a single stuck record can block an entire shard's progress until it succeeds, expires, or you route it aside.",
+      "props": {
+        "kicker": "ONE TABLE THE EXAM EXPECTS COLD",
+        "heading": "Sync, async, and poll-based — by trigger",
+        "variant": "table",
+        "table": {
+          "columns": ["Trigger", "Invocation model", "What it means for errors"],
+          "rows": [
+            { "label": "API Gateway", "cells": ["Synchronous", "Caller waits; errors surface as an HTTP status directly"] },
+            { "label": "S3 / SNS", "cells": ["Asynchronous", "Publisher doesn't wait; Lambda retries, then routes to a destination/DLQ"] },
+            { "label": "DynamoDB Streams / Kinesis", "cells": ["Poll-based (event source mapping)", "A stuck record can block that whole shard's progress"] },
+            { "label": "SQS", "cells": ["Poll-based (event source mapping)", "Repeated failures move the message to the queue's own DLQ at maxReceiveCount"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "decision-framework",
+      "type": "ArchitectureDiagram",
+      "narration": "Here's the framework that resolves most of these questions mechanically. One unit of work, event-triggered, comfortably under fifteen minutes — Lambda alone, no orchestrator needed. Multiple steps that need retries, branching, or parallel work — that's Step Functions orchestrating Lambda, because Retry, Catch, Choice, and Parallel states are built in and visualized, instead of you hand-rolling retry loops. A step that genuinely needs longer than fifteen minutes, or specialized hardware — Step Functions can call Fargate, Batch, or E C2 directly as a task, the same way it calls a Lambda. And millions of short, cost-sensitive executions per day where you don't need full execution history — that's Step Functions Express, not Standard.",
+      "props": {
+        "kicker": "THE DECISION FRAMEWORK",
+        "heading": "When Step Functions is the real answer",
+        "variant": "table",
+        "table": {
+          "columns": ["Situation", "Use this", "Because"],
+          "rows": [
+            { "label": "One step, < 15 min", "cells": ["Lambda alone", "Fits inside the hard timeout; no orchestration needed for one step"] },
+            { "label": "Multiple steps, retries/branching", "cells": ["Step Functions + Lambda", "Retry, Catch, Choice, Parallel are built in — no hand-written retry loops"] },
+            { "label": "A step needs > 15 min or special hardware", "cells": ["Step Functions + Fargate/Batch/EC2 task", "Step Functions calls non-Lambda targets as a task, same state machine"] },
+            { "label": "Millions of short executions/day, cost-sensitive", "cells": ["Step Functions Express", "Billed by request+duration, not per state transition"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cli-walkthrough",
+      "type": "TerminalDemo",
+      "narration": "A few commands make this concrete. Creating the payment function with a timeout of nine hundred seconds is a reminder that this really is the hard ceiling — you cannot pass a larger number. Starting a Step Functions execution hands the whole order off to a state machine that owns retries and branching, instead of one Lambda calling the next directly. And put-provisioned-concurrency-config is how you explicitly pay to keep a synchronous, user-facing function's environments warm — twenty pre-initialized environments here, a deliberate capacity choice, not a default behavior.",
+      "props": {
+        "kicker": "TRY IT YOURSELF",
+        "heading": "Create, orchestrate, and keep it warm",
+        "prompt": "$",
+        "steps": [
+          {
+            "cmd": "aws lambda create-function --function-name charge-payment --runtime python3.12 --handler app.handler --timeout 900 --memory-size 512",
+            "output": [
+              "{ \"FunctionName\": \"charge-payment\", \"Timeout\": 900,",
+              "  \"MemorySize\": 512, \"State\": \"Active\" }",
+              "# 900s is the hard ceiling — no higher value is accepted"
+            ]
+          },
+          {
+            "cmd": "aws stepfunctions start-execution --state-machine-arn arn:aws:states:us-east-1:111122223333:stateMachine:order-workflow --input '{\"orderId\":\"ord-4471\"}'",
+            "output": [
+              "{ \"executionArn\": \"arn:aws:states:...:execution:order-workflow:ord-4471\",",
+              "  \"startDate\": 1755000000.123 }"
+            ]
+          },
+          {
+            "cmd": "aws lambda put-provisioned-concurrency-config --function-name checkout-api --qualifier prod --provisioned-concurrent-executions 20",
+            "output": [
+              "{ \"AllocatedProvisionedConcurrentExecutions\": 20,",
+              "  \"Status\": \"IN_PROGRESS\" }",
+              "# a paid, pre-warmed capacity — not a free setting"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "case-study",
+      "type": "ConceptScene",
+      "narration": "Take a concrete case. A streaming startup ingests uploaded video and runs validation, thumbnail generation, and transcoding before publishing. Thumbnails finish in seconds; transcoding a long-form video reliably takes twenty five to forty minutes. Their first design chained three Lambda functions by direct invocation. Run it through the framework: transcoding's duration alone disqualifies Lambda for that one step, no matter how the rest is built. The fix keeps validation and thumbnailing as Lambda steps inside a Step Functions workflow, but routes the transcode step to a Fargate or Batch task invoked as a state in that same workflow.",
+      "props": {
+        "kicker": "ONE PIPELINE, WORKED THROUGH",
+        "heading": "The media company's 40-minute transcode step",
+        "variant": "profile",
+        "profile": {
+          "name": "A streaming startup's upload pipeline",
+          "role": "Validate → thumbnail (seconds) → transcode (25–40 minutes) → publish",
+          "detail": "The first design chained three Lambda functions by direct invocation, including the 25–40 minute transcode step — which Lambda's 900-second ceiling makes categorically ineligible, regardless of how the rest is built.",
+          "verdict": "Keep validation and thumbnailing as Lambda tasks in a Step Functions workflow, but route transcoding to a Fargate or Batch task invoked as a state in that same workflow."
+        }
+      }
+    },
+    {
+      "id": "knowledge-check",
+      "type": "KnowledgeCheck",
+      "narration": "Try these before we reveal the answers. First: a report behind an A P I Gateway REST API can take up to three minutes, so the team raises the Lambda's timeout to one hundred eighty seconds — but clients still see failures around twenty nine seconds. What's actually going on? Second: a payments workflow needs charge, reserve, and ship, with a hard rule that a failed payment must never leave inventory reserved — what should replace their hand-chained Lambda-to-Lambda design?",
+      "props": {
+        "kicker": "KNOWLEDGE CHECK",
+        "heading": "Try these before the answer",
+        "questions": [
+          {
+            "level": "ASSOCIATE",
+            "prompt": "A report behind an API Gateway REST API can take up to 3 minutes. The team raises the Lambda's timeout to 180 seconds, but clients still see the request fail around 29 seconds. What's the real cause and fix?",
+            "options": [
+              "The Lambda timeout change didn't deploy — redeploy the function.",
+              "API Gateway's REST API integration timeout is capped at 29 seconds regardless of the Lambda's own timeout — return a 202 Accepted immediately and process asynchronously instead.",
+              "API Gateway needs its own timeout increase request filed with AWS Support.",
+              "The function's memory is too low, causing it to fail before 29 seconds."
+            ]
+          },
+          {
+            "level": "PROFESSIONAL",
+            "prompt": "A workflow charges a customer, reserves inventory, and ships an order, with a hard rule that a failed payment must never leave inventory reserved. Lambdas currently invoke each other directly with hand-written try/catch. What should replace this design?",
+            "options": [
+              "Increase each Lambda's timeout so the chain has more time to complete before failing.",
+              "A Step Functions Standard workflow with a Retry policy on the payment step and a Catch clause routing to a compensating state that releases inventory and refunds.",
+              "Move all three Lambdas behind a single API Gateway endpoint to simplify the chain.",
+              "Combine all three steps into one larger Lambda function to avoid inter-function calls entirely."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer-reveal",
+      "type": "AnswerReveal",
+      "narration": "Here's why. API Gateway's REST API integration timeout is a hard twenty nine seconds, completely independent of whatever timeout the backing Lambda is configured with — raising the Lambda's timeout does nothing, because the client connection dies first. The architectural fix is to acknowledge fast and do the real work asynchronously. And for the payment workflow, a Step Functions Standard workflow is the answer specifically because Retry absorbs transient gateway errors and Catch routes permanent failures to a compensating state that releases the reservation and refunds — durability and an audit trail that hand-written try/catch inside a Lambda simply doesn't give you.",
+      "props": {
+        "kicker": "ANSWERS",
+        "heading": "Here's why",
+        "answers": [
+          {
+            "prompt": "Lambda timeout raised to 180s, but the API Gateway request still fails around 29 seconds.",
+            "correct": "API Gateway's 29-second integration timeout is independent of the Lambda's own timeout — the fix is to return 202 Accepted immediately and process asynchronously.",
+            "rationale": "The two timeouts don't interact — a 900-second Lambda behind a REST API still gets its client connection killed at 29 seconds. The only real fix is architectural: respond fast, do the slow work behind an orchestrator, and let the client poll or receive a callback."
+          },
+          {
+            "prompt": "Charge, reserve, ship — with a rule that a failed payment must never leave inventory reserved.",
+            "correct": "A Step Functions Standard workflow with Retry on the payment step and a Catch clause routing to a compensating release-and-refund state.",
+            "rationale": "Retry absorbs transient gateway blips automatically; Catch gives you an explicit compensating-transaction branch for permanent failures. Hand-written try/catch inside chained Lambdas gives you none of the durable execution history or built-in retry/backoff this design needs."
+          }
+        ]
+      }
+    },
+    {
+      "id": "recap",
+      "type": "ChapterRecap",
+      "narration": "Five things to carry forward. Lambda's maximum timeout is nine hundred seconds, fifteen minutes, a hard unconfigurable ceiling that alone eliminates it for long-running steps. API Gateway REST APIs add a second, independent twenty nine second integration timeout that can kill a request long before Lambda's own timeout ever would. Cold starts are mitigated specifically by provisioned concurrency — a paid, explicit capacity choice, never a default. Each trigger has a real, distinct invocation model: API Gateway is synchronous, S3 and S N S are asynchronous, DynamoDB Streams, Kinesis, and S Q S are poll-based — and that model decides where a dead-letter queue belongs. And whenever a scenario describes multiple steps with retries, branching, or parallelism, the correct orchestrator is Step Functions, not a hand-written chain of direct Lambda invocations. Next up: messaging and decoupling — S Q S, S N S, and EventBridge, and exactly when each one is the right answer for fanning work out to independent consumers.",
+      "props": {
+        "kicker": "RECAP",
+        "heading": "What to remember from this chapter",
+        "takeaways": [
+          "Lambda's max timeout is 900 seconds (15 min) — a hard, unconfigurable ceiling, not a rule of thumb.",
+          "API Gateway REST APIs add an independent 29-second integration timeout that Lambda's own timeout can't override.",
+          "Cold starts are real; provisioned concurrency is the real, paid fix — reach for it on a stated latency SLA.",
+          "Invocation model follows the trigger: API Gateway sync, S3/SNS async, DynamoDB Streams/Kinesis/SQS poll-based.",
+          "Multi-step workflows with retries or branching call for Step Functions, not hand-chained Lambda invocations."
+        ],
+        "next": {
+          "title": "Chapter 11 — Messaging & Decoupling: SQS, SNS & EventBridge",
+          "teaser": "SQS for point-to-point buffering, SNS for pub/sub fan-out, and EventBridge for event-bus routing — and when each is the exam's correct answer."
+        }
+      }
+    },
+    {
+      "id": "challenge",
+      "type": "FinalChallenge",
+      "narration": "One more to work through yourself. A workload validates, then geocodes, then runs a fraud-scoring step that occasionally calls a slow third-party API and needs up to three retries with exponential backoff, and on repeated permanent failure it must flag the order for manual review rather than silently failing. Using this chapter's framework, is this a job for chained Lambda invocations or for an orchestrator, and which specific built-in feature handles the retry-then-flag-for-review requirement?",
+      "props": {
+        "kicker": "THINK ABOUT IT",
+        "prompt": "A workload validates, geocodes, then runs fraud-scoring that occasionally calls a slow third-party API and needs up to 3 retries with backoff — and on permanent failure must flag the order for manual review, not fail silently. Chained Lambdas, or an orchestrator? Which built-in feature covers the retry-then-flag requirement?",
+        "hint": "The requirement has two parts: a retry policy for the transient case, and a branch for the permanent one.",
+        "nextChapterTitle": "Chapter 11 · Messaging & Decoupling: SQS, SNS & EventBridge"
+      }
+    }
+  ]
+}
