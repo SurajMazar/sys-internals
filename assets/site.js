@@ -17,12 +17,27 @@ const ORDERED = [...COURSES].sort((a, b) =>
 function chrome(activeKey){
   document.body.insertAdjacentHTML("afterbegin",
     `<div class="topnav"><a class="brand" href="index.html">SYS/<span>INTERNALS</span></a>` +
+    `<button class="navtoggle" id="navtoggle" aria-label="Toggle course menu" aria-expanded="false" aria-controls="topnav-links">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>` +
+    `<div class="topnav-links" id="topnav-links">` +
     ORDERED.filter(c => c.enabled !== false && COURSE_PAGE[c.key])
            .map(c=>`<a class="tl${c.key===activeKey?" on":""}" href="${COURSE_PAGE[c.key]}">${c.short || c.name}</a>`).join("") +
-    `<span class="sp"></span><div class="searchbtn" id="searchbtn">
+    `</div>` +
+    `<div class="searchbtn" id="searchbtn">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-      Search <span class="kbd">/</span></div>
+      <span class="sbtxt">Search</span> <span class="kbd">/</span></div>
       <button id="theme-toggle" title="Toggle light / dark" aria-label="Toggle light and dark theme">☀️</button></div>`);
+
+  (function navToggleInit(){
+    const btn = $("navtoggle"), links = $("topnav-links");
+    if (!btn || !links) return;
+    btn.onclick = () => {
+      const open = links.classList.toggle("open");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    links.addEventListener("click", e => { if (e.target.closest("a")) links.classList.remove("open"); });
+  })();
 
   (function themeInit(){
     const KEY = "sysinternals-theme", btn = $("theme-toggle");
