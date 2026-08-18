@@ -142,7 +142,7 @@ def process_chapter(path):
 def main():
     patterns = ["pg-*.html", "kafka-*.html", "rmq-*.html", "wa-*.html",
                 "bc-*.html", "btc-*.html", "ctr-*.html", "crypto-*.html",
-                "k8s-*.html", "rust-*.html", "uber-*.html"]
+                "k8s-*.html", "rust-*.html", "uber-*.html", "nflx-*.html"]
     files = sorted(set(f for p in patterns for f in glob.glob(p)))
     n_changed = 0
     for f in files:

@@ -205,6 +205,26 @@ COURSES = {
         "Docstore: The Next-Generation Distributed Database",
         "Sharding, Replication & Multi-Region Strategy",
         "Capstone: Design Uber's Backend End to End"]},
+ "nflx": {
+  "name":"Netflix Streaming Internals","page":"course-netflix.html","accent":"#e50914","prefix":"nflx-",
+  "ch":["Genesis: From DVD-by-Mail to Streaming",
+        "Video Fundamentals: Why Raw Video Is Too Big",
+        "Codecs & Compression: H.264, VP9 & AV1",
+        "Adaptive Bitrate Streaming: The Core Problem",
+        "The Bitrate Ladder & Per-Title Encoding",
+        "Manifests & Streaming Protocols: HLS & DASH",
+        "Open Connect: Netflix's Real CDN",
+        "Content Placement & Predictive Caching",
+        "The Recommendation Problem",
+        "Collaborative Filtering & the Netflix Prize",
+        "Modern Recommendation Systems",
+        "Personalization at the UI Level",
+        "A/B Testing & the Experimentation Platform",
+        "Reliability for Streaming: Circuit Breakers & Graceful Degradation",
+        "Chaos Engineering: Chaos Monkey & the Simian Army",
+        "Client Diversity & the Device Certification Problem",
+        "Production Incidents & Streaming-Scale Observability",
+        "Capstone: Build a Mini Streaming Service End to End"]},
 }
 
 NAV_CSS = """

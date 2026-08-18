@@ -1,0 +1,1532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><!-- THEME-EARLY --><script>(function(){try{var t=localStorage.getItem("sysinternals-theme");if(t==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NFLX-14 · Reliability for Streaming: Circuit Breakers & Graceful Degradation — Netflix Streaming Internals</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#07090d">
+<style>
+  :root {
+    --bg:#07090d; --bg-2:#0b0e15; --panel:#0e1219; --panel-2:#131824;
+    --border:#1c2330; --border-hi:#2a3446;
+    --text:#e8ecf4; --muted:#8b94a7; --dim:#5b6475;
+    --pg:#e50914; --pg-dim:rgba(229,9,20,.12);
+    --ok:#4ade80; --warn:#ff9f43; --bad:#f25c54; --purple:#a78bfa;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif; --body:var(--body);}
+
+  #theme-toggle{position:relative;display:inline-flex;align-items:center;justify-content:center;
+    width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:var(--bg-2);
+    color:var(--muted);cursor:pointer;font-size:14px;line-height:1;transition:all .15s;margin-left:6px}
+  #theme-toggle:hover{color:var(--text);border-color:var(--border-hi)}
+
+/* THEME-LIGHT-OVERRIDE */
+  html[data-theme="light"] { --bg:#f6f7fb; --bg-2:#ffffff; --panel:#ffffff; --panel-2:#eef0f5; --border:#dde2ec; --border-hi:#c3cbdc; --text:#12151c; --muted:#55606f; --dim:#7a8494; --pg:#eb030f; --ok:#15843e; --warn:#b85a00; --bad:#e8170c; --purple:#8056fc; --body:#61759d; }
+  /* THEME-TEXT-FIX-V2 */
+  html[data-theme="light"] canvas{background:#0b0e15 !important;}
+  html[data-theme="light"] #topbar{background:rgba(255,255,255,.85);}
+  html[data-theme="light"] #chapnav{background:rgba(255,255,255,.93);}
+
+
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:rgba(229,9,20,.28)}
+  a{color:var(--pg)}
+
+  /* ---------- top bar ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;gap:14px;
+    background:rgba(11,14,21,.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);
+    padding:10px 18px;font-size:13px}
+  #topbar a.back{color:var(--muted);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .15s}
+  #topbar a.back:hover{color:var(--text)}
+  #topbar .crumb{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  #topbar .crumb b{color:var(--pg);font-weight:600}
+  #topbar .spacer{flex:1}
+  #topbar .kbdhint{color:var(--dim);font-size:11px;display:flex;gap:10px}
+  .kbd{font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--border-hi);border-bottom-width:2px;border-radius:5px;padding:0 5px;background:var(--panel)}
+  #readbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--pg),var(--purple));width:0;z-index:101}
+
+  /* ---------- TOC ---------- */
+  #toc{position:fixed;left:18px;top:80px;bottom:24px;width:212px;overflow-y:auto;z-index:50;
+    scrollbar-width:none;padding-right:6px}
+  #toc::-webkit-scrollbar{display:none}
+  #toc .toc-title{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:10px}
+  #toc a{display:flex;align-items:center;gap:8px;color:var(--muted);text-decoration:none;font-size:12px;
+    padding:5.5px 9px;border-radius:8px;border-left:2px solid transparent;transition:all .15s;line-height:1.3}
+  #toc a:hover{color:var(--text);background:var(--panel)}
+  #toc a.active{color:var(--text);background:var(--panel);border-left-color:var(--pg)}
+  #toc a .n{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:0 0 20px}
+  #toc a.seen .n{color:var(--ok)}
+  @media(max-width:1250px){#toc{display:none}}
+
+  /* ---------- layout ---------- */
+  main{max-width:820px;margin:0 auto;padding:96px 24px 140px}
+  section{margin-top:74px;scroll-margin-top:80px}
+  .arc{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--pg);
+    border:1px solid rgba(229,9,20,.28);background:var(--pg-dim);border-radius:999px;padding:4px 12px;
+    letter-spacing:.08em;margin-bottom:14px}
+  h2.sec{font-size:clamp(23px,3vw,30px);font-weight:750;letter-spacing:-.02em;margin-bottom:16px;line-height:1.2}
+  h3{font-size:17px;font-weight:650;margin:30px 0 10px;letter-spacing:-.01em}
+  p{color:var(--body);font-size:15px;line-height:1.75;margin-bottom:14px}
+  p b,li b{color:var(--text)}
+  .lead{font-size:16.5px;color:var(--text)}
+  ul.plain{margin:0 0 14px 20px}
+  ul.plain li{color:var(--body);font-size:14.5px;line-height:1.7;margin-bottom:7px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:5px;padding:1.5px 5px;color:#9fd0ff}
+  .term{border-bottom:1px dashed var(--dim);cursor:help;position:relative}
+  .term:hover::after{content:attr(data-def);position:absolute;left:0;bottom:calc(100% + 8px);z-index:60;
+    width:280px;background:var(--panel-2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 12px;
+    font-size:12px;line-height:1.55;color:var(--muted);box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:normal}
+
+  /* ---------- callouts ---------- */
+  .callout{border:1px solid var(--border);border-left:3px solid var(--pg);background:var(--panel);
+    border-radius:12px;padding:15px 18px;margin:18px 0;font-size:14px;line-height:1.7;color:var(--body)}
+  .callout .co-t{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;margin-bottom:6px;color:var(--pg)}
+  .callout.warn{border-left-color:var(--warn)} .callout.warn .co-t{color:var(--warn)}
+  .callout.bad{border-left-color:var(--bad)} .callout.bad .co-t{color:var(--bad)}
+  .callout.deep{border-left-color:var(--purple)} .callout.deep .co-t{color:var(--purple)}
+  .callout.ok{border-left-color:var(--ok)} .callout.ok .co-t{color:var(--ok)}
+  .callout p{margin-bottom:8px;font-size:14px} .callout p:last-child{margin-bottom:0}
+
+  /* ---------- code blocks ---------- */
+  .codeblock{background:#0a0d13;border:1px solid var(--border);border-radius:13px;margin:18px 0;overflow:hidden}
+  .codeblock .cb-head{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;
+    border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .codeblock .cb-head .lang{color:var(--pg)}
+  .codeblock pre{padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.4px;line-height:1.62;color:#cdd6e4}
+  .codeblock pre .c{color:#5f6b7f;font-style:italic}
+  .codeblock pre .k{color:#c792ea}
+  .codeblock pre .f{color:#82aaff}
+  .codeblock pre .s{color:#c3e88d}
+  .codeblock pre .n{color:#f78c6c}
+  .codeblock pre .t{color:#ffcb6b}
+  .codeblock pre .hl{background:rgba(229,9,20,.10);display:inline-block;width:100%}
+
+  /* ---------- generic interactive shell ---------- */
+  .widget{background:var(--panel);border:1px solid var(--border);border-radius:16px;margin:24px 0;overflow:hidden}
+  .widget .w-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .widget .w-head .w-dot{width:8px;height:8px;border-radius:50%;background:var(--pg);box-shadow:0 0 10px var(--pg)}
+  .widget .w-head .w-title{font-size:13px;font-weight:650}
+  .widget .w-head .w-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto;letter-spacing:.06em}
+  .widget .w-body{padding:18px}
+  .btn{background:var(--panel-2);border:1px solid var(--border-hi);color:var(--text);border-radius:9px;
+    padding:7px 14px;font-size:12.5px;font-family:var(--sans);font-weight:550;cursor:pointer;transition:all .15s}
+  .btn:hover:not(:disabled){border-color:var(--pg);transform:translateY(-1px)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .btn.primary{background:var(--pg);border-color:var(--pg);color:#fff}
+  .btn.danger{border-color:rgba(242,92,84,.5);color:var(--bad)}
+  .btn.danger:hover:not(:disabled){border-color:var(--bad)}
+  .btn.good{border-color:rgba(74,222,128,.4);color:var(--ok)}
+  .btn.warn{border-color:rgba(255,159,67,.5);color:var(--warn)}
+
+  /* ---------- stepper decks ---------- */
+  .deck .deck-stage{min-height:300px;padding:18px;position:relative;opacity:0;transform:translateY(6px);
+    transition:opacity .3s ease,transform .3s ease}
+  .deck .deck-stage.in{opacity:1;transform:none}
+  .deck .deck-cap{padding:14px 18px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.7;color:var(--body);min-height:86px}
+  .deck .deck-cap .deck-stepnum{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.1em;display:block;margin-bottom:5px}
+  .deck .deck-ctl{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border)}
+  .deck-dots{display:flex;gap:5px;margin:0 auto}
+  .deck-dots .dot{width:8px;height:8px;border-radius:50%;border:none;background:var(--border-hi);cursor:pointer;transition:all .2s;padding:0}
+  .deck-dots .dot.on{background:var(--pg)}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding:10px 0 4px;overflow-x:auto}
+  .tl-track{display:flex;gap:0;min-width:700px;position:relative;padding:34px 10px 10px}
+  .tl-track::before{content:"";position:absolute;top:44px;left:20px;right:20px;height:2px;
+    background:linear-gradient(90deg,var(--border-hi),var(--pg))}
+  .tl-item{flex:1;position:relative;cursor:pointer;text-align:center;min-width:84px}
+  .tl-item .tl-dot{width:13px;height:13px;border-radius:50%;background:var(--panel-2);border:2.5px solid var(--border-hi);
+    margin:4px auto 8px;transition:all .2s;position:relative;z-index:2}
+  .tl-item:hover .tl-dot,.tl-item.on .tl-dot{border-color:var(--pg);background:var(--pg);box-shadow:0 0 14px rgba(229,9,20,.5)}
+  .tl-item .tl-yr{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tl-item.on .tl-yr{color:var(--pg);font-weight:700}
+  .tl-item .tl-l{font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tl-detail{margin:8px 18px 18px;padding:15px 17px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:12px;font-size:13.5px;line-height:1.7;color:var(--body);min-height:96px}
+  .tl-detail b{color:var(--pg)}
+
+  /* ---------- sliders ---------- */
+  .slider-row{display:flex;align-items:center;gap:14px;margin:10px 0;flex-wrap:wrap}
+  .slider-row label{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:170px}
+  .slider-row input[type=range]{flex:1;min-width:140px;accent-color:var(--pg);height:4px}
+  .slider-row .val{font-family:var(--mono);font-size:12px;color:var(--pg);min-width:88px;text-align:right}
+  .toggle-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--border-hi);background:var(--bg-2);color:var(--muted);border-radius:999px;
+    padding:5px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+  .chip.on{border-color:var(--pg);color:var(--pg);background:var(--pg-dim)}
+
+  /* ---------- comparison table ---------- */
+  table.cmp{width:100%;border-collapse:collapse;font-size:12.8px;margin:16px 0}
+  table.cmp th{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-align:left;
+    padding:9px 11px;border-bottom:1px solid var(--border-hi)}
+  table.cmp td{padding:9px 11px;border-bottom:1px solid var(--border);color:var(--body);vertical-align:top;line-height:1.55}
+  table.cmp td:first-child{color:var(--text);font-weight:600;white-space:nowrap}
+  table.cmp tr:hover td{background:rgba(229,9,20,.03)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;border-radius:6px;padding:1.5px 7px;margin:1px}
+  .pill.g{color:var(--ok);background:rgba(74,222,128,.1)}
+  .pill.b{color:var(--bad);background:rgba(242,92,84,.1)}
+  .pill.y{color:var(--warn);background:rgba(255,159,67,.1)}
+
+  /* ---------- architecture explorer ---------- */
+  .arch{display:grid;grid-template-columns:1fr 300px;gap:0}
+  @media(max-width:760px){.arch{grid-template-columns:1fr}}
+  .arch-map{padding:18px;border-right:1px solid var(--border)}
+  @media(max-width:760px){.arch-map{border-right:none;border-bottom:1px solid var(--border)}}
+  .arch-row-label{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.1em;margin:12px 0 6px}
+  .arch-grid{display:flex;flex-wrap:wrap;gap:7px}
+  .acard{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:9px;padding:7px 11px;
+    font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;color:var(--body)}
+  .acard:hover{border-color:var(--pg);transform:translateY(-2px)}
+  .acard.sel{border-color:var(--pg);background:var(--pg-dim);color:var(--pg);box-shadow:0 0 16px rgba(229,9,20,.15)}
+  .acard.shmcard{border-style:dashed;width:100%;text-align:center;padding:12px}
+  .arch-detail{padding:18px;font-size:13px;line-height:1.65;color:var(--body)}
+  .arch-detail .ad-name{font-family:var(--mono);font-size:14px;color:var(--pg);font-weight:700;margin-bottom:4px}
+  .arch-detail .ad-file{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px}
+  .arch-detail .ad-sec{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.1em;margin:12px 0 4px}
+
+  /* ---------- quiz ---------- */
+  .q{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .q:last-child{border-bottom:none}
+  .q .q-text{font-size:14.5px;font-weight:600;margin-bottom:11px;line-height:1.55}
+  .q .q-num{font-family:var(--mono);font-size:10px;color:var(--pg);letter-spacing:.08em;display:block;margin-bottom:5px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13.5px;line-height:1.55;
+    color:var(--body);transition:all .15s}
+  .opt:hover{border-color:var(--border-hi)}
+  .opt .ol{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border-hi);border-radius:6px;
+    padding:1px 7px;flex:0 0 auto;margin-top:1px}
+  .opt.correct{border-color:var(--ok);background:rgba(74,222,128,.07)}
+  .opt.correct .ol{border-color:var(--ok);color:var(--ok)}
+  .opt.wrong{border-color:var(--bad);background:rgba(242,92,84,.07)}
+  .opt.wrong .ol{border-color:var(--bad);color:var(--bad)}
+  .opt.disabled{pointer-events:none;opacity:.75}
+  .q .expl{display:none;margin-top:10px;border-left:3px solid var(--pg);background:var(--pg-dim);
+    border-radius:0 10px 10px 0;padding:11px 14px;font-size:13px;line-height:1.65;color:var(--body)}
+  .q .expl.show{display:block;animation:framein .3s ease}
+  @keyframes framein{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+  .quiz-score{padding:14px 18px;font-family:var(--mono);font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+  .quiz-score b{color:var(--pg)}
+
+  /* order quiz */
+  .order-item{display:flex;align-items:center;gap:11px;border:1px solid var(--border);background:var(--bg-2);
+    border-radius:10px;padding:10px 13px;margin-bottom:7px;cursor:pointer;font-size:13px;font-family:var(--mono);
+    transition:all .15s;color:var(--body)}
+  .order-item:hover{border-color:var(--border-hi)}
+  .order-item .seq{width:24px;height:24px;border-radius:8px;border:1px solid var(--border-hi);display:flex;
+    align-items:center;justify-content:center;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .order-item.picked .seq{background:var(--pg);border-color:var(--pg);color:#fff;font-weight:700}
+  .order-item.right{border-color:var(--ok)} .order-item.right .seq{background:var(--ok);border-color:var(--ok);color:#06121f}
+  .order-item.wrong2{border-color:var(--bad)} .order-item.wrong2 .seq{background:var(--bad);border-color:var(--bad);color:#06121f}
+
+  /* ---------- interview / knowledge cards ---------- */
+  .qa{border:1px solid var(--border);border-radius:13px;margin-bottom:11px;overflow:hidden;background:var(--panel)}
+  .qa .qa-q{padding:14px 17px;font-size:14px;font-weight:600;cursor:pointer;display:flex;gap:10px;align-items:flex-start;line-height:1.5}
+  .qa .qa-q .lvl{font-family:var(--mono);font-size:9.5px;border-radius:6px;padding:2px 8px;flex:0 0 auto;margin-top:2px;
+    color:var(--purple);background:rgba(167,139,250,.1)}
+  .qa .qa-hint{padding:0 17px 12px;color:var(--dim);font-size:12px;font-style:italic}
+  .qa .qa-a{display:none;padding:0 17px 16px;font-size:13.5px;line-height:1.7;color:var(--body);border-top:1px solid var(--border);padding-top:13px}
+  .qa.open .qa-a{display:block;animation:framein .3s}
+  .qa .qa-btn{margin:0 17px 14px;display:inline-block}
+
+  /* ---------- file tree ---------- */
+  .ftree{font-family:var(--mono);font-size:12.3px;line-height:1.9;padding:16px 18px;color:var(--body)}
+  .ftree .dir{color:var(--pg)}
+  .ftree .fnote{color:var(--dim);font-size:11px}
+  .ftree .fhl{color:var(--warn)}
+
+  /* ---------- SIMULATOR ---------- */
+  #sim .w-body{padding:0}
+  .sim-wrap{display:grid;grid-template-columns:1fr 285px;min-height:520px}
+  @media(max-width:860px){.sim-wrap{grid-template-columns:1fr}}
+  .sim-stage{padding:16px;border-right:1px solid var(--border);position:relative}
+  @media(max-width:860px){.sim-stage{border-right:none}}
+  .sim-side{display:flex;flex-direction:column;border-left:none}
+  .sim-ctl{padding:13px 15px;border-bottom:1px solid var(--border)}
+  .sim-ctl .ctl-t{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:8px}
+  .sim-ctl .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .sim-ctl .btn{padding:5.5px 10px;font-size:11.5px}
+  .meter{margin:7px 0}
+  .meter .m-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px}
+  .meter .m-bar{height:7px;border-radius:4px;background:var(--bg-2);border:1px solid var(--border);overflow:hidden}
+  .meter .m-fill{height:100%;border-radius:4px;background:var(--pg);width:0%;transition:width .25s}
+  .meter .m-fill.hot{background:var(--bad)}
+  .meter .m-fill.warm{background:var(--warn)}
+  .sim-counters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:11px 15px;border-bottom:1px solid var(--border)}
+  .scounter{background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;text-align:center}
+  .scounter .cv{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--pg)}
+  .scounter .cl{font-size:9px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+  .inspector{padding:11px 15px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--muted);min-height:92px}
+  .inspector .i-t{font-size:9.5px;color:var(--dim);letter-spacing:.12em;margin-bottom:7px}
+  .inspector .btns{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .inspector .btn{padding:4px 9px;font-size:10.5px}
+  .slog{background:#05070b;font-family:var(--mono);font-size:10.8px;line-height:1.75;padding:12px 15px;
+    height:190px;overflow-y:auto;border-top:1px solid var(--border)}
+  .slog div{white-space:pre-wrap;word-break:break-word}
+  .slog .lv-LOG{color:#7d8aa3} .slog .lv-FATAL{color:var(--bad)} .slog .lv-PANIC{color:var(--bad);font-weight:700}
+  .slog .lv-WARN{color:var(--warn)} .slog .lv-OK{color:var(--ok)} .slog .lv-HINT{color:var(--purple)}
+
+  /* breaker state nodes */
+  .bnode{border:1px solid var(--border-hi);background:var(--panel-2);border-radius:12px;padding:14px 22px;
+    font-family:var(--mono);font-size:13px;text-align:center;transition:all .3s}
+  .bnode .sub{display:block;font-size:10px;color:var(--dim);margin-top:4px}
+  .bnode.closed{border-color:var(--ok);color:var(--ok)}
+  .bnode.open{border-color:var(--bad);color:var(--bad);background:rgba(242,92,84,.1)}
+  .bnode.half{border-color:var(--warn);color:var(--warn);background:rgba(255,159,67,.1)}
+  .brow{display:flex;gap:20px;justify-content:center;align-items:center;flex-wrap:wrap;padding:10px}
+  .barrow{font-size:20px;color:var(--dim)}
+
+  /* request stream dots */
+  .reqrow{display:flex;flex-wrap:wrap;gap:5px;min-height:40px;align-content:flex-start;padding:8px 0}
+  .reqdot{width:14px;height:14px;border-radius:4px;background:var(--border-hi);transition:all .2s}
+  .reqdot.ok{background:var(--ok)}
+  .reqdot.slow{background:var(--warn)}
+  .reqdot.fail{background:var(--bad)}
+  .reqdot.short{background:var(--pg);opacity:.6}
+
+  /* instance grid for sim */
+  .instgrid{display:grid;grid-template-columns:repeat(10,1fr);gap:5px;margin:10px 0}
+  .instbox{aspect-ratio:1;border-radius:5px;background:var(--ok);opacity:.85;transition:all .3s;position:relative}
+  .instbox.down{background:var(--border-hi);opacity:.3}
+  .instbox.overloaded{background:var(--bad);animation:pulse2 .6s infinite alternate}
+  @keyframes pulse2{from{opacity:.6}to{opacity:1}}
+
+  /* perf chart */
+  .chartbox{position:relative;margin-top:8px}
+  .chartbox canvas{width:100%;border:1px solid var(--border);border-radius:12px;background:var(--bg-2)}
+  .chart-legend{display:flex;gap:16px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+
+  /* footer / hero */
+  .lesson-end{margin-top:80px;border:1px solid var(--border);border-radius:16px;padding:26px;background:var(--panel);text-align:center}
+  .lesson-end h3{margin-top:0}
+  .hero{padding-top:26px}
+  .hero .ch-tag{font-family:var(--mono);font-size:11px;color:var(--pg);letter-spacing:.14em;margin-bottom:14px}
+  .hero h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.025em;line-height:1.08;margin-bottom:18px}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--pg),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .objectives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:22px}
+  .obj{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .obj b{display:block;color:var(--text);font-size:12.5px;margin-bottom:3px}
+
+/* ===== injected inter-chapter navigation ===== */
+#chapnav{position:fixed;left:0;right:0;bottom:0;z-index:120;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;background:rgba(11,14,21,.93);backdrop-filter:blur(18px) saturate(1.3);
+  border-top:1px solid var(--border);font-family:var(--sans)}
+#chapnav .cn-btn{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--muted);
+  border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 13px;font-size:12.5px;
+  font-weight:550;transition:all .16s;white-space:nowrap;max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+#chapnav .cn-btn:hover{color:var(--text);border-color:var(--cn-accent);transform:translateY(-1px)}
+#chapnav .cn-btn.disabled{opacity:.3;pointer-events:none}
+#chapnav .cn-btn .cn-lbl{color:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;display:block}
+#chapnav .cn-btn .cn-ttl{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chapnav .cn-mid{flex:1;display:flex;align-items:center;gap:9px;justify-content:center;min-width:0}
+#chapnav select{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;
+  padding:7px 11px;font-size:12.5px;font-family:var(--sans);max-width:min(480px,45vw);cursor:pointer;outline:none}
+#chapnav select:hover{border-color:var(--cn-accent)}
+#chapnav .cn-home{color:var(--muted);text-decoration:none;font-size:12.5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel);transition:all .16s;white-space:nowrap}
+#chapnav .cn-home:hover{color:var(--text);border-color:var(--cn-accent)}
+#chapnav .cn-prog{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap}
+body{padding-bottom:64px}
+@media(max-width:820px){
+  #chapnav .cn-btn .cn-ttl{display:none}
+  #chapnav select{max-width:52vw}
+  #chapnav .cn-prog{display:none}
+}
+</style>
+</head>
+<body>
+
+<div id="readbar"></div>
+<div id="topbar">
+  <a class="back" href="course-netflix.html">← Netflix Streaming Internals</a>
+  <span class="crumb">NETFLIX STREAMING INTERNALS · <b>CH 14 / 18</b> · RELIABILITY</span>
+  <span class="spacer"></span>
+  <span class="kbdhint"><span><span class="kbd">j</span>/<span class="kbd">k</span> sections</span><span><span class="kbd">g</span> top</span></span>
+<!-- THEME-BTN --><button id="theme-toggle" title="Toggle light / dark" aria-label="Toggle light and dark theme">☀️</button>
+<script>(function(){
+  var KEY="sysinternals-theme", btn=document.getElementById("theme-toggle");
+  function sync(){ var light=document.documentElement.getAttribute("data-theme")==="light";
+    if(btn) btn.textContent = light ? "\ud83c\udf19" : "\u2600\ufe0f"; }
+  sync();
+  if(btn) btn.onclick=function(){
+    var light=document.documentElement.getAttribute("data-theme")==="light";
+    if(light){ document.documentElement.removeAttribute("data-theme"); localStorage.setItem(KEY,"dark"); }
+    else { document.documentElement.setAttribute("data-theme","light"); localStorage.setItem(KEY,"light"); }
+    sync();
+  };
+})();</script>
+</div>
+
+<nav id="toc">
+  <div class="toc-title">CHAPTER MAP</div>
+  <a href="#s1"><span class="n">01</span>The Problem</a>
+  <a href="#s2"><span class="n">02</span>Historical Context</a>
+  <a href="#s3"><span class="n">03</span>Naive Solution</a>
+  <a href="#s4"><span class="n">04</span>Why It Fails</a>
+  <a href="#s5"><span class="n">05</span>Breakers & Bulkheads</a>
+  <a href="#s6"><span class="n">06</span>Why That Still Hurts</a>
+  <a href="#s7"><span class="n">07</span>Final Architecture</a>
+  <a href="#s8"><span class="n">08</span>Internal Implementation</a>
+  <a href="#s9"><span class="n">09</span>Tradeoffs</a>
+  <a href="#s10"><span class="n">10</span>Performance</a>
+  <a href="#s11"><span class="n">11</span>Real-World Incidents</a>
+  <a href="#s12"><span class="n">12</span>Interview Questions</a>
+  <a href="#s13"><span class="n">13</span>Code Walkthrough</a>
+  <a href="#s14"><span class="n">14</span>Quiz</a>
+  <a href="#s15"><span class="n">15</span>Simulator</a>
+  <a href="#s16"><span class="n">✓</span>Knowledge Check</a>
+</nav>
+
+<main>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="ch-tag">NETFLIX STREAMING INTERNALS · CHAPTER 14</div>
+  <h1>Reliability for Streaming:<br><span class="grad">Circuit Breakers & Graceful Degradation</span></h1>
+  <p class="lead">Somewhere behind the play button sit dozens of backend services: personalization, ratings,
+  reviews, "skip intro" markers, parental-control checks, A/B assignment (chapter 13). None of them are as
+  important as one job — starting the video. This chapter asks a deliberately narrow question, on purpose: when
+  one of those non-essential dependencies degrades or fails, what specifically stops that failure from taking
+  the play button down with it? The answer is two patterns Netflix's own engineering organization made famous —
+  the circuit breaker and the bulkhead — plus the design discipline of graceful degradation that decides what to
+  show instead of an error.</p>
+  <div class="objectives">
+    <div class="obj"><b>You will be able to</b>Explain, with real thread-pool math, exactly how one slow dependency exhausts an entire service.</div>
+    <div class="obj"><b>You will understand</b>The circuit breaker's three states and why "fail fast" is a feature, not a compromise.</div>
+    <div class="obj"><b>You will predict</b>When a bulkhead is necessary even after adding a circuit breaker.</div>
+    <div class="obj"><b>You will simulate</b>A recommendation-service outage with and without these patterns and watch whether playback survives.</div>
+  </div>
+</div>
+
+<!-- ================= S1 PROBLEM ================= -->
+<section id="s1">
+  <div class="arc">ARC 14 · THE PROBLEM</div>
+  <h2 class="sec">Why must the play button still work?</h2>
+  <p class="lead">Every streaming session is, underneath the player, a call graph: the client asks for a
+  personalized home page, which asks a ranking service (chapter 11) for rows, which asks a metadata service for
+  titles, which asks an artwork-personalization service (chapter 12) for images, and so on outward into a large
+  mesh of independently deployed services. None of that mesh is guaranteed to be perfectly healthy at every
+  moment — some part of a system this large is, statistically, always experiencing elevated latency or an
+  outright failure somewhere. The core reliability question a streaming service must answer is not "how do we
+  prevent all failures" (impossible past a certain scale) but "which failures are we willing to let the customer
+  see, and which one is truly non-negotiable."</p>
+  <p>Netflix's own answer, stated as a design principle rather than an implementation detail, is unambiguous:
+  <b>a subscriber pressing play on a title they've already chosen must succeed even if every non-essential
+  service behind the home page is unhealthy.</b> A broken "Because You Watched" row is a bad afternoon for one
+  team. A broken play button is the product not doing the one thing it exists to do. This chapter is about the
+  mechanisms that make that priority real in code, not just in a design document.</p>
+  <ul class="plain">
+    <li><b>Failure is not rare at this scale.</b> With hundreds of interdependent services each individually
+      having some small failure rate, the probability that <i>something</i> downstream is degraded at any given
+      moment approaches certainty — this is a numbers argument identical in shape to the "some instance is always
+      failing" argument chapter 15 will make about hardware.</li>
+    <li><b>Failures cascade by default, not by exception.</b> A synchronous call from service A to a slow service
+      B does not just delay A's response to B's problem — it can consume A's own finite resources (threads,
+      connections) while waiting, which then makes A slow to <i>everyone</i> calling A, including callers who
+      have nothing to do with B.</li>
+    <li><b>Not all dependencies are equally essential.</b> Personalization quality is a real product differentiator,
+      but it is not as essential as returning a valid manifest and playable stream (chapters 4–6). The engineering
+      goal is to make that priority ordering explicit and enforced, not implicit and hoped-for.</li>
+  </ul>
+  <div class="callout">
+    <div class="co-t">SCOPE, STATED EXPLICITLY</div>
+    <p>This chapter is not a general course on microservice architecture — Netflix's broader backend
+    decomposition, service discovery, and inter-service communication patterns are a large and genuinely
+    separate topic (a full course on this site, built around a different real company's engineering history,
+    covers general backend architecture in depth). Everything here stays scoped to one question: which
+    reliability techniques exist specifically because a non-essential failure must never reach the play button,
+    and how do they work.</p>
+  </div>
+</section>
+
+<!-- ================= S2 HISTORY ================= -->
+<section id="s2">
+  <div class="arc">ARC 14 · HISTORICAL CONTEXT</div>
+  <h2 class="sec">From a three-day outage to an open-source library</h2>
+  <p>The patterns in this chapter were not derived in the abstract — they were built, named, and open-sourced by
+  engineers responding to real, painful, well-documented incidents. Click through the milestones.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Interactive timeline — how Netflix arrived at circuit breakers</span><span class="w-sub">CLICK EVENTS</span></div>
+    <div class="timeline"><div class="tl-track" id="tl-track"></div></div>
+    <div class="tl-detail" id="tl-detail"></div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">DEEP CONTEXT · A SHIP METAPHOR THAT PREDATES SOFTWARE BY A CENTURY</div>
+    <p>The word "bulkhead" is not a software neologism — it names the watertight compartment walls used in ship
+    hulls since well before the 20th century, designed so that a hull breach in one compartment floods only that
+    compartment instead of sinking the entire vessel. Software engineers borrowed the term directly for the
+    identical structural idea: partition a shared resource pool (threads, connections) into isolated
+    compartments per dependency, so that one dependency's "flooding" — a slow or failing call — cannot sink
+    every other caller sharing the same process. §5 derives exactly why a circuit breaker alone is not enough
+    to guarantee this, and a bulkhead is the missing piece.</p>
+  </div>
+</section>
+
+<!-- ================= S3 NAIVE ================= -->
+<section id="s3">
+  <div class="arc">ARC 14 · NAIVE SOLUTION</div>
+  <h2 class="sec">Attempt #1: just call the dependency</h2>
+  <p>The simplest possible way to fetch a personalized row is to call the personalization service directly,
+  synchronously, and use whatever it returns:</p>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>home_page_service.py — the strawman, annotated</span></div>
+    <pre><span class="k">def</span> <span class="f">render_home_page</span>(account_id):
+    playback_state = <span class="f">get_continue_watching</span>(account_id)   <span class="c"># essential — must not fail silently</span>
+
+    <span class="c"># non-essential row — a plain synchronous call, no timeout, no fallback</span>
+    personalized_row = <span class="f">personalization_service</span>.<span class="f">get_ranked_row</span>(account_id)
+
+    <span class="k">return</span> <span class="f">assemble_page</span>(playback_state, personalized_row)</pre>
+  </div>
+
+  <p>This is not a joke implementation — it is the honest first draft, and on a healthy day it works perfectly:
+  the call returns in a few milliseconds, the row renders, nobody notices any of the machinery underneath.
+  Like every naive attempt in this course, it is the correct place to start reasoning from, because it makes
+  the actual failure mode legible instead of hidden behind speculative engineering.</p>
+
+  <div class="widget deck" id="deckNaive">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">One slow dependency, watched live</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S4 WHY FAILS ================= -->
+<section id="s4">
+  <div class="arc">ARC 14 · WHY IT FAILS</div>
+  <h2 class="sec">Thread-pool exhaustion: the exact arithmetic of a cascading failure</h2>
+  <p>A synchronous call with no timeout ties up the calling thread for as long as the call takes — and every
+  web server that handles requests with a bounded thread pool has a hard ceiling on how many requests it can
+  serve concurrently. Do the arithmetic honestly, the way earlier chapters did with bitrate and sample size.</p>
+  <div class="callout bad">
+    <div class="co-t">THE NUMBERS</div>
+    <p>A home-page service runs with a thread pool of <b>200 threads</b> and normally serves requests at a mean
+    latency of <b>50 ms</b>, giving a healthy sustainable throughput of roughly <code>200 / 0.05 = 4,000
+    requests/sec</code> (Little's Law: throughput caps at pool size divided by mean service time). Now the personalization service degrades and its calls start
+    taking <b>5 seconds</b> instead of 5 milliseconds. Each request thread is now held <b>1,000× longer</b>.
+    Sustainable throughput collapses to <code>200 / 5 = 40 requests/sec</code> — a <b>99% capacity loss</b>,
+    and it is not just personalization-dependent requests that suffer: <i>every</i> request competing for the
+    same 200-thread pool, including ones that only wanted continue-watching state or the play button's own
+    manifest lookup, now queues behind threads stuck waiting on an unrelated dependency. One slow, non-essential
+    call has taken down the whole page — including the essential part.</p>
+  </div>
+  <p>This is the cascading-failure pattern in its purest form: a failure in component B propagates into a
+  resource-exhaustion failure in component A, and from there into every one of A's other callers, none of whom
+  called B at all. The naive design has no mechanism to notice "this dependency has become slow" and no
+  mechanism to stop paying its cost after the first few requests reveal the problem.</p>
+</section>
+
+<!-- ================= S5 BETTER ================= -->
+<section id="s5">
+  <div class="arc">ARC 14 · BETTER SOLUTION</div>
+  <h2 class="sec">Timeouts, circuit breakers, and bulkheads — derived in order</h2>
+  <p>Step through the three layers of defense, each one fixing what the previous layer leaves exposed.</p>
+
+  <div class="widget deck" id="deckBreaker">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Building the defense, layer by layer</span><span class="w-sub">STEP-BY-STEP</span></div>
+    <div class="deck-stage"></div>
+    <div class="deck-cap"></div>
+    <div class="deck-ctl">
+      <button class="btn prev">← Prev</button>
+      <div class="deck-dots"></div>
+      <button class="btn primary next">Next →</button>
+    </div>
+  </div>
+
+  <h3>The circuit breaker's three states</h3>
+  <p>A circuit breaker wraps a dependency call and tracks its recent success/failure rate, moving between three
+  states exactly like the electrical breaker it's named for:</p>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Breaker state machine</span><span class="w-sub">CLICK A STATE</span></div>
+    <div class="w-body">
+      <div class="brow">
+        <div class="bnode closed" data-b="closed">CLOSED<span class="sub">calls pass through</span></div>
+        <div class="barrow">→</div>
+        <div class="bnode open" data-b="open">OPEN<span class="sub">calls fail instantly</span></div>
+        <div class="barrow">→</div>
+        <div class="bnode half" data-b="half">HALF-OPEN<span class="sub">one probe call allowed</span></div>
+      </div>
+      <div class="tl-detail" id="breaker-detail" style="margin:12px 0 0"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">THE CLINCHING ARGUMENT: FAILING FAST IS A FEATURE</div>
+    <p>The counter-intuitive core of this whole pattern: once a dependency is known to be unhealthy, the single
+    best thing a caller can do for that dependency <i>and for itself</i> is to stop calling it — immediately,
+    without even attempting the request. Continuing to send traffic to an overloaded service adds load to a
+    system that is already failing (making recovery slower), while burning the caller's own threads on calls that
+    were statistically very likely to fail anyway. An open circuit breaker's near-zero-cost synthetic failure
+    (§8) is strictly better, for both sides, than a slow real failure.</p>
+  </div>
+</section>
+
+<!-- ================= S6 STILL FAILS ================= -->
+<section id="s6">
+  <div class="arc">ARC 14 · WHY THAT STILL HURTS</div>
+  <h2 class="sec">The bill: fallback logic is a second code path you have to actually maintain</h2>
+  <p>Circuit breakers and bulkheads solve the cascading-failure problem — but they are not free, and the costs
+  are specifically the kind that are easy to underestimate until they bite:</p>
+  <ul class="plain">
+    <li><b>Fallback code paths rot.</b> The generic, non-personalized row shown when personalization is unhealthy
+      runs so rarely — only during real degradations — that it is exactly the kind of code most likely to have
+      quietly broken since it was last exercised. A fallback that was never tested is not a real fallback.</li>
+    <li><b>False trips cost real quality.</b> A circuit breaker tuned too aggressively will open during ordinary,
+      transient latency blips — degrading the personalized experience for viewers who would have gotten a fine
+      response if the caller had just waited slightly longer. Every threshold in §8 is a real trade between
+      "trip too eagerly, lose quality unnecessarily" and "trip too slowly, let a cascading failure through."</li>
+    <li><b>Bulkheads cost dedicated resources up front, whether or not there's an incident.</b> Giving the
+      personalization dependency its own thread pool means those threads sit reserved and cannot be borrowed by
+      other work even on a perfectly healthy day — capacity paid permanently for a failure mode that (hopefully)
+      occurs rarely.</li>
+    <li><b>More moving parts, more to reason about.</b> A request's behavior now depends on breaker state,
+      bulkhead saturation, and fallback logic — genuinely harder to reason about at a glance than the naive
+      direct call from §3, and a new source of its own bugs (a stuck-open breaker that never recovers is a real,
+      documented failure mode of poorly tuned implementations).</li>
+  </ul>
+  <div class="callout warn">
+    <div class="co-t">A HONEST INDUSTRY DATA POINT</div>
+    <p>Netflix's own Hystrix library — the open-source implementation that popularized this exact pattern
+    industry-wide starting in 2012 — was placed into maintenance mode by Netflix in 2018. The company's own public
+    reasoning, communicated at the time, was not that circuit breaking as a concept had failed, but that its
+    engineering organization was moving toward newer approaches — including adaptive concurrency-limiting
+    techniques that adjust capacity limits dynamically rather than relying purely on static, hand-tuned
+    thresholds — as the ecosystem's understanding of this problem matured. The lesson is not "circuit breakers
+    are obsolete"; it is that even a widely adopted, foundational pattern keeps evolving, and the second-order
+    costs listed above are exactly why.</p>
+  </div>
+  <p>So the final architecture is not "add a circuit breaker and be done" — it is a layered defense: timeouts,
+  breakers, bulkheads, and a fallback strategy, each with its own tuning, its own failure modes, and its own
+  testing discipline. Let's see how the pieces fit together.</p>
+</section>
+
+<!-- ================= S7 FINAL ARCHITECTURE ================= -->
+<section id="s7">
+  <div class="arc">ARC 14 · FINAL ARCHITECTURE</div>
+  <h2 class="sec">The playback path's defense in depth</h2>
+  <p>Click any component below to see its job and exactly what happens if it's removed.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Architecture explorer</span><span class="w-sub">CLICK ANY COMPONENT</span></div>
+    <div class="arch">
+      <div class="arch-map">
+        <div class="arch-row-label">ESSENTIAL PATH (must never be blocked by anything below)</div>
+        <div class="arch-grid"><div class="acard" data-p="playback">playback / manifest service</div></div>
+        <div class="arch-row-label">NON-ESSENTIAL DEPENDENCIES (each isolated)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="personalization">personalization service</div>
+          <div class="acard" data-p="ratings">ratings & reviews service</div>
+          <div class="acard" data-p="artwork">artwork personalization</div>
+        </div>
+        <div class="arch-row-label">ISOLATION LAYER (one per dependency)</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="breaker">circuit breaker</div>
+          <div class="acard" data-p="bulkhead">bulkhead (dedicated thread pool)</div>
+          <div class="acard" data-p="timeout">bounded timeout</div>
+        </div>
+        <div class="arch-row-label">DEGRADATION LAYER</div>
+        <div class="arch-grid">
+          <div class="acard" data-p="fallback">fallback / cached-generic response</div>
+          <div class="acard" data-p="monitor">health / metrics monitor</div>
+        </div>
+      </div>
+      <div class="arch-detail" id="arch-detail"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S8 IMPLEMENTATION ================= -->
+<section id="s8">
+  <div class="arc">ARC 14 · INTERNAL IMPLEMENTATION</div>
+  <h2 class="sec">The breaker's state machine and the bulkhead's thread pool, in code</h2>
+  <p>Three pieces: <b>(a)</b> the circuit breaker's error-rate tracking and state transitions, <b>(b)</b> the
+  bulkhead's isolated thread pool, and <b>(c)</b> the fallback that produces graceful degradation instead of an
+  error page.</p>
+
+  <h3>(a) Circuit breaker: a rolling error-rate window plus two thresholds</h3>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>circuit_breaker.py — closed/open/half-open, Hystrix-style</span></div>
+    <pre><span class="k">class</span> <span class="t">CircuitBreaker</span>:
+    <span class="k">def</span> <span class="f">__init__</span>(self, error_threshold=<span class="n">0.5</span>, volume_threshold=<span class="n">20</span>, open_duration_s=<span class="n">10</span>):
+        self.state = <span class="s">"CLOSED"</span>
+        self.window = <span class="f">RollingWindow</span>(seconds=<span class="n">10</span>)   <span class="c"># tracks recent successes/failures</span>
+        self.error_threshold = error_threshold      <span class="c"># e.g. 50% error rate trips it</span>
+        self.volume_threshold = volume_threshold    <span class="c"># don't trip on 2 failures out of 2 calls</span>
+        self.open_duration_s = open_duration_s
+        self.opened_at = <span class="k">None</span>
+
+    <span class="k">def</span> <span class="f">allow_request</span>(self):
+        <span class="k">if</span> self.state == <span class="s">"OPEN"</span>:
+            <span class="k">if</span> <span class="f">now</span>() - self.opened_at > self.open_duration_s:
+                self.state = <span class="s">"HALF_OPEN"</span>       <span class="c"># time to probe — allow exactly one call through</span>
+                <span class="k">return</span> <span class="k">True</span>
+            <span class="k">return</span> <span class="k">False</span>                    <span class="c"># fail fast — do NOT call the dependency</span>
+        <span class="k">return</span> <span class="k">True</span>                        <span class="c"># CLOSED or the single HALF_OPEN probe</span>
+
+    <span class="k">def</span> <span class="f">on_result</span>(self, success):
+        self.window.<span class="f">record</span>(success)
+        <span class="k">if</span> self.state == <span class="s">"HALF_OPEN"</span>:
+            self.state = <span class="s">"CLOSED"</span> <span class="k">if</span> success <span class="k">else</span> <span class="s">"OPEN"</span>
+            <span class="k">if</span> self.state == <span class="s">"OPEN"</span>: self.opened_at = <span class="f">now</span>()
+            <span class="k">return</span>
+        <span class="k">if</span> self.window.count() >= self.volume_threshold <span class="k">and</span> self.window.error_rate() >= self.error_threshold:
+            self.state = <span class="s">"OPEN"</span>
+            self.opened_at = <span class="f">now</span>()</pre>
+  </div>
+
+  <h3>(b) Bulkhead: why the breaker alone doesn't save the shared thread pool</h3>
+  <p>A circuit breaker stops <i>future</i> calls once it trips — but by the time enough failures have accumulated
+  to trip it (the volume threshold above exists precisely to avoid over-reacting to noise), some number of
+  threads have already been held hostage waiting on the slow dependency. If personalization and the play button's
+  own manifest lookup share one thread pool, that brief window is enough to starve the essential path. The fix is
+  giving each dependency its own bounded pool of workers, so its blast radius is capped structurally, not just
+  reactively:</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Shared pool vs. bulkheaded pools</span><span class="w-sub">DRAG SLIDER</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>personalization latency</label><input type="range" id="bh-lat" min="5" max="5000" value="50" step="5"><span class="val" id="bh-lat-val">50 ms</span></div>
+      <div class="chartbox" style="margin-top:10px" id="bh-viz"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="bh-note"></p>
+    </div>
+  </div>
+
+  <h3>(c) Fallback: producing a good-enough answer, not an error</h3>
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>home_page_service.py — the same page, now defended</span></div>
+    <pre><span class="k">def</span> <span class="f">render_home_page</span>(account_id):
+    playback_state = <span class="f">get_continue_watching</span>(account_id)      <span class="c"># still direct — this IS the essential path</span>
+
+    personalized_row = personalization_breaker.<span class="f">call</span>(
+        fn=<span class="k">lambda</span>: personalization_bulkhead.<span class="f">submit</span>(
+                <span class="k">lambda</span>: personalization_service.<span class="f">get_ranked_row</span>(account_id, timeout_ms=<span class="n">150</span>)),
+        fallback=<span class="k">lambda</span>: <span class="f">cached_generic_row</span>()   <span class="c"># pre-computed, always-fresh, non-personalized</span>
+    )
+    <span class="k">return</span> <span class="f">assemble_page</span>(playback_state, personalized_row)</pre>
+  </div>
+  <p>Notice what changed and what deliberately didn't: <code>get_continue_watching</code> — genuinely on the
+  essential path — is still called directly, with no breaker theatrics, because it isn't the failure this chapter
+  is defending against; adding unnecessary indirection to an already-essential call only adds risk. Only the
+  non-essential dependency gets the full treatment. This asymmetry is the whole design philosophy in one function.</p>
+</section>
+
+<!-- ================= S9 TRADEOFFS ================= -->
+<section id="s9">
+  <div class="arc">ARC 14 · TRADEOFFS</div>
+  <h2 class="sec">Five ways to defend against a bad dependency</h2>
+  <table class="cmp">
+    <tr><th>TECHNIQUE</th><th>DEFENDS AGAINST</th><th>WHAT IT BUYS</th><th>WHAT IT COSTS</th></tr>
+    <tr><td>Bounded timeout</td><td>A call that never returns</td>
+      <td><span class="pill g">simplest possible fix</span> <span class="pill g">bounds worst-case latency</span></td>
+      <td><span class="pill b">doesn't stop repeated calls to a known-bad dependency</span></td></tr>
+    <tr><td>Circuit breaker</td><td>Repeatedly calling a dependency that's statistically failing</td>
+      <td><span class="pill g">fails fast once tripped</span> <span class="pill g">gives the dependency room to recover</span></td>
+      <td><span class="pill y">tuning thresholds is genuinely hard</span> <span class="pill b">can trip on noise, or get stuck</span></td></tr>
+    <tr><td>Bulkhead</td><td>One dependency starving a shared resource pool</td>
+      <td><span class="pill g">hard structural isolation, not just reactive</span></td>
+      <td><span class="pill b">reserved capacity sits idle on healthy days</span></td></tr>
+    <tr><td>Retries with backoff</td><td>Transient, non-systemic failures (one bad node in a fleet)</td>
+      <td><span class="pill g">recovers from blips a breaker would needlessly punish</span></td>
+      <td><span class="pill b">retrying a systemically overloaded dependency makes the overload worse — the opposite of what's needed</span></td></tr>
+    <tr><td>Load shedding</td><td>The caller itself being overwhelmed, independent of any one dependency</td>
+      <td><span class="pill g">protects the caller under its own excess load</span></td>
+      <td><span class="pill b">some legitimate requests are deliberately rejected</span></td></tr>
+  </table>
+  <p>These are not competitors — a mature playback path layers several of them, as §7's architecture shows: a
+  timeout bounds each call, a breaker stops calling a dependency that's statistically failing, a bulkhead caps
+  the structural damage while the breaker is still deciding, and retries handle the genuinely transient blips a
+  breaker would otherwise over-punish. Retrying blindly against an already-overloaded dependency is a real,
+  common anti-pattern worth naming explicitly: it is the opposite of what an overloaded system needs.</p>
+</section>
+
+<!-- ================= S10 PERFORMANCE ================= -->
+<section id="s10">
+  <div class="arc">ARC 14 · PERFORMANCE / SCALE CHARACTERISTICS</div>
+  <h2 class="sec">What the numbers look like with and without these patterns</h2>
+  <p>Revisit §4's arithmetic with the defenses from §5–§8 in place, and watch the shape of the failure change
+  entirely — from a cliff to a controlled, bounded loss.</p>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Throughput during a dependency outage — with and without defenses</span><span class="w-sub">DRAG + TOGGLE</span></div>
+    <div class="w-body">
+      <div class="slider-row"><label>personalization error rate</label><input type="range" id="perf-err" min="0" max="100" value="70" step="5"><span class="val" id="perf-err-val">70%</span></div>
+      <div class="toggle-row">
+        <button class="chip" id="perf-breaker">circuit breaker + bulkhead: ON</button>
+      </div>
+      <div class="chartbox"><canvas id="perf-chart" width="740" height="280"></canvas></div>
+      <div class="chart-legend">
+        <span><span style="color:var(--pg)">━</span> essential-path throughput (relative)</span>
+        <span><span style="color:var(--warn)">━</span> personalized-row success rate</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:10px" id="perf-note"></p>
+    </div>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">MODEL, NOT MEASUREMENT</div>
+    <p>The curve is an analytic sketch of the thread-pool-exhaustion math from §4 applied with and without
+    isolation, tuned to show the right qualitative shape — a real deployment's exact numbers depend on pool
+    sizes, real latency distributions, and traffic mix that are not public. The point that <i>is</i> load-bearing
+    and general: without isolation, essential-path throughput collapses in direct proportion to the unhealthy
+    dependency's slowdown; with isolation, essential-path throughput is nearly unaffected by that same slowdown,
+    at the cost of the personalized row's own success rate — exactly the trade this chapter argues is correct.</p>
+  </div>
+</section>
+
+<!-- ================= S11 INCIDENTS ================= -->
+<section id="s11">
+  <div class="arc">ARC 14 · REAL-WORLD INCIDENTS / HISTORY</div>
+  <h2 class="sec">The incident that actually started this chapter's arc</h2>
+
+  <h3>The 2008 database corruption and the move to the cloud</h3>
+  <p>In August 2008, Netflix experienced a major database corruption incident in its own data centers that
+  prevented the company from shipping DVDs to customers for three days — a real, publicly documented event that
+  Netflix's own engineering leadership (including Yury Izrailevsky, in a widely cited public blog post on the
+  company's cloud migration) has cited directly as a root cause for the decision to move infrastructure to AWS,
+  betting that a large, professionally operated cloud provider's horizontal scaling and redundancy would be more
+  reliable than a single-vendor, vertically scaled data center. That migration — completed by 2016 — is also the
+  environment in which the failure modes this chapter addresses (many independent, horizontally scaled services
+  calling each other over an unreliable network) became Netflix's normal operating reality, and it is the
+  backdrop against which Hystrix was built and open-sourced in 2012.</p>
+
+  <h3>A realistic, industry-standard pattern: the cascading personalization outage</h3>
+  <p>Beyond that one specific, named 2008 incident, the general failure pattern this chapter defends against —
+  a non-essential recommendation or personalization dependency degrading and, absent isolation, taking down an
+  entire page including its essential elements — is a well-documented, industry-standard incident pattern at
+  any company operating a service mesh of this shape, stated here as a class of failure rather than one specific
+  public Netflix postmortem. The mitigation described throughout this chapter (isolate non-essential
+  dependencies, fail fast, degrade gracefully) is the standard industry response to exactly this pattern,
+  independent of which specific company's specific dependency happened to be the trigger on a given day.</p>
+
+  <div class="callout warn">
+    <div class="co-t">STATED HONESTLY</div>
+    <p>Netflix's exact current internal architecture for isolating dependencies — which specific libraries
+    replaced Hystrix internally, exact threshold values, or a full list of every non-essential dependency behind
+    the real home page — is not public. What is public and well documented: the 2008 outage and its role in the
+    cloud migration decision, Hystrix's 2012 open-source release and 2018 move to maintenance mode, and the
+    general architectural principle (isolate non-essential dependencies from the essential path) that this
+    chapter derives from first principles rather than from a specific undisclosed internal design.</p>
+  </div>
+</section>
+
+<!-- ================= S12 INTERVIEW ================= -->
+<section id="s12">
+  <div class="arc">ARC 14 · INTERVIEW-LEVEL QUESTIONS</div>
+  <h2 class="sec">Could you defend this design at a whiteboard?</h2>
+  <div id="qa-interview"></div>
+</section>
+
+<!-- ================= S13 CODE ================= -->
+<section id="s13">
+  <div class="arc">ARC 14 · CODE WALKTHROUGH</div>
+  <h2 class="sec">Reading the isolation layer</h2>
+  <p>Illustrative reference pseudocode representative of how a system like this is actually built, in the
+  Hystrix-command style Netflix's own library popularized — not Netflix's current, non-public internal source.</p>
+
+  <div class="widget"><div class="ftree" id="ftree">
+<div><span class="dir">resilience-layer/</span></div>
+<div>├── <span class="dir">breaker/</span></div>
+<div>│   ├── <span class="fhl">● circuit_breaker.py</span> <span class="fnote">— CLOSED/OPEN/HALF_OPEN state machine — see §8a</span></div>
+<div>│   └── rolling_window.py <span class="fnote">— fixed-size time-bucketed success/failure counters</span></div>
+<div>├── <span class="dir">bulkhead/</span></div>
+<div>│   └── <span class="fhl">● thread_pool_bulkhead.py</span> <span class="fnote">— per-dependency bounded executor — see §8b</span></div>
+<div>├── <span class="dir">commands/</span></div>
+<div>│   ├── <span class="fhl">● dependency_command.py</span> <span class="fnote">— wraps breaker + bulkhead + timeout + fallback into one call</span></div>
+<div>│   └── personalization_command.py <span class="fnote">— one concrete DependencyCommand per non-essential dependency</span></div>
+<div>└── <span class="dir">monitoring/</span>health_stream.py <span class="fnote">— exposes live breaker state + error rates for dashboards/alerts</span></div>
+  </div></div>
+
+  <div class="codeblock">
+    <div class="cb-head"><span class="lang">pseudocode</span><span>dependency_command.py — the composed pattern</span></div>
+    <pre><span class="k">class</span> <span class="t">DependencyCommand</span>:
+    <span class="k">def</span> <span class="f">__init__</span>(self, breaker, bulkhead, timeout_ms, fallback_fn):
+        self.breaker, self.bulkhead = breaker, bulkhead
+        self.timeout_ms, self.fallback_fn = timeout_ms, fallback_fn
+
+    <span class="k">def</span> <span class="f">execute</span>(self, call_fn):
+        <span class="k">if</span> <span class="k">not</span> self.breaker.<span class="f">allow_request</span>():
+            <span class="k">return</span> self.fallback_fn()                 <span class="c"># fail fast — never touch bulkhead or network</span>
+        <span class="k">try</span>:
+            future = self.bulkhead.<span class="f">submit</span>(call_fn)      <span class="c"># isolated pool — see §8b</span>
+            result = future.<span class="f">get</span>(timeout=self.timeout_ms)
+            self.breaker.<span class="f">on_result</span>(success=<span class="k">True</span>)
+            <span class="k">return</span> result
+        <span class="k">except</span> (TimeoutError, BulkheadFullError, DependencyError):
+            self.breaker.<span class="f">on_result</span>(success=<span class="k">False</span>)
+            <span class="k">return</span> self.fallback_fn()                 <span class="c"># graceful degradation, not an error page</span></pre>
+  </div>
+
+  <div class="callout deep">
+    <div class="co-t">WHY IT WAS BUILT THIS WAY</div>
+    <p><b>1. The breaker check happens before touching the bulkhead.</b> An open breaker must be nearly free —
+    checking a boolean and returning a fallback — because the entire point is avoiding the cost of even
+    attempting a call to a known-bad dependency. <b>2. A full bulkhead is treated identically to a timeout or a
+    dependency error.</b> All three represent "this call did not succeed within the resource and time budget
+    we're willing to spend," and all three should count against the breaker's error rate and produce the same
+    fallback — the caller of <code>execute()</code> doesn't need to know which specific thing went wrong.
+    <b>3. The fallback function is a required parameter, not an afterthought.</b> Forcing every dependency
+    command to be constructed with an explicit fallback is a structural nudge against the exact fallback-code-rot
+    risk named in §6 — you cannot wire up a dependency this way without at least writing the fallback once.</p>
+  </div>
+</section>
+
+<!-- ================= S14 QUIZ ================= -->
+<section id="s14">
+  <div class="arc">ARC 14 · INTERACTIVE QUIZ</div>
+  <h2 class="sec">Check the model in your head</h2>
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Multiple choice</span><span class="w-sub" id="quiz-progress">0 / 6</span></div>
+    <div id="quiz"></div>
+    <div class="quiz-score" id="quiz-score">Answer all six to see your score.</div>
+  </div>
+
+  <div class="widget">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">Sequencing challenge — a request through the isolation layer</span><span class="w-sub">CLICK IN ORDER</span></div>
+    <div class="w-body">
+      <p style="font-size:13px;color:var(--muted)">Click the steps in the order they happen when a request hits a dependency protected by a closed circuit breaker that is about to trip.</p>
+      <div id="order-quiz"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" id="order-check">Check order</button>
+        <button class="btn" id="order-reset">Reset</button>
+        <span id="order-verdict" style="font-family:var(--mono);font-size:12px;align-self:center;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= S15 SIMULATOR ================= -->
+<section id="s15">
+  <div class="arc">ARC 14 · INTERACTIVE SIMULATOR</div>
+  <h2 class="sec">The cascade preventer</h2>
+  <p>Fail the recommendation service under load, with and without the defenses from this chapter, and watch
+  whether the play button itself survives. Toggle the breaker and bulkhead independently to see what each one
+  specifically contributes.</p>
+
+  <div class="widget" id="sim">
+    <div class="w-head"><span class="w-dot"></span><span class="w-title">home page request stream — live</span><span class="w-sub" id="sim-phase">HEALTHY</span></div>
+    <div class="w-body">
+      <div class="sim-wrap">
+        <div class="sim-stage">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.1em;margin-bottom:4px">PERSONALIZED ROW REQUESTS</div>
+          <div class="reqrow" id="sim-personal"></div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.1em;margin:14px 0 4px">PLAY BUTTON REQUESTS (the essential path)</div>
+          <div class="reqrow" id="sim-play"></div>
+          <div class="chartbox" style="margin-top:16px"><canvas id="sim-chart" width="480" height="180"></canvas></div>
+        </div>
+        <div class="sim-side">
+          <div class="sim-ctl">
+            <div class="ctl-t">DEPENDENCY HEALTH</div>
+            <div class="btns">
+              <button class="btn" id="sc-healthy">personalization: healthy</button>
+              <button class="btn danger" id="sc-degrade">degrade personalization (5s latency)</button>
+            </div>
+          </div>
+          <div class="sim-ctl">
+            <div class="ctl-t">DEFENSES</div>
+            <div class="btns">
+              <button class="chip on" id="sc-breaker">circuit breaker: ON</button>
+              <button class="chip on" id="sc-bulkhead">bulkhead: ON</button>
+            </div>
+          </div>
+          <div class="sim-counters">
+            <div class="scounter"><div class="cv" id="cnt-play-ok">0%</div><div class="cl">play success</div></div>
+            <div class="scounter"><div class="cv" id="cnt-personal-ok">0%</div><div class="cl">row success</div></div>
+            <div class="scounter"><div class="cv" id="cnt-breaker-state">CLOSED</div><div class="cl">breaker</div></div>
+          </div>
+          <div class="inspector" id="sim-insp">
+            <div class="i-t">STATUS</div>
+            <div style="color:var(--dim)">start the stream…</div>
+            <div class="btns"><button class="btn primary" id="sc-run">▶ run traffic</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="slog" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <div class="co-t">EXPERIMENTS TO RUN</div>
+    <p><b>1.</b> Degrade personalization with both defenses OFF and watch play-button success collapse alongside
+    it — the naive §3 scenario, live. <b>2.</b> Turn the breaker ON, degrade again, and watch it trip and fail
+    fast, protecting the shared pool. <b>3.</b> Turn the breaker OFF but the bulkhead ON, and see the structural
+    isolation alone still protect the essential path, just less efficiently than with the breaker also engaged.</p>
+  </div>
+</section>
+
+<!-- ================= S16 KNOWLEDGE CHECK ================= -->
+<section id="s16">
+  <div class="arc">GATE · KNOWLEDGE CHECK</div>
+  <h2 class="sec">Before chapter 15: three questions, no options</h2>
+  <div id="qa-check"></div>
+
+  <div class="lesson-end">
+    <h3>Chapter 14 complete</h3>
+    <p style="max-width:560px;margin:10px auto 18px">You can now explain thread-pool exhaustion with real
+    arithmetic, walk through a circuit breaker's three states, and articulate why a bulkhead is still needed even
+    with a breaker in place. Chapter 15 asks a harder question: how do you know these defenses actually work,
+    before a real, uncontrolled failure finds out for you? The answer is Netflix's most famous export —
+    deliberately breaking production on purpose.</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn primary" id="mark-done">✓ Mark chapter complete</button>
+      <a class="btn" href="index.html" style="text-decoration:none;display:inline-flex;align-items:center">← Back to hub</a>
+      <button class="btn" disabled title="Generated next">NFLX-15: Chaos Engineering →</button>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+/* ============================================================
+   0. GENERIC MACHINERY
+   ============================================================ */
+function el(id){ return document.getElementById(id); }
+
+function stepper(rootId, steps){
+  const root = el(rootId);
+  const stage = root.querySelector(".deck-stage");
+  const cap = root.querySelector(".deck-cap");
+  const dots = root.querySelector(".deck-dots");
+  const prev = root.querySelector(".prev"), next = root.querySelector(".next");
+  let i = -1;
+  steps.forEach((s,k)=>{ const d=document.createElement("button"); d.className="dot";
+    d.onclick=()=>go(k); dots.appendChild(d); });
+  function go(k){
+    k = Math.max(0, Math.min(steps.length-1, k));
+    if (k === i) return;
+    i = k;
+    stage.classList.remove("in");
+    setTimeout(()=>{
+      stage.innerHTML = steps[i].stage;
+      cap.innerHTML = `<span class="deck-stepnum">STEP ${i+1} / ${steps.length}</span>` + steps[i].cap;
+      stage.classList.add("in");
+      [...dots.children].forEach((d,j)=>d.classList.toggle("on", j<=i));
+      prev.disabled = i===0; next.disabled = i===steps.length-1;
+      if (steps[i].onshow) steps[i].onshow(stage);
+    }, 120);
+  }
+  prev.onclick = ()=>go(i-1);
+  next.onclick = ()=>go(i+1);
+  go(0);
+}
+
+function qaCards(rootId, items){
+  const root = el(rootId);
+  items.forEach(it=>{
+    const d = document.createElement("div");
+    d.className = "qa";
+    d.innerHTML = `<div class="qa-q"><span class="lvl">${it.lvl}</span>${it.q}</div>
+      ${it.hint?`<div class="qa-hint">hint: ${it.hint}</div>`:""}
+      <button class="btn qa-btn">Reveal answer</button><div class="qa-a">${it.a}</div>`;
+    d.querySelector(".qa-btn").onclick = e=>{ d.classList.add("open"); e.target.style.display="none"; };
+    d.querySelector(".qa-q").onclick = ()=>{ if(!d.classList.contains("open")){ d.classList.add("open"); d.querySelector(".qa-btn").style.display="none"; } };
+    root.appendChild(d);
+  });
+}
+
+/* ============================================================
+   1. TIMELINE (§2)
+   ============================================================ */
+const TL = [
+  { yr:"2007", l:"Ship metaphor is old", d:"<b>The bulkhead pattern is not a software invention.</b> Watertight ship-hull compartments predate software engineering by well over a century; software engineers adopted the term directly for the identical structural idea of isolating a shared resource into failure-contained partitions." },
+  { yr:"2007", l:"\"Release It!\"", d:"<b>Michael Nygard's book <i>Release It!: Design and Deploy Production-Ready Software</i> is published</b>, formally naming and popularizing the circuit breaker pattern for software systems — the direct conceptual ancestor of what this chapter derives in §5 and §8." },
+  { yr:"2008", l:"The three-day outage", d:"<b>A major database corruption incident in Netflix's own data centers</b> prevents DVD shipping for three days — a real, publicly documented event Netflix's engineering leadership later cited as a key driver of the decision to migrate to AWS, betting on cloud-scale horizontal redundancy over a single data center's vertical reliability (see §11)." },
+  { yr:"2012", l:"Hystrix open-sourced", d:"<b>Netflix open-sources Hystrix</b>, its own circuit-breaker and bulkhead library, built to isolate calls between the many independent services created by the AWS migration. Hystrix becomes the reference implementation that popularizes this entire pattern industry-wide." },
+  { yr:"2016", l:"Cloud migration complete", d:"<b>Netflix completes its migration to AWS</b>, cited in the company's own public engineering writing as substantially complete by this point — the environment of many independently scaled, network-connected services (rather than a monolith) is now Netflix's permanent operating reality, and isolation patterns like this chapter's are correspondingly permanent infrastructure, not a temporary fix." },
+  { yr:"2018", l:"Hystrix → maintenance mode", d:"<b>Netflix places Hystrix into maintenance mode</b>, publicly signaling a shift toward newer approaches including adaptive concurrency limiting — an honest data point that even a foundational, widely adopted resilience pattern keeps evolving (see §6's callout)." }
+];
+const tlTrack = el("tl-track"), tlDetail = el("tl-detail");
+TL.forEach((t,i)=>{
+  const item = document.createElement("div");
+  item.className = "tl-item" + (i===3 ? " on" : "");
+  item.innerHTML = `<div class="tl-dot"></div><div class="tl-yr">${t.yr}</div><div class="tl-l">${t.l}</div>`;
+  item.onclick = ()=>{ [...tlTrack.children].forEach(c=>c.classList.remove("on")); item.classList.add("on"); tlDetail.innerHTML = t.d; };
+  tlTrack.appendChild(item);
+});
+tlDetail.innerHTML = TL[3].d;
+
+/* ============================================================
+   2. DECK: naive slow dependency (§3) — canvas queue sim
+   ============================================================ */
+(function(){
+  let cfg = { latencyMs: 50 };
+  const steps = [
+    { stage:`<canvas id="nv-c" width="740" height="240" style="width:100%"></canvas>`,
+      cap:`<b>Healthy day.</b> Personalization responds in ~50 ms. The pool of 200 request-handler threads (right) drains work faster than it arrives — plenty of idle threads (grey) at any moment.`,
+      onshow:()=>{ cfg.latencyMs = 50; } },
+    { stage:`<canvas id="nv-c" width="740" height="240" style="width:100%"></canvas>`,
+      cap:`<b>Personalization degrades to 5,000 ms.</b> Watch threads (right) turn red and stay red — each one is now held 100× longer per request. New requests queue because there's nothing free to serve them, even though those new requests might not even need personalization.`,
+      onshow:()=>{ cfg.latencyMs = 5000; } },
+    { stage:`<canvas id="nv-c" width="740" height="240" style="width:100%"></canvas>`,
+      cap:`<b>Total exhaustion.</b> All 200 threads are eventually red. A request for continue-watching state — which has nothing to do with personalization — now queues behind the same starved pool. The essential path is down, caused entirely by a non-essential dependency.`,
+      onshow:()=>{ cfg.latencyMs = 5000; } }
+  ];
+  stepper("deckNaive", steps);
+
+  let threads = Array.from({length:40}, ()=>({busy:false,t:0}));
+  let last = performance.now(), served=0;
+  function loop(now){
+    const dt = Math.min((now-last)/1000,.1); last = now;
+    const c = document.getElementById("nv-c");
+    if (c){
+      if (Math.random() < 30*dt){
+        const free = threads.find(th=>!th.busy);
+        if (free){ free.busy=true; free.t = cfg.latencyMs/1000; }
+      }
+      threads.forEach(th=>{ if(th.busy){ th.t -= dt; if(th.t<=0){ th.busy=false; served++; } } });
+      const ctx = c.getContext("2d");
+      const W=c.width,H=c.height;
+      ctx.clearRect(0,0,W,H);
+      ctx.fillStyle="#5b6475"; ctx.font="11px monospace";
+      ctx.fillText(`thread pool (40 of 200 shown) — latency: ${cfg.latencyMs} ms — served: ${served}`, 14, 20);
+      const cols=10;
+      threads.forEach((th,i)=>{
+        const x = 20 + (i%cols)*70, y = 40 + Math.floor(i/cols)*45;
+        ctx.fillStyle = th.busy ? (cfg.latencyMs>1000?"#f25c54":"#4ade80") : "#1c2330";
+        ctx.fillRect(x,y,56,30);
+      });
+      const busyCount = threads.filter(t=>t.busy).length;
+      ctx.fillStyle="#8b94a7"; ctx.fillText(`busy: ${busyCount}/40 (${(busyCount/40*100).toFixed(0)}%)`, 14, H-14);
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+
+/* ============================================================
+   3. DECK: layered defense (§5)
+   ============================================================ */
+(function(){
+  const box = (t,inner,style="")=>`<div style="border:1px solid var(--border-hi);border-radius:11px;padding:12px;${style}">
+    <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px">${t}</div>${inner}</div>`;
+  stepper("deckBreaker", [
+    { stage: box("LAYER 0 — NOTHING", `<p style="color:var(--body);font-size:13px">A raw synchronous call, no timeout. A hung dependency hangs the caller's thread forever. This is §3's naive design.</p>`),
+      cap:`<b>Baseline.</b> No defense at all — the failure mode is unbounded latency on the caller.` },
+    { stage: box("LAYER 1 — TIMEOUT", `<p style="color:var(--body);font-size:13px">Bound every call to e.g. 150ms. A hung dependency now costs at most 150ms per request instead of forever.</p>`, "border-color:var(--warn)"),
+      cap:`<b>Add a timeout.</b> This bounds the worst case per call, but a caller that keeps retrying a systemically broken dependency still burns a thread every 150ms, repeatedly, for every request that needs it.` },
+    { stage: box("LAYER 2 — CIRCUIT BREAKER", `<p style="color:var(--body);font-size:13px">Track the error rate. Once it crosses a threshold, stop calling entirely — return the fallback in microseconds instead of waiting out another timeout.</p>`, "border-color:var(--bad)"),
+      cap:`<b>Add a breaker.</b> Now a known-bad dependency costs nothly close to zero per request once tripped — no more 150ms tax per call. But by the time enough failures accumulate to trip it, some threads were already held hostage.` },
+    { stage: box("LAYER 3 — BULKHEAD", `<p style="color:var(--body);font-size:13px">Give this dependency its own bounded pool of, say, 10 threads — separate from the 200 serving everything else. Even total failure here can only ever cost 10 threads.</p>`, "border-color:var(--ok)"),
+      cap:`<b>Add a bulkhead.</b> The blast radius is now capped structurally, not just reactively — even in the brief window before the breaker trips, at most the bulkhead's own small pool is at risk, and the other 190 threads serving the essential path are untouched by construction.` }
+  ]);
+})();
+
+/* ============================================================
+   4. BREAKER STATE MACHINE EXPLORER (§5)
+   ============================================================ */
+const BSTATES = {
+  closed:{ t:"CLOSED — normal operation", d:"Every call passes through to the real dependency. The breaker silently tracks a rolling window of successes and failures behind the scenes. Most of a healthy dependency's life is spent here." },
+  open:{ t:"OPEN — failing fast", d:"The error rate crossed the threshold (with enough call volume to be meaningful — see §8a's volume_threshold). Every call is rejected immediately with the fallback, without even attempting the network call. This state is time-boxed — after open_duration_s, the breaker allows exactly one probe through." },
+  half:{ t:"HALF-OPEN — cautious probe", d:"One test call is allowed through. If it succeeds, the breaker assumes the dependency has recovered and returns to CLOSED. If it fails, it goes straight back to OPEN and starts the timer again. This is the mechanism that lets the system self-heal without a human flipping a switch." }
+};
+document.querySelectorAll(".bnode").forEach(n=>{
+  n.onclick = ()=>{ el("breaker-detail").innerHTML = `<b style="color:var(--pg)">${BSTATES[n.dataset.b].t}</b><br>${BSTATES[n.dataset.b].d}`; };
+});
+el("breaker-detail").innerHTML = `<b style="color:var(--pg)">${BSTATES.closed.t}</b><br>${BSTATES.closed.d}`;
+
+/* ============================================================
+   5. BULKHEAD VIZ (§8b)
+   ============================================================ */
+(function(){
+  function render(){
+    const lat = +el("bh-lat").value;
+    el("bh-lat-val").textContent = lat + " ms";
+    const poolSize = 200, bulkheadSize = 10;
+    const heldFractionShared = Math.min(1, (30 * lat/1000) / poolSize); // rough occupancy model
+    const heldFractionBulk = Math.min(1, (30 * lat/1000) / bulkheadSize);
+    function bar(label, frac, color){
+      return `<div style="margin-bottom:10px"><div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:4px">${label} — ${(frac*100).toFixed(0)}% held</div>
+        <div style="height:14px;background:var(--bg-2);border:1px solid var(--border);border-radius:7px;overflow:hidden">
+        <div style="height:100%;width:${Math.min(100,frac*100)}%;background:${color};transition:width .3s"></div></div></div>`;
+    }
+    el("bh-viz").innerHTML = bar("shared 200-thread pool (no bulkhead) — includes essential-path threads", heldFractionShared, heldFractionShared>0.5?"var(--bad)":"var(--warn)")
+      + bar("bulkheaded 10-thread pool (isolated) — essential path unaffected", heldFractionBulk, "var(--pg)");
+    el("bh-note").innerHTML = heldFractionShared > 0.5
+      ? `At ${lat}ms latency, the SHARED pool is <b style="color:var(--bad)">${(heldFractionShared*100).toFixed(0)}% consumed</b> by a single non-essential dependency — including capacity the essential path needed. The BULKHEADED pool contains the exact same failure within its own 10 threads, at 100% of a much smaller, deliberately isolated budget — the other 190 threads are untouched.`
+      : `At ${lat}ms latency, both pools are lightly loaded — the difference between shared and bulkheaded capacity only becomes visible once latency rises far enough to matter. Drag the slider higher to see the shared pool start to starve the essential path.`;
+  }
+  el("bh-lat").oninput = render;
+  render();
+})();
+
+/* ============================================================
+   6. ARCHITECTURE EXPLORER (§7)
+   ============================================================ */
+const ARCH = {
+  playback:{ n:"playback / manifest service", f:"the essential path", r:"Resolves what to actually stream: license checks, manifest generation (chapter 6), and Open Connect routing (chapter 7). This is the one thing that must succeed for the product to do its job.", l:"Called the instant a viewer presses play; every millisecond of latency here is directly felt.", d:"If THIS fails, there is no fallback that matters — this is why it deliberately has NO breaker/bulkhead indirection added on its own behalf; the isolation layer exists to protect it from everything else, not to wrap it." },
+  personalization:{ n:"personalization service", f:"non-essential dependency #1", r:"Produces the ranked, personalized rows on the home page (chapter 11's ranking models, chapter 9-12's whole arc).", l:"Called on every home-page render; not called at all once a viewer has already chosen a title and pressed play.", d:"Wrapped in its own breaker + bulkhead + timeout (§8); its failure degrades row quality, never playback." },
+  ratings:{ n:"ratings & reviews service", f:"non-essential dependency #2", r:"Supplies user-facing signals like match scores and review counts shown alongside titles.", l:"Called opportunistically while rendering title details.", d:"Isolated identically to personalization — its failure means missing badges, not a broken page." },
+  artwork:{ n:"artwork personalization", f:"non-essential dependency #3 (chapter 12)", r:"Selects which thumbnail image variant to show a given account for a given title.", l:"Called per title, per render.", d:"Falls back to a single default artwork variant per title if unhealthy — a graceful degradation exactly analogous to the generic row fallback for personalization." },
+  breaker:{ n:"circuit breaker", f:"resilience-layer/breaker/circuit_breaker.py", r:"Tracks each dependency's rolling error rate and trips to OPEN when it crosses threshold with sufficient call volume — see §8a and the state-machine widget above.", l:"One instance per dependency, living for the life of the process.", d:"A breaker stuck OPEN (a real, documented failure mode of poorly tuned implementations) permanently serves the fallback even after the dependency recovers — a monitoring gap this chapter's §6 calls out explicitly." },
+  bulkhead:{ n:"bulkhead (dedicated thread pool)", f:"resilience-layer/bulkhead/thread_pool_bulkhead.py", r:"A small, bounded, dependency-specific thread pool that structurally caps how much shared capacity any one dependency's calls can ever consume — see §8b.", l:"Sized once at startup per dependency, based on expected call volume and acceptable worst-case blast radius.", d:"Undersized, it causes false rejections on a healthy day; oversized, it wastes capacity that could serve the essential path — a real tuning tradeoff, not a free parameter." },
+  timeout:{ n:"bounded timeout", f:"per-call parameter, e.g. timeout_ms=150", r:"The simplest layer (§5, Layer 1): bounds any single call's worst-case duration, independent of breaker or bulkhead state.", l:"Applied to every dependency call, always — the cheapest defense in the stack.", d:"Alone, it bounds latency per call but does nothing to stop repeated calls to a dependency that is systemically, not just occasionally, broken." },
+  fallback:{ n:"fallback / cached-generic response", f:"e.g. cached_generic_row()", r:"A pre-computed, always-available response used whenever the breaker is open or a call fails — graceful degradation in code form (chapter brief's core idea).", l:"Refreshed independently of the live dependency, specifically so it stays usable even while that dependency is down.", d:"If this code path itself has quietly rotted (§6's warning), the 'graceful' degradation becomes an ungraceful error instead — this is why testing the fallback path deliberately (chapter 15's chaos engineering) matters." },
+  monitor:{ n:"health / metrics monitor", f:"resilience-layer/monitoring/health_stream.py", r:"Continuously exposes each breaker's current state and error rate for dashboards and alerting — the observability layer that lets humans know a dependency degraded even while the system is already handling it gracefully.", l:"Runs continuously, independent of any single request.", d:"Without this, a tripped breaker silently degrading quality could go unnoticed by engineers for a long time, even though customers were never impacted on the essential path." }
+};
+const archDetail = el("arch-detail");
+function showArch(key){
+  const a = ARCH[key];
+  archDetail.innerHTML = `<div class="ad-name">${a.n}</div><div class="ad-file">${a.f}</div>
+    <div class="ad-sec">ROLE</div>${a.r}<div class="ad-sec">LIFECYCLE</div>${a.l}<div class="ad-sec">FAILURE MODE</div>${a.d}`;
+  document.querySelectorAll(".acard").forEach(c=>c.classList.toggle("sel", c.dataset.p===key));
+}
+document.querySelectorAll(".acard").forEach(c=> c.onclick = ()=>showArch(c.dataset.p));
+showArch("playback");
+
+/* ============================================================
+   7. PERFORMANCE CHART (§10)
+   ============================================================ */
+(function(){
+  let breakerOn = true;
+  const cv = el("perf-chart"), ctx = cv.getContext("2d");
+  function model(errRate, breakerOn){
+    const e = errRate/100;
+    let essential, rowSuccess;
+    if (breakerOn){
+      essential = 1 - e*0.03; // bulkhead+breaker cap the leak to ~3% of error rate
+      rowSuccess = 1 - e*0.9;
+    } else {
+      essential = Math.max(0.02, 1 - e*1.4); // unbounded cascading collapse
+      rowSuccess = 1 - e;
+    }
+    return { essential: Math.max(0,Math.min(1,essential)), rowSuccess: Math.max(0,Math.min(1,rowSuccess)) };
+  }
+  function render(){
+    const err = +el("perf-err").value;
+    el("perf-err-val").textContent = err+"%";
+    el("perf-breaker").classList.toggle("on", breakerOn);
+    el("perf-breaker").textContent = "circuit breaker + bulkhead: " + (breakerOn?"ON":"OFF");
+    const W=cv.width,H=cv.height,PAD=34;
+    ctx.clearRect(0,0,W,H);
+    const xs = []; for (let x=0;x<=100;x+=2) xs.push(x);
+    ctx.strokeStyle="#1c2330"; ctx.fillStyle="#5b6475"; ctx.font="10px monospace"; ctx.lineWidth=1;
+    [0,25,50,75,100].forEach(x=>{ const px = PAD+(x/100)*(W-PAD-12); ctx.beginPath(); ctx.moveTo(px,10); ctx.lineTo(px,H-20); ctx.stroke(); ctx.fillText(x+"%", px-10, H-6); });
+    function curve(get,color){
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      xs.forEach((x,i)=>{ const m=model(x,breakerOn); const px=PAD+(x/100)*(W-PAD-12); const py=H-24-get(m)*(H-44); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+      ctx.stroke();
+    }
+    curve(m=>m.essential, "#e50914");
+    curve(m=>m.rowSuccess, "#ff9f43");
+    ctx.strokeStyle="#5b6475"; ctx.setLineDash([4,4]); const xm=PAD+(err/100)*(W-PAD-12); ctx.beginPath(); ctx.moveTo(xm,10); ctx.lineTo(xm,H-20); ctx.stroke(); ctx.setLineDash([]);
+    const here = model(err, breakerOn);
+    el("perf-note").innerHTML = `At a <b>${err}%</b> personalization error rate ${breakerOn?"with":"without"} isolation: essential-path (play button) throughput ≈ <b style="color:var(--pg)">${(here.essential*100).toFixed(0)}%</b> of healthy baseline; personalized-row success ≈ <b style="color:var(--warn)">${(here.rowSuccess*100).toFixed(0)}%</b>. ${breakerOn ? "Notice the essential-path curve barely bends — that's the whole point of §5-§8's defenses." : "Notice both curves collapse together — without isolation, the essential path has no defense against a dependency it doesn't even need."}`;
+  }
+  el("perf-err").oninput = render;
+  el("perf-breaker").onclick = ()=>{ breakerOn = !breakerOn; render(); };
+  render();
+})();
+
+/* ============================================================
+   8. INTERVIEW QA (§12) + KNOWLEDGE CHECK (§16)
+   ============================================================ */
+qaCards("qa-interview", [
+  { lvl:"SENIOR", q:"Walk through exactly how a single slow dependency can take down an entire service, in terms of threads, not vibes.", hint:"Little's Law, and what a thread is doing while it waits",
+    a:"A bounded thread pool serves requests at a sustainable rate of pool_size / mean_latency (Little's Law). A synchronous, unbounded call to a dependency that slows from 50ms to 5s holds each thread 100x longer per request; sustainable throughput collapses by the same factor, because those threads aren't doing anything except waiting — they can't serve any other request, including ones that never touch the slow dependency. Once the pool is fully occupied by threads stuck waiting, every caller, regardless of what they actually needed, queues indefinitely." },
+  { lvl:"SENIOR", q:"Why is a circuit breaker's fallback response usually much cheaper to compute than the real dependency call it replaces?", hint:"what would happen if the fallback also needed a network call",
+    a:"The fallback exists specifically to be safe to call even while the real dependency is unhealthy — usually a pre-computed, cached, or static response (e.g. a generic non-personalized row) rather than a fresh call to another potentially struggling service. If the fallback itself required a live network call, a correlated outage could take down the fallback too, defeating the entire purpose; the design goal is a response that's available under exactly the conditions where it's needed most." },
+  { lvl:"STAFF", q:"You add a circuit breaker to a dependency but not a bulkhead. Under what specific failure pattern does the breaker alone fail to protect the essential path?", hint:"the window before enough failures accumulate to trip it",
+    a:"A breaker requires a minimum call volume before it will trip (§8a's volume_threshold), specifically to avoid overreacting to a couple of unlucky failures. During that accumulation window — and during every HALF_OPEN probe after it — calls are still going out to the real dependency and can still consume shared threads if the pool isn't isolated. If enough concurrent requests arrive during that window (a thundering-herd-shaped burst), they can exhaust the shared pool before the breaker has enough data to trip, which is exactly the gap a bulkhead closes structurally rather than statistically." },
+  { lvl:"STAFF", q:"Design the fallback for the personalization service specifically so it doesn't rot, referencing this chapter's own warning about untested fallback code.", hint:"how do you make rarely-run code get run anyway",
+    a:"Two structural fixes: (1) make the 'generic row' fallback the same code path used for legitimately unpersonalizable cases (e.g. brand-new accounts with no viewing history, chapter 9's cold-start problem) so it runs constantly in production under normal conditions, not only during rare outages; (2) exercise the failure path deliberately and routinely via controlled fault injection — precisely chapter 15's chaos engineering discipline, which exists in large part to keep exactly this kind of rarely-exercised code honest before a real, uncontrolled outage discovers it's broken." },
+  { lvl:"STAFF", q:"Retrying a failed call sounds like it should improve reliability. Explain the specific scenario where retries make an outage worse.", hint:"what is 'load' from the dependency's point of view",
+    a:"If a dependency's failures are due to systemic overload (too much traffic for its current capacity) rather than a transient, isolated blip, every retry is additional load on a system that is already failing to keep up — retries under systemic overload directly increase the total request rate the struggling dependency must handle, which can push it further from recovery rather than closer to it. Retries are appropriate for genuinely transient, non-systemic failures (one bad node in a load-balanced fleet); a circuit breaker's fail-fast behavior is the correct response to systemic overload precisely because it stops adding load instead of adding more." },
+  { lvl:"PRINCIPAL", q:"Netflix put Hystrix into maintenance mode in 2018 in favor of, among other things, adaptive concurrency limiting. Steelman why a company might move away from static, hand-tuned breaker thresholds toward adaptive limits.", hint:"what has to be true for a fixed threshold to stay correct over time",
+    a:"A fixed error-rate or volume threshold (§8a) is only correct for the traffic pattern and dependency behavior it was tuned against; as traffic grows, as a dependency's own capacity changes, or as latency distributions shift, a threshold tuned a year ago can become miscalibrated — too sensitive (unnecessary fallbacks on a healthy, just-differently-shaped day) or too lax (a real cascading failure that doesn't cross a now-stale threshold). Adaptive concurrency limiting (dynamically inferring a dependency's actual current capacity from its own observed latency, rather than a human-chosen static number) removes an entire category of manual re-tuning work at the cost of a more complex, less immediately legible control system — a classic 'automate the tuning, accept more complexity' tradeoff that mature infrastructure teams often make as a system's traffic and scale outgrow what a human can keep hand-tuned." },
+  { lvl:"PRINCIPAL", q:"A junior engineer proposes wrapping the play button's own manifest service call in a circuit breaker with a 'safe' fallback, 'just in case,' the same way personalization is wrapped. Why is this the wrong instinct, given this chapter's core argument?", hint:"what would a fallback for the essential path even mean",
+    a:"There is no meaningful fallback for the essential path — a 'fallback manifest' that doesn't actually let the customer watch the title they chose isn't graceful degradation, it's just a differently shaped failure to do the one thing the product exists to do. Wrapping the essential call in the same isolation machinery as a non-essential one adds real complexity and a new potential point of failure (a misconfigured breaker on the essential path could now cause outages that wouldn't otherwise happen) without buying a real safety benefit, because there was never an acceptable degraded answer to fall back to in the first place. The entire design principle in §1 and §8's code is to apply this machinery asymmetrically — precisely because not every dependency deserves the same treatment." }
+]);
+
+/* ============================================================
+   9. QUIZ (§14)
+   ============================================================ */
+const QUIZ = [
+  { q:"A home page service's thread pool exhausts entirely after the personalization dependency slows from 50ms to 5s. Which requests are affected?",
+    opts:[ "Only requests that specifically asked for a personalized row",
+           "Every request competing for the same thread pool, including ones with nothing to do with personalization",
+           "Only requests made in the first second of the slowdown",
+           "None — the operating system automatically reallocates threads to healthy work" ],
+    a:1,
+    why:"This is the core lesson of §4: a shared, bounded thread pool means threads stuck waiting on ANY slow dependency cannot serve ANY other request, regardless of what that request actually needed. The failure propagates to unrelated callers purely through shared resource contention, not through any code path that references personalization at all. The OS doesn't 'reallocate' threads mid-block in this scenario (D); the effect isn't limited to the first second (C) — it persists as long as the pool stays saturated." },
+  { q:"Why does a circuit breaker require a minimum call volume (not just an error rate) before it's allowed to trip to OPEN?",
+    opts:[ "To make the breaker's code simpler to implement",
+           "To avoid tripping on a couple of unlucky failures that don't represent a real systemic problem",
+           "Because circuit breakers are legally required to have a minimum threshold",
+           "It doesn't — volume thresholds are purely a performance optimization" ],
+    a:1,
+    why:"A 2-out-of-2 failure rate is 100% but tells you almost nothing statistically — it could easily be coincidence. The volume threshold (§8a) ensures the breaker only trips once there's enough call volume for the observed error rate to be a meaningful signal of a real, systemic problem rather than noise, directly paralleling the sample-size discipline chapter 13 built for A/B tests. It's a statistical safeguard, not a simplification (A), a legal requirement (C), or a pure performance tweak (D)." },
+  { q:"In HALF-OPEN state, how many requests does the breaker allow through to the real dependency?",
+    opts:[ "All of them, to quickly confirm the dependency has recovered",
+           "None — HALF-OPEN behaves identically to OPEN",
+           "Exactly one probe request; success returns to CLOSED, failure returns to OPEN",
+           "A random sample of 50% of incoming requests" ],
+    a:2,
+    why:"HALF-OPEN (§5, §8a) allows exactly one cautious probe through — enough to test recovery without risking a flood of real traffic hitting a dependency that might still be struggling. Allowing all traffic through (A) defeats the purpose of caution; treating it identically to OPEN (B) would mean the breaker could never self-heal; a random 50% sample (D) is not how the standard pattern works and would risk real load on a possibly-still-unhealthy dependency." },
+  { q:"A bulkhead gives the personalization dependency its own 10-thread pool, separate from the 200-thread pool serving the essential path. What is the worst-case cost of a total personalization failure under this design?",
+    opts:[ "The entire 200-thread pool can still be exhausted",
+           "At most the bulkhead's own 10 threads are affected; the other 190 are structurally untouched",
+           "Zero — bulkheads eliminate all failure cost",
+           "It depends entirely on the circuit breaker's threshold settings" ],
+    a:1,
+    why:"The entire point of a bulkhead (§8b) is a hard structural cap: a total failure of the isolated dependency can consume at most its own dedicated pool, by construction — it has no path to threads outside that pool. This bound holds even if the breaker hasn't tripped yet (unlike A, which describes the shared-pool scenario the bulkhead is specifically designed to prevent). It's not zero-cost (C) — the bulkhead's own 10 threads genuinely can be exhausted — and the guarantee doesn't depend on breaker settings (D), which is exactly why bulkheads are a complementary, not redundant, defense." },
+  { q:"Why does retrying a failed call make a systemic overload worse rather than better?",
+    opts:[ "Retries always use a different, more expensive code path",
+           "Each retry adds additional load onto a dependency that is already failing to keep up with current load",
+           "Retries are blocked by circuit breakers, so they never actually reach the dependency",
+           "Retries only fail for security-related reasons, unrelated to load" ],
+    a:1,
+    why:"If a dependency's failures stem from systemic overload, every retried request is more traffic arriving at a system that's already struggling to keep up — the opposite of what recovery needs (§9's tradeoff table calls this out explicitly). This is why retries are appropriate for transient, isolated blips but actively harmful against a systemically overloaded dependency, where a circuit breaker's fail-fast behavior is the better response. Retries don't inherently use a different code path (A), aren't automatically blocked by breakers (C — an open breaker prevents the call, but a closed or half-open one does not), and the mechanism has nothing to do with security (D)." },
+  { q:"Why does the essential playback/manifest path in this chapter's architecture deliberately NOT get wrapped in its own circuit breaker and fallback, the same way personalization does?",
+    opts:[ "Because playback requests are always fast enough that failures never occur",
+           "Because there is no acceptable degraded response for the one thing the product must do — a 'fallback' here isn't graceful, it's just a different failure",
+           "Because circuit breakers are too expensive computationally to use on high-traffic paths",
+           "Because Netflix's engineering culture discourages using the same pattern twice" ],
+    a:1,
+    why:"The entire design philosophy of this chapter (§1, §8's code example) is asymmetric application: circuit breakers and fallbacks make sense exactly where a degraded-but-acceptable response exists. For playback itself, there is no such acceptable degraded answer — a 'fallback manifest' that doesn't let someone watch the title they chose is simply a failure with extra steps, not graceful degradation. This isn't about raw speed (A, which is false — playback calls can and do fail) or computational cost (C, negligible in practice) or a stylistic taboo (D)." }
+];
+(function(){
+  const root = el("quiz");
+  let answered = 0, correct = 0;
+  QUIZ.forEach((item,qi)=>{
+    const d = document.createElement("div");
+    d.className = "q";
+    d.innerHTML = `<span class="q-num">QUESTION ${qi+1} / ${QUIZ.length}</span><div class="q-text">${item.q}</div>` +
+      item.opts.map((o,i)=>`<div class="opt" data-i="${i}"><span class="ol">${"ABCD"[i]}</span><span>${o}</span></div>`).join("") +
+      `<div class="expl"></div>`;
+    const expl = d.querySelector(".expl");
+    d.querySelectorAll(".opt").forEach(opt=>{
+      opt.onclick = ()=>{
+        if (d.dataset.done) return;
+        d.dataset.done = 1; answered++;
+        const pick = +opt.dataset.i;
+        if (pick === item.a) correct++;
+        d.querySelectorAll(".opt").forEach(o=>{
+          o.classList.add("disabled");
+          if (+o.dataset.i === item.a) o.classList.add("correct");
+          else if (+o.dataset.i === pick) o.classList.add("wrong");
+        });
+        expl.innerHTML = `<b style="color:var(--pg)">${pick===item.a ? "Correct." : "Not quite — "+"ABCD"[item.a]+" is right."}</b> ${item.why}`;
+        expl.classList.add("show");
+        el("quiz-progress").textContent = `${answered} / ${QUIZ.length}`;
+        if (answered === QUIZ.length)
+          el("quiz-score").innerHTML = `Score: <b>${correct} / ${QUIZ.length}</b> — ${correct===6?"flawless; Hystrix would be proud.":correct>=4?"solid mental model; skim the explanations you missed.":"re-run §5 and §8's decks, then try the simulator — thread exhaustion clicks fast once you watch it happen yourself."}`;
+      };
+    });
+    root.appendChild(d);
+  });
+})();
+
+/* order quiz */
+(function(){
+  const CORRECT = [
+    "Request arrives; breaker for personalization is CLOSED",
+    "Call is submitted to the bulkhead's dedicated thread pool",
+    "Personalization service responds slowly, exceeding the configured timeout",
+    "The timed-out call counts as a failure in the breaker's rolling window",
+    "Enough failures accumulate to cross the error-rate AND volume thresholds",
+    "Breaker transitions to OPEN — subsequent calls fail instantly without touching the network",
+    "After open_duration_s elapses, breaker transitions to HALF-OPEN",
+    "A single probe call succeeds; breaker transitions back to CLOSED"
+  ];
+  const root = el("order-quiz");
+  let picks = [];
+  const shuffled = CORRECT.map((t,i)=>({t,i})).sort(()=>Math.random()-.5);
+  function render(){
+    root.innerHTML = "";
+    shuffled.forEach(item=>{
+      const idx = picks.indexOf(item.i);
+      const d = document.createElement("div");
+      d.className = "order-item" + (idx>=0 ? " picked" : "");
+      d.innerHTML = `<span class="seq">${idx>=0 ? idx+1 : ""}</span><span>${item.t}</span>`;
+      d.onclick = ()=>{
+        const at = picks.indexOf(item.i);
+        if (at >= 0) picks.splice(at,1); else picks.push(item.i);
+        render();
+      };
+      root.appendChild(d);
+    });
+  }
+  el("order-check").onclick = ()=>{
+    if (picks.length !== CORRECT.length){ el("order-verdict").textContent = `pick all ${CORRECT.length} first (${picks.length} chosen)`; return; }
+    let ok = 0;
+    [...root.children].forEach((d,di)=>{
+      const item = shuffled[di], pos = picks.indexOf(item.i);
+      d.classList.remove("right","wrong2");
+      if (pos === item.i){ d.classList.add("right"); ok++; } else d.classList.add("wrong2");
+    });
+    el("order-verdict").innerHTML = ok===CORRECT.length ? `<span style="color:var(--ok)">perfect — that's the real breaker lifecycle</span>` : `<span style="color:var(--warn)">${ok}/${CORRECT.length} in position — green ones are correctly placed</span>`;
+  };
+  el("order-reset").onclick = ()=>{ picks=[]; el("order-verdict").textContent=""; render(); };
+  render();
+})();
+
+/* knowledge check */
+qaCards("qa-check", [
+  { lvl:"THINK", q:"Chapter 15 is about Chaos Monkey — deliberately killing production instances at random. Predict: why would it be reckless to start running Chaos Monkey on a service that does NOT yet have circuit breakers, bulkheads, and graceful degradation in place?",
+    a:"Without these defenses, a randomly killed instance's traffic has nowhere safe to go — callers have no fallback, no isolation, and no fail-fast behavior, so a random kill could trigger exactly the cascading thread-pool-exhaustion failure this chapter derived in §4, taking down far more than the one instance that was actually killed. Chaos Monkey is designed to validate that a system tolerates failure gracefully — running it before that graceful tolerance exists doesn't test resilience, it just causes a real, self-inflicted outage. This is precisely why chapter 15's brief calls out that chaos engineering only works safely once this chapter's patterns are already in place." },
+  { lvl:"THINK", q:"This chapter's fallback for personalization is a pre-computed generic row. Predict what could go wrong if that fallback is never actually exercised in production until a real outage happens.",
+    a:"§6 named this directly: fallback code that only runs during rare real outages is exactly the code most likely to have silently broken since it was last exercised — a dependency it relies on may have been deprecated, a data format may have changed, or the pre-computation job that builds the generic row may itself have quietly stopped running. The team would discover all of this at the worst possible moment: during the very outage the fallback was supposed to handle gracefully." },
+  { lvl:"THINK", q:"Both this chapter's circuit breakers and chapter 15's Chaos Monkey are described as deliberately embracing failure rather than only trying to prevent it. What's the common underlying engineering philosophy?",
+    a:"Both patterns reject the idea that reliability comes from trying to eliminate failure entirely (impossible at scale) and instead engineer systems to make failure's occurrence survivable and even boring: a circuit breaker assumes some dependency will eventually degrade and builds a controlled, fast, cheap response to that eventuality; Chaos Monkey assumes some instance will eventually die and forces the system to prove, continuously and proactively, that it already handles that eventuality gracefully. The shared insight is that designing for failure as a normal, expected event produces more reliable systems than treating every failure as an exceptional emergency to be prevented outright." }
+]);
+
+/* ============================================================
+   10. SIMULATOR (§15)
+   ============================================================ */
+(function(){
+  const S = { degraded:false, breakerOn:true, bulkheadOn:true, breakerState:"CLOSED", window:[], openedAt:0, tick:0,
+              playOk:0, playTotal:0, rowOk:0, rowTotal:0, running:false, sharedBusy:0, bulkBusy:0 };
+  const logEl = el("sim-log");
+  function log(msg, lv="LOG"){
+    const d = document.createElement("div"); d.className = "lv-"+lv; d.textContent = `[${lv}] ${msg}`;
+    logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+  }
+  function reqDot(kind){ const d = document.createElement("div"); d.className = "reqdot " + kind; return d; }
+  function pushRow(id, kind, cap){
+    const row = el(id);
+    row.appendChild(reqDot(kind));
+    while (row.children.length > cap) row.removeChild(row.firstChild);
+  }
+  function tick(){
+    S.tick++;
+    const latencyMs = S.degraded ? 5000 : 50;
+    const willFail = S.degraded; // degraded => timeouts/failures
+    // breaker logic
+    let personalOutcome;
+    if (S.breakerOn && S.breakerState === "OPEN"){
+      if (S.tick - S.openedAt > 15){ S.breakerState = "HALF_OPEN"; log("breaker: OPEN → HALF_OPEN, allowing one probe", "WARN"); }
+    }
+    let attemptCall = true;
+    if (S.breakerOn && S.breakerState === "OPEN") attemptCall = false;
+
+    if (!attemptCall){
+      personalOutcome = "short"; // fast fail
+    } else {
+      // bulkhead saturation model
+      if (S.bulkheadOn){
+        S.bulkBusy = willFail ? Math.min(10, S.bulkBusy+2) : Math.max(0, S.bulkBusy-3);
+        personalOutcome = willFail ? (S.bulkBusy>=10 ? "fail" : "slow") : "ok";
+      } else {
+        S.sharedBusy = willFail ? Math.min(200, S.sharedBusy+8) : Math.max(0, S.sharedBusy-20);
+        personalOutcome = willFail ? "fail" : "ok";
+      }
+      const success = personalOutcome === "ok";
+      if (S.breakerOn){
+        S.window.push(success); if (S.window.length>20) S.window.shift();
+        if (S.breakerState === "HALF_OPEN"){
+          S.breakerState = success ? "CLOSED" : "OPEN";
+          if (S.breakerState==="OPEN"){ S.openedAt = S.tick; log("breaker: probe failed, HALF_OPEN → OPEN", "FATAL"); }
+          else log("breaker: probe succeeded, HALF_OPEN → CLOSED", "OK");
+        } else if (S.window.length>=8){
+          const errRate = S.window.filter(x=>!x).length / S.window.length;
+          if (errRate >= 0.5 && S.breakerState==="CLOSED"){ S.breakerState="OPEN"; S.openedAt=S.tick; log("breaker: error rate "+(errRate*100).toFixed(0)+"% ≥ 50% threshold — CLOSED → OPEN", "FATAL"); }
+        }
+      }
+    }
+    S.rowTotal++; if (personalOutcome==="ok") S.rowOk++;
+    pushRow("sim-personal", personalOutcome, 40);
+
+    // play button path: only affected if NO isolation and shared pool saturated
+    let playOutcome = "ok";
+    if (!S.bulkheadOn && !S.breakerOn){
+      playOutcome = S.sharedBusy > 150 ? "fail" : (S.sharedBusy>80 ? "slow" : "ok");
+    } else if (!S.bulkheadOn && S.breakerOn){
+      // breaker still protects somewhat once tripped, but pre-trip window can leak
+      playOutcome = (S.breakerState==="CLOSED" && S.sharedBusy>150) ? "slow" : "ok";
+    } else {
+      playOutcome = "ok"; // bulkhead present => essential path structurally safe
+    }
+    S.playTotal++; if (playOutcome==="ok") S.playOk++;
+    pushRow("sim-play", playOutcome, 40);
+
+    el("cnt-play-ok").textContent = Math.round(S.playOk/S.playTotal*100)+"%";
+    el("cnt-personal-ok").textContent = Math.round(S.rowOk/S.rowTotal*100)+"%";
+    el("cnt-breaker-state").textContent = S.breakerOn ? S.breakerState : "N/A";
+    el("sim-phase").textContent = S.degraded ? "DEGRADED" : "HEALTHY";
+    renderChart();
+  }
+  function renderChart(){
+    const cv = el("sim-chart"), ctx = cv.getContext("2d");
+    const W=cv.width,H=cv.height;
+    if (!S.histPlay) S.histPlay=[], S.histRow=[];
+    S.histPlay.push(S.playOk/S.playTotal); S.histRow.push(S.rowOk/S.rowTotal);
+    if (S.histPlay.length>100){ S.histPlay.shift(); S.histRow.shift(); }
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle="#1c2330"; ctx.beginPath(); ctx.moveTo(10,H-20); ctx.lineTo(W-10,H-20); ctx.stroke();
+    function line(arr,color){
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+      arr.forEach((v,i)=>{ const x=10+(i/(Math.max(1,arr.length-1)))*(W-20); const y=H-20-v*(H-40); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+    }
+    line(S.histRow, "#ff9f43");
+    line(S.histPlay, "#e50914");
+    ctx.fillStyle="#8b94a7"; ctx.font="10px monospace";
+    ctx.fillText("red = play success · orange = row success", 12, 14);
+  }
+  let timer = null;
+  el("sc-run").onclick = ()=>{
+    S.running = !S.running;
+    el("sc-run").textContent = S.running ? "⏸ pause" : "▶ run traffic";
+    if (S.running){ timer = setInterval(tick, 180); log("traffic started", "OK"); }
+    else { clearInterval(timer); log("traffic paused"); }
+  };
+  el("sc-healthy").onclick = ()=>{ S.degraded=false; log("personalization restored to healthy", "OK"); };
+  el("sc-degrade").onclick = ()=>{ S.degraded=true; log("personalization degraded to 5000ms latency / failures", "WARN"); };
+  el("sc-breaker").onclick = ()=>{ S.breakerOn=!S.breakerOn; el("sc-breaker").classList.toggle("on",S.breakerOn); el("sc-breaker").textContent="circuit breaker: "+(S.breakerOn?"ON":"OFF"); if(!S.breakerOn) S.breakerState="CLOSED"; };
+  el("sc-bulkhead").onclick = ()=>{ S.bulkheadOn=!S.bulkheadOn; el("sc-bulkhead").classList.toggle("on",S.bulkheadOn); el("sc-bulkhead").textContent="bulkhead: "+(S.bulkheadOn?"ON":"OFF"); };
+  log("simulator ready — press run traffic, then degrade personalization", "OK");
+})();
+
+/* ============================================================
+   11. CHROME: readbar, scrollspy, keys, completion
+   ============================================================ */
+window.addEventListener("scroll", ()=>{
+  const h = document.documentElement;
+  el("readbar").style.width = (h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%";
+}, { passive:true });
+
+const tocLinks = [...document.querySelectorAll("#toc a")];
+const secs = tocLinks.map(a=>document.querySelector(a.getAttribute("href")));
+const spy = new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    const i = secs.indexOf(e.target);
+    if (i<0) return;
+    if (e.isIntersecting){ tocLinks.forEach(l=>l.classList.remove("active")); tocLinks[i].classList.add("active"); tocLinks[i].classList.add("seen"); }
+  });
+}, { rootMargin:"-20% 0px -65% 0px" });
+secs.forEach(s=> s && spy.observe(s));
+
+document.addEventListener("keydown", e=>{
+  if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.metaKey||e.ctrlKey) return;
+  const cur = tocLinks.findIndex(l=>l.classList.contains("active"));
+  if (e.key==="j"){ const n = secs[Math.min(cur+1, secs.length-1)]; if(n) n.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="k"){ const p = secs[Math.max(cur-1,0)]; if(p) p.scrollIntoView({behavior:"smooth"}); }
+  else if (e.key==="g") window.scrollTo({top:0, behavior:"smooth"});
+});
+
+el("mark-done").onclick = ()=>{
+  const KEY = "sysinternals-progress-v1";
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(KEY)) || {}; } catch(_){}
+  p["nflx-14"] = true;
+  localStorage.setItem(KEY, JSON.stringify(p));
+  el("mark-done").textContent = "✓ Completed — saved to your hub progress";
+  el("mark-done").disabled = true;
+};
+</script>
+<div id="chapnav" style="--cn-accent:#e50914"><a class="cn-btn" href="nflx-13.html"><span>←</span><span><span class="cn-lbl">PREV · CH 13</span><span class="cn-ttl">A/B Testing & the Experimentation Platform</span></span></a><div class="cn-mid"><a class="cn-home" href="course-netflix.html">☰ Netflix Streaming Internals</a><select id="cn-sel" aria-label="Jump to chapter"><option value="nflx-01.html">CH 01 · Genesis: From DVD-by-Mail to Streaming</option><option value="nflx-02.html">CH 02 · Video Fundamentals: Why Raw Video Is Too Big</option><option value="nflx-03.html">CH 03 · Codecs & Compression: H.264, VP9 & AV1</option><option value="nflx-04.html">CH 04 · Adaptive Bitrate Streaming: The Core Problem</option><option value="nflx-05.html">CH 05 · The Bitrate Ladder & Per-Title Encoding</option><option value="nflx-06.html">CH 06 · Manifests & Streaming Protocols: HLS & DASH</option><option value="nflx-07.html">CH 07 · Open Connect: Netflix's Real CDN</option><option value="nflx-08.html">CH 08 · Content Placement & Predictive Caching</option><option value="nflx-09.html">CH 09 · The Recommendation Problem</option><option value="nflx-10.html">CH 10 · Collaborative Filtering & the Netflix Prize</option><option value="nflx-11.html">CH 11 · Modern Recommendation Systems</option><option value="nflx-12.html">CH 12 · Personalization at the UI Level</option><option value="nflx-13.html">CH 13 · A/B Testing & the Experimentation Platform</option><option value="nflx-14.html" selected>CH 14 · Reliability for Streaming: Circuit Breakers & Graceful Degradation</option><option value="nflx-15.html">CH 15 · Chaos Engineering: Chaos Monkey & the Simian Army</option><option value="nflx-16.html">CH 16 · Client Diversity & the Device Certification Problem</option><option value="nflx-17.html">CH 17 · Production Incidents & Streaming-Scale Observability</option><option value="nflx-18.html">CH 18 · Capstone: Build a Mini Streaming Service End to End</option></select><span class="cn-prog">14 / 18</span></div><a class="cn-btn" href="nflx-15.html"><span><span class="cn-lbl">NEXT · CH 15</span><span class="cn-ttl">Chaos Engineering: Chaos Monkey & the Simian Army</span></span><span>→</span></a></div><script>(function(){var s=document.getElementById("cn-sel");s.addEventListener("change",function(){location.href=s.value});document.addEventListener("keydown",function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var t=e.target.tagName;if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT")return;if(e.key==="[")  {var p=document.querySelector("#chapnav .cn-btn:not(.disabled)");var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[0]&&a[0].href)location.href=a[0].href;}if(e.key==="]"){var a=document.querySelectorAll("#chapnav a.cn-btn");if(a[1]&&a[1].href)location.href=a[1].href;}});})();</script>
+</body>
+</html>
