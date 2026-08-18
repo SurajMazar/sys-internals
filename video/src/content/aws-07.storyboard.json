@@ -1,0 +1,248 @@
+{
+  "chapter": "aws-07",
+  "title": "Elastic Load Balancing & Auto Scaling",
+  "voice": "af_heart",
+  "scenes": [
+    {
+      "id": "intro",
+      "type": "ChapterIntro",
+      "narration": "A load balancer decides where a request goes. An Auto Scaling group decides how many servers exist to receive it. The exam tests them as a pair because real architectures ship them as a pair, and this chapter maps to two domains at once: Design Resilient Architectures at twenty six percent, and Design High Performing Architectures at twenty four percent. Two numbers anchor almost everything else here — the default Auto Scaling cooldown period is three hundred seconds, and the default connection-draining window, officially called deregistration delay, is also three hundred seconds.",
+      "props": {
+        "kicker": "AWS CERTIFICATION PREP · CHAPTER 7",
+        "title": "Elastic Load Balancing & Auto Scaling",
+        "facts": [
+          { "label": "SAA-C03 domain weight", "value": "50% — Resilient (26%) + High-Performing (24%)" },
+          { "label": "Two defaults worth memorizing", "value": "Cooldown: 300s · Deregistration delay: 300s" }
+        ]
+      }
+    },
+    {
+      "id": "wrong-instinct",
+      "type": "ConceptScene",
+      "narration": "Here's the instinct that feels like diligence but isn't. A L B is the newest, most capable load balancer A W S sells, so treat it as the safe default for any distribute-traffic scenario, HTTP or not. Pair it with target tracking on CPU utilization, and assume the exact numbers — cooldown, warm-up, health-check thresholds — are just implementation detail that can't change the right answer. Both halves of that instinct are usually correct. They fail exactly at the edges the exam is built to test.",
+      "props": {
+        "kicker": "THE INSTINCT TO AVOID",
+        "heading": "\"It's a load balancer — they're basically interchangeable\"",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "Treat ALB as the universal default load balancer, regardless of protocol or IP requirements.",
+          "Assume target tracking on CPU is always the right scaling signal, no matter the bottleneck.",
+          "Treat cooldown, warm-up, and health-check timing as tunable trivia, not load-bearing mechanics."
+        ]
+      }
+    },
+    {
+      "id": "why-wrong",
+      "type": "ConceptScene",
+      "narration": "Three real mechanisms break that instinct. A L B only speaks Layer 7 — it terminates HTTP, HTTPS, WebSocket, and gRPC, and it hands you no fixed IP per Availability Zone. Raw TCP, U D P, or a partner firewall demanding an allow-listed IP address all eliminate it immediately. The cooldown period isn't friction to delete — CloudWatch metrics for a freshly launched instance take real time to stabilize, and zeroing the cooldown lets a policy launch a second wave before the first wave's improved numbers even land, which overshoots and then thrashes back down. And CPU is only the right target-tracking metric when CPU is actually the bottleneck — request count per target and custom metrics exist for exactly the workloads where it isn't.",
+      "props": {
+        "kicker": "WHY IT FAILS",
+        "heading": "Real mechanisms, not vague best practices",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "ALB is Layer 7 only — no raw TCP/UDP, and no fixed per-AZ IP for a firewall allow-list.",
+          "Zero-second cooldown lets a policy scale again before the last scale-out's metrics even stabilize — overshoot, then thrash.",
+          "CPU utilization is the default target-tracking metric, not the only one — request-count-per-target exists for workloads CPU doesn't predict."
+        ]
+      }
+    },
+    {
+      "id": "lb-comparison",
+      "type": "ArchitectureDiagram",
+      "narration": "Line the three load balancer types up side by side. Application Load Balancer works at Layer 7 — it understands HTTP path and host routing, and it can even target a Lambda function directly, but it gives you no static I P. Network Load Balancer drops down to Layer 4 — raw TCP, U D P, and T L S, with extremely low added latency and a real static I P, or an assigned Elastic I P, per Availability Zone. Classic Load Balancer is the original two-thousand-nine service — it still runs in some accounts, but on a new design it's essentially always the wrong answer; A W S itself steers everything new toward A L B or N L B.",
+      "props": {
+        "kicker": "THE CORE CHOICE",
+        "heading": "ALB vs NLB vs Classic Load Balancer",
+        "variant": "table",
+        "table": {
+          "columns": ["", "Application LB", "Network LB", "Classic LB (legacy)"],
+          "rows": [
+            { "label": "OSI layer", "cells": ["Layer 7 — HTTP/HTTPS/WebSocket/gRPC", "Layer 4 — TCP/UDP/TLS", "Layer 4 (basic), limited Layer 7"] },
+            { "label": "Routing intelligence", "cells": ["Path- and host-based rules, Lambda targets", "None — passes traffic through", "Minimal round-robin only"] },
+            { "label": "Static IP per AZ", "cells": ["No", "Yes — or an assigned Elastic IP", "No clean story"] },
+            { "label": "Pick it when", "cells": ["Scenario names HTTP, path routing, WebSocket", "UDP, fixed IP, or extreme low latency", "Practically never on a new design"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cooldown-trap",
+      "type": "ConceptScene",
+      "narration": "This is the single most exam-relevant trap in the whole chapter. The cooldown period exists so a scaling decision has time to actually show up in CloudWatch before the next decision fires. Set it too low, and a simple-scaling policy launches instance after instance because it never sees the last launch's improvement — that's over-scaling. Set your health-check grace period shorter than the app's real boot time, and the group cycles: launch, fail the check before the app is even up, terminate, launch again — that's a different failure that looks like under-scaling from the outside. Target tracking and step scaling avoid the first failure mode with an instance warm-up window: a new instance's metrics are excluded from the group average until it's finished warming up, specifically so it can't make the fleet look cooler than it really is.",
+      "props": {
+        "kicker": "THE COOLDOWN TRAP",
+        "heading": "Two clocks, easy to confuse",
+        "tone": "warn",
+        "variant": "steps",
+        "steps": [
+          "Cooldown (default 300s) — blocks a new scaling decision until the last one's metrics stabilize",
+          "Zero it out → scaling thrash: repeated launches before improvement is even visible",
+          "Health-check grace period too short → app fails checks before it's booted, ASG loops forever",
+          "Warm-up window → excludes a new instance's metrics from the aggregate until it's actually ready"
+        ]
+      }
+    },
+    {
+      "id": "decision-framework",
+      "type": "ArchitectureDiagram",
+      "narration": "This table is the chapter distilled. Application Load Balancer for anything HTTP-shaped with path or host routing. Network Load Balancer the moment you hear raw T C P or U D P, a fixed I P requirement, or extreme throughput. Classic Load Balancer almost never, on any new design. For scaling: target tracking is the recommended default — hold one metric near a target automatically. Step scaling when you need graduated, threshold-specific responses. Scheduled scaling when the pattern is known by clock or calendar. And launch templates, always, over the deprecated launch configurations, because only launch templates support versioning and mixed On-Demand-plus-Spot fleets.",
+      "props": {
+        "kicker": "DECISION FRAMEWORK",
+        "heading": "The table that resolves most exam questions here",
+        "variant": "table",
+        "table": {
+          "columns": ["Choose", "When the scenario says", "Not when"],
+          "rows": [
+            { "label": "Application LB", "cells": ["HTTP/HTTPS/WebSocket/gRPC, path- or host-based routing, Lambda targets", "Traffic isn't HTTP, or a fixed per-AZ IP is required"] },
+            { "label": "Network LB", "cells": ["Raw TCP/UDP/TLS, static IP required, extreme low latency", "You need Layer-7 content-based routing rules"] },
+            { "label": "Target tracking", "cells": ["Hold one metric near a target — the recommended default", "The bottleneck metric isn't CPU — pick request-count or custom instead"] },
+            { "label": "Step scaling", "cells": ["Graduated, threshold-specific responses (add 2 at 60%, add 5 at 85%)", "A single smooth target is simpler — tracking usually wins"] },
+            { "label": "Scheduled / predictive", "cells": ["Load is known by clock/calendar, or has a learnable recurring pattern", "The pattern genuinely isn't predictable yet"] },
+            { "label": "Launch templates", "cells": ["Always, for any new configuration — versioned, supports mixed Spot fleets", "Never prefer the deprecated launch configurations"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cli-walkthrough",
+      "type": "TerminalDemo",
+      "narration": "Four commands, in the order you'd actually run them. First, create the load balancer itself — type application is the flag that distinguishes an A L B request from an N L B request in the same A P I family. Second, create the target group, with the health-check path pointed at a real application endpoint, not just is-the-process-alive. Third, create the Auto Scaling group from a launch template, and notice health-check-type E L B — that single flag is what makes the group trust application-level health instead of only the basic E C 2 status check. Finally, attach a target-tracking policy with a target value of fifty percent CPU — that number is the literal thermostat setpoint driving the desired-capacity math.",
+      "props": {
+        "kicker": "TRY IT YOURSELF",
+        "heading": "Stand up ALB + target group + ASG",
+        "prompt": "$",
+        "steps": [
+          {
+            "cmd": "aws elbv2 create-load-balancer --name app-alb --type application --subnets subnet-pub-a subnet-pub-b",
+            "output": [
+              "{ \"LoadBalancers\": [{ \"LoadBalancerArn\": \"arn:aws:elasticloadbalancing:...:loadbalancer/app/app-alb/abc\",",
+              "  \"Type\": \"application\", \"State\": { \"Code\": \"provisioning\" } }] }"
+            ]
+          },
+          {
+            "cmd": "aws elbv2 create-target-group --name app-tg --protocol HTTP --port 8080 --health-check-path /healthz",
+            "output": [
+              "{ \"TargetGroups\": [{ \"TargetGroupName\": \"app-tg\",",
+              "  \"HealthCheckPath\": \"/healthz\", \"HealthyThresholdCount\": 3 }] }"
+            ]
+          },
+          {
+            "cmd": "aws autoscaling create-auto-scaling-group --launch-template LaunchTemplateName=app-lt,Version='$Latest' --min-size 2 --max-size 10 --health-check-type ELB --health-check-grace-period 180",
+            "output": [
+              "Auto Scaling group \"app-asg\" created",
+              "Health check type: ELB · Grace period: 180s"
+            ]
+          },
+          {
+            "cmd": "aws autoscaling put-scaling-policy --policy-type TargetTrackingScaling --target-tracking-configuration '{\"TargetValue\":50.0}'",
+            "output": [
+              "Policy \"tt-cpu-50\" attached to app-asg",
+              "Desired capacity now recomputed on every CloudWatch data point"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "case-study",
+      "type": "ConceptScene",
+      "narration": "Work a real case through the framework. A mobile game studio runs a real-time multiplayer server over a custom U D P protocol, with match state held in memory. Corporate partners require a fixed, allow-listable I P address, and latency has to stay minimal or gameplay visibly degrades. A tempting wrong move is defaulting to A L B and only reaching for N L B if U D P turns out to be required — but U D P alone already rules A L B out before the I P or latency requirements even enter the picture. The answer is Network Load Balancer: Layer 4 handles U D P, its per-A-Z static I P satisfies the allow-list, and its design is exactly what minimizes added latency.",
+      "props": {
+        "kicker": "ONE SCENARIO, WORKED THROUGH",
+        "heading": "The mobile game studio",
+        "variant": "profile",
+        "profile": {
+          "name": "A real-time multiplayer game studio",
+          "role": "Custom UDP protocol · in-memory match state · partner firewall needs a fixed IP · latency-sensitive",
+          "detail": "Corporate customers require the studio's servers to sit behind a small, fixed set of IP addresses their office firewalls can allow-list, and the SRE team worries about any added round-trip latency degrading gameplay.",
+          "verdict": "Network Load Balancer — UDP support plus a static IP per AZ satisfies both stated constraints, and NLB's Layer 4 design is exactly what minimizes added latency. ALB satisfies none of the three requirements at once."
+        }
+      }
+    },
+    {
+      "id": "knowledge-check",
+      "type": "KnowledgeCheck",
+      "narration": "Try these yourself first. One: an Auto Scaling group's instances are all passing their E C 2 status checks, but the application on several of them is returning HTTP five-hundred for every request, and the group hasn't replaced a single one — what's misconfigured? Two: a retailer wants extra web-tier capacity ready before a marketing email blast scheduled for a known time next Tuesday at nine A M — which scaling approach actually fits that?",
+      "props": {
+        "kicker": "KNOWLEDGE CHECK",
+        "heading": "Try these before the answer",
+        "questions": [
+          {
+            "level": "ASSOCIATE",
+            "prompt": "An ASG's instances are all passing EC2 status checks, but the application on several of them returns HTTP 500 for every request, and none have been replaced. What's the most likely misconfiguration?",
+            "options": [
+              "The launch template is pinned to an outdated AMI version.",
+              "The ASG's health-check type is still set to EC2 instead of ELB.",
+              "The target group's deregistration delay is set too high.",
+              "The Auto Scaling group's cooldown period is set to zero."
+            ]
+          },
+          {
+            "level": "ASSOCIATE",
+            "prompt": "A retailer wants extra web-tier capacity provisioned ahead of a marketing email blast scheduled for a known time next Tuesday at 9 AM. Which scaling approach directly addresses this?",
+            "options": [
+              "Target tracking on CPU utilization, since it reacts fastest to any load change.",
+              "Step scaling with aggressive thresholds set well below normal load.",
+              "Scheduled scaling, provisioning ahead of the known date and time.",
+              "Simply raising the ASG's maximum size and letting the default policy catch up."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer-reveal",
+      "type": "AnswerReveal",
+      "narration": "Here's why. By default, an Auto Scaling group only replaces instances that fail the basic E C 2 status check — it has zero visibility into application-level failures like a five-hundred error unless you explicitly switch health-check-type to E L B, so the group can see what the target group's own health check already knows. And scheduled scaling is the one built specifically for a load pattern that's known in advance by clock or calendar — target tracking would technically catch up eventually, but it spends the first several scaling intervals playing catch-up instead of already being ready when the spike hits at nine sharp.",
+      "props": {
+        "kicker": "ANSWERS",
+        "heading": "Here's why",
+        "answers": [
+          {
+            "prompt": "Instances pass EC2 checks but the app itself is failing — and none get replaced.",
+            "correct": "Health-check type is still EC2, not ELB.",
+            "rationale": "Without ELB health checks explicitly enabled, the ASG only reacts to EC2-level status failures. Application-level failures the target group's own health check is already reporting stay invisible to the group until you flip that one setting."
+          },
+          {
+            "prompt": "Extra capacity needed ahead of a known Tuesday 9 AM spike.",
+            "correct": "Scheduled scaling.",
+            "rationale": "Scheduled scaling lets you specify a future date and time with a capacity change, provisioning ahead of a known event. Target tracking alone would only react after load has already started climbing, spending the spike's first minutes playing catch-up instead of being ready."
+          }
+        ]
+      }
+    },
+    {
+      "id": "recap",
+      "type": "ChapterRecap",
+      "narration": "Five things to carry forward. Pick A L B for HTTP-aware Layer 7 routing, and N L B for raw T C P, U D P, static I Ps, or extreme low-latency throughput — Classic Load Balancer is almost never the modern answer. The cooldown and warm-up periods exist to stop scaling thrash, not to be minimized — respect them. An Auto Scaling group only auto-replaces application-level failures once you've explicitly turned on E L B health checks. Default to target tracking unless the pattern is predictable, which points to scheduled or predictive scaling, or needs graduated thresholds, which points to step scaling. And remember the two three-hundred-second defaults — cooldown and deregistration delay — because the exam uses both to test whether you think scaling and connection draining happen instantly. Next: chapter eight moves one layer down, into R D S, Aurora, and the exam's most confused pair — Multi-A-Z failover versus read replicas for scaling.",
+      "props": {
+        "kicker": "RECAP",
+        "heading": "What to remember from this chapter",
+        "takeaways": [
+          "ALB for Layer 7 HTTP routing; NLB for raw TCP/UDP, static IPs, or extreme low latency — Classic LB is almost never right on a new design.",
+          "Cooldown and warm-up periods prevent scaling thrash — they're the mechanism, not friction to remove.",
+          "An ASG only replaces app-level failures once health-check type is explicitly set to ELB, not just EC2 status checks.",
+          "Target tracking is the default scaling policy; reach for scheduled/predictive when the pattern is known, or step scaling for graduated thresholds.",
+          "Two 300-second defaults — cooldown and deregistration delay — are the exam's favorite test of whether you assume scaling is instantaneous."
+        ],
+        "next": {
+          "title": "Chapter 8 — RDS, Aurora & Database Choices",
+          "teaser": "The exam's most confused pair: Multi-AZ failover vs read replicas for scaling."
+        }
+      }
+    },
+    {
+      "id": "challenge",
+      "type": "FinalChallenge",
+      "narration": "One more to work through yourself. An e-commerce company runs a predictable flash sale every Friday at noon, plus occasional unannounced viral spikes on other days triggered by social media. Using this chapter's framework, what scaling configuration actually covers both patterns well — and why does simply raising the Auto Scaling group's maximum size and trusting target tracking alone fall short for the Friday spike specifically?",
+      "props": {
+        "kicker": "THINK ABOUT IT",
+        "prompt": "A retailer has a predictable Friday-noon flash sale plus unannounced viral spikes on other days. What scaling configuration covers both — and why does raising max size and trusting target tracking alone fall short for the Friday spike?",
+        "hint": "The two policy families in this chapter are additive within one Auto Scaling group, not mutually exclusive.",
+        "nextChapterTitle": "Chapter 8 · RDS, Aurora & Database Choices"
+      }
+    }
+  ]
+}

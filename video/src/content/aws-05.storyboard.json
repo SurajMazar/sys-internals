@@ -1,0 +1,262 @@
+{
+  "chapter": "aws-05",
+  "title": "EBS, Instance Store & Storage Choices",
+  "voice": "af_heart",
+  "scenes": [
+    {
+      "id": "intro",
+      "type": "ChapterIntro",
+      "narration": "Every EC2 storage question on this exam hides the same decision, and this chapter is about making that decision in seconds instead of guessing. We're talking about E B S — Elastic Block Store — plus instance store, the local disk that isn't EBS at all. Storage choice lives inside Design High-Performing Architectures, twenty four percent of the associate exam, and it resurfaces on the professional exam wherever a migration scenario needs you to right-size existing storage. Here's the number that resolves more of these questions than anything else: a gp3 volume ships with a flat baseline of three thousand I O P S — input slash output operations per second — and one hundred twenty five mebibytes per second, for free, no matter how big the volume is. And here's the trap the chapter is built around: EBS is durable storage as a service, but whether any single volume survives a terminate command depends entirely on one flag, and that flag defaults differently depending on whether it's the root volume or not.",
+      "props": {
+        "kicker": "AWS CERTIFICATION PREP · CHAPTER 5",
+        "title": "EBS, Instance Store & Storage Choices",
+        "facts": [
+          { "label": "gp3's flat baseline", "value": "3,000 IOPS / 125 MiB/s — free, regardless of volume size" },
+          { "label": "The chapter's signature trap", "value": "Root volume DeleteOnTermination defaults true; other volumes default false" }
+        ]
+      }
+    },
+    {
+      "id": "wrong-instinct",
+      "type": "ConceptScene",
+      "narration": "Three related instincts show up constantly in practice exams, and all three sound reasonable until you check a number or a flag. First: general purpose SSD is fine for everything — a candidate sees a workload that needs twenty thousand random IOPS with tight latency and reaches for gp3 anyway, without ever checking gp3's actual ceiling. Second: instance store feels like just a faster EBS volume — a candidate sees NVMe storage built into the instance type and treats it like any other attached disk, forgetting to ask what happens the moment that instance stops. Third: EBS is persistent storage, so surely every volume attached to it survives termination — without ever checking the one boolean flag that actually decides that. Each of these is a half-truth wearing a whole-truth's confidence, which is exactly the shape of a good exam distractor.",
+      "props": {
+        "kicker": "THE INSTINCT TO AVOID",
+        "heading": "\"gp3 is cheap, and EBS obviously survives termination\"",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "\"General purpose SSD is fine for everything\" — reach for gp3 even past its real ceiling.",
+          "\"Instance store is basically a fast EBS volume\" — treat local NVMe like any other attached disk.",
+          "\"EBS is persistent, so every volume obviously survives termination\" — without checking one flag."
+        ]
+      }
+    },
+    {
+      "id": "why-it-fails",
+      "type": "ConceptScene",
+      "narration": "Each instinct collides with something specific and countable. gp3's ceiling of sixteen thousand IOPS and one thousand mebibytes per second isn't a price tag you can spend past — it's a hard, per-volume limit, full stop; a workload that genuinely needs twenty thousand IOPS cannot get there on gp3 at any price. Instance store's data is lost on stop, not just on terminate, because stopping an instance can move it to entirely different underlying hardware that never held your local disk's data in the first place. And DeleteOnTermination — the flag everyone forgets to check — defaults to true for a root volume, so terminating deletes it by design, but defaults to false for every other volume you attach, so it survives as an orphaned, still-billed resource until somebody deletes it by hand. Same service, two opposite defaults.",
+      "props": {
+        "kicker": "WHY IT FAILS",
+        "heading": "Real ceilings, not vibes",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "gp3's ceiling — 16,000 IOPS / 1,000 MiB/s provisioned — is a hard per-volume limit, not a pricing tier.",
+          "Instance store data is lost on stop AND on terminate — stopping can move the instance to different hardware entirely.",
+          "DeleteOnTermination defaults to true for the root volume, false for every other attached volume."
+        ]
+      }
+    },
+    {
+      "id": "volume-types-table",
+      "type": "ArchitectureDiagram",
+      "narration": "Line them up and the decision gets mechanical. gp3 gives every volume the same flat baseline — three thousand IOPS, one hundred twenty five mebibytes per second — with room to provision up to sixteen thousand IOPS and one thousand mebibytes per second beyond that, for extra cost. Need more consistent random IOPS than that ceiling allows? io2 scales to sixty four thousand IOPS, and io2 Block Express, Nitro instances only, pushes that to two hundred fifty six thousand IOPS and four thousand mebibytes per second. Need cheap, large, sequential throughput instead of random IOPS? st1 bursts to roughly five hundred mebibytes per second, sc1 to roughly two hundred fifty, both with a real one hundred twenty five gibibyte minimum size, and neither one able to boot an instance. And instance store isn't EBS at all — it's physically bound to the host, with no independent durability, correct only for data you can fully regenerate.",
+      "props": {
+        "kicker": "EVERY OPTION, SIDE BY SIDE",
+        "heading": "gp3, io2, st1/sc1, and instance store",
+        "variant": "table",
+        "table": {
+          "columns": ["Type", "Baseline / ceiling", "Best for"],
+          "rows": [
+            { "label": "gp3", "cells": ["3,000 IOPS / 125 MiB/s baseline; up to 16,000 IOPS / 1,000 MiB/s provisioned", "General-purpose boot & data volumes under the ceiling"] },
+            { "label": "io2 / Block Express", "cells": ["io2: up to 64,000 IOPS. Block Express: up to 256,000 IOPS / 4,000 MiB/s (Nitro only)", "Highest, most consistent random IOPS — large transactional DBs"] },
+            { "label": "st1", "cells": ["Scales with size, bursts ~500 MiB/s; 125 GiB minimum size", "Large sequential throughput — log processing, big scans"] },
+            { "label": "sc1", "cells": ["Scales with size, bursts ~250 MiB/s; 125 GiB minimum size", "Cold, infrequent, sequential-only, cost above all"] },
+            { "label": "Instance store", "cells": ["Physically bound to the host; no independent durability", "Fully regenerable data only — caches, scratch space"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "delete-on-termination-trap",
+      "type": "ConceptScene",
+      "narration": "Walk through the flag itself, because this is the fact the exam tests more than any other in this chapter. Every volume attached to an instance carries its own DeleteOnTermination flag, set individually per block device mapping — it isn't a property of the EBS service as a whole. For the root volume, that flag defaults to true: terminate the instance, and the root volume disappears with it, exactly as designed. For any additional volume — attached at launch or bolted on later — the default flips to false: that volume survives termination and just sits there, orphaned and still billing you, until someone deletes it on purpose. And either default can be overridden, either in the block device mapping at launch time, or afterward with a single modify-instance-attribute call. Miss this and you either lose data you assumed would survive, or quietly pay for volumes nobody remembered to clean up.",
+      "props": {
+        "kicker": "THE CHAPTER'S SIGNATURE TRAP",
+        "heading": "One flag, two opposite defaults",
+        "tone": "warn",
+        "variant": "steps",
+        "steps": [
+          "Every attached EBS volume carries its own DeleteOnTermination flag, set per block device mapping.",
+          "Root volume default: true — terminate the instance and the root volume is deleted with it, by design.",
+          "Additional volumes default: false — they survive termination as orphaned, still-billed resources.",
+          "Either default can be flipped: at launch in the block device mapping, or later via modify-instance-attribute."
+        ]
+      }
+    },
+    {
+      "id": "storage-lab-tree",
+      "type": "CodeScene",
+      "narration": "Three scripts map to the three mechanisms this chapter actually tests. One provisions a gp3 volume with explicit IOPS and throughput instead of trusting the free baseline. One fixes the root-volume trap after the fact, flipping DeleteOnTermination to false before a deployment that terminates instances. And one runs the snapshot cycle — create a snapshot, then restore it into a brand-new volume, potentially in a different availability zone. You're never asked to type these from memory on exam day; you're asked to recognize which mechanism a CLI fragment, or a Terraform resource, actually implements.",
+      "props": {
+        "kicker": "THE CLI, ORGANIZED BY INTENT",
+        "heading": "storage-lab/",
+        "variant": "tree",
+        "filename": "storage-lab/",
+        "lines": [
+          "storage-lab/",
+          "├── volumes/",
+          "│   ├── create-gp3.sh                 # create-volume with explicit --iops/--throughput",
+          "│   ├── fix-delete-on-termination.sh  # closes the root-volume trap after launch",
+          "│   └── snapshot-cycle.sh             # create-snapshot -> create-volume --snapshot-id",
+          "├── terraform/",
+          "│   └── ebs.tf                        # illustrative aws_ebs_volume + attachment resource",
+          "└── README.md"
+        ],
+        "linesPerFrame": 22
+      }
+    },
+    {
+      "id": "cli-walkthrough",
+      "type": "TerminalDemo",
+      "narration": "First, create the gp3 volume itself, requesting six thousand IOPS and two hundred fifty mebibytes per second explicitly — both above the free baseline, so this is a paid, provisioned request the service has to validate against gp3's ceiling. Next, close the root-volume trap directly: this modify-instance-attribute call flips DeleteOnTermination to false on the root device, so a future terminate won't quietly delete it. And finally, the backup path — create-snapshot kicks off an incremental backup; restoring later is just create-volume pointed at that snapshot ID, optionally into a completely different availability zone for disaster recovery.",
+      "props": {
+        "kicker": "TRY IT YOURSELF",
+        "heading": "From create-volume to a safe DeleteOnTermination flag",
+        "prompt": "$",
+        "steps": [
+          {
+            "cmd": "aws ec2 create-volume --availability-zone us-east-1a --volume-type gp3 --size 500 --iops 6000 --throughput 250",
+            "output": [
+              "{ \"VolumeId\": \"vol-0abc123\", \"VolumeType\": \"gp3\",",
+              "  \"Iops\": 6000, \"Throughput\": 250, \"State\": \"creating\" }"
+            ]
+          },
+          {
+            "cmd": "aws ec2 modify-instance-attribute --instance-id i-0abc123 --block-device-mappings '[{\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"DeleteOnTermination\":false}}]'",
+            "output": [
+              "Root device /dev/xvda updated",
+              "DeleteOnTermination: false"
+            ]
+          },
+          {
+            "cmd": "aws ec2 create-snapshot --volume-id vol-0abc123 --description \"orders-db-data nightly\"",
+            "output": [
+              "{ \"SnapshotId\": \"snap-0def456\", \"State\": \"pending\",",
+              "  \"VolumeSize\": 500, \"Progress\": \"0%\" }"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "decision-framework",
+      "type": "ArchitectureDiagram",
+      "narration": "Work this in a fixed order and the scenario's framing stops being able to trick you. Question one: can this data disappear on a stop or a terminate without consequence? If yes, instance store wins outright and you're done. If no, question two: is the access pattern random, small I/O, or large and sequential? Random points you at the SSD family — gp3 first, io2 if you outgrow it. Sequential points at the HDD family — st1, then sc1 if cost dominates. Only after those two questions do the raw numbers matter: place your IOPS or throughput requirement against gp3's baseline, its provisioned ceiling, io2, or io2 Block Express. And a fourth question sits off to the side — does anything genuinely need the same volume attached to multiple instances at once? That's the one, narrow case for Multi-Attach; if you just want ordinary shared files across instances, the answer is EFS or FSx, not EBS at all.",
+      "props": {
+        "kicker": "THE DECISION FRAMEWORK",
+        "heading": "Durability first, pattern second, numbers third",
+        "variant": "table",
+        "table": {
+          "columns": ["Question", "One branch", "The other branch"],
+          "rows": [
+            { "label": "Can you lose this on stop/terminate?", "cells": ["Yes → instance store, done", "No → everything below is EBS"] },
+            { "label": "Random or large-sequential?", "cells": ["Random → SSD family: gp3, then io2", "Sequential → HDD family: st1, then sc1"] },
+            { "label": "Where does the number land?", "cells": ["≤16,000 IOPS gp3; ≤64,000 io2; above → Block Express", "≤500 MiB/s, cost-ok → st1; colder/cheaper → sc1"] },
+            { "label": "Need multi-instance access?", "cells": ["Cluster-aware app on io1/io2 → Multi-Attach, one AZ, ≤16 instances", "Plain shared-filesystem need → EFS or FSx, not EBS"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "case-study",
+      "type": "ConceptScene",
+      "narration": "Take a concrete case. Vantage Analytics runs a database serving random point lookups at very high volume — their own benchmark shows sustained demand for roughly forty thousand IOPS, with tight, predictable latency, and any spike in tail latency causes visible errors downstream. Their current gp3 volume, already maxed out at sixteen thousand provisioned IOPS, simply cannot get there — that's not a pricing problem, it's gp3's hard ceiling. Run it through the framework: durability matters, the pattern is random, and the number, forty thousand, sits comfortably inside io2's sixty four thousand IOPS ceiling with a much tighter latency profile than gp3 could ever offer. io2 is the answer, and Block Express isn't needed yet.",
+      "props": {
+        "kicker": "ONE WORKLOAD, WORKED THROUGH",
+        "heading": "Vantage Analytics — 40,000 IOPS, tight latency",
+        "variant": "profile",
+        "profile": {
+          "name": "Vantage Analytics",
+          "role": "Trading-signals database · ~40,000 sustained random IOPS · tight, predictable latency required",
+          "detail": "Their gp3 volume is already maxed out at 16,000 provisioned IOPS and still can't keep up; any tail-latency spike causes visible errors downstream.",
+          "verdict": "Migrate to io2 — its 64,000 IOPS ceiling and tighter latency profile comfortably cover the requirement, without yet needing io2 Block Express."
+        }
+      }
+    },
+    {
+      "id": "knowledge-check",
+      "type": "KnowledgeCheck",
+      "narration": "Try these yourself before the answers. First: an auto scaling group terminates an instance whose root volume held disposable build artifacts, while a separately attached data volume held customer uploads — what happens to each one? Second, and this is where people reach one step too far: a financial firm needs forty five thousand sustained random IOPS with strict, consistent sub-millisecond latency on a Nitro-based instance — is that a job for gp3's ceiling, for io2, or does it actually need io2 Block Express?",
+      "props": {
+        "kicker": "KNOWLEDGE CHECK",
+        "heading": "Try these before the answer",
+        "questions": [
+          {
+            "level": "ASSOCIATE",
+            "prompt": "An auto scaling group terminates an instance. Its gp3 root volume held disposable build artifacts; a separately attached gp3 data volume held customer uploads. After termination, what happens to each volume?",
+            "options": [
+              "Both volumes are deleted automatically, since EBS always cleans up on terminate.",
+              "The root volume is deleted; the data volume survives as an orphaned, still-billed resource.",
+              "Neither volume is deleted — EBS volumes only detach, never delete, on termination.",
+              "Only the larger volume survives; deletion is based on volume size, not on any flag."
+            ]
+          },
+          {
+            "level": "PROFESSIONAL",
+            "prompt": "A financial firm migrating an on-prem database needs 45,000 sustained random IOPS with strict, consistent sub-millisecond latency, on a Nitro-based EC2 instance. Which EBS configuration is the right target?",
+            "options": [
+              "gp3, with the maximum amount of IOPS provisioned",
+              "io2 — its 64,000 IOPS ceiling on Nitro instances comfortably covers this with the required latency consistency",
+              "io2 Block Express, since any requirement above 16,000 IOPS requires it",
+              "st1, striped across multiple volumes for extra throughput"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer-reveal",
+      "type": "AnswerReveal",
+      "narration": "Here's why. Every EBS volume carries its own DeleteOnTermination flag — it defaults to true for the root volume and false for anything attached separately, so the root volume vanishes on terminate while the data volume lingers as an orphaned, billed resource, exactly as each default is designed to behave. And forty five thousand IOPS lands comfortably inside io2's sixty four thousand IOPS ceiling on Nitro instances, well past what gp3 can provision at any price — io2 Block Express is reserved for numbers that exceed io2's own ceiling, which forty five thousand doesn't.",
+      "props": {
+        "kicker": "ANSWERS",
+        "heading": "Here's why",
+        "answers": [
+          {
+            "prompt": "What happens to the root volume vs. the separately attached data volume on termination?",
+            "correct": "The root volume is deleted; the data volume survives as an orphaned, billed resource.",
+            "rationale": "DeleteOnTermination defaults to true for the root volume and false for anything attached separately — both defaults did exactly what they're designed to do. The lesson is knowing which default applies to which volume before you terminate anything."
+          },
+          {
+            "prompt": "45,000 IOPS, strict consistent latency, Nitro-based instance — gp3, io2, or io2 Block Express?",
+            "correct": "io2.",
+            "rationale": "io2's per-volume ceiling of 64,000 IOPS on Nitro instances comfortably covers 45,000, with the sub-millisecond, consistent latency the requirement calls for — well past gp3's 16,000 IOPS provisioned ceiling. Block Express exists for requirements that exceed io2's own 64,000 IOPS ceiling, which this one doesn't."
+          }
+        ]
+      }
+    },
+    {
+      "id": "recap",
+      "type": "ChapterRecap",
+      "narration": "Five things to carry forward. gp3's baseline is three thousand IOPS and one hundred twenty five mebibytes per second, flat no matter the size — its sixteen thousand IOPS ceiling is a hard limit, not something you can buy past. Instance store genuinely loses data on stop and on terminate, not as a simplification — it's correct only for data you can afford to regenerate completely. DeleteOnTermination defaults to true for the root volume and false for everything else — this single flag is the chapter's signature trap, and it runs in both directions, unexpected data loss or unexpected orphaned cost. EBS snapshots are incremental after the first one, which is exactly why frequent backup schedules on huge volumes stay affordable. And Multi-Attach is a narrow tool for cluster-aware applications on io1 or io2 within one availability zone — never reach for it as a general shared-filesystem hammer; that's EFS or FSx territory. Next: chapter six moves from block storage to object storage — S3's storage classes, lifecycle rules, and the security configuration the exam tests hardest.",
+      "props": {
+        "kicker": "RECAP",
+        "heading": "What to remember from this chapter",
+        "takeaways": [
+          "gp3's baseline is 3,000 IOPS / 125 MiB/s, flat regardless of size — its 16,000 IOPS / 1,000 MiB/s ceiling is a hard limit, not a pricing tier.",
+          "Instance store loses data on stop AND terminate — genuinely, not as a simplification; use it only for fully regenerable data.",
+          "DeleteOnTermination defaults to true for the root volume, false for every other volume — the chapter's signature trap, cutting both ways.",
+          "EBS snapshots are incremental after the first one — why frequent backup schedules on large volumes stay affordable.",
+          "Multi-Attach is a narrow tool for cluster-aware apps on io1/io2 in one AZ — never the answer for ordinary shared storage; that's EFS or FSx."
+        ],
+        "next": {
+          "title": "Chapter 6 — S3 Deep Dive: Storage Classes, Lifecycle & Security",
+          "teaser": "Block storage solved — now the exam moves to object storage and the security config it tests hardest."
+        }
+      }
+    },
+    {
+      "id": "challenge",
+      "type": "FinalChallenge",
+      "narration": "One more to work through yourself. A logging pipeline writes events sequentially in large batches, then a nightly job scans the entire day's file for aggregation — sustained throughput around three hundred mebibytes per second, essentially zero random IOPS, and a hard cost mandate from finance. Using this chapter's framework, which volume type actually fits, and why would gp3 or io2 be the wrong call here even though both could technically handle that throughput number?",
+      "props": {
+        "kicker": "THINK ABOUT IT",
+        "prompt": "A logging pipeline writes sequentially in large batches, then scans the whole day's file nightly for aggregation — ~300 MiB/s sustained throughput, essentially zero random IOPS, and a hard cost mandate. Which volume type fits, and why would gp3 or io2 be the wrong call even though both could handle the throughput?",
+        "hint": "Durability first, then pattern — and this one is sequential, not random, at any number.",
+        "nextChapterTitle": "Chapter 6 · S3 Deep Dive: Storage Classes, Lifecycle & Security"
+      }
+    }
+  ]
+}
