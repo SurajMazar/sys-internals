@@ -18,7 +18,7 @@ import soundfile as sf
 
 SAMPLE_RATE = 24000
 VIDEO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_VOICE = "am_michael"  # American English, male — instructor-style
+DEFAULT_VOICE = "af_heart"  # American English, female — instructor-style
 
 
 def synthesize_chapter(chapter: str) -> None:

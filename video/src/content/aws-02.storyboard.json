@@ -1,0 +1,278 @@
+{
+  "chapter": "aws-02",
+  "title": "IAM & Account Security Fundamentals",
+  "voice": "af_heart",
+  "scenes": [
+    {
+      "id": "intro",
+      "type": "ChapterIntro",
+      "narration": "Design Secure Architectures is the highest-weighted domain on the associate exam, at thirty percent — heavier than any other domain on either exam. And almost every question inside it boils down to one skill: look at a stack of policies and predict, exactly, whether a request gets allowed. This chapter builds that skill from scratch — users, groups, and roles, identity policies versus resource policies, the real order AWS evaluates them in, and S T S, or S-T-S, the mechanism that hands out temporary, cross-account access without a single long-lived secret changing hands.",
+      "props": {
+        "kicker": "AWS CERTIFICATION PREP · CHAPTER 2",
+        "title": "IAM & Account Security Fundamentals",
+        "facts": [
+          { "label": "Design Secure Architectures — SAA-C03", "value": "30% of the exam — the single highest-weighted domain" },
+          { "label": "The load-bearing rule of this chapter", "value": "explicit Deny → explicit Allow → implicit Deny, every request" }
+        ]
+      }
+    },
+    {
+      "id": "wrong-instinct",
+      "type": "ConceptScene",
+      "narration": "Faced with 'an application needs to talk to AWS,' the instinct that feels fastest is this: create one IAM user per app, hand it a permanent access key, and attach administrator access so nothing ever throws a permission error. Drop that key into a config file or bake it into a machine image, and you're done. For a human doing something urgent, the shortcut is even simpler — just sign in as the root user, since root can obviously do anything. None of this looks careless in the moment. It works on the first try. That's exactly why it's the wrong answer the exam loves to dangle.",
+      "props": {
+        "kicker": "THE INSTINCT TO AVOID",
+        "heading": "“One user, one key, AdministratorAccess, done”",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "Create one IAM user per application, hand it a long-lived access key pair",
+          "Attach AdministratorAccess \"to avoid permission errors later\"",
+          "Bake the key into a config file, an environment variable, or an AMI",
+          "For urgent human work, just sign in as the root user instead"
+        ]
+      }
+    },
+    {
+      "id": "why-it-fails",
+      "type": "ConceptScene",
+      "narration": "Here's the mechanism behind why each shortcut is worse than it looks. A long-lived access key has no expiry and no automatic rotation, so it sits exactly where secrets leak from — a git history, a plaintext config, a shared machine image — and stays valid until a human notices. Pairing that with administrator access means the least-privilege violation compounds the exposure: whichever leak happens first is now a full account compromise, not a contained one. Root is worse still, because no IAM policy can ever restrict it after the fact. And even correctly-issued role credentials aren't automatically safe — the older, unauthenticated version of the instance metadata service could be tricked into handing over a role's credentials through a server-side request forgery attack, which is why AWS has pushed newer instances toward a session-based, token-gated version by default.",
+      "props": {
+        "kicker": "WHY IT'S WRONG",
+        "heading": "A standing liability, not a one-time risk",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "Long-lived keys have no built-in expiry or rotation — once leaked, valid until someone notices",
+          "AdministratorAccess turns any single leak into a full account compromise",
+          "Root can't be scoped by any IAM policy — there's no restricting it after the fact",
+          "IMDSv1 was vulnerable to credential theft via SSRF; IMDSv2 closes that with a session token"
+        ]
+      }
+    },
+    {
+      "id": "evaluation-order",
+      "type": "ArchitectureDiagram",
+      "narration": "Every single API call, no matter which identity made it, gets evaluated the same three-step way. Step one: if any applicable policy — identity-based or resource-based, doesn't matter — contains an explicit Deny, the request is denied, full stop, no matter how many Allows exist elsewhere. Step two: if no Deny was found, but at least one applicable policy contains an explicit Allow, the request is allowed. Step three: if neither shows up, AWS's default posture is implicit deny — nothing is granted by default. This three-step order is the single most tested fact in this entire chapter.",
+      "props": {
+        "kicker": "THE CORE MECHANISM",
+        "heading": "How AWS turns a stack of policies into one decision",
+        "variant": "table",
+        "table": {
+          "columns": ["Step", "Applicable policy contains", "Result"],
+          "rows": [
+            { "label": "1", "cells": ["An explicit Deny", "DENY — wins outright, regardless of any Allow elsewhere"] },
+            { "label": "2", "cells": ["An explicit Allow (no Deny found)", "ALLOW"] },
+            { "label": "3", "cells": ["Neither Deny nor Allow", "Implicit DENY — deny-by-default"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "policy-json-example",
+      "type": "CodeScene",
+      "narration": "Here's that rule made concrete, inside an actual policy document. The first statement grants read access to the entire reports bucket. The second is an explicit Deny, scoped to just the confidential prefix inside that same bucket. Walk it through the three steps: for anything under confidential, the Deny applies and wins outright. For everything else in the bucket, no Deny applies, so the Allow stands. Reading a document like this and predicting the outcome instantly is arguably the single most common question shape in the secure-architectures domain.",
+      "props": {
+        "kicker": "SEEN IN A REAL POLICY DOCUMENT",
+        "heading": "A broad Allow, narrowed by an explicit Deny",
+        "variant": "code",
+        "filename": "reports-bucket-policy.json",
+        "lines": [
+          "{",
+          "  \"Version\": \"2012-10-17\",",
+          "  \"Statement\": [",
+          "    // grants read access to the whole bucket",
+          "    { \"Sid\": \"AllowReadReports\", \"Effect\": \"Allow\",",
+          "      \"Action\": [\"s3:GetObject\",\"s3:ListBucket\"],",
+          "      \"Resource\": \"arn:aws:s3:::reports-bucket/*\" },",
+          "    // this explicit Deny wins here, no matter what the Allow says",
+          "    { \"Sid\": \"DenyConfidentialPrefix\", \"Effect\": \"Deny\",",
+          "      \"Action\": \"s3:*\",",
+          "      \"Resource\": \"arn:aws:s3:::reports-bucket/confidential/*\" }",
+          "  ]",
+          "}"
+        ],
+        "linesPerFrame": 14
+      }
+    },
+    {
+      "id": "identity-design-steps",
+      "type": "ConceptScene",
+      "narration": "There's a fixed order of questions that gets you to the right identity design almost every time. Start by asking whether the principal in the scenario is a human who needs to sign in, or a workload — an EC2 instance, a Lambda function, an ECS or EKS task — that calls AWS APIs on its own. For humans, centralize through IAM Identity Center, or at minimum groups plus multi-factor authentication; never hand an individual user broad permissions directly. For workloads, the answer is always a role — its credentials rotate automatically through S T S, so there's no long-lived secret to leak. Whichever identity you land on, scope it to least privilege. And when a principal needs temporary or cross-account access, that's exactly when you reach for S T S AssumeRole.",
+      "props": {
+        "kicker": "THE DECISION SEQUENCE",
+        "heading": "Human or workload — then everything else follows",
+        "tone": "ok",
+        "variant": "steps",
+        "steps": [
+          "Is the principal human, or a workload calling APIs on its own?",
+          "Human: centralize via IAM Identity Center, or groups + MFA — never a one-off user",
+          "Workload: always an IAM role — EC2, Lambda, ECS/EKS, no exceptions",
+          "Scope whichever identity you land on to least privilege",
+          "Need temporary or cross-account access? Reach for STS AssumeRole"
+        ]
+      }
+    },
+    {
+      "id": "decision-framework",
+      "type": "ArchitectureDiagram",
+      "narration": "This is the single most exam-relevant table in the whole chapter, condensed to five rows. Reach for an IAM user only when you have a small number of named humans and Identity Center genuinely isn't in play. Reach for a role for any workload, full stop, or any temporary human access. Resource-based policies matter specifically when the resource type supports one — think S3 or K M S — and you're granting a principal in another account. A permissions boundary sets a ceiling on what a delegated identity's own policies can grant — it never grants anything by itself. And S T S AssumeRole is for temporary, scoped, cross-account or elevated access — not a substitute for a normal same-account identity policy you didn't actually need to complicate.",
+      "props": {
+        "kicker": "THE DECISION FRAMEWORK",
+        "heading": "Which tool, for which scenario",
+        "variant": "table",
+        "table": {
+          "columns": ["Choose", "When the scenario says", "Not when"],
+          "rows": [
+            { "label": "IAM User", "cells": ["A few named humans need direct access and Identity Center isn't in play", "The org has many humans across many accounts"] },
+            { "label": "IAM Role", "cells": ["Any workload needs to call AWS APIs, or anyone needs temporary access", "You're tempted to hand out its credentials as a permanent secret"] },
+            { "label": "Resource-based policy", "cells": ["The resource supports one (S3, KMS) and you're granting another account access", "The service doesn't support resource policies at all"] },
+            { "label": "Permissions boundary", "cells": ["You need a hard ceiling on what a delegated admin's roles can ever grant", "You think it grants permissions on its own — it never does"] },
+            { "label": "STS AssumeRole", "cells": ["Temporary, scoped access to a role in another account (or a higher-privilege one)", "You just needed a normal identity policy on an existing identity"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cli-assume-role",
+      "type": "TerminalDemo",
+      "narration": "Two commands are worth being able to read on sight, even though you'll rarely type them verbatim. Creating a role attaches a trust policy naming who's allowed to assume it — here, an EC2 instance profile. Calling S T S AssumeRole exchanges a trusted caller's identity for temporary credentials tied to that role, complete with an expiration timestamp — no standing secret involved. Access is gated twice along the way: the target role's trust policy has to name the caller, and the caller's own identity policy has to permit calling AssumeRole on that specific role in the first place. Only once both checks pass does the caller get a session token, and every call made with it is now authorized against the assumed role's own policies, not the original caller's.",
+      "props": {
+        "kicker": "TRY IT YOURSELF",
+        "heading": "The real AssumeRole flow, from the command line",
+        "prompt": "$",
+        "steps": [
+          {
+            "cmd": "aws iam create-role --role-name app-server-role --assume-role-policy-document file://ec2-trust.json",
+            "output": [
+              "{",
+              "  \"Role\": {",
+              "    \"RoleName\": \"app-server-role\",",
+              "    \"Arn\": \"arn:aws:iam::111111111111:role/app-server-role\"",
+              "  }",
+              "}"
+            ]
+          },
+          {
+            "cmd": "aws sts assume-role --role-arn arn:aws:iam::222222222222:role/partner-cross-account-role --role-session-name audit-session-2026-08",
+            "output": [
+              "{",
+              "  \"Credentials\": {",
+              "    \"AccessKeyId\": \"ASIAEXAMPLE1234567\",",
+              "    \"SessionToken\": \"[REDACTED-EXAMPLE-TOKEN]\",",
+              "    \"Expiration\": \"2026-08-18T14:00:00Z\"",
+              "  }",
+              "}"
+            ]
+          },
+          {
+            "cmd": "aws s3 ls s3://reports-bucket/ --profile audit-session",
+            "output": [
+              "2026-08-01 09:12:03 quarterly-summary.csv",
+              "2026-08-10 14:40:55 confidential/payroll.csv"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "case-study",
+      "type": "ConceptScene",
+      "narration": "Take a concrete case. A financial-services company hires an outside audit firm for a two-week engagement, and the auditors need read-only access to exactly one bucket of financial reports — no console, no other resources. The company doesn't want to create four IAM users it'll never see again, and it wants access to die automatically the moment the engagement ends. Run it through the framework: this is a human, but a temporary, external one, so the answer isn't a user at all. The auditors' own organization has them assume a cross-account role, scoped by its trust policy and an identity policy to just get-object and list-bucket on that single bucket. When the two weeks are up, the company simply deletes the role — there's no standing credential to revoke, because none was ever created.",
+      "props": {
+        "kicker": "ONE SCENARIO, WORKED THROUGH",
+        "heading": "The two-week audit engagement",
+        "variant": "profile",
+        "profile": {
+          "name": "The audit contractor",
+          "role": "External firm · four auditors · two-week engagement · read-only on one S3 bucket",
+          "detail": "A financial-services company needs to give an outside audit firm read-only access to a single bucket of financial reports — nothing else — and wants that access to stop working automatically the moment the two-week engagement ends. Creating four throwaway IAM users doesn't appeal to anyone.",
+          "verdict": "Have the auditors assume a purpose-built cross-account role, scoped by its trust policy and an identity policy to exactly GetObject and ListBucket on that one bucket. When the engagement ends, delete the role — there was never a standing user or key to revoke."
+        }
+      }
+    },
+    {
+      "id": "knowledge-check",
+      "type": "KnowledgeCheck",
+      "narration": "Try these before we reveal the answers. First: a role's own policy allows get-object, but a separate policy on that same role has an explicit Deny for all S3 actions on that bucket — which one wins? Second, and this one trips up even people who've used AWS for years: a role's permissions boundary limits it to read-only S3, but a bucket's resource-based policy independently grants that same role put-object on one object — does the boundary block that grant too?",
+      "props": {
+        "kicker": "KNOWLEDGE CHECK",
+        "heading": "Try these before the answer",
+        "questions": [
+          {
+            "level": "ASSOCIATE",
+            "prompt": "A role's identity policy allows s3:GetObject on a bucket. A separate policy on the same role contains an explicit Deny for s3:* on that same bucket. What happens when the role calls GetObject?",
+            "options": [
+              "Denied — the explicit Deny always wins over any Allow",
+              "Allowed — the Allow statement was attached first, so it takes precedence",
+              "Allowed, but only when MFA was used for the call",
+              "It depends on which statement has the lower Sid value"
+            ]
+          },
+          {
+            "level": "PROFESSIONAL",
+            "prompt": "A role's permissions boundary limits it to read-only S3 actions. Its own identity policy separately grants PutObject, and a bucket's resource-based policy independently grants that same role PutObject on one object. Does the boundary block the resource-policy grant too?",
+            "options": [
+              "Yes — a permissions boundary caps every grant the role can ever receive, from any source",
+              "No — the boundary only caps what the role's own identity policies can grant; the resource-based grant stands on its own",
+              "It depends on whether the boundary was attached before or after the bucket policy",
+              "No — permissions boundaries only apply to IAM users, never to roles"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer-reveal",
+      "type": "AnswerReveal",
+      "narration": "Here's why. An explicit Deny is checked first and wins outright — the evaluation never even reaches a 'which Allow wins' question, because Deny short-circuits the whole thing. And a permissions boundary only caps what the role's own identity policies can grant — it has zero authority over a resource-based policy attached somewhere else. The role's own attempt at put-object gets capped by the boundary and denied, but the bucket policy's independent grant is evaluated entirely on its own terms. That exact distinction shows up constantly as a professional-level trap.",
+      "props": {
+        "kicker": "ANSWERS",
+        "heading": "Here's why",
+        "answers": [
+          {
+            "prompt": "Identity policy Allows GetObject; a separate policy on the same role explicitly Denies s3:* on that bucket.",
+            "correct": "Denied — the explicit Deny always wins over any Allow.",
+            "rationale": "AWS checks for an applicable explicit Deny first. If one exists, the request is denied regardless of how many Allow statements exist elsewhere — statement order and Sid values don't change that, and MFA presence only matters if a policy's Condition specifically checks for it."
+          },
+          {
+            "prompt": "A read-only permissions boundary vs. a resource-based policy independently granting PutObject.",
+            "correct": "No — the boundary only caps the role's own identity policies; the resource-based grant is evaluated on its own terms.",
+            "rationale": "A permissions boundary sets a ceiling on what an identity's own attached policies can grant it. It has no authority over a resource-based policy attached to a completely different resource — that grant stands or falls on its own logic. Mixing this up is one of the most common professional-level trap answers."
+          }
+        ]
+      }
+    },
+    {
+      "id": "recap",
+      "type": "ChapterRecap",
+      "narration": "Five things to carry forward. The evaluation order is explicit Deny, then explicit Allow, then implicit deny, and that order never changes. Workload identity is always a role, never a long-lived key — no exceptions the exam expects you to accept. MFA and least privilege are the two most heavily tested security principles on either exam. A permissions boundary caps what an identity's own policies can grant it, but has no say over a resource-based policy granting that same identity access from outside. And S T S AssumeRole is gated twice — by the target role's trust policy and by the caller's own identity policy — both have to agree. Next: chapter three moves from who's allowed to act to where things actually sit on the network — a perfectly scoped IAM policy still won't save a resource that's reachable from anywhere on the internet.",
+      "props": {
+        "kicker": "RECAP",
+        "heading": "What to remember from this chapter",
+        "takeaways": [
+          "Evaluation order is fixed: explicit Deny, then explicit Allow, then implicit Deny — always in that order.",
+          "Workload identity is always a role, never a long-lived key — EC2, Lambda, ECS/EKS, no exceptions.",
+          "MFA and least privilege are the two most heavily tested security principles on both exams.",
+          "A permissions boundary caps an identity's own policies — it never limits a resource-based policy granting access from outside.",
+          "STS AssumeRole is gated twice: the target role's trust policy, and the caller's own identity policy — both must agree."
+        ],
+        "next": {
+          "title": "Chapter 3 — VPC Networking Fundamentals",
+          "teaser": "IAM decides who's allowed to act. Chapter three decides what can even reach the resource over the network in the first place."
+        }
+      }
+    },
+    {
+      "id": "challenge",
+      "type": "FinalChallenge",
+      "narration": "Before you move on, work this through yourself. A retail company's order-processing Lambda function currently reads an old IAM user's access key from an environment variable to write to DynamoDB, and nobody's sure whether that key has ever been rotated. Using this chapter's framework, what should replace it, and what actually changes once you make that switch? There's a specific, correct answer here — not just a vague direction.",
+      "props": {
+        "kicker": "THINK ABOUT IT",
+        "prompt": "A retail company's Lambda function reads a two-year-old IAM user's access key from an environment variable to write to DynamoDB. Using this chapter's framework, what should replace it, and what three things change once you make that switch?",
+        "hint": "Think about who authorizes the call, how long the credential lives, and what happens to the old key afterward.",
+        "nextChapterTitle": "Chapter 3 · VPC Networking Fundamentals"
+      }
+    }
+  ]
+}
