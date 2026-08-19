@@ -24,6 +24,12 @@ import storyboardAws09 from "./content/aws-09.storyboard.json";
 import durationsAws09 from "./content/aws-09.durations.json";
 import storyboardAws10 from "./content/aws-10.storyboard.json";
 import durationsAws10 from "./content/aws-10.durations.json";
+import storyboardAws11 from "./content/aws-11.storyboard.json";
+import durationsAws11 from "./content/aws-11.durations.json";
+import storyboardAws12 from "./content/aws-12.storyboard.json";
+import durationsAws12 from "./content/aws-12.durations.json";
+import storyboardAws13 from "./content/aws-13.storyboard.json";
+import durationsAws13 from "./content/aws-13.durations.json";
 
 const CHAPTERS: { id: string; storyboard: Storyboard; durations: Durations }[] = [
   { id: "aws-01", storyboard: storyboardAws01 as unknown as Storyboard, durations: durationsAws01 as Durations },
@@ -36,6 +42,9 @@ const CHAPTERS: { id: string; storyboard: Storyboard; durations: Durations }[] =
   { id: "aws-08", storyboard: storyboardAws08 as unknown as Storyboard, durations: durationsAws08 as Durations },
   { id: "aws-09", storyboard: storyboardAws09 as unknown as Storyboard, durations: durationsAws09 as Durations },
   { id: "aws-10", storyboard: storyboardAws10 as unknown as Storyboard, durations: durationsAws10 as Durations },
+  { id: "aws-11", storyboard: storyboardAws11 as unknown as Storyboard, durations: durationsAws11 as Durations },
+  { id: "aws-12", storyboard: storyboardAws12 as unknown as Storyboard, durations: durationsAws12 as Durations },
+  { id: "aws-13", storyboard: storyboardAws13 as unknown as Storyboard, durations: durationsAws13 as Durations },
 ];
 
 export const RemotionRoot: React.FC = () => {
