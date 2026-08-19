@@ -1,0 +1,319 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapters 8 and 9 gave the backend thousands of independently deployed services and a mesh that lets them call each other safely. None of that is directly reachable from a rider's or driver's phone \u2014 and it shouldn't be. This chapter derives, from first principles, why every mobile request instead crosses exactly one edge boundary, the API gateway, and why that gateway's hardest job isn't routing traffic \u2014 it's remembering, for months at a time, what every previous version of the app still believes the backend looks like."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain why mobile clients can never be allowed to call internal services directly, in terms this site has already built. You will understand Why \"backward compatibility\" for a mobile API is a fundamentally harder problem than for a typical internal RPC contract. You will predict Exactly how a gateway must transform one backend response differently for three different installed app versions, at the same instant. You will simulate Three app versions hitting one gateway, each correctly translated to the contract it expects \u2014 and a flaky-network retry safely deduplicated by an idempotency key."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Every other service-to-service call in this course happens between two processes the same company controls, deployed from the same pipeline, on the same private network. A rider's phone breaks every one of those assumptions at once: it runs code the backend cannot update on demand, it talks over a public, lossy, high-latency cellular network, and it is, from the backend's point of view, an untrusted client exactly like any other internet caller."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Concretely, the mobile edge has to solve five problems that no internal service-to-service call in chapters 8\u20139 had to solve at all:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "The client can't be redeployed on your schedule. An internal service's contract can change the moment both sides ship; a mobile app's contract is frozen the instant it's built, and stays frozen on some installs for months, regardless of what the backend does next. One logical screen may need many backend services. Opening the app's home screen alone can require the rider's profile, nearby driver availability, an ETA, a promotions/pricing check, and active-trip state \u2014 up to five or more independent internal calls behind one visible screen. The network itself is hostile. Cellular radios sleep and wake, tunnels and elevators cause total blackouts, and packet loss of a few percent is routine \u2014 nothing like the private, mostly-reliable network chapter 9's mesh was designed to run on. Retries are unavoidable and dangerous. A phone that doesn't hear back from \"request a ride\" cannot tell if the request failed before or after the backend acted on it \u2014 and naively retrying a state-changing call risks requesting two trips instead of one. Every internal service boundary must stay hidden. If the mobile app is allowed to know that \"get fare\" is served by the pricing service at some specific address, then chapter 8's whole point \u2014 being free to refactor internal service boundaries \u2014 is lost the day that knowledge ships inside an app binary you cannot force anyone to update."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "It's tempting to think the mobile edge is solved by the same sidecar/mesh machinery chapter 9 built for service-to-service calls. It isn't \u2014 for one structural reason: a sidecar assumes both ends of a call can be redeployed together by the same organization. The entire hard part of this chapter is a client the backend cannot touch after it ships. That single fact \u2014 not retries, not load balancing \u2014 is what forces a fundamentally different piece of infrastructure to exist at the edge."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "This chapter's problem didn't exist on day one \u2014 it was created by the very success of chapters 8 and 9. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Uber has publicly discussed, at a high level, operating a large mobile-facing fleet with a long tail of old app versions still in the field, and the general pressure that put on its backend API surface as the service count grew (chapters 8 and 9's migration is the well-documented backdrop here). This chapter does not claim to know the exact current name, internal source code, or precise architecture of Uber's present-day edge gateway \u2014 that level of detail isn't public. What it teaches instead is the general API gateway / backend- for-frontend pattern: a single, versioned, mobile-facing contract that fans out to internal services server-side. That pattern is extremely well documented across the industry (Netflix's and Amazon's public writing on gateway and BFF patterns are the widely cited examples), and it is exactly what any company at Uber's scale, with Uber's shape of mobile client base, needs to build for the same reasons derived below."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Start from the honest, obvious approach: the mobile app knows the addresses of the services it needs and calls each one over HTTPS, exactly the way an internal caller might before chapter 9's mesh existed."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is completely reasonable for a first version: it's simple, each team owns its own endpoint, and there's no extra infrastructure to build or operate. It also works fine in a demo, on office WiFi, with one app version installed on every test phone."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "Launch day. Two direct calls, ~240ms of network time on a good connection. Nobody notices \u2014 the screen is simple and there's exactly one app version in the field."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "Feature growth. Every new feature this screen gained added one more sequential cellular round trip \u2014 nobody chose 600ms, it accumulated one reasonable feature at a time. On real cellular conditions (packet loss, radio wake latency) this routinely gets worse, not better."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "The refactor the backend team wanted to make freely \u2014 and can't. Chapter 8 assumed internal refactors were safe because internal callers redeploy together. This caller doesn't. The backend team's honest choices now: keep the old address alive forever, or break every v3.1 install still active."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "Two independent failures, one root cause. \u00a74 makes the math and the compatibility trap precise; \u00a75 derives the fix."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Two independent failures, and either one alone would be disqualifying at Uber's real scale:"
+  },
+  {
+    "id": "s4-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-list1\"]",
+    "text": "Latency is the sum of every round trip, on the worst network you have. A cellular round-trip is commonly on the order of 100\u2013150 ms even on a healthy connection (versus low single-digit milliseconds on the private network chapter 9's calls run over) \u2014 and that's before TLS handshake overhead on a fresh connection to each distinct host. Four sequential calls at ~120 ms each is already ~480 ms of pure network time, before any service does a millisecond of work, and before a single retry. Add a fifth or sixth call as the home screen grows more features \u2014 routine over an app's lifetime \u2014 and the user is staring at a spinner for the better part of a second, on a good network. The backend can never promise a stable set of addresses again. The instant the mobile app hardcodes dispatch-svc.internal, that hostname is now a public contract frozen inside an app binary. Every future internal refactor this course has described \u2014 splitting a service (chapter 8), renaming one, moving a capability behind a different owner \u2014 either breaks every installed copy of the app that hasn't updated, or requires the backend team to keep the old hostname alive, forever, as a compatibility shim, indefinitely duplicating the very deploy-coupling problem chapter 8 broke the monolith apart to escape."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "App Store and Play Store releases are opt-in and gradual \u2014 a new version typically reaches a majority of active devices only after days to weeks of staged rollout, and a real long tail of installs never updates until the device itself is replaced. That means at any given moment the backend is serving a genuine mixture of app versions spanning months of history, all simultaneously, all expecting whatever contract existed when they were built. A naive direct-call design has no way to serve five different contract shapes from five different backend states at once \u2014 every naive fix (branch server-side on app version, forever) is exactly the kind of permanent, uncoordinated special-casing chapter 9 rejected for internal calls, now happening at the one boundary the backend can least afford to get informally."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The fix follows directly from naming the two failures precisely: fan the calls out server-side, in parallel, on the fast private network \u2014 and give the mobile app a small, stable, versioned contract that the gateway is responsible for satisfying, regardless of which internal services or shapes currently sit behind it."
+  },
+  {
+    "id": "deck-deckGateway-0",
+    "kind": "deck",
+    "deckId": "deckGateway",
+    "step": 0,
+    "text": "Where \u00a73 left off. Four direct calls, four hardcoded addresses, paid sequentially over the worst network the system runs on."
+  },
+  {
+    "id": "deck-deckGateway-1",
+    "kind": "deck",
+    "deckId": "deckGateway",
+    "step": 1,
+    "text": "One stable call, N parallel internal calls. The phone now only ever needs to know one hostname and one contract. The gateway pays the sequential-call tax internally \u2014 but in parallel, on a network two orders of magnitude faster than cellular."
+  },
+  {
+    "id": "deck-deckGateway-2",
+    "kind": "deck",
+    "deckId": "deckGateway",
+    "step": 2,
+    "text": "Version translation, the other half of the fix. The gateway doesn't just aggregate \u2014 it also reshapes today's backend truth into whichever contract shape the calling app version was built against, regardless of how many times that truth has changed internally since."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "Two distinct capabilities fall out of this move, and it's worth naming them separately because they solve different halves of \u00a74's problem: aggregation (one client call fans out to N internal calls in parallel, server-side, over the fast network) attacks the latency problem; version translation (the gateway adapts whatever the current backend produces into the exact shape a given app version was built expecting) attacks the compatibility problem. A gateway that only aggregated, without translating, would still break every time an internal contract changed underneath an old app version."
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "It becomes the single hop 100% of mobile traffic must pass through. It can be horizontally scaled and made highly available, but it is still, logically, one chokepoint standing between every phone on Earth and the entire backend \u2014 an outage here is a total outage, in a way no single internal service's outage (contained by chapter 9's circuit breakers) usually is. Version-translation logic accumulates and almost never gets deleted. Every old app version still active in the field needs its adapter kept working, for as long as that version has installs \u2014 and because of the long tail from \u00a74, \"as long as\" can mean years. The gateway team inherits a permanently growing pile of translation logic for contracts nobody internally uses anymore. It becomes a hidden dependency for every backend team's roadmap. A backend team that wants to change a response shape can't just ship \u2014 they must coordinate with whoever owns the gateway to add or update a translation adapter, turning what should be an internal, single-team change into a cross-team one. It adds a real hop's worth of latency and serialization cost to every single request, forever \u2014 small per call, but paid by every mobile request that will ever be made, which is the overwhelming majority of all traffic the backend serves."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Just like chapter 9's sidecar, the gateway doesn't make the underlying problem \u2014 a stranger you can't redeploy, on a hostile network \u2014 disappear. It moves the cost of handling that stranger into one place, owned by one team, instead of leaving it scattered across every backend service and every app version's ad-hoc workarounds. That's a genuinely good trade at Uber's scale of mobile traffic and app-version diversity. It is not free, and the final architecture below is built explicitly around managing these costs rather than pretending they don't exist."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. Every mobile request passes through the same ordered pipeline: terminate the connection, authenticate the rider or driver, detect which contract version this client expects, fan out to internal services in parallel, then translate the aggregated result back into that exact contract before it ever reaches the phone."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Every one of these internal services ultimately reads and writes some durable datastore. The next arc of this course turns to exactly that layer \u2014 starting with the real, public story of why Uber's core datastore choice itself became a subject of intense engineering debate."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Two mechanisms do essentially all of the gateway's real work: an adapter layer that reshapes one backend response into whatever contract a given app version expects, and an idempotency-key protocol that lets a phone safely retry a state-changing request without risking a duplicate effect."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Every request carries the app version that sent it (a header, in practice). The gateway looks up which contract that version was built against and runs the current backend response through that version's adapter before replying:"
+  },
+  {
+    "id": "deck-deckVersion-0",
+    "kind": "deck",
+    "deckId": "deckVersion",
+    "step": 0,
+    "text": "One canonical shape. Every internal service call this request fanned out to gets assembled into exactly one current, best representation of the truth \u2014 nothing version-specific has happened yet."
+  },
+  {
+    "id": "deck-deckVersion-1",
+    "kind": "deck",
+    "deckId": "deckVersion",
+    "step": 1,
+    "text": "Current version: identity transform. The newest app version's contract IS the canonical shape (or close to it) \u2014 its \"adapter\" does essentially nothing, which is exactly what you want the common case to cost."
+  },
+  {
+    "id": "deck-deckVersion-2",
+    "kind": "deck",
+    "deckId": "deckVersion",
+    "step": 2,
+    "text": "Old version: real translation. v3.1 was built before \"surge_multiplier\" existed as its own field and before multiple driver types existed \u2014 the adapter synthesizes the one string field v3.1 knows how to render, and silently drops a field v3.1 never asked for. Same instant, same backend truth, different contract."
+  },
+  {
+    "id": "deck-deckVersion-3",
+    "kind": "deck",
+    "deckId": "deckVersion",
+    "step": 3,
+    "text": "The whole reason this pays for itself. A backend team can add a field to the canonical shape and ship immediately \u2014 every existing adapter simply doesn't reference a field it never knew about. Only a BREAKING change (renaming or removing a field an old adapter depends on) requires updating that specific adapter, which is precisely the failure \u00a711's pattern 2 walks through when that step gets skipped."
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "A phone that requests a ride and hears nothing back \u2014 a dropped cellular connection, a timeout \u2014 cannot distinguish \"my request never arrived\" from \"my request succeeded and only the response was lost.\" The fix: the client generates a unique idempotency key up front and sends it with every attempt of the same logical request; the gateway remembers keys it has already completed and returns the original result instead of re-executing:"
+  },
+  {
+    "id": "s8-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p4\"]",
+    "text": "Drag the network flakiness and the idempotency window and watch how many of a rider's retried \"request ride\" taps would have caused a duplicate trip without this mechanism, versus how many are safely deduplicated with it:"
+  },
+  {
+    "id": "s8-p5",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p5\"]",
+    "text": "And drag the fan-out concurrency to see how many of \u00a74's sequential milliseconds a gateway actually buys back by moving the same calls onto the private network and running them in parallel:"
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "The pattern from chapter 9 repeats: no row is simultaneously infrastructure-free, instantly upgradeable, and free of a central chokepoint. Uber's real, publicly discussed pressure \u2014 a huge, geographically spread mobile fleet with a long tail of old versions, calling a backend built from thousands of independently deployed services \u2014 is exactly the situation that pushes an organization toward the third or fourth row, at real, ongoing cost."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Two numbers matter here: how much latency parallel server-side fan-out saves versus the naive sequential client calls from \u00a74, and how that gap grows as a screen needs more backend calls."
+  },
+  {
+    "id": "s10-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-list1\"]",
+    "text": "Sequential mobile calls scale linearly with call count. N sequential cellular round-trips at ~120 ms each cost roughly N \u00d7 120ms \u2014 a screen needing 6 calls is pushing three quarters of a second before any actual work happens. Parallel server-side fan-out scales with the slowest call, not the sum. Once the gateway issues all N internal calls concurrently over the low-latency private network, total latency is close to max(call times) + one mobile round trip instead of their sum \u2014 the mobile round-trip is paid exactly once, for the gateway call itself, regardless of how many internal calls it fans out to."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The two curves are a first-principles arithmetic model \u2014 one round trip per call summed versus one round trip plus the slowest internal call, using a widely cited general cellular RTT figure \u2014 not a claimed measured Uber production number. The point is the shape: the gap between the two lines widens every time a screen needs one more backend call, which is exactly the direction real product features move over time."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber has not published a detailed public postmortem naming a specific internal gateway incident, so this section teaches two realistic, industry-standard patterns this class of system is well known to produce across the industry, and says so plainly rather than inventing a specific internal Uber event."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Mobile apps, especially older versions, often implement their own client-side retry logic on top of whatever the gateway itself does \u2014 sometimes aggressively, with short fixed intervals rather than the backoff-and-jitter discipline chapter 9 derived for internal calls. A brief gateway blip (a deploy, a spike in one dependency) can cause a large fraction of concurrently active devices to retry in a tight, synchronized window right as the gateway is recovering \u2014 the same retry-amplification math from chapter 9, except now the source is millions of phones the backend team does not control the code of, rather than services it does."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "A backend team changes an internal response shape, updates the gateway's current adapter, and ships \u2014 but forgets (or was never told) that an old, still-active app version's adapter assumed a field that no longer exists in the same form. Because the affected version is a small, easy-to-miss slice of total traffic, the breakage can go unnoticed in aggregate metrics for days, surfacing only as a spike in support complaints from a specific, older app-version cohort \u2014 a failure mode unique to the mobile edge's long tail, with no equivalent in chapter 9's all-internal service graph where every caller can simply be redeployed."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "Both incidents trace back to the same root cause named in \u00a71: code the backend cannot redeploy. The fix in both cases is process, not just engineering \u2014 treating every version adapter as a real, tracked, tested contract with its own regression suite, and instrumenting metrics per app version, not only in aggregate, so a long-tail-only breakage is visible before it becomes a support fire."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Staff-level systems interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Uber's exact internal gateway source isn't public. What follows is precise, representative pseudocode for how a system like this is actually built \u2014 labeled illustrative because it is a reconstruction of the well-documented general pattern, not a copy of proprietary source."
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "1. Adapters translate OUT of one canonical shape, never re-derive it. Every internal service always produces its single current, best representation of the truth; every adapter's only job is reshaping that one truth for one contract. This keeps N adapters linear in complexity instead of letting each one reimplement its own aggregation logic. 2. The idempotency key lives in the gateway, not in each internal service. Exactly like chapter 9's decision to centralize retry/circuit-breaking logic in a sidecar rather than duplicating it per service, putting the client-retry safety net at the one edge boundary every mobile write passes through means every internal service can assume \"this call only happens once\" without implementing that guarantee itself."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Send a request as v3.1, v4.0, or v5.2 and watch the gateway detect the version, fan out to internal services in parallel, and translate the result into exactly the contract that version expects. Then fire a duplicate \"request ride\" with the same idempotency key on a flaky connection and watch the gateway suppress it instead of creating a second trip."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Switch between app versions and send the same GET \u2014 watch the adapter change the response shape each time, from the exact same backend data. 2. POST \"request ride,\" then hit \"retry (same idem-key)\" \u2014 watch the counter show it was deduplicated, not double-created. 3. Click \"ship contract change, forget old adapter,\" then send as an old app version \u2014 watch the exact \u00a711 pattern 2 failure happen live."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud \u2014 it's better), then reveal. If any reveal surprises you, re-run the relevant simulator experiment."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain why the mobile edge needed its own piece of infrastructure distinct from chapter 9's mesh, and trace exactly how one gateway request becomes N parallel internal calls, translated back into a version-specific contract with idempotent write safety. Chapter 14 turns to the layer every one of those internal services ultimately depends on: the real, public story of why Uber's core datastore choice itself became a subject of engineering debate."
+  }
+]

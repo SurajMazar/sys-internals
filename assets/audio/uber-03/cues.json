@@ -1,0 +1,339 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapters 1 and 2 both quietly assumed something this chapter finally interrogates: that a driver's position in the index is correct, right now. In production, a driver's phone reports its GPS position over a mobile network that drops packets, reorders them, duplicates them, and sometimes goes dark entirely \u2014 inside a tunnel, an underground garage, a dead zone. This chapter derives why \"write the driver's position to a table\" is the wrong mental model entirely, and what a real streaming-ingestion pipeline has to do instead to keep chapter 2's index honest."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain why location ingestion is a streaming problem, not a database-write problem. You will understand Why out-of-order arrival, duplicates, and dropped pings are the normal case, not the exception. You will predict The write-QPS collapse of naive per-ping database writes at realistic fleet scale. You will simulate A ping-reconciliation pipeline under adjustable network conditions and watch it recover a coherent position track."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Every driver's phone periodically samples GPS and sends the result \u2014 a \"ping\" \u2014 to the backend. It is tempting to think of this as a simple write: \"update this driver's row with their new position.\" That framing quietly assumes every ping arrives, arrives once, and arrives in the order it was generated. None of those three assumptions hold on a real mobile network, and the gap between the assumption and reality is this chapter's entire subject."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Four properties of the real input make this a streaming-ingestion problem rather than a database-write problem:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Out-of-order arrival. Mobile networks retry, reroute, and buffer packets; a ping generated at t=10.0s can genuinely arrive at the backend after a ping generated at t=10.4s. Any system that blindly applies \"the last write wins\" can overwrite a correct, newer position with a stale one that simply took a slower network path. Duplicates. A phone that doesn't receive an acknowledgment for a ping within its retry window will resend it \u2014 correctly, from the client's perspective, since it cannot distinguish \"the ack was lost\" from \"the ping was lost.\" The backend must expect and cheaply discard duplicates rather than treating every arrival as a new fact. Total gaps. A driver entering a tunnel, an underground garage, or a dense urban canyon can lose both GPS lock and network connectivity simultaneously, for anywhere from seconds to minutes. The system has no new information during that window and must have a defined, honest behavior for \"I don't currently know where this driver is,\" rather than silently freezing a stale position and presenting it as current. Volume. Even a moderate ping interval across a large online driver fleet produces a sustained, continuous, high-volume stream \u2014 this is a firehose to be processed, not an occasional row update."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "Every one of chapter 2's k-ring searches is only as good as the position data it's built on. An index that faithfully implements H3's real hexagonal geometry is still confidently wrong if the driver it says is in cell X actually left cell X ninety seconds ago. This chapter is, in a real sense, \"chapter 2's data-freshness problem, solved properly\" \u2014 the index's geometry was never the weak link; the pipeline feeding it position updates is."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "The location-ingestion problem this chapter describes did not exist as a mass-market engineering problem until a specific set of mobile-computing milestones made it possible \u2014 and then unavoidable at ride-hailing's scale. Click through the timeline."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Fleet telematics, IoT sensor networks, mobile-game state sync, and financial market-data feeds all face a version of this exact problem: many independent, unreliable clients producing a continuous stream of time-stamped facts that must be reconciled into a coherent current view despite arriving late, duplicated, or not at all. Ride-hailing is simply one of the highest-profile, highest-volume production instances of it \u2014 the techniques this chapter derives (sequencing, staleness detection, client-side batching and backoff) are general distributed-systems technique, not a ride-hailing-specific trick."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "The obvious first design, and a reasonable one to try: each phone, every few seconds, sends an HTTP POST with its current lat/lng; the backend handles the request by updating that driver's row in a positions table."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This design is correct in the easy case \u2014 a phone with a stable connection, sending pings in order, none lost \u2014 and it is simple enough that a small pilot deployment would likely never notice a problem. It gets the basic shape right: a moving fact (position) becomes a row update. The failures below are not implementation bugs in this code; they are structural consequences of the assumptions baked into \"one POST, one UPDATE, last write wins.\""
+  },
+  {
+    "id": "s3-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p3\"]",
+    "text": "Watch what happens when the network stops cooperating."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "Ideal network. Pings (dots, left to right = time) arrive in order, none lost. The stored position (right track) faithfully follows the true path (dashed). This is the only condition under which the naive design in \u00a73 is fully correct."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "Real packet loss (~25%). Some pings (greyed out) never arrive. The naive design has no way to know a gap happened \u2014 it just holds the last position it received, silently, for however long the gap lasts."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "Real out-of-order arrival (~30%). Watch the red markers: a ping generated later sometimes arrives before one generated earlier. Under \"last write wins,\" the stored track (right) now visibly jitters backward whenever an old ping lands after a newer one already updated the row \u2014 a silent correctness bug, not a crash."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "Verdict. Under realistic network conditions (loss + reordering together, the normal case on mobile networks) the naive design's stored position visibly diverges from the true path \u2014 not occasionally, but continuously. This is precisely the failure \u00a75's sequence-guarded design exists to fix."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Consider an illustrative large metro market with on the order of 50,000 concurrently online drivers (the same illustrative scale used in chapter 1), each pinging roughly every 4 seconds. That alone is 12,500 writes/second for one city \u2014 sustained, continuously, for as long as drivers are online, not a burst. A platform running across thousands of cities multiplies this further. A single-row UPDATE per ping, at this sustained rate, is a very different load profile than the occasional-write pattern most relational schemas are tuned for \u2014 and this is before considering that every write also needs to eventually reach chapter 2's index (a further downstream fan-out this naive design doesn't even attempt)."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "\"Last write wins\" means whichever request the database processes last determines the stored position \u2014 not whichever ping was generated most recently by the phone. If ping A (generated at t=10.0s) takes a slower network path than ping B (generated at t=10.4s) and arrives at the server after B, the naive UPDATE overwrites B's newer, correct position with A's older, stale one \u2014 silently, with no error, and no way to detect it happened without additional bookkeeping the naive design doesn't have."
+  },
+  {
+    "id": "s4-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p3\"]",
+    "text": "When a driver enters a tunnel and stops sending pings, the naive design simply stops receiving updates \u2014 the stored row keeps its last known position indefinitely, with nothing distinguishing \"driver is stationary at this exact spot\" from \"driver's phone has been silent for the last two minutes and could be anywhere within that window's travel radius.\" Chapter 2's index, and everything downstream of it, has no way to tell the difference without this chapter's fix."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "Even setting aside raw volume, the correctness failure is the sharper problem: any out-of-order pair of pings reaching the naive handler in the wrong sequence corrupts the stored position with no signal that anything went wrong. At a sustained tens-of-thousands-of-writes-per-second rate, even a modest percentage of pings arriving out of order (entirely ordinary on real mobile networks) means a continuous, non-trivial stream of silently wrong positions feeding directly into dispatch's candidate search \u2014 precisely the kind of bug that is maddeningly hard to detect from server-side metrics alone, because nothing errors; the data is just wrong."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The fix reframes the whole problem: instead of \"each ping is an independent write,\" treat the incoming pings as an ordered stream per driver that must be reconciled, and make the client a cooperative participant in reliability rather than a fire-and-forget emitter. Step through the redesign:"
+  },
+  {
+    "id": "deck-deckBetter-0",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 0,
+    "text": "Starting point. Every sample is its own fire-and-forget request. No client-side state, no server-side guard against reordering or duplicates."
+  },
+  {
+    "id": "deck-deckBetter-1",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 1,
+    "text": "Reduce request volume, add ordering metadata. Fewer round-trips (fixes Collapse 1's write-volume math), and now every ping carries the information the server needs to detect reordering."
+  },
+  {
+    "id": "deck-deckBetter-2",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 2,
+    "text": "Make old data unable to overwrite new data. This is \u00a78's reconcile() function \u2014 a small amount of per-driver state that makes \"last write wins\" become \"last GENERATED write wins,\" which is the actual correctness property needed."
+  },
+  {
+    "id": "deck-deckBetter-3",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 3,
+    "text": "Make failure recovery safe at fleet scale. Without jitter, a mass reconnection event (\u00a711's tunnel pattern) would have every affected phone retry at the same instant \u2014 exactly the reconnection-storm failure mode this step exists to prevent."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "Three concrete mechanisms carry this fix, and each maps directly to one of \u00a74's collapses:"
+  },
+  {
+    "id": "s5-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-list1\"]",
+    "text": "Client-side batching. Instead of one HTTP round-trip per GPS sample, the client accumulates a short window of samples and sends them together, each tagged with its own client-generated timestamp and a monotonically increasing per-driver sequence number. This amortizes connection overhead and reduces the request volume that drives Collapse 1. Sequence-number/timestamp-guarded acceptance. The server tracks the highest sequence number (or client timestamp) it has accepted per driver, and rejects \u2014 or explicitly reorders \u2014 any incoming ping older than what it already has. This directly fixes Collapse 2: a slow-arriving old ping can no longer silently overwrite a newer position. Exponential backoff with jitter on retry. When a client's batch send fails (no network, no ack), it waits, retries with a growing delay (capped), and jitters that delay slightly across all clients so that a mass reconnection event (an entire tunnel's worth of cars re-entering signal at once) doesn't produce a synchronized retry storm against the backend."
+  },
+  {
+    "id": "s6-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p1\"]",
+    "text": "The redesign in \u00a75 fixes the three collapses from \u00a74, but introduces its own real, ongoing engineering costs that a serious system has to keep paying:"
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Backpressure has to be a first-class concept. If the reconciliation and downstream indexing service (chapter 2) can't keep up with the incoming rate \u2014 during a demand spike, a partial outage, or a mass reconnection storm \u2014 something has to give: buffer growth (risking memory exhaustion), dropped pings (risking staleness), or explicit backpressure signaled to clients (risking clients backing off exactly when data is most needed). None of these are free, and choosing wrong under load is a real, common incident pattern (\u00a711). Deduplication itself costs work. Recognizing and discarding a duplicate ping requires tracking recently seen sequence numbers or timestamps per driver \u2014 a real, ongoing memory and lookup cost, multiplied across the entire online fleet, not a one-time fix. Dead-reckoning during gaps is a genuine estimation problem, not a lookup. When pings stop arriving (a tunnel, a dead zone), a system that wants to present a \"current position\" rather than an honest \"unknown\" has to estimate \u2014 extrapolating from recent velocity and heading \u2014 and that estimate is wrong in proportion to how long the gap lasts and how much the driver's actual path deviates from a straight line during it (a turn taken inside a parking garage, for instance). Partitioning and rebalancing the reconciliation layer itself is real distributed-systems work. A single reconciliation process cannot absorb a whole platform's ping volume; the stream must be partitioned (naturally, by driver ID, so all of one driver's pings land on the same worker and preserve their relative order) \u2014 and workers joining or leaving that partitioned pool is its own rebalancing problem, directly analogous to consumer-group rebalancing in any partitioned streaming system."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "None of these costs are reasons to prefer the naive design from \u00a73 \u2014 that design's correctness failures are strictly worse. They are reasons this chapter treats location ingestion as a genuinely substantial piece of infrastructure, staffed and operated as its own system, rather than \"a table with an UPDATE endpoint.\" The final architecture below names the pieces; \u00a78 makes the reconciliation logic itself concrete."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component to see the specific problem from \u00a74\u2013\u00a76 it exists to solve."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Notice the pipeline has two structurally different consumers reading the same reconciled stream: the geospatial index (ch. 2) needs the single freshest position per driver, updated as fast as possible, and can discard history once superseded; analytics and trip-history consumers want the entire sequence of positions, including ones the index has already discarded, to reconstruct a full trip's path later. Designing the reconciliation service to serve both without forcing one to slow down the other is a real architectural decision, not an afterthought."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "The core of this chapter's fix is a small, precise piece of logic run per driver: given a new incoming ping, decide whether to accept it as the new \"current position,\" and update a bounded amount of state to make that decision fast and safe against duplicates and reordering."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Step through one ping's real journey, including a duplicate and an out-of-order arrival, to see this logic actually fire:"
+  },
+  {
+    "id": "deck-deckPing-0",
+    "kind": "deck",
+    "deckId": "deckPing",
+    "step": 0,
+    "text": "Starting state. The reconciler's per-driver state shows the last accepted sequence number: 4."
+  },
+  {
+    "id": "deck-deckPing-1",
+    "kind": "deck",
+    "deckId": "deckPing",
+    "step": 1,
+    "text": "Ping 5 arrives, in order. 5 > 4, so it's accepted; state advances."
+  },
+  {
+    "id": "deck-deckPing-2",
+    "kind": "deck",
+    "deckId": "deckPing",
+    "step": 2,
+    "text": "The client's retry logic resends ping 5 because it never received an ack for the first send. The reconciler correctly recognizes 5 \u2264 lastSeq and discards it \u2014 no harm done, no double-counted movement."
+  },
+  {
+    "id": "deck-deckPing-3",
+    "kind": "deck",
+    "deckId": "deckPing",
+    "step": 3,
+    "text": "A genuinely older ping (seq 4, already effectively superseded) finally straggles in after taking a slower network path. It's rejected too \u2014 this is precisely Collapse 2 from \u00a74, fixed: an old position can never silently overwrite a newer one, no matter what order the network delivers them in."
+  },
+  {
+    "id": "deck-deckPing-4",
+    "kind": "deck",
+    "deckId": "deckPing",
+    "step": 4,
+    "text": "The stream recovers cleanly. The next genuinely new ping (6) is accepted normally. The reconciler never needed to know why 4 was late or 5 was duplicated \u2014 the sequence guard handles both uniformly."
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "Now make the client-side tradeoff tunable. Batching more samples per network round-trip reduces request volume (\u00a74's Collapse 1) but adds latency before the backend learns anything at all \u2014 drag both and watch the real numbers move:"
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "The throughline: every fix that improves correctness under real network conditions requires the server to remember something about each driver's history \u2014 a sequence number, a last-known velocity, a staleness clock. The naive design's appeal was statelessness; the real design's cost is exactly the state it must keep to buy correctness back."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "The single most consequential operational number in an ingestion pipeline is what happens to its backlog (pending pings not yet reconciled) when arrival rate exceeds processing rate \u2014 a mass reconnection storm, a partial outage of the reconciliation tier, or simply ordinary peak demand. Drag arrival rate and processing capacity and watch backlog behave very differently with and without backpressure engaged."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The curve is a simple queueing sketch: backlog accumulates at (arrival \u2212 capacity) per second when arrival exceeds capacity; with backpressure engaged, the model caps arrival at capacity once backlog crosses a threshold (clients are told to slow down or drop to lower-frequency reporting), trading fresher-everywhere data for a bounded backlog. Without it, backlog \u2014 and therefore the average staleness of every position in it \u2014 grows without bound for as long as the imbalance persists. The shape is the lesson: a pipeline with no backpressure strategy doesn't degrade gracefully, it degrades unboundedly."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber-specific incident postmortems for its location-ingestion pipeline are not public, so this section states the general, industry-documented failure patterns honestly, as real risks any system built this way must design against \u2014 not as specific disclosed Uber events."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Any mobile fleet moving through infrastructure with predictable dead zones (a tunnel, an underground garage, a stadium's parking structure) produces a recurring, well-understood failure shape: a burst of devices lose connectivity together, buffer their pending data locally, and then reconnect and flush that buffer simultaneously the moment signal returns \u2014 a classic thundering-herd pattern. Without jittered backoff (\u00a75) and backpressure (\u00a710), this arrives at the ingestion tier as a sharp, synchronized spike that can look, from a monitoring dashboard, indistinguishable from a real traffic surge or an attack, and can genuinely overwhelm a tier sized for steady-state load. This is a generic pattern well documented across mobile and IoT systems generally, not a claim about a specific disclosed Uber incident."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "Dense urban cores with tall buildings on multiple sides famously degrade consumer GPS accuracy \u2014 signals reflect off buildings before reaching a phone's receiver (multipath interference), producing position fixes that can be off by tens of meters, and can even appear to \"jump\" a driver across a street or a city block between two consecutive pings. This is a widely documented general limitation of consumer GPS in dense urban environments, not a defect in any particular company's ingestion pipeline \u2014 and it directly motivates dead-reckoning and smoothing logic (\u00a78) that treats a single ping's raw coordinates with some skepticism rather than as ground truth, especially in exactly the dense downtown areas where ride-hailing demand is highest."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "Both patterns share a root cause: the physical world (tunnels, buildings, dead zones) does not politely conform to a pipeline's steady-state assumptions. A production-grade ingestion system has to be designed assuming bursts and noise are normal operating conditions it must absorb gracefully, not edge cases it can treat as rare."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Senior\u2192Principal systems-design interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Uber's actual ingestion source is not public, so what follows is illustrative reference pseudocode \u2014 structured the way a service like this is genuinely built in the industry, not a claim about Uber's real internal file layout."
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "1. Persist the sequence counter only after a confirmed send. If the client persisted it before sending and the send then failed, the next attempt would use a higher sequence number than the server ever saw \u2014 silently creating a gap the server can't distinguish from lost pings. Persisting after success keeps the client's counter and the server's view honestly in sync. 2. Backpressure returns a signal, not silence. An admission decision that simply drops an over-capacity batch gives the client no way to know to slow down; returning an explicit retry hint is what makes \u00a710's \"backpressure vs. unbounded backlog\" distinction real in code, not just in a chart."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "A single driver's raw ping stream, degraded by adjustable network conditions, next to the reconciled position track \u00a78's algorithm produces from it. Every accept/reject decision below is computed live by the real sequence-guarded reconciliation logic, not scripted."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Raise out-of-order rate to 50% \u2014 watch \"rejected (duplicate_or_stale)\" climb in the log while the green reconciled track (right) still traces a clean, monotonic path, because the sequence guard from \u00a78 is doing its job. 2. Raise packet-loss and watch the raw ping trail (left, faint dots) thin out while the reconciled track keeps moving smoothly via dead reckoning \u2014 until 3. you trigger the tunnel scenario and watch staleness climb past the honesty threshold, at which point the track marks itself \"position unknown\" rather than guessing indefinitely."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud \u2014 it's better), then reveal. If any reveal surprises you, re-run the relevant widget above."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain why location ingestion is fundamentally a streaming-reconciliation problem, derive the specific collapses a naive per-ping write hits at fleet scale, and reason about the real cost/benefit tradeoffs sequence-guarded acceptance and backpressure impose. Chapter 4 assumes this chapter's pipeline is feeding chapter 2's index accurately, and asks the next honest question: even with correct, fresh positions and a fast candidate search, how do you actually decide which driver gets which rider \u2014 without double-booking anyone, and without a greedy nearest-first assignment leaving the whole market worse off than a smarter batch would have?"
+  }
+]

@@ -1,0 +1,273 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "In July 2016, Uber Engineering published a widely read blog post explaining why it had moved its core datastore from PostgreSQL to MySQL. It became one of the most-discussed database posts of the decade \u2014 and also one of the most publicly pushed back on, by name, by PostgreSQL contributors who disagreed with parts of it. This chapter presents Uber's stated reasoning honestly, on its own terms, and then presents the rebuttal just as honestly. The goal is not to tell you which database is better \u2014 it's to teach you how to read any engineering blog post like this one: as one team's real experience, at a specific point in time, under specific conditions, not as a universal verdict."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to State the five specific technical reasons Uber's 2016 post gave, in Uber's own framing. You will understand Why the same claims drew substantive, named technical pushback \u2014 not just brand loyalty \u2014 from the Postgres community. You will predict How a single schema decision (which columns are indexed) changes whether an optimization like HOT even has a chance to apply. You will simulate The same update-heavy workload against a simulated append-versioning engine and a simulated in-place-update engine, and watch bloat accumulate differently \u2014 and watch that gap change when the updated column is or isn't indexed."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Chapter 7 built the trip lifecycle as a state machine: requested \u2192 matched \u2192 driver en route \u2192 arrived \u2192 trip started \u2192 trip completed, with cancellation and timeout transitions from nearly every state. Read that state machine again with a storage engineer's eyes: every single transition is an UPDATE to an existing row, not an INSERT of a new one. Multiply that by millions of trips a day, each with a handful of status transitions, plus every other update-heavy workload the growing company was running on the same core relational datastore \u2014 driver locations, availability flags, account balances \u2014 and the workload shape that matters most is not \"how fast can we write new rows\" but \"how cheaply can we update the same row, over and over, many times a second, at full scale.\""
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "This is the exact kind of foundational infrastructure decision that a company only makes once, feels the consequences of for years, and \u2014 if it turns out wrong for the workload \u2014 pays an enormous cost to unwind. Uber's publicly documented answer, and its reception, is this chapter's subject."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "What follows is Uber's real, publicly published reasoning from 2016, presented on its own terms \u2014 followed, with equal weight, by the real technical pushback it received. Neither side gets the last word here. The lesson this chapter is actually trying to teach is how to evaluate a specific engineering team's specific experience against a specific workload, at a specific point in a specific database's development \u2014 not to settle \"Postgres vs. MySQL\" as a general question, which this single case study cannot do and does not attempt."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "This is real, dated, publicly documented history. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Uber ran on PostgreSQL in its earlier years, then migrated its core trip/dispatch datastore to a MySQL/InnoDB-based architecture, and Uber Engineering published a public blog post in mid-2016 (\"Why Uber Engineering Switched from Postgres to MySQL\") explaining five specific technical reasons. That post is real and widely archived. The rebuttals are equally real and public: PostgreSQL core contributor Robert Haas published a detailed response the same season, and Markus Winand (a well-known SQL performance writer) published a specific technical rebuttal titled \"On Uber's Choice of Databases,\" centered on one precise, checkable claim \u2014 more on that in \u00a711. This chapter does not need to speculate about any of this; it is on the public record."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Picture the obvious, reasonable schema an engineering team builds early on, when query flexibility matters more than write-path cost: one core table, with a secondary index on every column anyone ever wants to filter or sort by, because indexes are \"free\" performance for reads and nobody is thinking about write amplification yet."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "Nothing about this schema is careless \u2014 every index answers a real, common query. That's precisely what makes it a useful strawman: it's the schema a competent team ends up with by making locally reasonable decisions, without yet reasoning about what an UPDATE to status actually costs underneath, at the storage-engine level, on the specific database engine running it."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Uber's post named five specific, technical pain points it said it hit running this shape of workload on PostgreSQL at its scale. Presented on their own terms, as Uber stated them:"
+  },
+  {
+    "id": "s4-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-list1\"]",
+    "text": "1. Inefficient architecture for writes. Uber's stated argument: PostgreSQL's MVCC design writes a new row version on every update rather than updating in place \u2014 and, Uber said, every secondary index on that table then needs a new entry pointing at the new row version too, not just the one index on whatever column actually changed. On a table with a dozen or more indexes and an update-heavy workload, Uber's post described this as significant write amplification: one logical update fanning out into many physical writes across every index, not just the relevant one. 2. Inefficient data replication. Uber's stated argument: because PostgreSQL's built-in replication at the time shipped changes derived from the write-ahead log \u2014 closely tied to the physical write volume described above \u2014 the amplified write volume from point 1 directly inflated replication bandwidth and replica catch-up time, which Uber said became a real operational cost as write volume grew. 3. Issues with data corruption. Uber's post described encountering cases where a query against a corrupted index or cache returned incorrect results, and said the tooling to detect and diagnose exactly which rows were affected was, in their experience, inadequate at the time. 4. Poor replica MVCC support. Uber's stated argument: a long-running read on a replica could be cancelled by the replica applying replicated writes that conflicted with that read's MVCC snapshot \u2014 forcing a choice between letting replicas fall behind or cancelling in-flight replica queries, a tension Uber said it hit in production. 5. Difficulty upgrading to newer releases. Uber's stated argument: major-version upgrades were operationally painful in their environment at the time, without an easy zero-downtime path \u2014 a real cost for a company that could not tolerate extended maintenance windows on its core datastore."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "Uber's post also named two related operational pain points worth stating precisely because they connect directly to material this course has already covered: connection-handling cost \u2014 Uber described needing an external pooler to handle its connection volume, a direct real-world instance of the process-per-connection cost this site's dedicated PostgreSQL Internals course derives from first principles \u2014 and schema-migration friction, where certain schema changes locked the whole table for both reads and writes, causing visible service impact during a migration."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "Every point above is Uber's own stated experience, in 2016, on the PostgreSQL versions and configuration they were running at the time. That is exactly the right level of confidence to hold each claim at until \u00a711 \u2014 where you'll see that some of these points held up to technical scrutiny very well, and others drew specific, substantive, named rebuttal."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "Uber's stated fix followed directly from reason #1: move the update-heavy core datastore onto an engine whose default update path doesn't require touching every secondary index on every write."
+  },
+  {
+    "id": "deck-deckMigration-0",
+    "kind": "deck",
+    "deckId": "deckMigration",
+    "step": 0,
+    "text": "The trigger. Every trip-status transition is exactly this kind of update \u2014 and Uber's post argued its cost was higher than it needed to be, specifically because of how many indexes typically sit on a table like this."
+  },
+  {
+    "id": "deck-deckMigration-1",
+    "kind": "deck",
+    "deckId": "deckMigration",
+    "step": 1,
+    "text": "What InnoDB offers by default. Because secondary indexes store the primary key rather than a raw physical location, they don't need new entries unless an INDEXED column's value itself changed \u2014 a structural difference from the append-versioning description in \u00a74, independent of tuning."
+  },
+  {
+    "id": "deck-deckMigration-2",
+    "kind": "deck",
+    "deckId": "deckMigration",
+    "step": 2,
+    "text": "Not a config flag. \"Switch engines\" meant a real, multi-quarter engineering project, re-deriving operational practices the team had spent years learning on the previous engine \u2014 the real cost \u00a76 names."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "MySQL's InnoDB storage engine organizes a table as a clustered index on the primary key \u2014 the table's physical layout IS the primary-key B-tree, and an update that doesn't touch an indexed column can modify that row's data in place within its page. Secondary indexes store the primary-key value, not a raw physical pointer, so they only need new entries when an indexed column's value actually changes. That structural difference is precisely the property Uber's post argued fit their update-heavy trip-status workload better than the schema in \u00a73 running on Postgres's default heap-plus-index-pointers layout."
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "The migration itself was a massive undertaking. Moving a company's core datastore between engines at Uber's real scale means rewriting application data-access code, re-validating every query's behavior under a new engine's semantics, and executing the cutover itself without an unacceptable amount of downtime \u2014 work that took real engineering time away from every other roadmap for a sustained period. MySQL/InnoDB has its own, different footguns. InnoDB's default isolation level uses gap locking that can produce surprising deadlocks under concurrent range-based updates; asynchronous replication (the historically common default at the time) can silently lose recently committed writes on an unplanned primary failover unless semi-synchronous replication is deliberately configured and monitored. Switching engines trades one set of operational lessons the team had already learned for a different set it had to learn from scratch. It didn't remove the need to eventually shard. A single MySQL primary has a ceiling on write throughput too \u2014 moving to a cheaper per-update cost delays that ceiling, it doesn't eliminate it. Uber's continued growth still required horizontal partitioning, which is exactly what chapter 15's Schemaless was built on top of this same MySQL foundation to provide."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Even reading Uber's stated reasons at face value, this was not \"Postgres bad, MySQL good\" \u2014 it was a real, expensive, multi-year engineering bet that a different default update path was worth the cost of a full migration, for one specific, extremely update-heavy workload, at one specific company's scale, running one specific set of database versions and configurations. That framing matters for everything that follows."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. This is the shape Uber's post described moving to \u2014 and, not coincidentally, the exact foundation chapter 15's Schemaless was built on top of."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Here is the mechanism behind Uber's reason #1, stated precisely and just far enough to make the argument checkable \u2014 this course's dedicated PostgreSQL Internals series covers MVCC's full tuple-versioning and vacuum machinery in depth and is not repeated here."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Uber's argument, precisely: an UPDATE that changes even one column creates a new physical row version; every secondary index on that table then needs an entry for the new version, because each index's leaf entries point at a specific physical row version, not merely a logical row. A table with k secondary indexes therefore costs, in Uber's framing, roughly 1 (new row version) + k (index entries) physical writes per logical update \u2014 versus an engine where an update leaves the row in place and only touches indexes on columns that actually changed."
+  },
+  {
+    "id": "deck-deckTuple-0",
+    "kind": "deck",
+    "deckId": "deckTuple",
+    "step": 0,
+    "text": "Starting state, either engine. One live row; four secondary indexes each hold an entry referencing it."
+  },
+  {
+    "id": "deck-deckTuple-1",
+    "kind": "deck",
+    "deckId": "deckTuple",
+    "step": 1,
+    "text": "Uber's described path. The old row version stays (marked dead, not yet reclaimed); a new version is written; because every index's entry pointed at a physical row version, ALL FOUR indexes need a new entry \u2014 even idx_driver and idx_rider, whose indexed columns never changed."
+  },
+  {
+    "id": "deck-deckTuple-2",
+    "kind": "deck",
+    "deckId": "deckTuple",
+    "step": 2,
+    "text": "The clustered-index path. The row is rewritten in place at the same physical location; only indexes on COLUMNS THAT CHANGED (status, updated_at) need new entries. idx_driver and idx_rider, unaffected by this update, are untouched \u2014 the exact structural saving Uber's post pointed to."
+  },
+  {
+    "id": "deck-deckTuple-3",
+    "kind": "deck",
+    "deckId": "deckTuple",
+    "step": 3,
+    "text": "What changes if the updated column isn't indexed at all. Both engines can then avoid touching secondary indexes entirely \u2014 the append-versioning engine via HOT (\u00a711), the in-place engine because no indexed column changed. The gap the previous two steps showed depends heavily on which columns are indexed, which is precisely Winand's critique."
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "Drag the index count and the fraction of updates that touch an indexed column to see how the write-amplification gap this argument describes actually scales \u2014 and notice what happens to the Postgres side specifically once updates stop touching indexed columns (\u00a711 explains exactly why that matters):"
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this table for what it is: a snapshot of one team's fit-for-purpose decision at one point in time, not a permanent scorecard. Several of Postgres's 2016-era gaps (notably logical replication) have since shipped; some of MySQL's operational rough edges (like semi-sync replication tuning) required \u2014 and still require \u2014 real expertise to run safely. \u00a711 examines exactly how much of this table Uber's critics accepted versus disputed."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Uber's post argued that under a sustained, heavily-indexed, update-heavy workload, an append-versioning engine accumulates dead row versions and bloated indexes faster than an in-place-update engine does \u2014 requiring more aggressive background reclamation work to hold steady state."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "These curves are a first-principles arithmetic sketch of the mechanism Uber's post described \u2014 dead-tuple accumulation proportional to update rate and index count, offset when updates don't touch indexed columns \u2014 not a claimed measured Uber production number, and not a general verdict on either engine's real-world benchmarked performance across other workloads."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "This is the section this chapter exists to get right. Uber's post was widely read and widely discussed \u2014 and it received specific, technical, named rebuttal, not just reflexive defensiveness. Two responses matter most:"
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Robert Haas, a longtime PostgreSQL core contributor, published a detailed public response the same season. He acknowledged some of Uber's pain points as genuine and worth PostgreSQL's community taking seriously, while pushing back on the overall framing \u2014 arguing that several of the specific claims (particularly around corruption and the severity of the write-amplification story) reflected specific bugs, specific configurations, or specific tuning choices from that moment in time rather than an unfixable architectural ceiling, and cautioning readers against treating the post as a general verdict that MySQL is simply the better-engineered database."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "Markus Winand, a well-known SQL performance writer, published a specific, checkable technical rebuttal centered on one precise point: Uber's write-amplification argument never mentioned HOT \u2014 Heap-Only Tuple updates, a PostgreSQL optimization that existed since version 8.3, released in 2008 \u2014 eight years before Uber's post \u2014 specifically engineered to avoid touching secondary indexes at all when an update doesn't change an indexed column. Winand's point was precise: the naive schema in \u00a73, with an index on nearly every column, including status itself, is exactly the shape of schema that prevents HOT from ever applying \u2014 which means part of what Uber's post presented as an inherent MVCC limitation may instead have been a consequence of specific schema and indexing choices that could, in principle, have been revisited without changing engines at all."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "Both things are true simultaneously, and that's the point of this section, not a contradiction to resolve: Uber's engineers had a real, expensive, update-heavy production problem, measured it honestly, and made a defensible engineering bet given their team's constraints and existing MySQL expertise at the time. And, separately, named technical experts identified specific, checkable gaps in how the problem was framed \u2014 gaps that suggest at least part of the pain might have been addressable through schema and configuration changes on the existing engine. Neither fact cancels the other. This is what it looks like to read a real engineering blog post critically: take the team's lived experience seriously, and take the technical pushback just as seriously, without needing either side to be simply \"right.\""
+  },
+  {
+    "id": "s11-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p4\"]",
+    "text": "It's also worth stating plainly what has changed since: PostgreSQL shipped native logical replication in version 10 (2017), directly addressing part of Uber's replication complaint, and major-version upgrade tooling has continued to mature industry-wide since 2016. None of that retroactively changes what was true for Uber's team in 2016 \u2014 it simply means a reader encountering this same tradeoff table today should re-check which rows in \u00a79 are still current before making their own decision."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 a Staff-level interviewer expects you to hold both sides of \u00a711 at once, not pick one."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Neither Uber's exact original schema nor its internal migration tooling is public. What follows is precise, representative pseudocode for the general pattern a migration like this actually requires \u2014 labeled illustrative because it reconstructs the well-documented general technique, not proprietary source."
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "Any migration of a company's core, always-on datastore follows the same general risk-reducing shape, documented across the industry for exactly this class of problem: backfill history once, dual-write every new change to both stores while the old one stays authoritative, continuously diff reads between the two stores to catch bugs before they matter, and only then flip which store is authoritative for reads \u2014 followed, much later, by retiring the old store once confidence is high. The alternative \u2014 a single cutover weekend \u2014 makes every bug in the new engine's behavior a full, simultaneous incident with no fallback, which is an unacceptable risk profile for infrastructure this central."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Run the same update-heavy workload against a simulated append-versioning engine and a simulated in-place-update engine side by side. Watch dead row versions and index writes accumulate differently \u2014 then toggle whether updates touch an indexed column and watch the append-versioning side's cost change dramatically, exactly the way \u00a711's HOT critique describes."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Run 10 updates with the toggle ON \u2014 watch the append-versioning engine pile up dead tuples AND touch every secondary index, while the in-place engine barely grows. 2. Switch the toggle OFF (updates no longer touch an indexed column) and run 10 more \u2014 watch the append-versioning engine's index writes drop to zero, exactly Winand's HOT critique from \u00a711. 3. Run vacuum/reclaim and watch dead tuples clear \u2014 then notice that reclaiming is itself extra background work the in-place engine never needed to do at all."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud \u2014 it's better), then reveal. If any reveal surprises you, re-run the relevant simulator experiment."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now state Uber's 2016 case for moving to MySQL in Uber's own terms, state the specific named rebuttal it received, and explain why both can be true at once. You also know precisely what write amplification means and what HOT does about it. Chapter 15 picks up exactly where this one leaves off: Schemaless, the real, sharded-MySQL-backed datastore Uber built on top of the foundation this chapter described."
+  }
+]

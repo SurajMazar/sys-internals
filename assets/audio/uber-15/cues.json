@@ -1,0 +1,294 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapter 14 left Uber's engineering team with a MySQL foundation they trusted and knew how to operate \u2014 and a growing realization that trust alone doesn't scale a single instance forever. Rather than build or adopt an entirely new distributed database engine, Uber's real, publicly documented answer was almost contrarian in its restraint: keep MySQL as the storage engine, strip the schema down to almost nothing, and shard aggressively. This chapter derives Schemaless from first principles and then shows you the real, documented design Uber's engineering blog published in 2014."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain why a generic (row key, column, version) schema removes ALTER TABLE from the picture entirely. You will understand Exactly what Schemaless gave up \u2014 cross-shard joins and rich secondary indexing \u2014 and why that was a deliberate, documented trade. You will predict How a poorly chosen shard key creates a hot shard, using the real hashing mechanism this chapter derives. You will simulate Writing JSON blobs into the correct MySQL shard by row key, and watch a cross-shard query fail exactly the way Schemaless's real design predicts."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Chapter 14 closed on an honest note: migrating to a storage engine with cheaper per-update costs raised the ceiling on how much load a single MySQL primary could absorb \u2014 it did not remove the ceiling. Uber's real growth in trip volume, driver locations, and every other update-heavy dataset this course has built kept climbing, and a single machine, however efficient its write path, has finite CPU, memory, and disk throughput. The next problem was therefore unavoidable: how do you keep scaling a relational workload horizontally, across many machines, without either operating a brand-new, unproven distributed database engine, or freezing your schema in place because every change now has to run against dozens of independent database instances at once?"
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Two requirements pulled in different directions, and naming them precisely is the whole chapter:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Horizontal write scale. Data has to be split across many independent MySQL instances (shards), each handling only a fraction of the total dataset, so total write capacity grows by adding machines rather than hitting one machine's ceiling. Schema agility. New product features constantly need new fields on existing entities, and a traditional ALTER TABLE against a table sharded across dozens of MySQL instances means coordinating dozens of simultaneous schema changes \u2014 each one, per chapter 14's own stated pain point, capable of locking a table for reads and writes while it runs."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "This is the real, documented judgment call Uber's engineering blog described making: rather than adopt an unfamiliar distributed database engine, the team chose to build a comparatively thin layer on top of infrastructure \u2014 MySQL \u2014 that its operators already deeply understood from the migration chapter 14 covered. That's a real, deliberate tradeoff (operational familiarity over a purpose-built engine's native features), and this chapter presents it as exactly that \u2014 not as proof that this is always the right call for every company at this scale. It's worth being precise about what \"operational familiarity\" actually buys a team under pressure: by this point, Uber's operators already knew how a MySQL primary fails over, how replication lag behaves under load, how backups and point-in-time recovery work, and how to read a slow-query log \u2014 a whole runbook's worth of accumulated, hard-won knowledge from chapter 14's migration. Adopting an unfamiliar distributed database engine instead would have meant relearning all of that from scratch, under real production pressure, for a system the team had comparatively little operational history with. Schemaless's entire design can be read as an attempt to get horizontal scale and schema flexibility while deliberately not spending that hard-won operational capital twice in a row."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "This is real, public, documented history \u2014 Uber's own engineering blog. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Schemaless is real, well-documented Uber engineering: a datastore built as an append-only layer on top of sharded MySQL, where the smallest unit of data is called a cell \u2014 an immutable JSON blob addressed by a row key, a column name, and a ref key (a version identifier), plus an auto-incrementing added ID used for ordering within a shard. Uber's engineering blog published this design across three public posts in 2014: \"Designing Schemaless,\" an architecture deep-dive, and a piece on \"triggers\" \u2014 an asynchronous, pub-sub-style change-notification mechanism used to build secondary indexes. This chapter's \u00a77 and \u00a713 present that documented design directly, not a reconstruction."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "The obvious first move: keep the traditional relational schema from chapter 14, and just split rows across more MySQL instances by some sharding key, so no single instance holds the whole dataset."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This works, and for a while it's genuinely fine \u2014 sharding a rigid schema is a completely standard technique. The trouble is what happens to that one, simple ALTER TABLE line as both the shard count and the pace of product change keep growing."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "Where it starts. A handful of shards, a stable schema \u2014 the friction this chapter is about doesn't exist yet."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "Growth on both axes at once. More shards (needed for capacity) and more schema changes (needed for product velocity) multiply together \u2014 240 coordinated, potentially-locking operations where there used to be 6."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "The correctness hazard. Mid-rollout, the fleet has two different schemas simultaneously. Every application code path touching this field now needs defensive logic for a state that a single, unsharded schema never had to represent at all."
+  },
+  {
+    "id": "s4-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-list1\"]",
+    "text": "Schema-change cost multiplies by shard count. One ALTER TABLE against one database becomes N coordinated operations across N shards \u2014 each one, per chapter 14's own stated pain point, a potential table lock affecting reads and writes on that shard for its duration. As shard count grows to keep up with data volume, so does the blast radius and coordination cost of every single schema change. Product velocity and shard count pull against each other. The more successful the product is, the more shards you need for capacity \u2014 and the more shards you have, the more expensive and risky every new field, every renamed column, every schema evolution becomes. The naive approach makes horizontal scale and schema agility directly opposed, when a growing company needs both simultaneously. Partial-rollout risk. An ALTER TABLE that succeeds on 7 shards and fails or times out on the 8th leaves the fleet in an inconsistent schema state \u2014 application code now has to handle \"does this shard have the new column yet or not,\" a correctness hazard with no equivalent when there was only ever one schema to reason about."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "A team wants to ship a new feature requiring one new field on the trips record. What should be a five-minute change becomes a coordinated, carefully-scheduled, multi-shard migration \u2014 repeated for every shard, for every future field, indefinitely, with real risk of leaving shards in different schema states along the way. The friction doesn't come from any one shard being hard to change \u2014 it comes from having to change all of them, identically, every time, which grows directly with the very success that made sharding necessary in the first place."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The fix Uber's real, documented design chose: collapse the rigid, wide table into one generic schema that never needs an ALTER TABLE again, no matter how many new kinds of data the product adds. Instead of columns, the unit of data becomes a cell: an immutable JSON blob, identified by a row key (which entity this belongs to), a column name (which piece of information this is), and a ref key (which version of it this is)."
+  },
+  {
+    "id": "deck-deckSchemaless-0",
+    "kind": "deck",
+    "deckId": "deckSchemaless",
+    "step": 0,
+    "text": "The rigid shape. Every field is a column; every new field needs a new column, on every shard."
+  },
+  {
+    "id": "deck-deckSchemaless-1",
+    "kind": "deck",
+    "deckId": "deckSchemaless",
+    "step": 1,
+    "text": "Same logical entity, generic shape. \"promo_code_applied\" simply appears as a new column_name value the first time anyone writes it \u2014 nothing about the underlying MySQL table changes. No ALTER TABLE, on any shard, ever."
+  },
+  {
+    "id": "deck-deckSchemaless-2",
+    "kind": "deck",
+    "deckId": "deckSchemaless",
+    "step": 2,
+    "text": "Deterministic shard mapping, per row_key. Every cell under the same row_key \u2014 regardless of which column_name or how many versions accumulate \u2014 lands on the exact same shard, which is exactly what makes single-entity reads and writes fast and simple, and what makes cross-entity queries hard (\u00a76)."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "\"Adding a new field\" now means nothing more than writing a new column_name value that has never been used before \u2014 no DDL, no per-shard coordination, no partial-rollout risk, because the underlying MySQL table structure never changes at all. Sharding is handled the same way: each row key hashes to exactly one shard, independent of how many different column names get written under it over the entity's lifetime."
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "No cross-shard queries, joins, or transactions. Because a row key deterministically maps to exactly one shard, and shards are independent MySQL instances with no cross-shard query engine, any access pattern that needs data from multiple row keys that hash to different shards simply cannot be expressed as one query \u2014 the application has to fan out itself, or precompute an index. No database-enforced schema or constraints. The body blob is opaque to MySQL \u2014 there's no column type checking, no foreign keys, no NOT NULL constraint on any field inside the JSON. Every guarantee about shape and validity that a rigid schema gave you for free now has to be enforced entirely in application code. Secondary indexing requires real, separate infrastructure. \"Find all trips for this driver\" is trivial when driver_id is an indexed column \u2014 but Schemaless has no indexed columns inside the blob at all. Uber's real, documented answer was triggers: an asynchronous, pub-sub-style mechanism that notifies subscribers when a cell is written, so a separate process can build and maintain a purpose-built index table (itself just another Schemaless table) \u2014 real infrastructure, not a free byproduct. Storage grows with every version, by design. Because cells are immutable and addressed by ref key, \"updating\" a value doesn't overwrite it \u2014 it writes a new cell under a new ref key. Old versions accumulate unless a deliberate compaction or retention policy reclaims them."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Schemaless doesn't remove complexity \u2014 it relocates it. Schema and index maintenance move out of the database and into application code and purpose-built asynchronous infrastructure (triggers, index tables) that Uber's engineers had to design, build, and operate themselves. That's a real, worthwhile trade for a company whose bottleneck was schema-change friction and horizontal scale specifically \u2014 not a strictly simpler system in any absolute sense."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. This is the architecture Uber's engineering blog described directly."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Schemaless's own documented tradeoffs \u2014 no rich secondary indexing, no cross-shard transactions, an application-level trigger mechanism to bolt on what indexes used to give for free \u2014 are exactly what motivated Uber to later build Docstore, a MyRocks/RocksDB-based successor with real secondary-index support and multi-region replication. Chapter 16 covers it directly."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Uber's real documented schema identifies each cell by three fields, with a compound index across them for efficient lookup, plus an auto-incrementing added ID for ordering within a shard:"
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Every cell is immutable once written \u2014 there is no UPDATE in this model, only new inserts under a new ref_key. Reads for \"the current value\" fetch the newest ref_key for a given (row_key, column_name) pair."
+  },
+  {
+    "id": "deck-deckWrite-0",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 0,
+    "text": "The application's only job. It never picks a shard, a table, or a connection \u2014 the client library handles all of that."
+  },
+  {
+    "id": "deck-deckWrite-1",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 1,
+    "text": "Deterministic, stateless routing. No lookup service round-trip needed \u2014 any client can compute which shard owns a row_key using the same hash function."
+  },
+  {
+    "id": "deck-deckWrite-2",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 2,
+    "text": "An ordinary insert, on an ordinary MySQL instance. Nothing about this write is exotic \u2014 it's exactly the InnoDB in-place-friendly write path chapter 14 described, just against a deliberately generic schema."
+  },
+  {
+    "id": "deck-deckWrite-3",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 3,
+    "text": "The one extra step Schemaless requires that a rigid schema didn't. Because there's no native secondary index, anything that needs one is responsible for keeping itself current \u2014 asynchronously, after the write commits, not blocking the client's write."
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "Drag the shard count and toggle whether row keys are well-distributed (real random/hashed keys) or poorly chosen (e.g. sequential IDs or a low-cardinality field) to see exactly how a bad shard-key choice creates a hot shard:"
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this the same way as chapters 9 and 13's spectrums: Schemaless is a genuinely well-reasoned point on this spectrum for a team with deep MySQL operational expertise and a schema-agility problem specifically \u2014 not a universal best datastore design, and Uber's own later investment in Docstore (chapter 16) is itself documented evidence that Schemaless's tradeoffs eventually needed revisiting as requirements grew."
+  },
+  {
+    "id": "s9-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p2\"]",
+    "text": "Notice, too, how this table connects back across the whole database arc of this course: chapter 14 was about which storage engine to trust with individual updates; this chapter is about how to keep trusting that engine as data outgrows any single instance of it. Neither decision made the other unnecessary \u2014 Schemaless is built directly on top of chapter 14's migrated MySQL foundation, inheriting both its per-update efficiency and its operational maturity, and adds a second, independent axis of scale (horizontal sharding) rather than replacing anything chapter 14 already solved."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "The core scaling argument is simple and worth stating precisely: total write capacity is roughly the number of shards times one shard's capacity, as long as writes are spread evenly across shards \u2014 the entire scalability story collapses the moment row keys aren't well distributed, which is exactly what \u00a78's slider demonstrated."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "These curves are a first-principles arithmetic model of the mechanism \u2014 throughput scaling linearly with shard count under even distribution, and capping at one hot shard's ceiling otherwise \u2014 not a claimed measured Uber production number. The point is the shape: even distribution is not a nice-to-have, it's the entire basis for why sharding scales at all."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber's own Schemaless documentation described a real resilience mechanism worth naming directly, and this chapter also names one industry-standard sharding failure pattern honestly flagged as a general pattern rather than a specific documented Uber incident."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Uber's engineering writing on Schemaless described building buffered writes specifically to tolerate a transient failure of a shard's MySQL master \u2014 absorbing writes rather than failing them outright while a shard's primary is temporarily unavailable or undergoing failover, then applying them once the shard recovers. This is a real, documented design decision, not a reconstruction."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "This specific failure isn't tied to a named public Uber incident, so it's presented plainly as the well-known, industry-wide sharding failure pattern it is: choosing a row key with low cardinality or skewed popularity (a sequential ID, a single heavily-used tenant, a \"trending\" entity that suddenly gets far more writes than any other) sends a disproportionate share of traffic to one shard, which then becomes the ceiling on total system throughput regardless of how many other shards sit comparatively idle \u2014 exactly the failure \u00a78 and \u00a710's widgets let you reproduce directly."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "A sharded system's throughput ceiling is set by its most loaded shard, not its average shard \u2014 which means shard-key selection is not an implementation detail decided once and forgotten, but an ongoing capacity concern that needs monitoring for skew as real-world usage patterns (which entities get popular, which customers grow fastest) shift over the system's lifetime."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Staff-level systems interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "The schema below is the real, publicly documented Schemaless design. The client-library and trigger-consumer pseudocode is illustrative reference code, representative of the documented general mechanism rather than a copy of Uber's actual internal source."
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "Notice that the \"index\" in the second code block is not a database feature at all \u2014 it's just another ordinary Schemaless table, row-keyed differently, kept current by application-level code reacting to writes asynchronously. This is the direct, honest consequence of \u00a76's tradeoff: Schemaless doesn't have a concept of a secondary index, so if you need one, you build it out of the exact same primitive the rest of the system uses \u2014 consistent, but entirely your own responsibility to keep correct and current."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Write a JSON blob keyed by row key and column name and watch it route to the correct MySQL shard by consistent hashing. Then attempt a cross-shard query and see exactly why Schemaless's real design doesn't support it."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Write cells under a few different row keys \u2014 watch them land on different shards by hash, and watch a second write under the SAME row key land on the SAME shard every time. 2. Write two versions of the same (row_key, column_name) \u2014 watch both cells persist as separate, immutable versions. 3. Click \"attempt cross-shard query\" and watch it fail exactly the way \u00a76 predicts \u2014 because the query would need to touch every shard independently, not one indexed lookup."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud \u2014 it's better), then reveal. If any reveal surprises you, re-run the relevant simulator experiment."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain Schemaless's real, documented cell schema, trace a write from client call to the correct shard, and state precisely what it gave up \u2014 cross-shard queries and native secondary indexing \u2014 to buy horizontal scale and schema agility on top of familiar MySQL. Chapter 16 picks up exactly where this one's tradeoffs point: Docstore, the MyRocks-based successor built to solve what Schemaless deliberately left unsolved."
+  }
+]

@@ -1,0 +1,345 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapter 8 ended by decomposing one monolith into independently deployed services and casually drawing arrows between them. This chapter takes that phrase seriously: an arrow between two services is a network call, which can time out, get dropped, or arrive at an instance that no longer exists \u2014 and at a scale of thousands of independently deployed services, no team can be allowed to hand-roll its own answer to that problem. This chapter derives, from first principles, why that pressure produces first a shared client library and eventually the sidecar-proxy service-mesh pattern, and exactly what each layer costs."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain why hand-rolled per-service retry logic causes cascading overload instead of preventing it. You will understand Why cross-cutting concerns migrate from application code, to a shared library, to a language-agnostic sidecar proxy. You will predict Exactly how a circuit breaker's state machine and a jittered backoff formula change system behavior under partial failure. You will simulate A request routed through a sidecar whose chosen instance dies mid-flight, and watch retry and circuit-breaking logic reroute it live."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Once dispatch, pricing, trips, notifications, and analytics are separate, independently deployed services (chapter 8), every call any one of them makes to another crosses a real network boundary. That single change quietly imports an entire category of problems that a function call never had: the callee might be slow, might be down, might not exist at the address you expected anymore because it just autoscaled, and the network itself might simply drop your request with no signal at all."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Every one of those calls needs the same five capabilities to be handled correctly, and \u2014 crucially \u2014 every one of those capabilities needs to be handled consistently across the whole fleet, not per-team:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Service discovery. \"Where is a healthy instance of the pricing service right now?\" \u2014 an answer that changes continuously as instances autoscale, deploy, and crash. Load balancing. Spreading requests across all healthy instances rather than hammering one. Retries with backoff. A single dropped request shouldn't become a user-visible failure if the callee was simply, transiently slow. Timeouts. A caller cannot wait forever for a callee that will never answer \u2014 but the \"right\" timeout value is a judgment call every single caller has to make. Transport security. Traffic between services carries real user and payment data (chapter 7) and needs encryption and mutual authentication, not an implicit trust that \"it's all internal.\""
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "With five services owned by one platform-savvy team, five slightly different retry implementations are an annoyance. With thousands of services, owned by hundreds of teams, written in more than one language, \"every team hand-rolls this\" guarantees wildly inconsistent timeout values, retry policies that amplify rather than absorb failures (\u00a74 makes this precise), and zero uniform way to even ask \"which services are currently unhealthy\" across the fleet. This chapter is the account of how that pressure forces cross-cutting network concerns out of application code entirely \u2014 first into a shared library, and ultimately into infrastructure that runs alongside, not inside, every service."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "This isn't an abstract concern \u2014 Uber hit it directly during the exact migration chapter 8 describes, and responded by building and publicly releasing real infrastructure for it. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Uber publicly documented and open-sourced real infrastructure from this era \u2014 an RPC/framing protocol and a gossip-based membership and routing layer built specifically to let its rapidly growing service fleet call each other reliably. This chapter is honest about the boundary of what's public: the exact behavior of Uber's current, present-day internal RPC and mesh stack is not fully documented anywhere on the public record, and this chapter does not claim to reconstruct it precisely. What it teaches instead is the general technique \u2014 service discovery, retries with backoff and jitter, circuit breaking, and eventually the sidecar/mesh pattern that today's industry (Envoy- and Istio-style meshes being the widely documented public examples) converged on independently, for exactly the reasons \u00a75 and \u00a76 derive. That general technique is real, well-documented, and squarely what a Staff-level systems interview expects you to understand \u2014 regardless of which specific implementation any one company runs internally today."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Start from the honest beginning: a service just calls another service's HTTP endpoint, with whatever retry and timeout logic its own author happened to write:"
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "Written by one engineer, for one caller, this is completely reasonable \u2014 it works, it's simple, and it handles the case that matters most (a transient blip) in the most obvious way. The trouble starts when every other service writes its own version of this same function, independently, with its own guesses for retry count and timeout."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "One caller, one guess. Reasonable, self-contained, and it works \u2014 this team never has to think about it again."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "Every other team writes their own version, independently. Nobody coordinated retry counts or timeouts with anybody else \u2014 there was no shared place to do so. Pricing now has four completely different sets of caller behavior aimed at it, none of which its own team chose or even necessarily knows about."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "Every caller's retries land on pricing at once. None of them coordinated with each other because none of them could \u2014 there was never a shared layer where that coordination could live."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "A brief blip becomes a sustained outage \u2014 not because pricing had a serious problem, but because uncoordinated retry logic, multiplied across every one of its callers, amplified a small transient issue into a large sustained one. This is exactly \u00a74's math, made concrete."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "The single most dangerous property of naive, uncoordinated retries is that they can turn a small, transient problem into a large, sustained one \u2014 through simple multiplication across call depth."
+  },
+  {
+    "id": "s4-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-list1\"]",
+    "text": "Retry amplification compounds with call depth. If service A calls B, which calls C, which calls D, and every hop independently retries up to 3 times on failure, then a single failure deep in the chain can cause up to 3 \u00d7 3 \u00d7 3 = 27 total attempts to reach the failing service from just one original request \u2014 and at four hops of depth, 3^4 = 81. When the callee is failing because it's overloaded, not because of a random blip, this amplified retry traffic is additional load on an already-struggling service, driving it further into overload rather than giving it room to recover. No backoff means retries arrive in lockstep. If every caller retries \"immediately\" on failure with no delay, and many callers hit the same failure at roughly the same moment (a deploy, a GC pause, a brief network blip), their retries all arrive back at the callee at roughly the same moment too \u2014 a synchronized retry storm indistinguishable, from the callee's perspective, from a sudden traffic spike. Inconsistent timeouts break in non-obvious ways. If service A's timeout for calling B is shorter than B's own internal processing time for some request, A gives up and (per the naive code above) retries \u2014 while B is still working on the original request. B now has two units of work in flight for what was conceptually one logical request, and neither A nor B has any way to know that."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "A downstream service takes a brief, real capacity hit \u2014 a deploy, a slow database query, a garbage-collection pause. Under naive, uncoordinated retries, every caller at every level of the call graph starts retrying against it simultaneously and without backoff, multiplying effective load by the product of each hop's retry count. What would have been a two-second blip, visible to a small fraction of requests, becomes a sustained overload that keeps the service unhealthy long after the original trigger has passed \u2014 a self-inflicted outage, caused entirely by well-intentioned retry logic with no fleet-wide coordination."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The obvious first fix: stop letting every team write its own retry/timeout logic. Put it in one shared client library that every service links against, with sane defaults for backoff, jitter, and circuit breaking, chosen once by a platform team instead of guessed independently by every caller."
+  },
+  {
+    "id": "deck-deckLibrary-0",
+    "kind": "deck",
+    "deckId": "deckLibrary",
+    "step": 0,
+    "text": "Where we started. Cross-cutting network logic duplicated, inconsistently, inside every application's own process."
+  },
+  {
+    "id": "deck-deckLibrary-1",
+    "kind": "deck",
+    "deckId": "deckLibrary",
+    "step": 1,
+    "text": "Better \u2014 one implementation, one team's judgment call on defaults, used consistently. But it only helps services written in a language the library supports, and fixing a bug in it means every service must pull a new version and redeploy."
+  },
+  {
+    "id": "deck-deckLibrary-2",
+    "kind": "deck",
+    "deckId": "deckLibrary",
+    "step": 2,
+    "text": "The logic leaves the application process entirely. Any language, any framework \u2014 the sidecar speaks plain network protocols to its own local app, so a fleet-wide policy fix ships by updating the sidecar, not by asking every team to redeploy."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "A shared library is a genuine improvement \u2014 it stops five different teams from inventing five different backoff formulas. But it has a structural limit worth naming precisely: it only helps services written in the languages the library supports, and upgrading its logic (say, fixing a bug in the circuit breaker) requires every service to pull a new library version and redeploy \u2014 you're back to needing hundreds of independent deploys to roll out one cross-cutting fix. The sidecar-proxy pattern is the answer to that specific limitation: move the logic out of the application's process entirely, into a separate proxy process running alongside it, so it can be upgraded once, fleet-wide, independent of which language any given service happens to be written in."
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Every call now takes an extra hop. Traffic goes app \u2192 local sidecar \u2192 network \u2192 remote sidecar \u2192 remote app, instead of app \u2192 network \u2192 remote app directly. That's real, measurable added latency per call (\u00a710 quantifies it), paid on every single request in the system, forever. Resource overhead, multiplied by every instance. A sidecar process runs alongside every single service instance \u2014 thousands of extra processes fleet-wide, each consuming its own memory and CPU, purely for infrastructure that adds no product value directly. A whole new control plane to operate. Sidecars need central configuration \u2014 routing rules, retry policies, certificates for mutual TLS \u2014 pushed out consistently to every instance. That control plane is now itself critical, fleet-wide infrastructure: if it misconfigures or fails to propagate an update, every service in the mesh is affected simultaneously, which is a new, mesh-specific single point of failure that didn't exist when each service simply called another directly. Debugging gets a new dimension of ambiguity. A failed request might have failed in the calling application, the callee application, or the mesh layer sitting between them (a misapplied timeout, a stale service-discovery entry, a circuit breaker that tripped for the wrong reason) \u2014 and telling which one requires the observability chapter 11 builds specifically to reconstruct a request's path across every hop it took."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "The sidecar pattern doesn't remove the cost of thousands of independently deployed services calling each other \u2014 it standardizes and centralizes that cost so it can be paid, measured, and improved once, by one team, instead of being paid inconsistently, invisibly, and often incorrectly by every team independently. That's a real, valuable trade at Uber's scale. It is not a free upgrade, and a small fleet of services should think hard before adopting the full weight of a mesh for the same reason chapter 8 warned against adopting microservices too early."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. Note the shape: every instance of every service gets its own sidecar, and every sidecar answers to the same central control plane \u2014 the mechanism that lets a fleet-wide policy change (a new default timeout, a rotated certificate) reach every instance uniformly."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Because every request now physically passes through a sidecar on both ends, the sidecar is also the natural place to attach the trace-context headers that let chapter 11's distributed tracing reconstruct a request's full path after the fact \u2014 one more reason this logic belongs in shared infrastructure rather than duplicated, inconsistently, inside every application."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Two mechanisms do almost all of the real work: a retry policy that spreads retries out over time instead of synchronizing them, and a circuit breaker that stops sending traffic to a callee that's clearly already unhealthy."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Instead of retrying immediately, each retry waits a randomized delay that grows with attempt number:"
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "The jitter matters as much as the exponential growth: without it, every caller that failed at the same moment computes the same delay and retries in lockstep anyway \u2014 a synchronized retry storm, just delayed by a fixed offset instead of eliminated. Randomizing within the window spreads retries out over time, converting a spike into a smoother trickle the recovering callee can actually absorb."
+  },
+  {
+    "id": "s8-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p4\"]",
+    "text": "A circuit breaker tracks a callee's recent success/failure rate and moves through three states, exactly the way an electrical circuit breaker protects a circuit from a persistent fault rather than continuously retrying it:"
+  },
+  {
+    "id": "deck-deckMesh-0",
+    "kind": "deck",
+    "deckId": "deckMesh",
+    "step": 0,
+    "text": "The app never touches the network directly. It only talks to its own local sidecar, over a loopback connection \u2014 that's the entire trick that makes the app language-agnostic to the mesh."
+  },
+  {
+    "id": "deck-deckMesh-1",
+    "kind": "deck",
+    "deckId": "deckMesh",
+    "step": 1,
+    "text": "Discovery and load balancing. The sidecar asks its local view of the discovery client for currently healthy pricing instances and picks one \u2014 dispatch's own code never had to know any of this happened."
+  },
+  {
+    "id": "deck-deckMesh-2",
+    "kind": "deck",
+    "deckId": "deckMesh",
+    "step": 2,
+    "text": "The real network call. Encrypted and mutually authenticated, sidecar to sidecar \u2014 pricing-7's own sidecar will hand the request to its local pricing application."
+  },
+  {
+    "id": "deck-deckMesh-3",
+    "kind": "deck",
+    "deckId": "deckMesh",
+    "step": 3,
+    "text": "The exact failure this whole chapter defends against. No response is coming for this attempt \u2014 dispatch's sidecar needs to notice and react without dispatch's own application code ever being involved."
+  },
+  {
+    "id": "deck-deckMesh-4",
+    "kind": "deck",
+    "deckId": "deckMesh",
+    "step": 4,
+    "text": "Retry, correctly. The failure is recorded against pricing-7 specifically, a short jittered delay is applied, and the retry re-runs load balancing from scratch \u2014 landing on a different, healthy instance rather than hammering the one that just died."
+  },
+  {
+    "id": "deck-deckMesh-5",
+    "kind": "deck",
+    "deckId": "deckMesh",
+    "step": 5,
+    "text": "Transparent recovery. From dispatch's own application code's point of view, this call simply succeeded \u2014 every bit of the discovery, retry, and reroute logic happened entirely inside the mesh layer."
+  },
+  {
+    "id": "s8-p5",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p5\"]",
+    "text": "Drag the failure-rate threshold and see exactly when the breaker should trip, computed from a real rolling window of outcomes:"
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this the same way as chapter 8's spectrum: there is no row that is simultaneously cheap, language-agnostic, and instantly upgradeable \u2014 each later row buys back one of the earlier row's limitations at a real, ongoing infrastructure cost, and the right point on the spectrum depends on fleet size and language diversity, not on which pattern is newest."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Two numbers matter most when evaluating a mesh at scale: the per-hop latency it adds, and how much overload it prevents during a partial outage compared to uncoordinated retries."
+  },
+  {
+    "id": "s10-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-list1\"]",
+    "text": "Per-hop latency is small but compounds with call depth. A sidecar hop typically adds low-single-digit milliseconds of overhead per call (proxying, mTLS handshake amortization, policy evaluation) \u2014 a widely cited, general industry figure for this class of proxy, not a specific measured Uber number. That's negligible for one hop; on a request that fans out across four or five services in sequence, it becomes a real, additive contributor to end-to-end latency that a team must budget for explicitly. A circuit breaker's value shows up specifically under partial failure, not steady state. In healthy conditions, a mesh with a circuit breaker and one without behave identically. The entire benefit appears exactly when a downstream service starts failing \u2014 bounding the retry amplification from \u00a74's math rather than letting it compound freely."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The multiplier curve is the direct arithmetic consequence of \u00a74's retry-amplification math (retries-per-hop raised to the power of chain depth), capped once a circuit breaker is enabled and trips \u2014 it is a first-principles model of the mechanism, not a claimed measured production number."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber has not published a detailed public postmortem naming a specific internal retry-storm incident, so this section teaches the realistic, industry-standard incident pattern this class of system produces \u2014 one of the most commonly discussed failure modes across the entire industry of companies running large service fleets \u2014 and says so plainly rather than inventing a specific internal Uber event."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "A downstream dependency has a brief real problem \u2014 a slow database query, a deploy, a garbage-collection pause \u2014 lasting only seconds. Uncoordinated retries across the fleet, without backoff or jitter, amplify total load on that dependency (\u00a74's math) well past what it can handle, and the resulting overload persists long after the original trigger has resolved, because the retry traffic itself is now the problem. The general fix \u2014 exponential backoff with jitter, plus a circuit breaker that stops sending traffic once failure rate crosses a threshold \u2014 is precisely \u00a78's mechanism."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "A dependency that's merely slow, not failing outright, is often more dangerous than one that's cleanly down: callers wait on connection pools and threads that don't free up, and that resource exhaustion propagates to parts of the system with no direct relationship to the original slow dependency \u2014 a failure \"in one corner\" becoming an outage everywhere calls eventually route through that corner. Aggressive timeouts and circuit breaking are the general defense, precisely because they convert \"slow and eventually might respond\" into \"fast, clean failure now\" \u2014 which callers can actually recover from."
+  },
+  {
+    "id": "s11-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p4\"]",
+    "text": "A poorly tuned breaker \u2014 threshold too low, or a rolling window too short and noisy \u2014 can trip on a brief, ordinary blip and stay open longer than the real problem justified, refusing perfectly healthy traffic and turning a minor hiccup into a self-inflicted, breaker-caused outage. This is the honest counterpoint to \u00a78: a circuit breaker is a real safety mechanism, but its parameters need the same careful, load-tested tuning as any other production safety system \u2014 badly configured protection is its own incident category."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Staff-level systems interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "The specifics of any single company's current internal mesh implementation are not fully public; what follows is precise, representative pseudocode of how a sidecar proxy of this shape is genuinely built in production \u2014 labeled as illustrative throughout."
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The circuit breaker's core state machine, matching \u00a78(b)'s table exactly:"
+  },
+  {
+    "id": "s13-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p3\"]",
+    "text": "The backoff-and-retry loop the sidecar runs on the caller's behalf, replacing every team's hand-rolled version from \u00a73:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "Notice the circuit breaker is checked before a new instance is even picked \u2014 an open breaker means the sidecar doesn't waste time on load balancing or attempt a network call it already has strong evidence will fail. And every retry re-runs PickHealthyInstance() rather than hammering the same instance again \u2014 a retry is only useful if it has a real chance of reaching a healthy target, which is exactly what the mesh's unified discovery and load-balancing layer, sitting outside any single application, is positioned to guarantee."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Send a request from dispatch's sidecar to pricing. Watch the sidecar discover healthy instances, pick one, and forward the call \u2014 then kill that exact instance mid-flight and watch retry and circuit-breaking logic reroute the request to a healthy one live, with no code change and no human intervention."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Send a request, then immediately kill the instance it picked \u2014 watch the sidecar's retry logic pick a different healthy instance and complete the request without the caller ever seeing an error. 2. Kill all instances, then send a burst of five requests \u2014 watch the failure rate cross the threshold and the circuit breaker trip to OPEN, after which further requests fail immediately without even attempting the network call. 3. Reset one instance back to healthy and send another request after the breaker's cooldown \u2014 watch it enter HALF-OPEN, send one trial request, and close again once that trial succeeds."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud), then reveal."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain precisely why retries need backoff and jitter to avoid amplifying failure rather than absorbing it, how a circuit breaker's three-state machine protects both caller and callee, and why cross-cutting network logic migrates from application code into a sidecar as a fleet grows. Everything in this chapter has been about synchronous request-response calls between services. Chapter 10 opens the other half of how these services actually talk to each other: an asynchronous event backbone, where one service publishes a fact and any number of others react to it on their own schedule, with nobody waiting on a response at all."
+  }
+]

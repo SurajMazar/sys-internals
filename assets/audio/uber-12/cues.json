@@ -1,0 +1,298 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Thousands of stateless service instances need to run somewhere \u2014 and so do large batch jobs and ML training runs, on the very same fleet of machines, at completely different times of day. This chapter derives why running separate siloed clusters per workload type wastes a fleet's capacity, how Peloton \u2014 Uber's real Mesos-based unified scheduler \u2014 bin-packs both workload classes onto shared hardware instead, and how a staged canary rollout uses live health signals to decide, automatically, whether a deploy should finish or reverse itself."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Compute why static, siloed clusters cap fleet utilization even when total capacity is sufficient. You will understand How hierarchical resource pools and preemption let latency-sensitive and best-effort workloads coexist safely. You will predict When a canary rollout's error-rate signal is statistically strong enough to trust. You will simulate A staged rollout that auto-completes or auto-rolls-back based on real threshold math."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "By this point in the course, Uber's backend is thousands of independently deployed stateless services (chapter 8) talking over a mesh (chapter 9) and an event backbone (chapter 10), observed by M3 and Jaeger (chapter 11). None of that runs on air \u2014 every service instance is a process that has to be placed on an actual machine, and so does something this course hasn't discussed yet: the large batch jobs and machine learning training runs that consume Uber's own event and trip data to compute things like ETA models, fraud models, and demand forecasts."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "These two workload classes have almost opposite shapes:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Stateless services \u2014 must be up continuously, respond in milliseconds, and their demand tracks rider and driver activity: it peaks during commute hours and Friday/Saturday nights, and troughs overnight. Batch and ML jobs \u2014 run for minutes to hours, don't need to respond to anyone in real time, and are usually scheduled (deliberately or by convenience) to run when spare capacity exists \u2014 which, for a rides business, is disproportionately overnight, exactly when stateless demand troughs."
+  },
+  {
+    "id": "s1-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p3\"]",
+    "text": "Those opposite demand curves are the entire opportunity this chapter is about: if the two workload classes could share one fleet, the batch/ML class's overnight peak could run on exactly the capacity the stateless class isn't using. The naive answer \u2014 give each workload class its own separate, statically-sized cluster \u2014 throws that opportunity away, and \u00a74 shows precisely how much."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "Even with enough total machines, which task runs on which machine, and what happens when two tasks both want the same one is a genuine algorithmic problem \u2014 bin-packing, which is provably hard to solve exactly at any real scale. Every unified scheduler, this chapter's included, is really a story about which heuristics it uses and which guarantees it's willing to trade away for speed."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "Click through the milestones that shaped why Uber built its own scheduling layer rather than running workload-specific clusters indefinitely."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Peloton is Uber's real unified scheduler, built on top of Apache Mesos \u2014 a cluster resource manager that abstracts a fleet of machines into offers of available CPU/memory that a scheduler can accept or decline. Mesos itself doesn't decide bin-packing policy; it hands resource offers to whichever scheduler framework is registered above it. Peloton is the scheduling policy layer built specifically to make that shared resource pool safe for mixing stateless services with batch and ML workloads \u2014 the placement heuristics, resource pools, and preemption rules this chapter derives are Peloton's job, not Mesos's."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "The obvious first cut: give stateless services their own fixed-size cluster, sized for peak rider demand, and give batch/ML its own separate fixed-size cluster, sized for its own peak job volume."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is a completely reasonable starting point: each cluster is simple to reason about, capacity planning for each workload class is independent, and a batch job gone haywire can't starve a rider-facing service of resources by accident, or vice versa. The problem is what those two fixed sizes actually cost, all day, every day."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Quantify it. Suppose (illustrative numbers, chosen to make the shape clear rather than to claim Uber's real published figures) the stateless cluster's real utilization looks like this over 24 hours: near 90% during evening peak, but only ~25% at 4am. The batch/ML cluster's utilization is the mirror image: near 85% overnight running training jobs, but only ~15% during evening peak when engineers are busy elsewhere and fewer jobs are scheduled."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "Average utilization of the stateless cluster across 24 hours, in this illustrative model, comes out around 50\u201355%; the batch/ML cluster, run separately and sized for its own peak, averages a similar figure. Neither cluster can ever borrow the other's idle capacity, because they are separate pools of machines \u2014 the stateless cluster's 4am idle capacity and the batch cluster's evening-peak idle capacity are both stranded, unusable by the workload that could actually use them at that hour. The fleet as a whole is paying for two peaks' worth of hardware while running, on average, closer to one peak's worth of real work. This is not a tuning problem within either cluster \u2014 it's a structural consequence of the partition itself, and no amount of resizing either cluster individually fixes it, because the waste is exactly the non-overlap between the two demand curves."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "Generalize it: any time two workload classes have demand curves that peak at different times, a static partition forces the fleet to be provisioned for the sum of their two peaks, while the combined peak \u2014 if the two workloads shared one pool \u2014 is usually meaningfully lower than that sum, because they rarely peak simultaneously. Capturing that gap is exactly what a unified scheduler buys you, and exactly why Uber built one."
+  },
+  {
+    "id": "s4-co2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co2\"]",
+    "text": "We need one shared pool of machines and a scheduler that can safely place both workload classes onto it \u2014 which immediately raises the question the naive design avoided entirely: what stops a batch job from starving a rider-facing service of resources at exactly the moment rider demand spikes?"
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "Step through how a shared pool becomes safe for both workload classes, one mechanism at a time."
+  },
+  {
+    "id": "deck-deckEvo-0",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 0,
+    "text": "Where we started. Two static, separately-sized clusters. Neither can ever use the other's idle capacity \u2014 the fleet is paying for both peaks, all day, every day, exactly as \u00a74 quantified."
+  },
+  {
+    "id": "deck-deckEvo-1",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 1,
+    "text": "Step 1: merge into one pool. Average utilization improves immediately, because either workload can now use whatever capacity the other isn't. But nothing yet stops a large batch job from taking capacity a spiking rider-facing service needs right now \u2014 sharing alone doesn't guarantee safety."
+  },
+  {
+    "id": "deck-deckEvo-2",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 2,
+    "text": "Step 2: give each workload class a reservation. The stateless pool's reservation is never taken away, no matter how busy the shared pool gets \u2014 exactly the guarantee a latency-sensitive service needs. Batch/ML gets elastic access to everything above reservations, up to its own limit, explicitly marked as capacity that can be reclaimed."
+  },
+  {
+    "id": "deck-deckEvo-3",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 3,
+    "text": "Step 3: add preemption for when reservations alone aren't enough. If stateless demand needs more than its reservation and the shared pool is tight, the scheduler evicts lower-priority preemptible batch/ML tasks \u2014 with a grace period, not an abrupt kill \u2014 to free capacity. This is the final shape: one pool, guaranteed slices for latency-sensitive work, and a safety valve for when elastic borrowing needs to be reclaimed."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "This is, at a high level, exactly what Uber's real Peloton was built to do: a scheduling layer over a shared Mesos-managed fleet that mixes stateless services with batch and ML workloads, using resource-pool guarantees and preemption to make the sharing safe rather than just convenient."
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Bin-packing is NP-hard, so real schedulers use heuristics, not optimal solutions. A placement engine choosing which host runs which task is provably not solvable optimally at scale in reasonable time \u2014 real systems use fast approximations (first-fit, best-fit, bin-packing scored by several dimensions at once), which means the fleet is never packed as tightly as a hypothetical optimal solver could pack it. Preemption has to be safe, not just decisive. Evicting a lower-priority batch task to free capacity for a latency-sensitive service is the whole point of sharing the pool \u2014 but evict too aggressively and a batch job that was 95% done gets killed and has to restart from scratch, wasting real compute; evict too conservatively and the latency-sensitive service waits. Colocation creates noisy-neighbor interference. Two workloads sharing a physical host, even with separate resource reservations, can still contend for shared hardware resources (memory bandwidth, cache, disk I/O) in ways a scheduler's accounting doesn't fully capture \u2014 a batch job doing heavy sequential I/O can measurably slow a latency-sensitive neighbor even while staying within its own allocated CPU share. Running the scheduler itself is a new operational responsibility. A unified scheduler is now load-bearing infrastructure for both workload classes at once \u2014 its own bugs, its own scaling limits, and its own on-call rotation replace what used to be two smaller, more independent operational surfaces."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Every operator running mixed workloads at scale accepts these costs deliberately, because the alternative \u2014 the static partition from \u00a73 \u2014 has a cost that's worse and, worse still, invisible on a capacity spreadsheet: hardware sitting idle. Choosing \"hard, occasionally messy sharing\" over \"clean, wasteful isolation\" is the same tradeoff this course has now made for processes (chapter 1), and it recurs here at the level of an entire fleet."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. This is the architecture Uber has publicly described for Peloton: a scheduling layer of cooperating components sitting above a Mesos-managed fleet, mixing stateless services with batch and ML workloads on shared hardware."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Notice the same separation-of-concerns instinct this course keeps re-deriving: the resource manager decides how much capacity each org/workload class is entitled to (a policy question), the job manager tracks what should be running (a bookkeeping question), and the placement engine decides where specifically each task lands (a bin-packing question) \u2014 three cleanly separated responsibilities instead of one component doing all three."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Four mechanisms: (a) hierarchical resource pools and admission control, (b) the placement engine's bin-packing heuristic, (c) the preemption decision, and (d) the canary rollout controller that watches live health signals."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Rather than one flat quota per team, resource pools form a tree \u2014 an org's pool contains its teams' pools, each with a reservation (guaranteed minimum), a limit (hard ceiling), and a share (how unused fleet-wide capacity is split when there's a surplus):"
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "This is the mechanism that makes sharing safe: a team's reservation is never taken away, regardless of how busy the rest of the fleet is \u2014 exactly the guarantee a latency-sensitive stateless service needs. Everything above the reservation, up to the limit, is elastic capacity borrowed from the shared pool, and explicitly marked preemptible."
+  },
+  {
+    "id": "s8-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p4\"]",
+    "text": "Step through what preemption actually looks like when a latency-sensitive service spikes:"
+  },
+  {
+    "id": "deck-deckPreempt-0",
+    "kind": "deck",
+    "deckId": "deckPreempt",
+    "step": 0,
+    "text": "Normal state. Stateless services run within their guaranteed reservation; a batch job and an ML training run occupy the elastic capacity above it, both marked preemptible."
+  },
+  {
+    "id": "deck-deckPreempt-1",
+    "kind": "deck",
+    "deckId": "deckPreempt",
+    "step": 1,
+    "text": "A rider-demand spike hits. Dispatch needs three more instances beyond its current footprint \u2014 more than its own idle reservation can cover. The resource manager admits the request as elastic, and the placement engine now needs capacity that's currently occupied by preemptible work."
+  },
+  {
+    "id": "deck-deckPreempt-2",
+    "kind": "deck",
+    "deckId": "deckPreempt",
+    "step": 2,
+    "text": "Preemption, targeted. The preemptor sorts preemptible tasks by priority and evicts only as many as needed \u2014 here, the batch ETL job alone freed enough capacity, so the ML training run (assume it's flagged as more expensive to restart) is left untouched. This is the targeted-eviction behavior from \u00a78(c)'s considerEviction, not a blanket sweep."
+  },
+  {
+    "id": "deck-deckPreempt-3",
+    "kind": "deck",
+    "deckId": "deckPreempt",
+    "step": 3,
+    "text": "Recovery. Once rider demand recedes and dispatch's footprint shrinks back toward its reservation, the freed capacity becomes available again, and the evicted batch job \u2014 assuming it checkpointed recently \u2014 resumes close to where it left off rather than restarting from scratch. This is exactly why encouraging frequent checkpointing on long-running preemptible work matters, as \u00a711's incident describes."
+  },
+  {
+    "id": "s8-p5",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p5\"]",
+    "text": "A staged rollout deploys a change to a small fraction of instances first, compares their error rate against a healthy baseline, and only proceeds if the comparison clears a real statistical bar \u2014 not just \"zero errors,\" which a tiny sample can show even for a genuinely broken build. Drag the sliders below; the verdict is computed live from the numbers, not scripted."
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this the same way as every tradeoff table in this course: there is no dominant option, only a different place to accept cost. Uber's real Peloton design pays scheduling complexity \u2014 resource pools, placement heuristics, careful preemption \u2014 to buy back the utilization that a static partition permanently strands."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Uber's real engineering materials describe Peloton coordinating scheduling across large, multi-tenant fleets mixing tens of thousands of stateless service instances with substantial batch and ML training workloads \u2014 the exact current scale moves over time and isn't the point here. The point is the utilization gap between siloed and shared scheduling, which the chart below computes directly from the two illustrative demand curves in \u00a74, not from a canned animation."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "Both demand curves are illustrative sine-shaped approximations tuned to show two peaks at different times of day, chosen for shape rather than calibrated to Uber's real published utilization figures. In siloed mode, required capacity is the sum of each curve's own peak, held fixed all day; in shared mode, it's the peak of the two curves' sum at each hour \u2014 provably less than or equal to the siloed sum, and usually meaningfully less whenever the two peaks don't coincide. That inequality, not any specific number, is the result worth remembering."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "This is a realistic, industry-standard incident pattern for this class of system rather than a specific documented Uber postmortem: a bad deploy passes its canary stage cleanly, because the canary's 5% of traffic happened not to exercise the one code path that was actually broken \u2014 a rare input, a specific region, a specific app version \u2014 and the rollout completes to 100% before the problem shows up at full production load and volume. The general lesson this incident pattern teaches, independent of any one company: a canary reduces risk, it does not eliminate it, and its usefulness is bounded by how representative the canary traffic actually is of the full fleet's traffic \u2014 which is exactly why serious canary systems watch signals well past the initial stage, keep the rollout at partial completion for a meaningful soak period, and treat a clean canary as reduced risk rather than proof of correctness."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Also a general, honestly-framed industry pattern rather than a specific documented Uber incident: a latency-sensitive service's demand spikes, the scheduler correctly preempts lower-priority batch tasks to free capacity \u2014 but a long-running ML training job that was 95% complete gets evicted along with everything else preemptible, and has to restart from its last checkpoint (or from scratch, if it wasn't checkpointing frequently), wasting hours of compute for a preemption decision that, from the scheduler's narrow point of view, was completely correct. The standard mitigation this pattern teaches across the industry: preemption policies that account for a task's progress and checkpoint frequency, not just its static priority number \u2014 and encouraging (or requiring) long-running batch/ML jobs to checkpoint regularly specifically so a preemption event costs minutes of recomputation, not hours."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "A scheduler's decisions are only as good as the signals and policies it's given \u2014 a canary is only as trustworthy as its traffic sample, and preemption is only as cheap as the preempted task's own resilience to being evicted. Neither problem is really \"the scheduler is wrong\" \u2014 both are \"the inputs to the scheduler's decision were incomplete.\""
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Peloton's full internals aren't reproduced here verbatim; what follows is precise, representative pseudocode for how a system in this class is genuinely built \u2014 organized to mirror Peloton's real, publicly described component names \u2014 labeled illustrative rather than literal."
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The canary controller \u2014 the core decision loop behind \u00a715's simulator:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "1. Reservations are promises; everything else is a loan. Splitting a pool's guarantee (reservation) from its ceiling (limit) is what lets latency-sensitive workloads coexist with elastic ones \u2014 the guarantee is never subject to renegotiation under load, exactly when it matters most. 2. A heuristic placement engine trades optimality for speed, deliberately. Waiting for a provably optimal bin-packing solution is not compatible with placing tasks in real time at fleet scale \u2014 a fast, good-enough heuristic beats a slow, perfect one every time a task is actually waiting to run. 3. A canary's verdict needs a statistical floor, not just a threshold. Requiring a minimum sample size before trusting an error-rate comparison is what stops a tiny, noisy canary sample from producing a confident-sounding but meaningless verdict either way."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Stage a deploy to a fraction of a 100-instance fleet, watch live error-rate signals stream in, and see the rollout either auto-complete stage by stage or auto-rollback \u2014 decided by the same threshold math as \u00a713's evaluateCanary, not by a scripted animation."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Deploy a healthy build and watch it auto-promote through 5% \u2192 25% \u2192 100% as its error rate stays near baseline. 2. Deploy a broken build and watch the canary stage catch the elevated error rate and auto-rollback before it ever reaches the full fleet. 3. Compare how long each verdict takes to become confident \u2014 notice it waits for enough samples, not just enough time."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "Formulate a full answer before revealing."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain why static workload silos permanently strand capacity, how hierarchical resource pools and preemption let a shared fleet stay safe for latency-sensitive work, and how a canary rollout turns a live error-rate signal into an automatic promote-or- rollback decision. This closes the backend-architecture arc of the course. Chapter 13 turns to the edge: once a change has safely rolled out across a scheduled fleet of thousands of services, how does a rider's mobile app \u2014 which might be running a version of the app from months ago \u2014 actually talk to any of it at all, and stay working, without every backend change breaking every app version still out in the field?"
+  }
+]

@@ -1,0 +1,364 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapters 1 through 6 each assumed a trip, once matched and priced, simply \"happens.\" This chapter opens that assumption. A trip is a long-lived object that must move through a precise sequence of states \u2014 requested, matched, en route, arrived, in progress, completed \u2014 while three or more independently deployed services (dispatch, payments, notifications) all need a consistent view of exactly which state it's in, at every moment, even while machines crash, networks drop packets, and clients retry. Get this wrong and the failure mode isn't a glitchy progress bar \u2014 it's a rider charged twice, or a driver stranded mid-trip with no system aware anything is wrong."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Draw the trip's real state machine, including every cancellation and timeout edge, not just the happy path. You will understand Why this state must live in durable, versioned storage owned by one service \u2014 never as a variable in any single process's memory. You will predict Exactly which retried events are safe and which ones need an idempotency key to avoid double-charging a rider. You will simulate A trip tracer that survives a duplicate completion event and a mid-trip driver dropout without corrupting state."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Everything upstream of this chapter \u2014 matching (chapter 4), routing (chapter 5), pricing (chapter 6) \u2014 resolves in seconds and hands off a decision. A trip itself does not resolve in seconds. It lives for minutes to hours, crosses a rider's phone, a driver's phone, and a fleet of backend services, and at the end of it a real payment moves and a real record is written that both parties may dispute later. That combination \u2014 long-lived, distributed, and financially consequential \u2014 is what makes the trip's state the hardest state in this course to get wrong."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Unpack it into concrete requirements:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Many independent services must agree. Dispatch needs to know a trip is still \"matched\" to avoid double-assigning the driver. Payments needs to know the exact moment a trip becomes \"completed\" to charge exactly once. Notifications needs every transition to tell the rider and driver apps what to show. None of these run in the same process, and none of them can be allowed to hold a private, divergent opinion about what state the trip is in. The state must outlive any single machine. A trip that started five minutes ago must still be trackable if the exact server that recorded \"driver arrived\" crashes one second later. State that lives only in one process's memory is state that a routine deploy, an OOM kill, or a hardware fault can simply erase. Transitions are not always driven by clean, first-time events. Mobile networks retry. A phone that thinks its \"trip completed\" call failed will call again \u2014 Uber's own driver and rider apps run on exactly the unreliable networks chapter 3 described. Some transitions carry money, so a retried event must produce the identical effect as the original, not the effect twice. Silence must be a first-class transition, not an unhandled case. A driver's phone loses signal in a tunnel or the app is killed by the OS mid-trip. Nothing \"happens\" \u2014 no event arrives at all. A correct system must notice the absence of an expected signal and act, on a timer, rather than waiting forever for an event that may never come. Almost every state needs an exit ramp. Riders cancel. Drivers cancel. Matches expire. A trip's state machine is not a straight line with one on-ramp; it is a graph with cancellation and timeout edges leaving nearly every node, each with its own real-world consequence (a cancellation fee, a re-match, a support ticket)."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "This chapter is the hinge between the two arcs of this course. Everything before it (chapters 1\u20136) is about deciding something \u2014 a match, a route, a price. Everything from chapter 8 onward is about the distributed-systems machinery that makes decisions like that survive at Uber's scale: services instead of one process (chapter 8), RPC and service meshes connecting them (chapter 9), an event backbone carrying their messages (chapter 10), and datastores durable enough to hold the state itself (chapters 14\u201317). The trip state machine is the first place in this course where you can't hand-wave \"the backend handles it\" \u2014 you have to say exactly which service owns the state, exactly how it survives a crash, and exactly why a retry can't cost a rider twice. Every later chapter's machinery exists, in part, to make this one correct."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "The trip state machine you'd design today did not spring into existence complete \u2014 it grew, the same way Uber's own architecture grew, from a simple assumption that broke as soon as the company operated at real scale in real cities. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "The general technique this chapter leans on hardest \u2014 attaching a client-generated idempotency key to any request that has a side effect, so a retried request produces the original effect exactly once \u2014 is not unique to Uber. It became industry-standard vocabulary largely through payments APIs (Stripe's public API documentation popularized the exact term \"idempotency key\" for this purpose in the mid-2010s), for the obvious reason that payments are where a duplicate side effect is most visible and most damaging. Any company moving money over an unreliable network converges on the same mechanism independently, because the alternative \u2014 trusting that every client only ever calls you once \u2014 is simply false at scale. This chapter teaches the general mechanism precisely because it's general: the same pattern appears in streaming-event consumer processing (chapter 10's event backbone), in payment-gateway integrations everywhere, and in this trip service."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Start honestly, the way any engineer would on day one. A trip has an obvious, small set of states. The simplest possible implementation is a single in-memory object, mutated directly as events arrive, living inside whichever process happens to be handling this trip right now:"
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is not a silly starting point \u2014 for a demo, or a single-city pilot with a few hundred concurrent trips, it is genuinely adequate. Every state transition is a plain function call, there is no serialization overhead, and reasoning about \"what happens next\" is as simple as reading the function top to bottom. Watch what happens once more than one thing can go wrong at once."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "The happy path, once. One process, one dictionary entry, a handful of function calls. Everything about this looks correct \u2014 because on a single successful pass, with no crash and no retry, it is correct."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "Silence isn't handled \u2014 because it isn't an event. The handler only reacts to messages that arrive. A message that never arrives produces exactly zero code execution: the trip is stuck in \"in_progress\" until a human notices, because nothing in this design is actively watching for the absence of a signal."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "Retried events are treated as brand new. The handler has no memory of \"have I already done this?\" \u2014 it just re-runs charge_rider() because an event of type trip_completed arrived, full stop. The rider is billed twice for one ride."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "State loss is silent and total. There's no log of \"trip 8841 was in_progress a moment ago\" anywhere durable \u2014 the only record was a Python object on a heap that the kernel just reclaimed. Nothing else in the system even knows to be surprised."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Three independent failure modes, each provable with arithmetic rather than intuition:"
+  },
+  {
+    "id": "s4-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-list1\"]",
+    "text": "Duplicate side effects at real retry rates. Mobile clients on real networks retry failed requests \u2014 that is correct client behavior, not a bug. Even a conservative 0.3% effective retry rate on the single \"trip completed\" call, across a platform completing on the order of tens of millions of trips a day, is tens of thousands of duplicate completion events landing on backend services every single day. The naive handler above charges the rider again on every one of them, because nothing distinguishes \"the same event, redelivered\" from \"a second, genuine event.\" State loss on crash, at in-flight scale. At any given moment, a platform this size has on the order of hundreds of thousands of trips in some active, non-terminal state. If that dictionary lives in one process's memory, every deploy, OOM kill, or hardware fault doesn't just interrupt one request \u2014 it erases the current state of every trip that process happened to be holding, with no record of what state they were in a moment before the crash. No cross-service agreement, ever. Dispatch, payments, and notifications each need their own copy of \"what state is this trip in.\" If each service keeps its own in-memory guess, updated by whichever events happen to reach it, there is no mechanism forcing those guesses to agree \u2014 and a network partition or message reordering (chapter 3's whole subject, applied here to trip events instead of location pings) makes disagreement the default, not the exception."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "Say a completion event is retried because the acknowledgment to the driver app was lost on a flaky connection (the driver app never learns the first call succeeded, so it retries). The naive handler runs charge_rider() a second time. At an average fare of roughly $15\u201320, a duplicate-charge rate of even one in ten thousand completions, at tens of millions of trips a day, is thousands of double-charged riders daily \u2014 each one a support ticket, a refund, and a trust cost with the rider that a system-design review should have caught for free. This is precisely the class of bug an idempotency key exists to make structurally impossible, not merely unlikely."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "So the fix must attack two separate problems at once: make the state durable and shared across services, and make transitions with side effects idempotent against redelivery. Section 5 builds both."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "Two changes, layered on top of each other. First: stop keeping the trip's state in any one process's memory. Persist it in a shared, durable store, keyed by trip id, with an explicit version number that increments on every transition \u2014 the same optimistic-concurrency pattern any system needs when more than one writer might touch the same row. Second: alongside the trip's state, keep a separate durable table of idempotency keys already processed, so any side-effecting event can be checked against \"have I already done this?\" before it's applied a second time."
+  },
+  {
+    "id": "deck-deckDurable-0",
+    "kind": "deck",
+    "deckId": "deckDurable",
+    "step": 0,
+    "text": "Where we started: an entry in a plain dictionary, gone the instant its process dies."
+  },
+  {
+    "id": "deck-deckDurable-1",
+    "kind": "deck",
+    "deckId": "deckDurable",
+    "step": 1,
+    "text": "One durable row, shared by every service. Any service reads it through the trip service's API; nobody keeps a private in-memory copy that can drift. The version field is the whole trick for concurrent writers \u2014 see the next step."
+  },
+  {
+    "id": "deck-deckDurable-2",
+    "kind": "deck",
+    "deckId": "deckDurable",
+    "step": 2,
+    "text": "Optimistic concurrency in action. Both writers read the same version. Whichever compare-and-swap runs first wins and bumps the version; the second one's precondition (\"if version is still 7\") now fails, so it's rejected rather than silently clobbering a transition that already legitimately happened."
+  },
+  {
+    "id": "deck-deckDurable-3",
+    "kind": "deck",
+    "deckId": "deckDurable",
+    "step": 3,
+    "text": "Durability alone doesn't stop a duplicate charge \u2014 a versioned row still has no memory of \"have I already run charge_rider() for this exact client request?\" That's a separate, deliberate structure: a durable table keyed by the client's idempotency key, checked before any side effect runs."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "Note precisely what each piece buys, because they solve different problems and neither one alone is sufficient: durability plus versioning solves \"the state survives a crash and two writers can't silently clobber each other\"; the idempotency ledger solves \"a retried request can't repeat a side effect.\" A system with only the first still double-charges on retry; a system with only the second still loses all state the instant a process dies holding it in memory."
+  },
+  {
+    "id": "s6-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p1\"]",
+    "text": "Be precise about what section 5's fix still leaves unsolved, because each gap is a real cost you pay, not a tuning oversight:"
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Every transition now costs a durable write. A read of the current state and version, a compare-and-swap write of the new state, and \u2014 for side-effecting transitions \u2014 a check-and-insert against the idempotency ledger. That is real latency (single-digit to double-digit milliseconds per hop, chapter 14\u201317's subject) on every single state change, paid by every trip, all the time \u2014 nothing here is free versus the naive in-memory version. Concurrent writers still collide. Two services racing to transition the same trip (dispatch marking \"driver arrived\" at the same instant a timeout job marks \"expired\" because the driver's last location ping was stale) will have one of their compare-and-swap writes rejected by the version check. That's correct \u2014 it prevents corruption \u2014 but it means the losing service must detect the rejection and decide whether to retry, re-read, or give up, which is real application logic you now must write for every transition. Durability doesn't detect silence. Persisting state changes says nothing about what to do when an expected event simply never arrives \u2014 a driver's phone dies mid-trip and no \"trip completed\" event is ever sent. A purely reactive, event-driven state machine sits in \"in progress\" forever unless something is actively watching the clock. Someone still has to own the row. Persisting to \"a shared datastore\" doesn't answer which service is allowed to write it, under what locking discipline, or what happens when two teams' services both believe they own a transition. Durability is a storage property; ownership is an architecture decision \u2014 section 7 makes it."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "What's emerging is a version of the saga / orchestrator pattern: a single service that owns the trip's canonical state and is the only writer of it, coordinating the other services (dispatch, payments, notifications) by publishing what changed rather than letting them all write to the same row. Sections 7 and 8 build exactly that, plus the piece durability alone can't provide: an active timeout mechanism watching for silence."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component to see its job. Note the shape: exactly one service holds write access to a trip's canonical state; every other service either calls into it through its API or reacts to the events it publishes \u2014 nobody else writes the row directly."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "The alternative \u2014 letting dispatch, payments, and notifications each hold a copy of the trip's state and reconcile via events, with no single owner \u2014 is a real pattern (choreography, see chapter 10's fan-out consumers) and it is not wrong, but it trades a hard problem (who's allowed to write?) for a different hard problem (whose copy is authoritative when two disagree?). For state this consequential \u2014 money moves on it \u2014 this course's design keeps one explicit owner. You'll meet the choreography alternative properly once chapter 10 covers the event backbone those \"downstream subscribers\" actually run on."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Three pieces make this concrete: (a) an explicit table of which transitions are even legal, so illegal ones are rejected before they can corrupt anything; (b) the handler that applies an event exactly once; and (c) the timeout mechanism that fires when an expected event never shows up."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Every state has a small number of legal next states. Everything not listed is rejected outright \u2014 this is the cheapest possible defense against a corrupt or out-of-order event ever reaching the stored state."
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "Step through a handler applying one event end to end, including the idempotency check and the optimistic concurrency write:"
+  },
+  {
+    "id": "deck-deckHandler-0",
+    "kind": "deck",
+    "deckId": "deckHandler",
+    "step": 0,
+    "text": "An event lands. Before touching the trip's state at all, the handler asks one question first."
+  },
+  {
+    "id": "deck-deckHandler-1",
+    "kind": "deck",
+    "deckId": "deckHandler",
+    "step": 1,
+    "text": "Idempotency check, first. If this exact key had already been reserved, the handler would return immediately \u2014 no state read, no write, no second charge. Here it's new, so processing continues."
+  },
+  {
+    "id": "deck-deckHandler-2",
+    "kind": "deck",
+    "deckId": "deckHandler",
+    "step": 2,
+    "text": "Load current state. Read the canonical row \u2014 not a locally cached guess \u2014 along with its version number for the compare-and-swap that's coming."
+  },
+  {
+    "id": "deck-deckHandler-3",
+    "kind": "deck",
+    "deckId": "deckHandler",
+    "step": 3,
+    "text": "Validate against the transition table. trip_completed from in_progress is a legal edge (\u00a78a's table). If it weren't \u2014 say this event arrived after the trip was already cancelled \u2014 it would be rejected right here, before any write."
+  },
+  {
+    "id": "deck-deckHandler-4",
+    "kind": "deck",
+    "deckId": "deckHandler",
+    "step": 4,
+    "text": "Write, guarded by the version. If another writer had changed the row since the load (version no longer 12), this write is rejected and the whole handler retries from a fresh read \u2014 never a blind overwrite."
+  },
+  {
+    "id": "deck-deckHandler-5",
+    "kind": "deck",
+    "deckId": "deckHandler",
+    "step": 5,
+    "text": "Side effects, last. Only after the write is durably committed does the handler cancel this trip's watchdog timers and publish the change \u2014 payments charges the rider exactly once, notifications tells both apps, and the idempotency key is now permanently marked applied for its TTL."
+  },
+  {
+    "id": "s8-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p4\"]",
+    "text": "For every non-terminal state with a real-world expectation attached (\"a matched driver should start moving within N seconds,\" \"an in-progress trip should complete within a bounded multiple of its estimated duration\"), the trip service schedules a timeout job when it enters that state, and cancels it the moment a legitimate transition fires first. If the timer fires before a transition arrives, the timeout event itself is just another input to the same handleEvent() \u2014 silence is not a special code path, it's a scheduled event like any other."
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "The pattern to notice: every row that is viable at Uber's scale pays a real, ongoing cost \u2014 either latency per transition, architectural complexity in reconciliation, or a dependency on more infrastructure. There is no row that is simultaneously fast, simple, and safe when the state is long-lived, distributed, and has money attached; this chapter's choice (durable row, single owner, explicit watchdog) is a specific, defensible point on that tradeoff curve, not the only correct one."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Every non-terminal trip carries at least one live, scheduled timeout job; every side-effecting transition carries one idempotency-ledger lookup. Neither is free, and both must be budgeted explicitly:"
+  },
+  {
+    "id": "s10-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-list1\"]",
+    "text": "Watchdog job volume scales linearly with in-flight trips. With roughly six non-terminal states each carrying a timer, a fleet with hundreds of thousands of concurrent trips is scheduling and cancelling on the order of a million timer operations at any given moment \u2014 this needs to be a purpose-built scheduling service (chapter 12 covers Uber's real internal scheduling infrastructure, Peloton, though that specific system targets compute jobs rather than per-trip timers), not a naive one-thread-per-timer implementation. The idempotency ledger's lookup cost is the whole game. Every side-effecting transition pays one check-and-insert against the ledger before doing anything real. That lookup must stay O(1) regardless of how many keys have ever been recorded \u2014 an indexed key-value store (this course's chapters 15\u201316 cover exactly this shape of datastore), not a table scan. Ledger entries must expire, or they grow forever. A completed trip's idempotency keys only need to be retained long enough to catch realistic redelivery windows (minutes, generously hours) \u2014 not forever. A TTL on ledger entries keeps the store's size bounded by recent traffic rather than all-time trip count."
+  },
+  {
+    "id": "s10-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p2\"]",
+    "text": "Drag the concurrency and see how per-transition latency and watchdog job volume respond as trips-in-flight grows, with and without a naive (unindexed) idempotency check:"
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The curve is an analytic sketch shaped to match the well-understood behavior of indexed vs. unindexed key lookups under load \u2014 the point is the shape, not a claimed real production number: an O(1) indexed ledger keeps latency essentially flat as concurrency grows, while an unindexed (linear-scan) ledger degrades sharply, which is exactly why this is a datastore-design decision and not an afterthought."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber has not published a detailed public postmortem specifically naming an internal trip-state-machine incident, so this section teaches the realistic, industry-standard incident pattern this class of system produces \u2014 the same pattern that has surfaced publicly, in some form, at essentially every company that moves money over unreliable mobile networks \u2014 and says so plainly rather than inventing a specific internal Uber event."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "The single most common incident in this category, across the payments industry broadly: a client-side retry (triggered by a timeout on the client's end, even though the server-side request actually succeeded) reaches a side-effecting endpoint a second time, and the endpoint \u2014 lacking an idempotency check \u2014 repeats the charge. The fix is always structural, not a patch: every endpoint with a financial side effect requires a client-generated idempotency key, checked against a durable ledger before the effect runs, exactly as this chapter builds it. This is precisely why payment APIs across the industry converged on the same \"idempotency key\" header as a first-class, documented concept rather than an internal implementation detail."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "A purely event-driven, reactive state machine has an inherent blind spot: it can only react to events that arrive. Any real fleet of mobile clients will occasionally produce a client that dies, loses network, or has its app killed by the OS at exactly the wrong moment, and the backend that only reacts to events will leave that trip \"in progress\" indefinitely \u2014 a support burden and, if payment is gated on completion, a lost or delayed charge. The general industry fix is exactly section 8(b)'s watchdog: every state with a real-world expectation attached gets an active timer, so silence itself becomes an input the system can act on rather than an unhandled case."
+  },
+  {
+    "id": "s11-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p4\"]",
+    "text": "A driver's \"trip completed\" event and a \"driver silent\" timeout can, in principle, arrive within milliseconds of each other \u2014 the driver's phone regains signal and sends the real event just as the watchdog decides it's been silent too long. This is exactly what optimistic-concurrency versioning (section 5) exists to adjudicate cleanly: whichever write wins the compare-and-swap is authoritative, and the loser's handler must recognize the version conflict and back off rather than silently overwriting a state transition that already happened for a good reason."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Staff-level systems interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Uber's actual internal trip-service source is not public; what follows is precise, representative pseudocode of how a system with this chapter's requirements is genuinely built in production \u2014 labeled as illustrative throughout, not a claim about Uber's literal internal code."
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The transition table, enforced as data rather than scattered if chains \u2014 the same defense named in \u00a78(a):"
+  },
+  {
+    "id": "s13-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p3\"]",
+    "text": "The handler that ties the idempotency ledger, the transition table, and optimistic concurrency together:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "Notice the order of operations: the idempotency check happens before any state is loaded, so a redelivered request short-circuits as cheaply as possible. The transition table is checked before any write is attempted, so illegal transitions never reach storage. And the compare-and-swap failure path retries the whole function rather than attempting a partial patch \u2014 re-reading fresh state and re-validating the transition against it, because the world may have changed underneath the first read. Every one of these choices trades a small amount of extra latency for eliminating an entire category of corruption bug \u2014 the same trade this whole chapter has been making since section 5."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Drive one simulated trip through every real transition. Then run the two experiments that matter: fire a duplicate completion event and watch the idempotency ledger absorb it as a no-op instead of charging twice, and force the driver silent mid-trip and watch the watchdog notice the missing signal and move the trip to review on its own, on a timer, with no event ever arriving to trigger it."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Drive to trip_completed, then click \"replay last completion\" \u2014 watch the idempotency ledger absorb it as a no-op and the version number not increment a second time. 2. From trip_started, click \"driver goes silent\" \u2014 no event fires, but watch the watchdog bar count down and move the trip to needs_review entirely on its own once it expires. 3. Try clicking a button for an illegal transition (e.g. \"trip_completed\" before \"trip_started\") \u2014 watch it get rejected by the transition table rather than silently applied."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud), then reveal."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now draw the trip's real state graph, explain precisely why durability and idempotency solve two different problems, and describe how an active watchdog turns silence into a handled input instead of an indefinite hang. Every chapter so far has quietly assumed dispatch, payments, and notifications are already separate, independently deployed services that somehow coordinate through this state machine. Chapter 8 opens that assumption: how Uber's backend actually got from one shared codebase to thousands of independently deployed services in the first place \u2014 and exactly what broke along the way."
+  }
+]

@@ -1,0 +1,316 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapter 15 built Schemaless \u2014 a deliberately dumb opaque-blob store bolted onto sharded MySQL, and it worked precisely because it refused to promise secondary indexes or cross-region writes. This chapter is about what happens when those two refusals stop being acceptable: Docstore, Uber's real next-generation datastore, built to succeed Schemaless by trading MySQL's InnoDB B-tree for MyRocks \u2014 a MySQL storage engine running on RocksDB's log-structured-merge tree \u2014 specifically because an LSM-tree's append-only write path fits Uber's write-heavy workloads in a way B-tree in-place updates never could, and by building real secondary indexes and multi-region replication directly into the engine instead of leaving them to application code."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain precisely why an LSM-tree's write path suits write-heavy workloads better than a B-tree's in-place updates. You will understand Why Schemaless's opaque blobs made secondary indexes and multi-region replication into the two hardest problems Docstore had to solve. You will predict Write-amplification factor from a leveled-compaction formula, and where a compaction backlog turns into a write stall. You will simulate A live memtable filling, flushing to SSTables, and compacting \u2014 side by side with a B-tree's in-place update path on the same workload."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Schemaless (chapter 15) earned its scalability by being honest about what it gave up: no native secondary indexes \u2014 look up a row only by the shard key, cell name, and row key you wrote it with \u2014 and no multi-region story beyond running independent Schemaless clusters per region. Both refusals were correct engineering for the problem Schemaless was solving in 2014. Neither refusal survives contact with Uber's continued growth."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Two concrete pressures make this precise, not aspirational:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "\"Find all trips for this rider\" is not a primary-key lookup. A service that needs to query by any attribute other than the exact key it wrote with \u2014 rider ID, driver ID, a status field, a timestamp range \u2014 has no way to ask Schemaless that question directly. Every such query becomes either a full shard scan (fine at small scale, ruinous at Uber's real row counts) or a hand-maintained secondary index table the application team must keep in sync themselves, by hand, forever. A single service increasingly needs to serve more than one region well. Schemaless's per-region cluster model means a service that wants its data available with low latency in more than one geography is on its own for keeping those clusters consistent \u2014 there is no built-in replication story between them at all."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "Secondary indexes and cross-region replication are not features you bolt onto an opaque-blob store after the fact \u2014 they need the storage engine itself to understand structure (so it can maintain an index atomically with the row it indexes) and to understand write ordering (so replication has something coherent to ship). Schemaless was deliberately blob-agnostic: MySQL's InnoDB never knew a JSON blob had a rider_id field worth indexing. Getting both capabilities right meant building a new engine, not patching the old one \u2014 which is exactly what Docstore is."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "Docstore did not appear from nothing \u2014 it stands on a real, publicly documented lineage of storage-engine work, most of it built outside Uber and adopted because it solved exactly this problem. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "RocksDB (Facebook, open-sourced 2013), MyRocks (Facebook's MySQL-on-RocksDB storage engine, open-sourced 2016), and Uber's own public engineering blog post introducing Docstore as a MySQL/MyRocks/RocksDB-based successor to Schemaless with secondary indexes and multi-region replication are all real, publicly documented facts, and this chapter treats them as such. The exact internal schema of Docstore's secondary-index metadata, its precise conflict-resolution algorithm for multi-region writes, and its current production tuning parameters are not public. Where this chapter shows a specific mechanism for those pieces, it is teaching the general, well-documented LSM-tree and index-maintenance technique any engine of this shape needs \u2014 labeled as illustrative, not as Docstore's literal source."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Before reaching for a new storage engine, take the honest first step: can secondary indexes and multi-region replication be added to Schemaless without changing its engine at all?"
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "Both halves of this are exactly the kind of thing an application team reaches for first \u2014 and both are reasonable, until you look at what happens under real failure and real network physics."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "The happy path. Two independent writes, both succeed, everything looks consistent \u2014 this is the case every naive design is tested against, and the case that always passes."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "The failure nobody tests for. The primary row exists; the index row doesn't. Nothing detects this \u2014 no error surfaces anywhere. The index has silently drifted."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "The physics problem. The request can only return once the slowest region acknowledges. A single cross-ocean round trip now taxes every write in the system, all the time, not just the writes that actually need cross-region durability."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "Verdict. One failure mode is silent and compounding (index drift); the other is loud and constant (latency floor set by the slowest region). Both point at the same fix: push index maintenance and replication into the storage engine, where atomicity and asynchrony can be guaranteed by construction instead of hoped for by application code."
+  },
+  {
+    "id": "s4-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-list1\"]",
+    "text": "The manual index has no atomicity guarantee. Writing the primary row and its \"index\" row are two independent Schemaless put s. If the process crashes, the network blips, or the second write simply fails after the first succeeds, the index now points at nothing, or is missing an entry that genuinely exists. At Uber's real write volume \u2014 millions of trip-related writes per day \u2014 even a failure rate of a fraction of a percent compounds into a steadily growing population of silently incorrect index rows, discovered only when a query using that index returns a wrong answer. Synchronous multi-region writes are bounded by the speed of light, not by engineering effort. A round trip between, say, a US and a European datacenter is commonly in the 100\u2013150 ms range on real backbone networks \u2014 physics, not a tunable parameter. If a write must be acknowledged by every region synchronously before the caller's request returns, every write anywhere in the system now costs at least the slowest region's round-trip time. For a trip-state write inside a request budget measured in tens of milliseconds (chapter 7), a mandatory 150 ms cross-ocean round trip is not a performance regression \u2014 it is disqualifying."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "If each of N independent writes in the naive fan-out has an independent failure probability p, the probability that all of them succeed is (1-p)^N \u2014 which shrinks fast as N grows even for small p. Two writes (row + index) at p = 0.1% failure each already gives roughly a 0.2% chance of a silently inconsistent pair per write; at Uber's real write volume that is thousands of drifted index rows per day, discovered only by a wrong query result. And synchronous three-region replication doesn't fail silently \u2014 it fails by making every write in the system pay the round-trip cost of whichever region is momentarily slow or unreachable, converting a regional network blip into a global latency spike."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The fix for both failures has the same shape: stop asking application code to fake a guarantee the storage layer should provide, and instead choose a storage engine that can offer it natively. Docstore's answer is MyRocks \u2014 RocksDB's LSM-tree wearing a MySQL-compatible storage-engine interface \u2014 plus index maintenance and replication logic built into Docstore's own layer above it."
+  },
+  {
+    "id": "deck-deckBetter-0",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 0,
+    "text": "The B-tree default. For a large, cold table this is a random disk access per write \u2014 the exact cost pattern chapter 14 blamed for Postgres's own write-amplification story, in a different engine."
+  },
+  {
+    "id": "deck-deckBetter-1",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 1,
+    "text": "The LSM alternative. Every write is a sequential append, regardless of where in the keyspace it lands. The expensive part \u2014 organizing data for efficient reads \u2014 is deferred entirely."
+  },
+  {
+    "id": "deck-deckBetter-2",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 2,
+    "text": "The deferred cost, paid later and in the background. Reorganization work still happens \u2014 it just happens asynchronously, batched, and off the path any individual write has to wait on."
+  },
+  {
+    "id": "deck-deckBetter-3",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 3,
+    "text": "Verdict \u2014 a workload-shaped decision, not a universal one. Docstore's bet is that Uber's write volume from trips, location pings, and events sits squarely on the write-heavy side, which is exactly where an LSM-tree's structural advantage shows up."
+  },
+  {
+    "id": "s5-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-co1\"]",
+    "text": "A B-tree (InnoDB's engine) satisfies a write by locating the exact page the key belongs on and updating it in place \u2014 for a large table with a cold cache, that page is essentially a random location on disk. An LSM-tree never does that on the write path: every write is appended to an in-memory memtable (backed by a write-ahead log for durability) in whatever order it arrives, and only later \u2014 in a background process called compaction \u2014 does the engine do the work of merging and reorganizing data into sorted, immutable SSTables on disk. Writes become sequential appends; the expensive reorganization work is deferred and batched. That single structural choice is why Uber's write-heavy trip, location, and event data fits an LSM-tree's shape better than a B-tree's."
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Reads get more expensive, not less. A key you wrote recently might still be in the memtable; if not, it might be in any of several SSTables at multiple levels, each of which must be checked (bounded by a Bloom filter that avoids most unnecessary disk reads, but not all of them). A single point read may need to consult the memtable plus several SSTables before it can be sure it has the newest version of a key \u2014 this is read amplification, and it is the direct price paid for deferring write-time reorganization. Old versions and deleted keys linger until compaction removes them. An update doesn't overwrite a key in place \u2014 it appends a new version; a delete appends a tombstone marker. Both the old version and the tombstone occupy real disk space until a compaction pass merges them away \u2014 space amplification, the LSM-tree's mirror image of a B-tree's index bloat problem (chapter 14's Postgres MVCC bloat is the same phenomenon in a different engine). Compaction itself is not free \u2014 it is real, sustained background I/O and CPU. Merging SSTables means reading multiple files, merging their sorted contents, and writing new files \u2014 work proportional to the data being merged, running continuously in the background, competing with foreground reads and writes for the same disk and CPU. Secondary indexes and cross-region replication are still hard \u2014 just hard inside the engine instead of inside application code. Docstore has to maintain each secondary index atomically with the row it indexes (via RocksDB's atomic write-batch primitive) and has to decide how asynchronous cross-region replication handles two regions writing to related keys at close to the same time \u2014 moving the problem into infrastructure doesn't make the problem disappear, it makes it one team's problem to solve well, once, instead of every application team's problem to solve badly, independently."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "An LSM-tree is not simply \"faster\" than a B-tree \u2014 it moves cost from the write path to the read path and to a background process, which is exactly the right trade for a write-heavy workload and exactly the wrong trade for a read-heavy, write-light one. Docstore's design bet is that Uber's workload \u2014 high write volume from trips, locations, and events \u2014 sits firmly on the write-heavy side of that line."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. Note the shape: a single logical write to Docstore fans out, inside the engine, into a primary-row write, one or more secondary-index writes (same atomic batch), and an asynchronous replication stream toward every other region \u2014 none of which the calling service has to orchestrate itself."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "The shard router and the async replication stream shown here are the exact two mechanisms chapter 17 generalizes into a full sharding-and-multi-region strategy \u2014 this chapter builds the single-node storage engine those mechanisms sit on top of; chapter 17 is about what happens once you have thousands of these nodes spread across regions."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Two mechanisms do the real work: (a) the LSM-tree write and flush path a single put actually takes, and (b) how a secondary index stays consistent with the row it indexes without the application ever orchestrating two separate writes."
+  },
+  {
+    "id": "deck-deckWrite-0",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 0,
+    "text": "The call arrives. Nothing has touched disk yet."
+  },
+  {
+    "id": "deck-deckWrite-1",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 1,
+    "text": "Durability first. Once this fsync completes, the write survives a crash even though it isn't organized for reading yet."
+  },
+  {
+    "id": "deck-deckWrite-2",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 2,
+    "text": "Now readable. A read for this key will find it here immediately; the caller is told the write succeeded."
+  },
+  {
+    "id": "deck-deckWrite-3",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 3,
+    "text": "Rotation, not blocking. Writes keep flowing into the new memtable while the old one waits to be flushed \u2014 the write path is never blocked on flush."
+  },
+  {
+    "id": "deck-deckWrite-4",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 4,
+    "text": "First time this data touches a permanent, sorted on-disk form. Still purely sequential I/O \u2014 the file is written once, start to finish, never modified in place."
+  },
+  {
+    "id": "deck-deckWrite-5",
+    "kind": "deck",
+    "deckId": "deckWrite",
+    "step": 5,
+    "text": "The deferred reorganization, finally paid. This is where the real work \u2014 and the real write amplification (\u00a78's slider) \u2014 actually happens, entirely off the original write's critical path."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Drag the sliders to see how leveled compaction's own tuning knobs trade write amplification against read and space amplification \u2014 a real, standard LSM-tree formula, not a decorative one:"
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this table the way chapter 15 asked you to read Schemaless's: there is no dominant strategy, only a different placement of the same underlying costs. Docstore's placement \u2014 accept read/space amplification and a real compaction bill, in exchange for a write path and a replication story that fit Uber's actual workload \u2014 is a specific, considered bet, not an obviously correct one for every company."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "The single number that predicts an LSM-tree's health under load is simple: is the compaction throughput keeping up with the incoming write rate? If not, the number of files waiting to be compacted (and therefore the number a read must check) grows without bound."
+  },
+  {
+    "id": "s10-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-list1\"]",
+    "text": "Write path: O(1) amortized \u2014 an append to the memtable and the WAL, regardless of table size. Read path: O(levels \u00d7 log(entries per SSTable)) in the worst case \u2014 the memtable plus a bounded number of SSTables per level, each narrowed by a Bloom filter and binary search within the level. Compaction backlog: grows whenever sustained write rate exceeds sustained compaction throughput \u2014 exactly the queueing-theory shape chapter 4 (dispatch) and chapter 9 (retry storms) both already taught you to recognize."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The backlog curve is a first-principles queueing sketch (backlog grows at write_rate \u2212 compaction_throughput whenever that difference is positive, clamped at zero otherwise) tuned to match the qualitatively well-documented shape of RocksDB/MyRocks write-stall behavior \u2014 not a claimed measured Uber production number."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber has not published a chapter-specific postmortem naming an internal Docstore incident, so this section is honest about that and instead teaches the real, publicly documented operational pattern that RocksDB's own project documentation describes for any engine built this way \u2014 the pattern any team running MyRocks or RocksDB at scale needs to plan for."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "RocksDB's own public documentation describes exactly the failure mode \u00a710's chart models: when the number of unflushed memtables or the number of L0 SSTables grows past configured thresholds \u2014 meaning the write rate has outrun compaction for long enough \u2014 RocksDB deliberately stalls or throttles incoming writes rather than let the backlog (and therefore read amplification) grow without bound. This is a documented, intentional safety mechanism, not a bug \u2014 but from the caller's point of view it looks exactly like the database suddenly got much slower, exactly when write volume was highest."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "A write stall triggered by a burst of write traffic (a viral event driving a spike in trip creation, for example) is a self-limiting problem in one sense \u2014 it protects the engine from unbounded read-amplification collapse \u2014 and a real availability problem in another \u2014 callers see elevated write latency exactly during the traffic spike they most needed the database to absorb. The standard, industry-documented mitigations are the same ones any LSM-tree operator reaches for: provision compaction throughput (I/O bandwidth, background threads) with real headroom above sustained write rate, not just average write rate, and treat \"compaction backlog\" as a first-class monitored signal, not an afterthought."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Staff/Principal-level systems interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Docstore's actual internal source is not public. What follows is precise, representative pseudocode of how an LSM-tree-backed store with schema-aware secondary indexes is genuinely built in production \u2014 labeled as illustrative throughout, matching the real, public architecture of engines like RocksDB and MyRocks."
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The core compaction loop, matching \u00a78's leveled-compaction shape:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "Compaction never mutates a file in place \u2014 it always reads inputs and writes brand-new SSTables, then swaps which files are \"live\" in one atomic metadata update. That discipline is what lets reads keep running against the old files while compaction is in flight, and it's what makes a crash mid-compaction harmless: the old files are still valid until the swap commits, so a crash before that point simply means the compaction attempt is retried, never that data is lost or half-merged. It's the same \"never mutate, always replace\" discipline chapter 15's Schemaless got from MySQL's own crash-safe writes \u2014 Docstore just applies it one layer lower, inside the engine itself."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Write keys into a live memtable and watch it flush to an SSTable once full; trigger compaction and watch overlapping SSTables merge into fewer, larger sorted files with old versions dropped. Toggle B-tree mode to run the identical workload against a simulated in-place-update page store and compare what each engine actually does on disk."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Write 8 keys in a row and watch the memtable auto-flush once it fills, landing a new SSTable in L0. 2. Write several overlapping keys (same key more than once), then trigger compaction \u2014 watch older versions of the same key disappear during the merge, and the write-amplification meter climb because compaction physically rewrote data that was already on disk. 3. Switch to B-tree mode and repeat the identical workload \u2014 watch pages get touched (and re-touched) in place, with no separate flush or compaction step, and compare the two engines' very different cost shapes for the same logical writes."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud), then reveal."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain precisely why an LSM-tree's append-only write path suits write-heavy workloads better than a B-tree's in-place updates, why that same choice pushes cost onto reads and onto a background compaction process, and how a secondary index stays atomically consistent with the row it indexes. This chapter built the single-node engine. Chapter 17 zooms out to the fleet: how Docstore's shard router and async replication stream \u2014 mentioned but not yet explained \u2014 actually distribute data across cities and regions, and what a real region failover looks like when one of them goes dark."
+  }
+]

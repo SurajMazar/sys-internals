@@ -1,0 +1,314 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapter 16 built a single-node storage engine capable of native secondary indexes and multi-region replication. This chapter asks the fleet-level question those capabilities were built for: how do you actually distribute data across thousands of cities and multiple continents so that most queries stay fast and local, an incident in one region can't take down every other region, and the whole system can still fail over when an entire region goes dark? The answer is a genuine tension \u2014 between strong global consistency and regional autonomy \u2014 and this chapter derives, honestly, which side of that tension a company at Uber's shape leans toward, and exactly what it costs to lean that way."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain why sharding by city/region is both a data-locality decision and a blast-radius decision. You will understand Why asynchronous cross-region replication is the general, honest trade between consistency and availability at this scale. You will predict Shard-distribution skew from a consistent-hashing virtual-node count, and replication lag from a write-rate-vs-bandwidth formula. You will simulate Killing an entire region's shard, watching real replication lag show what data is at risk, and stepping through the failover of live traffic to a healthy region."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "A rider in S\u00e3o Paulo requesting a trip has essentially no reason to touch data belonging to a rider in Singapore \u2014 different city, different drivers, different regulatory jurisdiction, different everything except the software running underneath. Once you accept that, the question stops being \"how do we build one database big enough for the whole world\" and becomes \"how do we partition data so most requests only ever need to talk to the partition that's actually relevant to them\" \u2014 and, just as importantly, \"how do we make sure a bad day in one partition doesn't become a bad day everywhere.\""
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Two forces, worth separating even though they usually agree:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Data locality. A trip in S\u00e3o Paulo, its driver's location updates, and its fare calculation are all naturally scoped to one geography. Keeping that data physically close to where it's used keeps read and write latency low and keeps the working set any one query touches small. Blast-radius isolation. Independent of latency, there is a second, equally important reason to keep regions separate: an incident \u2014 a bad deploy, a storage-engine write stall (chapter 16), an operator error \u2014 that is contained to one region's data should not be able to propagate and take down every other region's traffic at the same time. This is the exact same argument chapter 8 made for microservices and chapter 9 made for the mesh's sidecar isolation, applied one more time at the data layer."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "Uber has publicly and reasonably described geographic sharding by city/region as both a locality and an isolation decision, and that framing is the honest, public starting point for this chapter. The exact internal shard-key scheme, the precise replica-count and consensus parameters any specific Uber service runs today, and the fine details of its conflict-resolution logic for cross-region writes are not public knowledge. This chapter teaches the general, well-documented distributed-systems technique \u2014 consistent hashing, async replication, CAP- theorem tradeoffs, and failover mechanics \u2014 that any company operating at this shape has to build some version of, and says plainly where it is generalizing rather than reporting an exact internal fact."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "This chapter's mechanisms rest on real, publicly documented distributed-systems theory and on real infrastructure Uber itself built and open-sourced. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Ringpop is real, public, Uber-built infrastructure: a library implementing a gossip-based membership protocol (in the SWIM family) plus consistent hashing, designed to let a fleet of stateful nodes agree on which node owns which shard of a keyspace without a central coordinator being consulted on every request. It is exactly the kind of building block a sharded, horizontally-scaled system at Uber's shape would need \u2014 this chapter treats it as real evidence that this general technique matters at this scale, without claiming Ringpop is necessarily the literal mechanism behind any specific present-day Uber storage system's sharding (that internal detail isn't public)."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Start from the simplest possible answer: run a single database cluster, in a single region, that serves every city on Earth, with every read and write going through that one place. Global consistency is trivial \u2014 there is only ever one copy of the truth."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is a completely reasonable starting point \u2014 it's exactly what you'd build first, and for a company operating in one metro area it may never need to change. The trouble is what happens once \"every city on Earth\" stops being a hypothetical."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "Where we started. One cluster, one region \u2014 simple to reason about, and completely fine for a company serving one metro area near that region."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "Distance stops being free. Every city far from the one cluster pays a fixed network tax that no amount of query optimization can remove \u2014 it's bounded by the speed of light, not by engineering effort."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "The blast radius is the whole company. There is no independent second region to fail over to \u2014 an incident anywhere is an incident everywhere."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "Verdict. A single global region fails two independent ways at once: a fixed latency tax for distant cities, and a company-wide blast radius for any incident \u2014 and even sharding within that one region without geographic awareness throws away the locality benefit sharding was supposed to buy."
+  },
+  {
+    "id": "s4-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-list1\"]",
+    "text": "Latency is bounded by physics, not engineering effort. A rider in Manila whose request must reach a single database cluster in, say, the United States pays a real, unavoidable round-trip time commonly in the 150\u2013250 ms range on real intercontinental backbone routes \u2014 before any actual query execution happens. For a request budget measured in tens to low hundreds of milliseconds (chapters 4, 5, and 7 all assumed budgets in this range), that single fixed cost can already consume most of it, for every single city that isn't near the cluster. The blast radius is the entire company, everywhere, all the time. Any incident that takes down the single region \u2014 a bad deploy, a storage-engine write stall (chapter 16), a regional cloud-provider outage, a fiber cut \u2014 takes down every city's traffic simultaneously, with no isolation boundary anywhere in the system. There is no version of \"Manila is having a bad day but S\u00e3o Paulo is fine,\" because there is only one database for both. A single shard key with no locality also destroys the working-set benefit locality was supposed to buy. Even if you shard within that one region by, say, a naive hash(trip_id) mod N, trips from every city end up scattered uniformly across every shard \u2014 a query scoped to \"this city's trips\" now has to fan out to potentially every shard in the cluster instead of one."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "At a 200 ms round trip and a request budget of, say, 300 ms total, two-thirds of the entire budget is consumed by network transit before a single query executes \u2014 leaving almost nothing for dispatch (chapter 4), routing (chapter 5), and pricing (chapter 6) to actually do their work within. And because there is exactly one region, the probability that some incident affects all traffic is the probability of that one region having a bad day \u2014 there is no independent, uncorrelated second region to fail over to."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The fix addresses both failures at once: partition data so a city's traffic is served by a nearby regional cluster (fixing locality and giving each region an independent blast-radius boundary), and replicate data asynchronously toward other regions rather than requiring every write to be acknowledged everywhere before it completes (fixing the latency floor \u00a74 quantified)."
+  },
+  {
+    "id": "deck-deckBetter-0",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 0,
+    "text": "Locality restored. Each city's traffic is served by a nearby regional cluster instead of one distant global one \u2014 the network tax \u00a74 quantified mostly disappears for local traffic."
+  },
+  {
+    "id": "deck-deckBetter-1",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 1,
+    "text": "Blast radius contained. An incident in one region's shard no longer automatically becomes an incident everywhere \u2014 exactly the isolation \u00a71 asked for."
+  },
+  {
+    "id": "deck-deckBetter-2",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 2,
+    "text": "Async replication removes the latency floor. The caller never waits on a cross-region round trip \u2014 but other regions' copies of this data are now honestly, unavoidably a little stale until the stream catches up."
+  },
+  {
+    "id": "deck-deckBetter-3",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 3,
+    "text": "Verdict. Sharding by region plus async replication buys back both of \u00a74's failures at once \u2014 at the honest cost \u00a76 names next: real replication lag, real conflict-handling need, and a genuine failover procedure instead of a config flag."
+  },
+  {
+    "id": "s5-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-co1\"]",
+    "text": "Once a network partition between regions is possible \u2014 and at global scale, it always eventually is \u2014 the CAP theorem says you cannot have both full Consistency and full Availability across that partition; you must choose. Choosing regional autonomy with asynchronous replication is choosing Availability (and low, region-local latency) over strict cross-region Consistency, on the reasoning that most reads and writes for a S\u00e3o Paulo trip never actually need to be consistent with Manila's copy of unrelated data in the first place. That's not a universal answer \u2014 a banking ledger might reasonably choose the opposite trade \u2014 but it is the right answer for the overwhelming majority of ride-hailing data, which is naturally, physically scoped to one city at a time."
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Replication lag is real and must be monitored, not assumed away. Between the moment a write commits in its home region and the moment it's visible in a replica region, there is a real window \u2014 growing whenever write rate outpaces replication bandwidth, exactly the same queueing shape chapter 16's compaction backlog followed. Any region-failover decision has to reckon with exactly how much data is in that window and might not have replicated yet. Conflicting writes to related keys from different regions need a resolution rule. If two regions can both accept writes (rather than one strict primary per shard), the system needs an honest answer for what happens when both touch overlapping data before either replication catches up \u2014 last-write-wins by timestamp, an application-level merge rule, or simply preventing the situation by keeping one authoritative region per shard are all real, general strategies, each with real tradeoffs. Failover is now a genuine operational procedure, not a configuration flag. Promoting a replica region to primary for a shard means deciding what to do about writes that were in flight or unreplicated at the moment of failure \u2014 accept a bounded window of data loss (a real RPO), or block until you can prove nothing is at risk, trading availability for that guarantee. Running N regions is N times the operational surface. Every region needs its own capacity planning, its own on-call awareness, its own failure modes to test \u2014 multi-region isn't a free upgrade any more than the mesh (chapter 9) or the fleet-wide event backbone (chapter 10) were."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Regional sharding with async replication doesn't eliminate the tension between consistency and availability \u2014 it resolves it in a specific, considered direction (favor regional availability and locality, accept bounded cross-region staleness) that fits a workload where almost all data is naturally, physically scoped to one region at a time. A workload without that natural locality \u2014 a single global ledger of account balances, say \u2014 would reasonably resolve the same tension differently."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. Note the shape: a shard key derived from something naturally regional (city or region id) feeds a consistent-hashing ring that assigns ownership without a central lookup on every request, each shard has a home region plus asynchronously replicated copies elsewhere, and a failover coordinator is the one piece of infrastructure whose entire job is watching for a region going dark and re-pointing traffic."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Every component here is the fleet-scale version of the single-node shard router and replication stream chapter 16 introduced. Chapter 18's capstone will show exactly where in one rider's end-to-end request this shard-key decision actually gets made, and what happens to that request if the region it lands in goes dark mid-flight."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Two mechanisms carry this chapter's real math: (a) consistent hashing with virtual nodes, which decides which physical shard owns a key without a central lookup table, and (b) the replication-lag relationship between write rate and available replication bandwidth."
+  },
+  {
+    "id": "deck-deckHash-0",
+    "kind": "deck",
+    "deckId": "deckHash",
+    "step": 0,
+    "text": "The naive alternative. A plain modulo hash reassigns almost EVERY key when N changes \u2014 adding one shard to a 10-shard cluster remaps roughly 90% of keys, a massive, unnecessary data-movement event."
+  },
+  {
+    "id": "deck-deckHash-1",
+    "kind": "deck",
+    "deckId": "deckHash",
+    "step": 1,
+    "text": "The fix. Adding or removing one shard only remaps the keys between that shard's ring position and its neighbor \u2014 a small, bounded fraction of the keyspace, not almost all of it."
+  },
+  {
+    "id": "deck-deckHash-2",
+    "kind": "deck",
+    "deckId": "deckHash",
+    "step": 2,
+    "text": "The remaining problem. With few points on the ring, some shards get unlucky and own a much larger arc (and therefore much more of the keyspace) than others."
+  },
+  {
+    "id": "deck-deckHash-3",
+    "kind": "deck",
+    "deckId": "deckHash",
+    "step": 3,
+    "text": "Virtual nodes. Instead of hashing a shard once, hash it (say) 100 times to 100 different ring positions \u2014 \u00a78's slider shows exactly how this smooths real load distribution as virtual-node count grows."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Drag the virtual-node count and watch real key distribution across shards even out \u2014 more virtual nodes per physical shard smooths out the ring's natural randomness:"
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this the way every tradeoffs table in this course has asked you to: there is no dominant strategy, only a different placement of the same underlying cost between latency, consistency, and operational complexity. Regional sharding with async replication is the specific point on that spectrum that fits a workload where almost all data is naturally scoped to one region \u2014 it is a considered bet, not a universally correct default."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Two numbers define a multi-region strategy's real behavior under failure: RPO (how much recently-written data you can afford to lose on failover) and RTO (how long it takes to actually complete a failover once triggered). Both are direct functions of replication lag and failover procedure, not marketing numbers."
+  },
+  {
+    "id": "s10-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-list1\"]",
+    "text": "RPO \u2248 current replication lag at the moment of failure. If a region goes dark with 4 seconds of unreplicated writes sitting in its outbound replication stream, those 4 seconds of writes are the realistic worst-case data-loss window unless the failover procedure has another way to recover them. RTO \u2248 detection time + promotion time + traffic-manager propagation time. None of these are free: detecting a region is genuinely down (not just slow) takes real time to avoid false positives; promoting a replica to primary means it must first be sure it has applied everything it's going to receive; and updating DNS/traffic-manager routing takes real propagation time before all clients see the change."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The lag curve is a first-principles queueing sketch, identical in shape to chapter 16's compaction-backlog model, applied here to replication bandwidth instead of compaction throughput \u2014 a general, honest illustration of the mechanism, not a claimed measured Uber production number."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber has not published a chapter-specific postmortem naming an internal multi-region failover incident, so this section is honest about that and instead teaches the realistic, industry-standard pattern that region-level outages and failovers follow across the industry of every company operating at multi-region scale \u2014 a pattern publicly documented in postmortems from many large cloud-scale operators."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "A region degrades \u2014 not cleanly down, but slow and unreliable, the same \"worse than a clean failure\" pattern chapter 9 described for a slow-not-down downstream dependency. An automated failover triggers before the team has confirmed the actual replication-lag window, and traffic is redirected to a replica region that turns out to be missing more recent writes than expected \u2014 the realistic industry pattern behind the well-known operational lesson \"measure your actual RPO before you need it, not during.\""
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "All traffic from a failed region gets redirected to the remaining healthy region(s), which were provisioned for their own normal load, not for double or triple that load arriving suddenly \u2014 a documented, common industry pattern where a region failover, if capacity isn't pre-provisioned for exactly this scenario, turns one region's outage into a second, capacity-driven outage in the region that was supposed to absorb it."
+  },
+  {
+    "id": "s11-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p4\"]",
+    "text": "If a network partition between regions is itself the failure (rather than one region being cleanly down), and both regions believe they should now accept writes for the same shard, you get the general, well-documented split-brain problem: two regions independently accepting conflicting writes for a period, requiring exactly the conflict-resolution strategy \u00a76 named honestly as a real, unresolved-by-magic cost of multi-region operation."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Staff/Principal-level systems interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "No single company's exact internal sharding and failover source is fully public. What follows is precise, representative pseudocode of how consistent hashing, replication-lag monitoring, and region failover are genuinely built in production systems of this shape \u2014 labeled as illustrative throughout."
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The consistent-hashing lookup, matching \u00a78(a)'s virtual-node shape:"
+  },
+  {
+    "id": "s13-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p3\"]",
+    "text": "The failover coordinator's decision loop:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "The coordinator requires consecutive failed health checks, not a single one \u2014 exactly the discipline chapter 9's circuit breaker used to avoid tripping on ordinary noise. And it logs the estimated RPO before promoting, not after \u2014 because the failover decision and the data-loss estimate are the same decision, made with the same information, and an operator needs that number in the moment, not reconstructed afterward from logs."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Three regions, each replicating asynchronously to the others. Kill an entire region and watch replication lag show exactly what data was at risk at the moment of failure, then step through a real failover \u2014 health-check threshold, replica promotion, and traffic-manager repointing \u2014 to a healthy region."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Send a burst of writes, then immediately kill the home region \u2014 watch the replication-lag meter show exactly how many writes were still unreplicated, and note that this number IS the realistic RPO if you failed over this instant. 2. Wait a moment after killing the region (letting whatever lag existed continue to show, since a dead region can no longer replicate at all) then run the failover \u2014 watch it promote the lowest-lag replica and log the exact RPO it accepted. 3. Reset and try failing over from a healthy state \u2014 with zero lag, RPO is zero, and the failover is closer to a formality than a real recovery."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud), then reveal."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain precisely why regional sharding is both a locality and a blast-radius decision, why the CAP theorem forces a real choice once cross-region network partitions are possible, and what RPO and RTO actually measure during a real failover. Seventeen chapters have now built every individual piece of Uber's backend \u2014 geospatial indexing, dispatch, routing, pricing, the trip state machine, the microservices/mesh/event-backbone architecture, observability, and the storage layer this chapter and the last one covered. Chapter 18 is the capstone: one simulated rider request, traced end to end through every single piece, with the ability to break any one stage and watch how the rest of the system actually responds."
+  }
+]

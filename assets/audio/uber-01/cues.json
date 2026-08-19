@@ -1,0 +1,363 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Ride-hailing looks, from the outside, like an e-commerce checkout: pick an item, pay for it, get a confirmation. It is not. Every rider request and every driver's availability is a perishable unit of supply or demand that must be found, evaluated, and cleared against its counterpart in seconds, inside a constantly moving geography, with no central catalog to browse. This chapter derives why ride-hailing is fundamentally a real-time, two-sided, geographically-local matching problem \u2014 and why that framing, more than any single technology choice, is the reason the rest of this course's architecture looks the way it does."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to State precisely why ride-hailing cannot be modeled as a product catalog with an inventory count. You will understand Why matching must clear locally, per neighborhood, rather than as one global optimization. You will predict The throughput ceiling of a naive global-lock matcher, in matches per second, from first principles. You will simulate A live two-sided market and watch a naive matcher clear it \u2014 or fail to."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "Picture the two most common distributed-systems teaching examples: an e-commerce checkout and a chat application. Neither one prepares you for ride-hailing, because both have a comfortable property that ride-hailing does not: the thing being requested sits still until you deal with it. A product in a warehouse waits on a shelf. A chat message waits in a mailbox. A driver three minutes from a rider is, at this exact moment, still moving, might just have accepted a different trip, and will be somewhere else by the time your query resolves."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Formally, ride-hailing is a two-sided marketplace with five properties that, together, are what make it hard:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Perishable supply and demand. A driver who is idle for 4 minutes represents 4 minutes of matching opportunity that no future action can recover. A rider who waits too long cancels. Neither side can be inventoried \u2014 there is no warehouse of \"available driver-minutes\" to draw down later. Continuous motion. Both sides of the market move in physical space, independent of the matching system's decisions. A driver's position at the moment a match is proposed and at the moment it is confirmed are two different points on the map. Bilateral fit, not a single price. A match is only valid if the driver can plausibly reach the rider in bounded time \u2014 a driver 40 minutes away is not a candidate, no matter how \"available\" they are. Distance is a hard constraint, not a soft preference. Locality of clearing. A rider in downtown S\u00e3o Paulo can never be served by a driver idling in downtown Manila. The market must clear against a small geographically relevant slice of supply, not the global population of drivers. One-to-one exclusivity. A driver, once matched, is removed from the pool for every other rider \u2014 the opposite of a product listing, which can satisfy an unlimited number of simultaneous \"add to cart\" actions."
+  },
+  {
+    "id": "s1-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p3\"]",
+    "text": "Put those five together and the design question stops being \"how do we store and serve inventory\" and becomes \"how do we run, continuously, a very large number of small, independent, real-time clearing auctions \u2014 one per neighborhood, updating every few seconds, each with strict spatial eligibility rules.\" Every chapter in this course's ride-hailing arc \u2014 geospatial indexing (ch. 2), location ingestion (ch. 3), dispatch (ch. 4), ETA (ch. 5), surge pricing (ch. 6), and the trip state machine (ch. 7) \u2014 is a piece of machinery built to answer that one reframed question."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "Nearly every hard problem later in this course is a direct consequence of the five properties above. Geospatial indexing (ch. 2) exists because \"geographically relevant slice of supply\" needs an efficient data structure, not a full scan. Location ingestion (ch. 3) exists because \"continuous motion\" means positions are stale the instant they're read unless a pipeline keeps refreshing them. Dispatch (ch. 4) exists because \"one-to-one exclusivity\" under concurrent requests is a genuine distributed-systems race condition, not a UI nicety. Keep the five properties in mind; you will be told to recall them by name later."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "The marketplace-matching framing above did not arrive fully formed \u2014 it was forced onto the company by growth, the same way most hard architectural lessons are. Click through the timeline; each milestone either created the matching problem in its modern shape or forced a rewrite of how it was solved."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "It is worth being precise about vocabulary this early, because the rest of the course leans on it. An \"app\" implies a client talking to a server. A \"marketplace\" implies two independent, self-interested populations whose joint behavior \u2014 not just the server's code \u2014 determines whether the system works. A server can be perfectly correct and the market can still fail to clear, if there simply aren't enough nearby drivers (a liquidity problem, revisited in \u00a711). That distinction \u2014 code correctness vs. marketplace liquidity \u2014 recurs constantly in this course, most sharply in the surge-pricing chapter (ch. 6), which exists specifically to fix a liquidity problem, not a bug."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Derive the architecture honestly, the way a reasonable engineer would on day one. You have a table of drivers with a live latitude/longitude and an available flag. A rider requests a trip. The simplest possible matcher locks the table, scans every available driver, computes straight-line distance to each, and assigns the nearest one."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is not a strawman built to be knocked down cheaply \u2014 it is the version of the design that gets every correctness property right on day one. There is exactly one lock, so two riders can never be assigned the same driver (no double-booking). Distance is computed honestly for every candidate, so \"nearest\" really is nearest. A small pilot city with a few hundred drivers would never notice a problem with this code."
+  },
+  {
+    "id": "s3-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p3\"]",
+    "text": "Watch it degrade as the fleet and request volume grow. The simulation below runs the same locked, full-scan matcher against a driver pool that grows from pilot-city size to metro size."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "Pilot city, small fleet. ~500 drivers, light request arrival. Each locked scan is cheap because the fleet is small \u2014 the matcher (right) drains requests as fast as they arrive. Queue \u2248 0. This is the regime the naive design was built and tested in."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "uberX-scale fleet, same code. Fleet grows to 20,000 drivers. Every scan now costs 40\u00d7 as much CPU time even though request volume barely changed \u2014 the queue starts to lag during bursts, because service time per match grew with fleet size, not with load."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "Metro-scale fleet, peak demand. Fleet at 60,000, arrivals rising toward peak. The queue doesn't wobble \u2014 it grows without bound, because per-match cost (proportional to fleet size) times arrival rate now exceeds one lock's throughput. No amount of tuning the assignment logic fixes this; it's arithmetic (\u00a74)."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "Verdict. Correctness: still perfect \u2014 every match is genuinely the nearest available driver, and the lock genuinely prevents double-booking. Throughput: capped by 1/S where S grows linearly with fleet size. This is not a bug to patch; it's evidence the scan itself must shrink from \"everyone\" to \"nearby\" \u2014 \u00a75 does exactly that."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "The naive matcher fails in two distinct, additive ways, and it is worth separating them because they demand different fixes later (\u00a75 fixes one, \u00a77 fixes the other via ch. 4's dispatch design)."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "Every request scans every available driver on the entire platform, even though a driver on another continent can never be a valid candidate. Consider an illustrative large metro market with on the order of 50,000 concurrently active drivers and roughly 500 ride requests per minute at a busy peak \u2014 numbers chosen to be representative of large-market ride-hailing scale, not a specific disclosed internal figure. Each request costs 50,000 distance computations. At 500 requests/minute that is 25,000,000 distance calculations per minute for one city \u2014 and a platform operating in thousands of cities multiplies that by however many of them are concurrently near peak. The cost is not a constant per request; it scales linearly with a number (total fleet size) that has nothing to do with the request itself."
+  },
+  {
+    "id": "s4-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p3\"]",
+    "text": "The lock exists to prevent two riders from being assigned the same driver \u2014 a real requirement. But a single global lock enforces mutual exclusion between requests that could never have conflicted in the first place: a rider in Chicago and a rider in Nairobi are never contending for the same driver, yet the naive design forces their requests through the same critical section, one at a time."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "Model the matcher as a single-server queue (Little's Law, a classic result you'll see used again anywhere a shared resource serializes independent work). If each locked match \u2014 scan plus assignment \u2014 takes a mean service time S, the whole platform, not one city, is capped at throughput 1/S. If a scan-and-assign over 50,000 drivers takes on the order of 5 ms, the entire global platform tops out around 200 matches per second, regardless of how many independent cities are requesting rides simultaneously. A platform running in thousands of cities cannot clear its markets through one lock \u2014 the lock must be scoped to something far smaller than \"everywhere,\" and the scan must be scoped to something far smaller than \"everyone.\" Both fixes point at the same idea: exploit locality."
+  },
+  {
+    "id": "s4-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p4\"]",
+    "text": "The next section derives that idea properly: instead of one table and one lock, partition drivers by geography, so both the scan and the lock shrink to the size of a neighborhood instead of the size of the planet."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The core idea costs nothing to state and everything to implement well: a rider in one part of a city can only ever be matched to a driver in a nearby part of that same city, so pre-partition the map into small regions, index drivers by which region they're currently in, and run matching \u2014 and locking \u2014 per region instead of globally. Step through the evolution from the naive design to a spatially partitioned one."
+  },
+  {
+    "id": "deck-deckBetter-0",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 0,
+    "text": "Starting point. Every driver, everywhere, in one structure behind one lock. Correct, and completely unscoped to geography \u2014 a request in Lagos and a request in Seattle fight for the same lock."
+  },
+  {
+    "id": "deck-deckBetter-1",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 1,
+    "text": "Step 1 \u2014 carve the map into cells. Assign every driver to a cell based on current position. Each cell gets its own driver set and, crucially, its own lock."
+  },
+  {
+    "id": "deck-deckBetter-2",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 2,
+    "text": "Step 2 \u2014 scope both scan and lock to one cell. A request in cell 4 never touches cells 0\u20133 or 5\u20138's data or locks. Two requests in different cells now run fully in parallel \u2014 the fix for both collapses in \u00a74."
+  },
+  {
+    "id": "deck-deckBetter-3",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 3,
+    "text": "The new problem, seeded here for \u00a76. Fixed-cell search can miss the objectively nearest driver whenever the rider sits near a boundary \u2014 the fix (expanding-ring search across neighbor cells, \u00a78) helps, but the deeper fix is choosing a cell shape and hierarchy where \"neighbor\" is geometrically well-behaved. That is chapter 2's H3."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "Notice what partitioning buys, precisely: a request in region R now only scans drivers indexed under R (and perhaps R's immediate neighbors, to cover riders near a boundary) \u2014 not the global fleet. And a lock scoped to region R blocks only other requests in region R, so a match clearing in S\u00e3o Paulo and a match clearing in Manila proceed fully in parallel. This is the exact idea this course's chapter 2 formalizes with real geometry: which shape should a region be, and how do you assign any lat/lon point to one instantly? (Spoiler: not a naive rectangular grid \u2014 \u00a76 shows why, and chapter 2 derives Uber's real answer, H3.)"
+  },
+  {
+    "id": "s5-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-co1\"]",
+    "text": "This is spatial sharding \u2014 the geographic sibling of the hash-based sharding used in this site's database courses. The sharding key here is \"which region is this point in,\" and the entire rest of this ride-hailing arc depends on that key being cheap to compute and stable under the small measurement noise that real GPS produces."
+  },
+  {
+    "id": "s6-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p1\"]",
+    "text": "Spatial partitioning removes the O(N) global scan and the global lock, but it introduces its own set of costs \u2014 real ones you would hit the week you shipped it, not hypothetical ones:"
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Boundary riders exist. A rider standing 20 meters from a region boundary might have their nearest available driver sitting just across that line, indexed under the neighboring region. A matcher that only looks inside one region will systematically miss the objectively best match for anyone near an edge. Regions are not equally loaded. A naive rectangular grid over a city produces regions of equal area but wildly unequal request volume \u2014 a financial district cell might see a hundred times the traffic of a residential cell the same size. Fixed-size partitioning does not imply fixed-size load. Distance distortion at the boundary shape. If regions are square cells, a driver in the diagonally adjacent cell is materially farther away (by a factor of \u221a2) than a driver in the cell directly above \u2014 but a naive \"check my cell and its 8 neighbors\" search treats all 8 as equally worth checking, wasting scans on cells that are geometrically much less likely to contain the true nearest driver. Drivers move between regions constantly. Every region-crossing requires an index update \u2014 remove from the old region's set, add to the new one \u2014 and that update itself needs to be race-free against a match being attempted on the same driver at the same instant (ch. 3 covers the ingestion side of this; ch. 4 covers the assignment race in full)."
+  },
+  {
+    "id": "s6-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p2\"]",
+    "text": "The first two problems (boundaries, uneven load) are geometry problems, and geometry is solvable with the right choice of region shape and a real hierarchy of resolutions \u2014 which is exactly why chapter 2 exists, and why it spends real time on the specific claim that hexagonal cells beat square ones. The third and fourth problems (movement, concurrent updates) are the subject of chapters 3 and 4 respectively. This chapter's job is only to establish why those chapters need to exist \u2014 which the final architecture below now assembles into one picture."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Nearly every \"final architecture\" in this course follows the same shape: solve the obvious problem with partitioning, discover partitioning creates boundary and rebalancing problems, and solve those with a purpose-built index or protocol \u2014 the same rhythm shows up anywhere a large system is sharded by a key and then has to solve what happens at the shard boundaries. Ride-hailing's version of \"the index that makes partitioning honest\" is H3 \u2014 next chapter."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Nothing below is implemented yet \u2014 this is the map you'll fill in chapter by chapter. Click any component to see the specific problem from this chapter it exists to solve, and which future chapter builds it for real."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Every arrow implied here is load-bearing. Dispatch cannot answer \"who is nearby\" without a geospatial index; the index cannot stay accurate without a location-ingestion pipeline continuously refreshing positions; pricing cannot compute a fair multiplier without knowing current local supply and demand, which is itself a query against the same indexed, ingested state. The rest of this course builds this diagram left to right, mostly in the order shown."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Even before chapter 2 formalizes the real index, you can implement locality-scoped matching with a plain grid, and every real number below is genuinely computed by that grid, not decorative. The core shape:"
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Two things to notice. First, the scan cost is now proportional to drivers found within the search ring, not total fleet size \u2014 this is the O(N) \u2192 O(k) shift that \u00a710 will graph. Second, the lock only covers the ring actually searched, so two requests in different rings of the same city proceed concurrently. Chapter 4 will show this expanding-ring idea is still not quite enough by itself (naive \"grab the first ring with any driver\" still produces worse-than-optimal global matches) \u2014 that's the seed of the batched bipartite-assignment idea chapter 4 builds properly. Step through one real matching event end to end first:"
+  },
+  {
+    "id": "deck-deckMatch-0",
+    "kind": "deck",
+    "deckId": "deckMatch",
+    "step": 0,
+    "text": "Rider requests a trip. Their position resolves to the center cell (12). No search has happened yet."
+  },
+  {
+    "id": "deck-deckMatch-1",
+    "kind": "deck",
+    "deckId": "deckMatch",
+    "step": 1,
+    "text": "Ring 0 \u2014 check the rider's own cell first. Zero available drivers here. Expand outward."
+  },
+  {
+    "id": "deck-deckMatch-2",
+    "kind": "deck",
+    "deckId": "deckMatch",
+    "step": 2,
+    "text": "Ring 1 \u2014 the 8 surrounding cells. Still nothing available in this snapshot. This is the expanding-ring loop from \u00a78's pseudocode; each ring searched is logged as additional scan cost."
+  },
+  {
+    "id": "deck-deckMatch-3",
+    "kind": "deck",
+    "deckId": "deckMatch",
+    "step": 3,
+    "text": "Ring 2 finds a candidate. One available driver appears in cell 3. Total candidates scanned so far: everyone in rings 0\u20132 \u2014 far fewer than the full fleet, but more than zero, because this snapshot's local density was low. This is exactly the density/radius tradeoff the slider below makes explicit."
+  },
+  {
+    "id": "deck-deckMatch-4",
+    "kind": "deck",
+    "deckId": "deckMatch",
+    "step": 4,
+    "text": "Claim and assign. The candidate is optimistically claimed (\u00a713's TryClaim); if that succeeds, it's removed from its cell's available set and a match event fires. Only cells actually touched (rings 0\u20132, one specific cell) were ever locked \u2014 cells far from the rider were never contended."
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "Now make it tunable. Drag driver density and the maximum search-ring radius and watch the real expected candidate count and match probability recompute from a Poisson-style area model \u2014 the same math that determines, in a sparse suburb versus a dense downtown, how far a search has to expand before it finds anyone at all."
+  },
+  {
+    "id": "s8-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-co1\"]",
+    "text": "If a search radius is tuned so that the expected candidate count in the first ring is comfortably above 1 in dense areas but the same fixed radius produces an expected count near 0 in a sparse suburb, you have two different operating regimes hiding behind one parameter. This is precisely why a single global \"search radius\" constant is itself a naive simplification \u2014 real systems make the effective radius adapt to local density, which is a direct consequence of the area-vs-driver-count math this widget makes explicit."
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this table as the chapter's real thesis: every fix here trades implementation complexity for a narrower, cheaper scan \u2014 there is no version of this problem where you get O(1) global matching for free. The naive design is not \"wrong,\" it is priced for a fleet size the platform outgrew; chapter 2 exists because the fixed-grid design's boundary and load problems are themselves priced wrong for a platform running in tens of thousands of distinct local markets simultaneously."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "The complexity classes from \u00a79 are not an abstraction \u2014 they translate directly into match latency as fleet size grows. Drag total fleet size and watch both strategies' modeled match latency respond: the full-scan line grows with the whole fleet; the cell-indexed line stays roughly flat, because it only ever scans the drivers actually near the request."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The curves are an analytic sketch \u2014 per-distance-check cost held constant, latency scaling linearly with candidate count \u2014 chosen to make the Big-O gap from \u00a79 visible, not a benchmark of any specific deployed system. The shape is the point: past a modest fleet size, a full scan's latency keeps climbing while a well-tuned cell-indexed search stays essentially flat, because its cost is bound to local density (\u00a78), not global scale."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "This is the best-documented structural challenge in ride-hailing generally, and it is a marketplace failure, not a code bug: when Uber and its competitors have entered a new city, the earliest days consistently show the classic two-sided-marketplace cold-start pattern \u2014 too few drivers means riders wait too long and stop opening the app, and too few riders means drivers earn too little and stop logging on, each side's absence reinforcing the other's. This \"chicken-and-egg\" liquidity problem is widely discussed in the startup and marketplace-design literature (a well-known industry pattern, not a single disclosed internal Uber postmortem), and it is the direct motivation for the demand-side subsidies and driver incentives new-market launches are publicly known to use, and for surge pricing itself (ch. 6) as a mechanism to pull supply toward demand in real time once a market has scale. Chapter 2's H3 resolution choice and chapter 6's surge multiplier both assume a market has crossed this liquidity threshold; below it, no amount of matching-algorithm cleverness fixes an empty map."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "New Year's Eve, concert let-outs, and severe weather are recurring, publicly visible stress tests of exactly the matching mechanics this chapter describes: demand density in a small number of cells spikes far above the ambient rate the fixed search radius (\u00a78) was tuned for, and the system's response \u2014 surge pricing pulling in supply, or riders simply experiencing longer waits \u2014 is a direct, observable consequence of the supply/demand ratio inside a small geographic partition, not of a global platform failure. Uber's surge pricing during high-profile demand spikes has drawn real, publicly documented criticism over the years \u2014 including sharp reactions to multiplier levels seen during severe weather and other emergencies \u2014 and that controversy is substantive enough that chapter 6 devotes a full section to presenting both the mechanism and the criticism fairly, rather than relitigating it here. The relevant point for this chapter: the underlying trigger, in every one of these events, is a local supply/demand imbalance inside one or a few geographic partitions \u2014 exactly the unit of locality this chapter argued matching must be scoped to."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "Neither failure mode above is a defect in the matching algorithm as such \u2014 both are the marketplace itself running out of one side's supply relative to the other's demand, inside a bounded local area. A perfectly efficient O(k) matcher still returns nothing if k is zero. That is precisely why this course treats liquidity (this chapter, and again in ch. 6) as a first-class systems concern, not a business-side afterthought."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Senior\u2192Principal systems-design interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Uber's actual dispatch source is not public, so what follows is illustrative reference pseudocode \u2014 structured the way a service like this is genuinely built in the industry, not a claim about Uber's real internal file layout. Treat it as \"how you would build this,\" not \"how Uber built this.\""
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The two functions that matter most, expanded from the pseudocode in \u00a78 into a shape closer to production code:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "1. Per-cell locks, claimed optimistically. TryClaim \u2014 rather than taking a lock and holding it through the whole scoring step \u2014 means a losing request retries against the next-best candidate instead of blocking. This is the same optimistic-concurrency idea chapter 4 formalizes fully once batched assignment is on the table. 2. \"No supply in radius\" is a first-class return value, not an error path bolted on later. Treating a liquidity shortfall as an expected outcome, not an exceptional one, is what lets pricing (ch. 6) and driver-incentive systems hook into exactly that signal."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "A live two-sided market on a small canvas map. Spawn riders and drivers, let a naive matcher (global scan, one match processed at a time) try to clear it, then switch to cell-indexed matching and watch the same load clear faster and in parallel. Every number in the counters is computed from the actual entities on the canvas \u2014 not scripted."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Add 20 drivers and run a demand burst in naive mode \u2014 watch the queue of waiting riders grow even though drivers are on the map, because the matcher processes one match at a time platform-wide. 2. Switch to cell-indexed with the same load \u2014 watch matched count climb faster and average scan size (drivers actually checked, not the whole fleet) drop. 3. Spawn a driver and a rider in the same corner and one far away in naive mode \u2014 confirm it still always finds the true nearest, just slowly. 4. Pause, spread drivers thinly across the map, resume \u2014 watch cell-indexed mode's average scan size and wait time both rise, because local density (\u00a78) dropped, not because the algorithm changed."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud \u2014 it's better), then reveal. If any reveal surprises you, re-run the relevant widget above."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now state precisely why ride-hailing is a two-sided, perishable, locality-bound marketplace rather than a catalog; derive why a global lock and full scan collapse under real fleet sizes; and explain what spatial partitioning buys and what it still costs. Chapter 2 replaces this chapter's toy grid with Uber's real, open-sourced answer to those costs: H3, a hexagonal hierarchical spatial index."
+  }
+]

@@ -1,0 +1,333 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "A single trip completing at Uber is not one fact consumed by one system \u2014 it is one fact that payments, receipts, ratings, fraud detection, and a dozen analytics pipelines all need, on their own schedule, without any of them blocking the others or blocking the trip itself. This chapter derives why that requirement forces an asynchronous, durable, replayable event backbone, what a schema registry and event contract actually buy you once hundreds of independently-deployed services publish and subscribe to it, and how one event fans out to many consumers without becoming a distributed bottleneck."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain precisely why synchronous fan-out calls collapse availability math as consumer count grows. You will understand What a schema registry actually enforces, and which specific outage it prevents. You will predict How consumer lag accumulates when one downstream service degrades, and why the others don't notice. You will simulate One trip-completed event fanning out to four independently-paced consumers, live."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "By the time you reach this chapter, Uber's backend is no longer one program \u2014 it is thousands of independently deployed services (chapter 8) talking over synchronous RPC calls routed through a service mesh (chapter 9). Synchronous calls are the right tool when the caller needs an answer to keep going: \"is this rider's payment method valid?\" But a huge share of what happens inside Uber is not a question that needs an answer \u2014 it is an announcement. \"This trip just completed.\" Nobody making that announcement should need to know, or care, who is listening."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Unpack what a single trip-completed announcement actually has to reach:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Payments \u2014 must charge the rider's stored payment method exactly once. Receipts \u2014 must generate and email/push a fare breakdown. Ratings \u2014 must open a rating prompt for both rider and driver. Driver payouts \u2014 must credit the driver's earnings ledger. Fraud/risk \u2014 must score the trip for anomalies (impossible routes, fare manipulation). Analytics & data warehouse \u2014 must land the event for dashboards, experimentation, and forecasting, often hours or days later."
+  },
+  {
+    "id": "s1-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p3\"]",
+    "text": "Every one of those consumers has a different processing rate, a different failure mode, and a different tolerance for delay. Payments must be fast and exactly-once. The data warehouse is fine processing in batches an hour late. Fraud scoring might briefly fall behind during a traffic spike and catch up overnight with no rider-visible consequence. A single mechanism that forced all of these to consume the event synchronously, in the same request, would be optimizing for the slowest, least available consumer in the entire list \u2014 which is exactly the naive design this chapter starts from and dismantles."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "This is a classic fan-out problem, and it recurs at every layer of a system this size: trip lifecycle events (chapter 7) firing into this backbone, location pings (chapter 3) streaming through a similar path, and \u2014 as chapter 11 will show \u2014 even observability data itself flows through comparable pipes. Solve fan-out once, well, and every one of those becomes a special case of the same mechanism."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "The event backbone did not appear on day one \u2014 it became necessary at exactly the moment the monolith-to- microservices migration (chapter 8) turned \"notify the other systems a trip finished\" from a function call inside one process into a cross-service coordination problem involving dozens, and eventually hundreds, of independently owned consumers. Click through the milestones that shaped the backbone you'll study in this chapter."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Uber's real event backbone runs on Apache Kafka's distributed commit log as its transport \u2014 the partition, replication, and consumer-group mechanics that make that log durable and horizontally scalable are the subject of this site's dedicated Kafka Internals course and are not re-derived here. What matters for this chapter is the property a log gives you that a plain message queue doesn't: events are retained and replayable, so a brand-new consumer service launched next quarter can read events from days ago, and an existing consumer that crashes can resume from exactly where it left off instead of losing whatever was in flight."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "Derive it honestly, the way the naive service-mesh caller in chapter 9 would: when a trip completes, the trip service simply calls every downstream service's API, synchronously, in a loop, before returning success to the mobile client."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "Like every naive solution in this course, this one is not stupid \u2014 it is the obvious first cut, and it gets one thing right immediately: it is trivially easy to reason about. There is one code path, one trace, and if everything succeeds, everything is consistent by construction the moment onTripCompleted returns. The problem is what it costs, and the cost is not a rounding error \u2014 it compounds with every new consumer anyone ever adds."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Two failure modes compound here, and both are quantifiable \u2014 this is not a vibe, it's arithmetic you can run on a whiteboard."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "If each of the six downstream calls is independently up 99.9% of the time, and the trip-completion path calls all six synchronously and requires all six to succeed, the combined success probability is the product, not the average:"
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "0.999 6 \u2248 0.994 \u2014 six \"three nines\" services chained synchronously degrade to roughly 99.4% combined availability, which is worse than any single one of them. Add the eight services chapter 8 says a mid-size Uber deployment already had by the microservices era, and six independent 99.9% dependencies becomes fourteen: 0.999 14 \u2248 0.986 \u2014 nearly a full order of magnitude more downtime than any individual dependency, purely from chaining. And every new consumer team adds to the product, degrading a metric they don't own and usually can't even see."
+  },
+  {
+    "id": "s4-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p3\"]",
+    "text": "The trip-completion response can't return until every call finishes (or times out). If five calls take ~20 ms and fraud scoring occasionally spikes to 4 seconds under load, every rider \u2014 including the ones whose trip had nothing unusual about it \u2014 waits behind fraud scoring's tail latency. The naive design makes the rider-facing experience hostage to the slowest, least rider-relevant consumer in the list."
+  },
+  {
+    "id": "s4-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p4\"]",
+    "text": "Every new consumer requires a code change and a redeploy of the trip service itself \u2014 the one team that owns \"did the trip complete\" now also owns a growing, unrelated fan-out list, and a bug in any downstream client library (a bad timeout, a thrown exception) can take down trip completion for every rider, not just the feature that broke. This is precisely the deploy-coupling failure mode chapter 8 introduced for code \u2014 here it reappears for event delivery."
+  },
+  {
+    "id": "s4-co2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co2\"]",
+    "text": "Generalize it: with N event types and M consumers per type, naive point-to-point wiring needs on the order of N\u00d7M integrations, each a synchronous dependency added to whoever produces the event. Every new consumer is a new outage vector for a producer team that has no reason to know the consumer exists. We need to decouple publishing a fact from reacting to it."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "Step through the evolution from tightly-coupled synchronous calls to the architecture Uber actually runs. Each step removes one specific coupling from the naive design."
+  },
+  {
+    "id": "deck-deckEvo-0",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 0,
+    "text": "Where we started. Six direct, synchronous calls. The trip service's response depends on all six succeeding, and its code changes every time a new consumer is added \u2014 exactly the naive design from \u00a73."
+  },
+  {
+    "id": "deck-deckEvo-1",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 1,
+    "text": "Step 1: introduce any shared message broker. The trip service now makes exactly one call \u2014 publish \u2014 and returns immediately. Latency and availability for trip completion no longer depend on six downstream services. But a plain queue only supports one logical reader per message: the first consumer group to read a message consumes it, so payments and receipts can't both independently read the same event without a producer explicitly copying it to multiple queues."
+  },
+  {
+    "id": "deck-deckEvo-2",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 2,
+    "text": "Step 2: replace the destructive queue with a durable, retained log. Reading an event no longer removes it. This single change is what makes multiple independent readers possible at all \u2014 and what lets a consumer launched next quarter replay history it never saw live. This durable log is the real transport Uber's backbone runs on (Apache Kafka) \u2014 its retention and replication mechanics are the dedicated Kafka course's subject, not this chapter's."
+  },
+  {
+    "id": "deck-deckEvo-3",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 3,
+    "text": "Step 3: give every consumer its own independent read position. Four consumer groups now read the same log independently \u2014 each tracks its own bookmark, so slowing one down or restarting it has zero effect on the others. This is the final shape: the trip service publishes once, knows nothing about who's listening, and every consumer team owns its own pace, failure handling, and deploy schedule."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "By the last step, the trip service's job has shrunk to exactly one responsibility: publish a well-formed trip.completed event once. It has zero knowledge of who reads it, how many readers there are, or how fast any of them process it \u2014 and that ignorance is the entire point. Availability and latency for trip completion no longer depend on payments, receipts, ratings, payouts, fraud, or analytics at all."
+  },
+  {
+    "id": "s6-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p1\"]",
+    "text": "The backbone removes synchronous coupling, but it introduces its own costs, each traceable to a specific design choice made in \u00a75:"
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Schema drift becomes everyone's problem at once. The moment dozens of teams independently consume the same event stream, a producer renaming or retyping a field silently breaks every consumer that reads it \u2014 and because delivery is asynchronous, the breakage surfaces minutes or hours later, far from the deploy that caused it, in a completely different team's on-call rotation. \"Eventually\" is a real number, and it's not always small. A consumer group that falls behind \u2014 because its own dependency is slow, or it just got redeployed and is replaying a backlog \u2014 accumulates consumer lag. Payments falling behind by even a few minutes is operationally very different from analytics falling behind by a few hours, but the backbone itself doesn't know that \u2014 it just stores bytes. Replay is a superpower and a hazard in the same breath. The ability to replay historical events (new consumer backfilling six months of history, or a consumer recovering from a bug by reprocessing) is exactly what makes a durable log worth the operational cost over a destructive queue \u2014 but replaying millions of historical events at full speed against live systems can look, to those systems, exactly like a traffic spike or a duplicate-event storm. Cross-region delivery adds a second network hop with its own failure modes. Uber runs multiple regions (chapter 17 covers this in depth for the datastore layer); an event produced in one region that must reach consumers or a data lake in another has to cross a replication link that can itself lag or partition, on top of whatever lag already exists locally."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Every company operating an event backbone at this scale ends up building (or adopting) two things this chapter treats as first-class: a schema registry that makes contract-breaking changes a rejected publish instead of a silent runtime failure, and an audit pipeline that independently counts what was produced against what was consumed, because \"the log never drops anything\" is a property you have to verify continuously, not a guarantee you get for free."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component to see its job, what it protects against, and what happens when it's absent. Note the deliberate separation: nothing in this diagram is on the critical path of the trip-completion response itself \u2014 every box here exists purely to make the fan-out reliable, auditable, and safe to evolve."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "The trip service's write to the log is the only synchronous step, and it is fast and local to the backbone \u2014 a durability acknowledgment, not a downstream processing guarantee. Every box to the right of the log runs entirely off the critical path. This is the architectural payoff promised in \u00a75: rider-facing latency and availability are now a function of the log's write path alone, not of six unrelated teams' on-call quality."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Three mechanisms do the actual work: (a) the event contract itself, (b) the schema registry's compatibility check that runs on every publish, and (c) the fan-out mechanism that lets four consumers read the same event at four different speeds without contention."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "An event contract is a versioned, machine-checked schema \u2014 the thing that lets a producer team and a dozen consumer teams, none of whom talk to each other day to day, agree on a shape without a meeting:"
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "The schema registry's core job is to reject a schema change before it can reach a single consumer, by classifying the change against the previous version:"
+  },
+  {
+    "id": "s8-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p4\"]",
+    "text": "Step through what the registry actually blocks, using three realistic changes a producer engineer might try to ship:"
+  },
+  {
+    "id": "deck-deckSchema-0",
+    "kind": "deck",
+    "deckId": "deckSchema",
+    "step": 0,
+    "text": "Change 1: add an optional field with a default. Old consumers ignore a field they don't know about; new consumers reading old events get the default. No existing consumer can break. Accepted."
+  },
+  {
+    "id": "deck-deckSchema-1",
+    "kind": "deck",
+    "deckId": "deckSchema",
+    "step": 1,
+    "text": "Change 2: rename a required field. Every consumer still reading the old field name gets nothing where it expects a value \u2014 a required field just vanished from their point of view. Rejected at publish time, forcing the producer to either keep the old name or coordinate a deliberate multi-step migration (publish both names for a transition period) instead of finding out from an angry on-call channel."
+  },
+  {
+    "id": "deck-deckSchema-2",
+    "kind": "deck",
+    "deckId": "deckSchema",
+    "step": 2,
+    "text": "Change 3: change a required field's type. Every consumer parsing it as an integer now gets a type error or silent misparse. Rejected for the same reason as change 2 \u2014 this is precisely the class of change the compatibility check in \u00a78(b) exists to catch before it ever reaches a subscriber."
+  },
+  {
+    "id": "s8-p5",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p5\"]",
+    "text": "Once an event is durably in the log, every subscribing service reads it through its own independent consumer group \u2014 a bookmark into the log that belongs to that service alone. Slow it down, pause it, restart it: no other consumer group is affected, because none of them share that bookmark. Drag the sliders below to feel how lag behaves when a consumer's processing rate falls behind the publish rate \u2014 the math is real, not decorative: lag grows at (publish_rate \u2212 process_rate) events per second whenever that quantity is positive, and only shrinks when the consumer catches back up."
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this as the fan-out version of the tradeoff table from chapter 1's process model, or chapter 9's mesh: there is no dominant choice, only a different place to pay the cost. Uber's real backbone pays operational complexity \u2014 running and auditing a large distributed log \u2014 to buy every consumer team the ability to move, fail, and redeploy on its own schedule."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Uber's engineering blog has publicly described its Kafka-based backbone operating at enormous volume \u2014 well over a trillion messages a day flowing across thousands of topics, serving both the trip/rider-facing path and the much larger stream of location pings and analytics events. Exact figures move over time and aren't the point; the point is the shape of the cost as fan-out grows."
+  },
+  {
+    "id": "s10-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-list1\"]",
+    "text": "Storage cost scales with retention \u00d7 volume, not with consumer count. Ten consumer groups reading the same topic cost the log almost nothing extra \u2014 they each just track their own read position. This is the single biggest structural win over point-to-point calls, where every new consumer added onto the producer's own request path. Consumer lag is the operational health signal, not producer-side latency. A producer's publish latency stays flat regardless of how far behind any consumer falls \u2014 which is exactly why lag has to be monitored per consumer group explicitly (chapter 11 shows the observability machinery that watches it). Replay cost is proportional to how much history you re-read, not to how the log is organized. Backfilling a new consumer over six months of trip-completed events means reading six months of events \u2014 there's no shortcut, which is exactly why retention windows and compaction policies are a real cost decision, not a free knob."
+  },
+  {
+    "id": "s10-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p2\"]",
+    "text": "Drag the arrival-rate and outage-duration sliders below to watch a consumer's backlog build during a simulated downstream degradation, then drain back to zero once it recovers \u2014 the chart is genuinely computed from the sliders, not a canned animation."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The curve models a fixed steady publish rate against a consumer whose processing rate drops to zero for the outage window and then resumes at a fixed rate above steady-state until the backlog clears \u2014 a standard queueing sketch, tuned for shape rather than calibrated to any specific published Uber number. The point that survives any specific number: recovery time is not linear in outage time once the backlog is large enough that catch-up rate matters \u2014 this is precisely why \"how fast can this consumer drain a backlog\" is a capacity-planning question worth answering before the outage happens, not during it."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Uber's own engineering blog on Chaperone \u2014 the auditing tool built specifically for this backbone \u2014 is explicit that undetected data loss and duplication across an asynchronous pipeline was exactly the class of problem that motivated building a dedicated audit system in the first place, precisely because nothing about a distributed log's normal operation tells you, on its own, whether every event that was produced was also faithfully delivered and consumed. The general pattern this defends against is well documented across the industry: a producer narrows a field's type, or renames it, believing \"nobody's using the old name anymore\" \u2014 and one consumer team, on a slightly older schema version, starts silently dropping or misparsing records. Nothing crashes loudly; a report just quietly goes wrong days later. Where the exact internal detection thresholds Uber uses aren't public, the honest general lesson is this: an async pipeline needs an independent count reconciliation between what was produced and what each consumer actually processed \u2014 you cannot infer correctness from the absence of errors."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "This is a realistic, industry-standard incident pattern for this class of system rather than a specific documented Uber postmortem: a consumer service is redeployed with a bug, falls hours behind, gets fixed, and is restarted to \"catch up.\" Reading a multi-hour backlog at maximum speed generates a burst of downstream calls \u2014 database writes, cache invalidations, outbound notifications \u2014 at a rate the consumer's own dependencies were never sized for during steady state, and the very consumer meant to recover instead trips its own downstream's rate limits or exhausts a connection pool. The fix pattern operators converge on everywhere this happens: rate-limited replay with backoff, rather than \"as fast as the log can serve it,\" is a deliberate design decision for any consumer that expects to fall behind and catch up."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "Decoupling producers from consumers does not make correctness or capacity planning optional \u2014 it moves both problems downstream in time and out of the producer's field of view. A backbone you can't audit and a consumer that can't rate-limit its own catch-up are both forms of the same mistake: treating \"the log delivered it\" as equivalent to \"the business outcome happened correctly.\""
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 these are calibrated to a Staff-level systems interview."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Uber's actual production source for this backbone isn't public; what follows is precise, representative pseudocode for how a system in this class is genuinely built, labeled illustrative rather than literal."
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The publish path \u2014 validate against the registry, then write, and only then consider the event \"sent\":"
+  },
+  {
+    "id": "s13-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p3\"]",
+    "text": "The audit pipeline's core idea \u2014 a periodic reconciliation, not a per-event guarantee:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "1. Reject bad contracts at publish time, not at consume time. A schema check that runs when the producer deploys turns a fleet-wide incident into a failed build for one team. 2. Trust nothing about delivery you haven't independently measured. The audit pipeline doesn't ask the backbone \"did you drop anything\" \u2014 it counts both sides and compares, because a distributed log's own internal accounting is not the same thing as business-level correctness. 3. Keep replication and audit off every consumer's critical path. Both run as their own consumers of the very same topics they're protecting \u2014 if either one falls behind, no rider-facing or payment-facing path even notices."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Publish trip-completed events and watch them fan out to four independent consumers, each processing at its own configurable rate. Slow one consumer down and watch only its own lag grow. Try publishing an event with a broken schema and watch the registry reject it before it ever reaches the log."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Publish a burst and watch all four consumers drain it independently at different speeds. 2. Slow \"payments\" and confirm receipts/ratings/analytics keep processing at full speed \u2014 that's the entire point of independent consumer groups. 3. Publish a bad-schema event and watch the registry reject it before it ever reaches the log \u2014 nobody downstream even sees it happened. 4. Let one consumer's lag climb, then un-slow it and watch it drain the backlog."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "Formulate a full answer before revealing."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain why fan-out has to be decoupled from publishing, what a schema registry actually blocks, and how independent consumer groups let one slow service fall behind without dragging the others with it. Every event you just traced arrived at its consumers with no record of the path it took to get there. Chapter 11 asks the next question: when a rider's single request crosses dozens of services and this same asynchronous backbone, how do you even reconstruct what happened \u2014 and how do you keep a metric per driver or per trip from silently exploding the monitoring system meant to watch all of it?"
+  }
+]

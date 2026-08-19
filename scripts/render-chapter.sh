@@ -15,8 +15,7 @@ VIDEO_DIR="$ROOT/video"
 STORYBOARD="$VIDEO_DIR/src/content/${CHAPTER}.storyboard.json"
 
 if [[ ! -f "$STORYBOARD" ]]; then
-  echo "No storyboard at $STORYBOARD — write it first." >&2
-  exit 1
+x   exit 1
 fi
 
 echo "==> [1/3] Synthesizing narration with Kokoro..."

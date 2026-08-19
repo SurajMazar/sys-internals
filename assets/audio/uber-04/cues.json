@@ -1,0 +1,374 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapter 2 gave you a way to ask \"which drivers are near this rider?\" in microseconds. Chapter 3 gave you a trustworthy, reconciled answer to \"where is each driver, right now?\" Neither chapter told you which driver should actually get which rider. That decision \u2014 dispatch \u2014 is where a spatial index and a location pipeline turn into an actual marketplace clearing trades, thousands of times a second, under constraints that make it far subtler than \"give the rider whichever car is closest.\""
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain precisely why greedy nearest-driver matching produces double-bookings and globally worse outcomes. You will understand Why batching a short window of requests into one constrained assignment problem is the industry-standard fix, and what it costs. You will predict How window size trades dispatch latency against match quality, with real numbers. You will simulate Naive nearest-first matching against a real, computed bipartite assignment on the same rider/driver snapshot."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "\"Find nearby drivers\" (chapter 2) is a lookup problem: one query, one answer, no side effects. Dispatch is an assignment problem: deciding which of several riders gets which of several drivers, where every assignment you make changes what's available for every assignment you make next. That distinction is the entire reason this chapter exists as a separate, harder problem from geospatial search."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "State the constraints precisely, because every design in this chapter is a response to exactly these five:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Exclusivity. A driver can serve at most one rider at a time. Assigning driver D to rider A and rider B simultaneously is not a rare bug to tolerate \u2014 it is a correctness violation with a real-world consequence (a driver shows up for the wrong person, or two people). Locality. An assignment across town is useless \u2014 the rider waits longer than if no car had been sent. Every candidate match is implicitly bounded by a maximum acceptable pickup distance or time. Perishability. A rider who waits too long cancels; a driver who idles too long goes offline. Neither side of this market can be \"held in inventory\" \u2014 an unmatched request is a lost/degraded outcome, not a queued one. Continuous arrival. Requests and idle drivers appear and disappear asynchronously and constantly \u2014 there is no natural \"batch boundary\" handed to you by the problem; any batching is a design decision this chapter has to justify. Global vs. local optimality. The obviously simple strategy \u2014 assign each request to its closest idle driver, one request at a time \u2014 optimizes each decision in isolation while potentially producing a worse total outcome than a strategy that looks at several requests together. Section 4 makes this precise with a worked numeric counterexample."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "It is tempting to think dispatch is \"just\" a shortest-path query \u2014 send the closest car. Chapter 5 shows that even measuring \"closest\" correctly requires real routing. But dispatch itself is a level above that: it is a combinatorial assignment over a live two-sided market, where the objective (minimize total rider wait, maximize fulfilled requests, keep drivers utilized) is a property of the whole assignment, not any one match. That is precisely the kind of problem where greedy, one-at-a-time decisions are provably suboptimal \u2014 and where the fix costs real latency, which riders can feel."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "Ride-hailing did not invent the dispatch problem \u2014 taxi and livery dispatch is a decades-old operations research topic. What changed was scale and latency budget: a human dispatcher matching a handful of radio-equipped cars became, within a few years, a real-time optimization problem running continuously across an entire city. Click through the milestones that shaped how automated matching had to evolve."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Uber has never published the literal source of its production dispatch/matching engine, and this chapter does not pretend otherwise. What is public: the general shape of the problem (a real-time constrained bipartite assignment over a two-sided marketplace) is decades-old operations-research territory, well documented in academic literature on taxi dispatch, kidney-exchange matching, and online bipartite matching; Uber's own engineering blog and conference talks have described the existence of a marketplace-optimization discipline and the general batching/assignment approach at a high level, without open-sourcing the algorithm the way H3, M3, or Jaeger were open-sourced. Where this chapter gets specific about mechanism, it is teaching the general technique any company at this scale would need \u2014 not reproducing Uber's undisclosed internals."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "The obvious first design: the instant a ride request arrives, scan idle drivers within some radius (chapter 2's index makes this scan fast), pick the closest one by straight-line distance, mark it busy, done. One request in, one decision out, no waiting."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is not a strawman built to be knocked down for sport \u2014 it is the correct starting point. It is simple to reason about, it has no configuration knobs, and under light load, with few simultaneous requests, it behaves exactly as you'd want: every rider gets the closest available car, instantly. Watch it hold up as load rises."
+  },
+  {
+    "id": "deck-deckNaive-0",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 0,
+    "text": "Light load: this works perfectly. One request, one idle-driver scan, one commit. There's no other request in flight to race against, so the read-then-write gap from \u00a74 is invisible \u2014 it exists, but nothing is fast enough to exploit it yet."
+  },
+  {
+    "id": "deck-deckNaive-1",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 1,
+    "text": "Now two requests land close enough in time to overlap. Both scans run against the same idle-driver snapshot before either commit has happened \u2014 this is the exact read-then-write gap \u00a74.1 described. Neither computation is wrong in isolation; the danger is that they happened concurrently against stale shared state."
+  },
+  {
+    "id": "deck-deckNaive-2",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 2,
+    "text": "Whichever write lands second wins the slot \u2014 silently. There is no step in this design that ever checks \"is D4 still idle?\" between R1's commit and R2's commit; there is no atomic operation spanning both. D4 is now nominally serving two riders. This is not a hypothetical: it is the deterministic outcome of any concurrent read-then-write without coordination."
+  },
+  {
+    "id": "deck-deckNaive-3",
+    "kind": "deck",
+    "deckId": "deckNaive",
+    "step": 3,
+    "text": "Greedy-immediate is not a bad idea \u2014 it's an incomplete one. It nails latency and simplicity, and would be entirely correct in a world with no concurrency and no need to compare requests against each other. Neither assumption survives contact with Uber's real request volume. \u00a75 keeps the good instinct (find nearby, cheap matches) and removes the two failure modes by looking at more than one request at a time."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Look again at the pseudocode's two numbered steps. Step (1) reads the current idle-driver set and picks a winner; step (2) writes the commit. Between those two steps \u2014 even if it's microseconds \u2014 the system does other work: other requests are being processed, possibly concurrently, possibly on other machines entirely, all reading from the same idle-driver set before any of their commits land. If requests from rider A and rider B both arrive within that window and both see driver D as the closest idle candidate, both can compute \"assign D\" before either write happens. Whichever write lands second either overwrites the first (driver D is now double-booked) or must be caught by a compensating check \u2014 but that check is exactly the distributed-locking problem chapter 7's state machine has to solve properly. A single-process, single-threaded prototype can paper over this by locking the whole read-modify-write section; a system partitioned across many hosts serving overlapping geographic cells cannot, without deliberate distributed coordination this naive design doesn't have."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "\"Closest by haversine distance \" and \"closest by actual arrival time\" are different orderings, and they diverge exactly where it matters most: rivers, highways with limited crossings, one-way street grids, and traffic. A driver 400 meters away on the far side of a river can have a longer real ETA than a driver 1.1 km away with a clear road. Optimizing the wrong metric doesn't fail loudly \u2014 it fails by consistently picking the second-best or third-best real choice while reporting confidently that it found the closest one. Chapter 5 derives exactly what \"closest\" should mean; for now, take as given that straight-line distance is a proxy that's wrong often enough to matter at scale."
+  },
+  {
+    "id": "s4-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p3\"]",
+    "text": "This is the subtlest failure and the one that justifies the rest of this chapter. Consider two riders, R1 and R2, and two idle drivers, D1 and D2, with these distances:"
+  },
+  {
+    "id": "s4-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p4\"]",
+    "text": "Greedy processes requests in arrival order. If R1 arrives first, greedy correctly gives R1 its closest driver, D1 (2 min) \u2014 that decision looks perfect in isolation. But now R2's only option is D2, at 8 minutes. Total wait: 2 + 8 = 10 minutes. The globally optimal assignment instead gives D1 to R2 (2.5 min) and D2 to R1 (3 min): total wait 2.5 + 3 = 5.5 minutes \u2014 45% less total waiting, achieved by making R1's match slightly worse than the greedy choice in exchange for making R2's match dramatically better. Greedy cannot see this trade because by the time R2 arrives, D1 is already gone. Seeing it requires looking at multiple requests and multiple drivers together \u2014 which is precisely what a lookup-per-request architecture structurally cannot do."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "This isn't a rare 2\u00d72 curiosity. Millions of trip requests per day translate to sustained request rates of hundreds to thousands per second in a single dense metro during peak demand. At that arrival rate, in any given one-second window, dozens of riders and drivers in the same neighborhood are legitimate candidates for each other \u2014 and greedy's per-request tunnel vision throws away the option to compare them. The pathological case in the table above isn't an occasional accident; it is the statistically expected outcome whenever two or more requests and two or more candidate drivers are geographically close in time, which at Uber's request volume in any major city is most of the time, not an edge case."
+  },
+  {
+    "id": "s4-p5",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p5\"]",
+    "text": "So the fix has to attack the exclusivity race with real coordination, attack the metric problem with real routing (chapter 5), and attack the greedy-suboptimality problem by looking at more than one request at a time \u2014 which means, deliberately, not deciding the instant a request arrives."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The fix that directly answers \u00a74's global-optimality failure: instead of matching the instant one request arrives, hold a short window \u2014 commonly on the order of a few hundred milliseconds to a couple of seconds \u2014 collecting every unmatched rider request and every idle driver that becomes available during that window. At the window's close, solve one bipartite graph assignment problem over the whole batch at once, then commit every match atomically."
+  },
+  {
+    "id": "deck-deckBatch-0",
+    "kind": "deck",
+    "deckId": "deckBatch",
+    "step": 0,
+    "text": "Collect, don't decide. For the length of the window, every unmatched rider and every newly-idle driver is simply accumulated. No matching decision happens yet \u2014 the windower's only job (\u00a77) is faithful accumulation."
+  },
+  {
+    "id": "deck-deckBatch-1",
+    "kind": "deck",
+    "deckId": "deckBatch",
+    "step": 1,
+    "text": "Build the sparse bipartite graph. Chapter 2's H3 index prunes riders\u00d7drivers down to geographically plausible pairs only \u2014 R2's edge to D9 doesn't exist because D9 is outside R2's search radius, so the solver never has to consider (and reject) it."
+  },
+  {
+    "id": "deck-deckBatch-2",
+    "kind": "deck",
+    "deckId": "deckBatch",
+    "step": 2,
+    "text": "One solve over the whole batch. The solver finds the assignment minimizing total cost across all three riders at once \u2014 and correctly decides that R1 is better left for the next window than forced onto a worse, distant match, because leaving a rider unmatched (the dummy-column mechanism from \u00a78b) is itself a candidate outcome, not a failure."
+  },
+  {
+    "id": "deck-deckBatch-3",
+    "kind": "deck",
+    "deckId": "deckBatch",
+    "step": 3,
+    "text": "Commit or nothing. Every match in the batch is committed with a per-driver compare-and-swap (\u00a713). No driver can be double-committed \u2014 the whole batch either lands as computed, or an individual match is rejected and its rider is re-queued, never silently duplicated."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "Three design decisions make this work, each answering one of \u00a74's failures directly:"
+  },
+  {
+    "id": "s5-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-list1\"]",
+    "text": "One solve, one commit. Because the whole batch is assigned in a single computation against a single snapshot of idle drivers, and the commit writes every match atomically before the next batch reads the driver set, there is no read-then-write gap for two riders to race into \u2014 the race in \u00a74.1 is closed by construction, not by locking. A real objective function, not a per-request heuristic. The solver minimizes a stated quantity \u2014 total wait time, or a weighted combination of wait time and driver idle distance \u2014 over all matches in the batch simultaneously. That is exactly the lever the 2\u00d72 example in \u00a74 needed and greedy didn't have. A hard locality constraint. Any rider-driver pair further apart than a maximum radius or ETA is simply not a candidate edge in the graph \u2014 the solver is free to leave a rider or driver unmatched this round rather than produce a technically-optimal-but-useless cross-town assignment."
+  },
+  {
+    "id": "s5-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-co1\"]",
+    "text": "A bipartite graph with weighted edges where you want to select a set of edges covering as many nodes as possible while minimizing (or maximizing) total edge weight, with each node used at most once, is the assignment problem, solvable exactly in polynomial time by the Hungarian algorithm (Kuhn, 1955, refined by Munkres) in O(n\u00b3) for an n\u00d7n cost matrix, or heuristically and faster at very large n by min-cost max-flow relaxations and auction-style algorithms. Section 8 implements the exact algorithm and runs it live \u2014 this is not hand-waving; the assignments you will see computed later in this chapter are real solved instances of this problem, not scripted animations."
+  },
+  {
+    "id": "s6-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p1\"]",
+    "text": "Nothing here is free. Batch matching converts \u00a74's correctness and optimality problems into a smaller, more manageable, but still real set of costs:"
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Added latency, felt by every rider. Holding a window means every request waits at least the window length before it can be matched, even the request that arrived one millisecond before the window closed. A 500 ms window costs every rider up to 500 ms of pure waiting that greedy-immediate wouldn't have cost them. Riders perceive \"finding your driver\" latency directly; this is a real, felt tax, not an internal metric. Solver cost grows faster than linearly. The Hungarian algorithm is O(n\u00b3) in the size of the cost matrix. Doubling the batch size (which a longer window does, roughly linearly with arrival rate) more than doubles solve time \u2014 at some batch size, in some dense city center during a demand spike, the solver itself becomes the latency bottleneck the window was trying to avoid. Building the cost matrix isn't free either. A naive implementation computes a candidate edge \u2014 and hence a real routing-engine ETA query (chapter 5) \u2014 for every rider\u00d7driver pair in the batch, which is quadratic before the solver even starts. Production systems must prune this aggressively using the geospatial index from chapter 2 (only consider drivers within a few H3 rings) rather than considering every driver in the city for every rider. Starvation at the edges. A rider in a sparsely served area, or a driver willing to travel further than most, can be systematically deprioritized by a solver optimizing total system wait time \u2014 the individually best outcome for the whole batch is not guaranteed to be a good outcome for every individual in it. Real systems need fairness constraints or aging (a request's priority rises the longer it's waited) layered on top of pure cost minimization."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Every cost above is a function of one number: how long the window stays open. A near-zero window degenerates back toward greedy-immediate (\u00a73/\u00a74's failures return); a very long window approaches a better and better assignment but imposes latency riders will not tolerate and a solver workload that scales against you. There is no value-free choice here \u2014 production systems tune window size empirically per city and per time of day, and section 8's slider lets you feel exactly why that's true with real computed numbers, not an assumed curve."
+  },
+  {
+    "id": "s6-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p2\"]",
+    "text": "So the final architecture keeps the batch-and-solve core, but wraps it with: geo-pruned candidate generation so the cost matrix stays small, a tuned (and likely adaptive) window, and the coordination needed to commit a batch's matches without racing the next one."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any stage to see its job, its inputs/outputs, and what happens when it's the bottleneck. This is the shape any batched real-time matching system takes, regardless of the exact solver used internally."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Separating \"collect a batch\" from \"solve a batch\" from \"commit a batch\" is a deliberate isolation of concerns that mirrors the postmaster/backend separation seen elsewhere on this site: the windower's only job is faithfully accumulating unmatched demand and supply without ever making a matching decision itself, so that it can be simple, fast, and hard to get wrong. All of the complexity \u2014 and all of the tunable behavior \u2014 lives in the solver stage, which can be swapped, tuned, or fall back to a cheaper heuristic under extreme load without touching how requests are collected."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Three pieces, in the order data flows through them: (a) pruning riders\u00d7drivers down to a tractable candidate set, (b) the cost function that turns a candidate pair into a number the solver can minimize, (c) the assignment solver itself, stepped through on a small worked example."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "A batch with R unmatched riders and D idle drivers has up to R\u00d7D possible pairs. At realistic batch sizes during a busy window in a dense city (tens of riders, tens of drivers), that's already thousands of pairs; naively computing a real routing ETA (chapter 5) for every one of them is wasteful and slow. Production systems restrict candidates using chapter 2's H3 index: for each rider, only consider drivers within a small ring of hex cells around the rider's cell \u2014 say, the rider's cell plus its immediate neighbors, expanding outward only if too few candidates are found. This turns an R\u00d7D dense problem into a sparse graph with only the edges worth evaluating."
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "Every candidate edge needs a single number. The simplest honest choice is predicted pickup ETA in seconds (chapter 5's routing engine, not straight-line distance \u2014 that was \u00a74's second failure). Real systems weight in more terms: a small penalty for how long the rider has already waited (so the solver doesn't let one unlucky rider get repeatedly skipped in favor of marginally better matches for others \u2014 this is the fairness/starvation concern from \u00a76), and sometimes a term reflecting driver preference or upcoming destination. A representative shape:"
+  },
+  {
+    "id": "s8-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p4\"]",
+    "text": "That BIG_M term is doing real work: rather than removing far-apart pairs from the graph entirely (which complicates a solver that expects a well-formed matrix), an infeasible pair is simply given a cost so large the solver will never choose it over leaving the rider unmatched this round \u2014 enforcing the hard radius constraint from \u00a75 without special-casing the solver's math."
+  },
+  {
+    "id": "s8-p5",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p5\"]",
+    "text": "Step through the Hungarian algorithm's logic on the 2\u00d72 example from \u00a74 \u2014 the exact numbers that made greedy lose 45% of achievable wait-time savings."
+  },
+  {
+    "id": "deck-deckHungarian-0",
+    "kind": "deck",
+    "deckId": "deckHungarian",
+    "step": 0,
+    "text": "The original cost matrix (minutes to pickup) from \u00a74's counterexample. Greedy processes R1 first, takes D1 (cost 2, the row minimum) \u2014 looks perfect \u2014 leaving R2 stuck with D2 at cost 8. Greedy's total: 2 + 8 = 10."
+  },
+  {
+    "id": "deck-deckHungarian-1",
+    "kind": "deck",
+    "deckId": "deckHungarian",
+    "step": 1,
+    "text": "Step 1 \u2014 subtract each row's minimum. R1's row minus 2 \u2192 [0, 1]. R2's row minus 2.5 \u2192 [0, 5.5]. Every row now has at least one zero \u2014 a candidate \"free\" assignment \u2014 without changing which assignment is cheapest overall (subtracting a constant from a whole row never changes the arg-min of a matching)."
+  },
+  {
+    "id": "deck-deckHungarian-2",
+    "kind": "deck",
+    "deckId": "deckHungarian",
+    "step": 2,
+    "text": "Step 2 \u2014 subtract each column's minimum too. D1's column minimum is already 0. D2's column minimum is 1 \u2192 subtract it: R1's cell becomes 0, R2's becomes 4.5. Three zeros now exist (highlighted) \u2014 the algorithm's real job (not shown in full here) is finding the minimum set of lines covering all zeros and, if that count is less than n, adjusting further. On this small example it resolves in one more step."
+  },
+  {
+    "id": "deck-deckHungarian-3",
+    "kind": "deck",
+    "deckId": "deckHungarian",
+    "step": 3,
+    "text": "Step 3 \u2014 read off a non-conflicting zero in every row and column. R1\u2194D2 and R2\u2194D1 are both zero-cost in the reduced matrix and use each row/column exactly once \u2014 a valid perfect matching. Translating back to original costs: R1\u2192D2 (3) + R2\u2192D1 (2.5) = 5.5 \u2014 exactly the optimum from \u00a74, found mechanically, with no need to have guessed it. This is what the win-slider below actually runs, on random data, every time you move it."
+  },
+  {
+    "id": "s8-p6",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p6\"]",
+    "text": "Now feel the \u00a76 latency/quality tradeoff directly. Drag the batch window: a larger window means more riders and drivers accumulate before each solve, giving the solver more freedom to find a good global assignment \u2014 and the numbers below are computed for real on a freshly generated random snapshot at each window size, not an assumed curve."
+  },
+  {
+    "id": "s8-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-co1\"]",
+    "text": "Uber has not published the exact window-sizing policy its dispatch system uses today, and this chapter does not claim otherwise. What's a safe, general, well-established technique any system in this class would use: make the window adaptive rather than fixed \u2014 shrink it when supply is abundant and match quality is already near-optimal even with few candidates, widen it when demand is dense enough that batching more requests clearly improves the solver's options. That adaptive-batching idea is standard in streaming-systems design broadly, not a fact specific to Uber's undisclosed implementation."
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this as another proof by exhaustion, in the same shape as chapter 1's process-vs-thread table: latency and assignment quality trade against each other, and no strategy escapes that trade \u2014 only prices it differently. The windowed-batch approach this chapter focused on is the standard textbook answer because it makes the trade explicit and tunable (one number: window size) rather than implicit and hard to reason about."
+  },
+  {
+    "id": "s10-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-list1\"]",
+    "text": "Solver complexity: the Hungarian algorithm on an n\u00d7n cost matrix is O(n\u00b3) time (and the common potential-based implementation used in this chapter's simulator is O(n\u00b2 \u00b7 m) for an n\u00d7m rectangular problem). Geo-pruning (\u00a78a) keeps the effective matrix sparse and small rather than letting n grow with total city-wide idle-driver count. Candidate generation cost: without pruning, R riders \u00d7 D drivers pairs, each needing a routing-engine ETA call (chapter 5) \u2014 a real system budgets this as the dominant cost of the whole pipeline and prunes hard. Window-length latency floor: every rider's minimum wait for a match decision is at least half the window length on average (a request arriving uniformly within the window waits, on average, half of it before the window closes) \u2014 this is a hard floor no amount of solver speed removes. Throughput at real scale: millions of trips per day translate to a sustained global request rate in the hundreds per second, concentrated heavily into the world's densest metro areas and into daily peak windows \u2014 the system must be partitioned geographically (by city or by region) so that no single batch solve ever has to consider the whole world's supply and demand at once."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Drag fleet density and batch window below to see the analytic latency/quality curves this class of system follows \u2014 the shape is what matters here, tuned to be qualitatively consistent with the general assignment-problem complexity above, not a claim about Uber's measured production numbers."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The curves above are an analytic sketch \u2014 quality rising with diminishing returns as batch size grows, latency rising as window length plus O(n\u00b2\u00b7m)-ish solver cost \u2014 chosen to be qualitatively faithful to the complexity facts stated above. Section 8's slider widget, by contrast, runs the actual Hungarian solver in your browser on real random data; treat that one as ground truth for \"does the math work,\" and this chart as \"what shape should I expect as the system scales.\""
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "Riders and drivers on ride-hailing platforms have publicly reported (in app-store reviews, driver forums, and news coverage of ride-hailing operations over the years) being matched to a driver who was simultaneously servicing another rider, or arriving to find \"their\" driver had already picked someone else up. Uber has not published a postmortem naming a specific internal race condition behind any particular report, so this chapter does not attribute a cause with false precision \u2014 but \u00a74.1's read-then-write race is the textbook mechanism by which any greedy, uncoordinated dispatch design produces exactly this symptom, and it is why batched atomic commit (\u00a75) or equivalent distributed locking is considered mandatory at this class of scale, not an optional hardening."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Large, geographically concentrated events \u2014 a concert or stadium letting out, severe weather, a transit outage \u2014 routinely produce a demand spike that badly outstrips locally available drivers for the minutes immediately following. This is a well-documented, industry-wide pattern across ride-hailing operators, reported repeatedly in the press as \"surge\" or long wait times after major events; chapter 6 covers the pricing side of the response in detail. From a pure dispatch perspective, the honest lesson is that no matching algorithm \u2014 greedy, batched, or otherwise \u2014 creates supply that doesn't exist; batching can only make the best possible use of the drivers actually available in the area, which is why the pricing and supply-repositioning incentives in chapter 6 exist as a complementary mechanism, not a substitute for good matching."
+  },
+  {
+    "id": "s11-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p3\"]",
+    "text": "No specific Uber postmortem for this exact scenario is public, so it is presented as a realistic, industry-standard incident shape rather than a documented Uber event. A sudden, large influx of ride requests (a major event ending, a transit disruption) drives batch size up sharply in one region; if window length is fixed rather than adaptive, the solver's O(n\u00b2\u00b7m)-ish cost grows faster than the arrival rate, and solve time for that region's batches starts exceeding the window length itself \u2014 batches back up, effective matching latency balloons well past what the configured window would suggest, and riders in that region see dispatch delays that look like an outage even though every individual component is technically \"up.\" The general, industry-standard fixes are exactly what \u00a78's callout describes: adaptive window sizing that shrinks under load, hard caps on batch size with overflow spilling into the next window, and load shedding that falls back to a cheaper greedy match rather than let the exact solver become the bottleneck."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is calibrated to the level a Staff or Principal systems interview would actually expect."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "There is no public Uber dispatch-service source tree to read cold the way some of this site's other courses can walk through a real open-source codebase line by line. What follows is illustrative reference pseudocode \u2014 representative of how a real-time batched matching service of this kind is actually built in industry, not a reproduction of Uber's undisclosed internal source."
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "A single lock around the entire commit step would work correctly but would serialize every batch's commit behind every other batch's commit system-wide \u2014 exactly the kind of global bottleneck this whole chapter has been trying to avoid. Per-driver compare-and-swap gives the same correctness guarantee (no driver is ever committed to two riders) while allowing unrelated batches, in different geographic regions with disjoint driver sets, to commit fully in parallel. This is the same \"isolate the lock to the smallest thing that actually needs protecting\" instinct chapter 1 applied to shared memory versus private backend state."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Generate one random snapshot of riders and idle drivers, then run both matchers against the identical data: naive nearest-first (with a concurrent-burst mode that reproduces \u00a74.1's race), and the real Hungarian solver from \u00a78/\u00a79's assignment problem. Compare total wait time and double-booking count directly \u2014 both numbers are computed from the actual assignments produced, not scripted."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Same snapshot, run naive then batched \u2014 compare total wait directly; the batched number is never worse. 2. Turn concurrent burst ON and re-run naive several times \u2014 watch double-bookings appear exactly when two riders' nearest driver collide, then run batched on the identical snapshot and confirm it's always zero, by construction. 3. Push driver count below rider count and watch both matchers correctly leave some riders unmatched rather than violate the exclusivity constraint. 4. Increase riders toward 14 and watch the visible gap between naive's and batched's total wait widen \u2014 greedy's suboptimality compounds with batch size."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud), then reveal."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain why greedy per-request matching both races and loses to a real assignment solver, and you've watched a genuine Hungarian-algorithm solve run in your browser against your own snapshots. Every cost function in this chapter leaned on one unexamined assumption: that \"ETA\" is a trustworthy number. Chapter 5 opens that box \u2014 map-matching noisy GPS onto a real road graph, and why straight-line distance was always the wrong metric to optimize."
+  }
+]

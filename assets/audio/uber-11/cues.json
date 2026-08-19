@@ -1,0 +1,298 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Once a rider's request crosses dozens of services connected by synchronous calls (chapter 9) and an asynchronous event backbone (chapter 10), two questions become disproportionately hard to answer: is the system healthy right now, in aggregate \u2014 and what exactly happened to this one request? This chapter derives why tagging metrics per-driver or per-trip explodes conventional monitoring tools, why Uber built and open-sourced its own metrics platform, M3, specifically to survive that cardinality, and why reconstructing one request's path across a hundred services needs a fundamentally different tool \u2014 Jaeger, Uber's real distributed tracing system, later donated to the CNCF."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Compute how many distinct time series a single high-cardinality tag actually creates. You will understand Why M3 separates ingestion, aggregation, and storage instead of running one monolithic time-series database. You will predict What a sampling rate trades away, and why a fixed percentage isn't always the right answer. You will simulate Reassembling one request's trace from spans arriving out of order from six services."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "\"Is the system healthy?\" and \"what happened to this specific request?\" feel like the same question asked at different zoom levels, but they demand structurally different tools, and conflating them is the single most common observability mistake at scale."
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "Aggregate health needs numbers you can chart and alert on across the whole fleet: request rate, error rate, latency percentiles, queue depth \u2014 the kind of thing a dashboard shows as a line moving over time. This is the domain of metrics. One request's story needs the causal path a single rider's tap-to-request took: which services it touched, in what order, how long each hop took, and \u2014 critically \u2014 exactly where it went wrong if it did. No amount of aggregated charting answers \"why was trip #48213 specifically slow.\" This is the domain of distributed tracing."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "Both get harder in the same specific way as the system Uber built in chapters 8\u201310 comes into being. A monolith could answer \"why was this request slow\" by reading one process's log, in order, top to bottom. Once that request crosses dozens of independently deployed services \u2014 some synchronous, some via the asynchronous backbone \u2014 no single process's log contains the whole story anymore, and the metrics you'd naturally reach for (tag it by driver, by trip, by request) run headlong into a problem most engineers underestimate until it takes down the monitoring system itself: cardinality."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "Uber's engineering org built two real, independently open-sourced systems to answer these two questions: M3, a metrics platform designed from the ground up around extreme cardinality, and Jaeger, a distributed tracing system later donated to the Cloud Native Computing Foundation. They are not competing solutions to the same problem \u2014 they are the right tool for two genuinely different questions, and this chapter derives both from first principles."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "Neither M3 nor Jaeger was built speculatively \u2014 both are publicly documented responses to a specific pain that the microservices migration (chapter 8) and the event backbone (chapter 10) made unavoidable. Click through the milestones."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "Jaeger's donation to the Cloud Native Computing Foundation and its subsequent graduation is real and public \u2014 it stands among the CNCF's flagship graduated projects, the same tier of well-governed, widely adopted open infrastructure, and is now used far outside Uber. That trajectory \u2014 an internal tool built to survive one company's specific scale, then generalized and given to the industry \u2014 is the same pattern chapter 2 traced for H3 and this chapter traces again for M3."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "The obvious first move, and a completely reasonable one at small scale: instrument every service call with a metric, and attach whatever identifying tags might later help you slice the data."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is not a beginner's mistake \u2014 it is the natural instinct of an engineer who has been burned by not having enough detail during a past incident, and every individual tag genuinely is useful in isolation. The problem only appears once you multiply them together, and it appears violently."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "A conventional time-series system typically treats every unique combination of a metric name and its tag values as its own distinct series to index and store. That is the arithmetic that breaks:"
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "One metric, five tags, with cardinalities trip_id (unbounded \u2014 a new value every request), driver_id (millions), rider_id (millions), city (thousands), app_version (hundreds) \u2014 the number of distinct time series this one metric can produce is the product of those cardinalities, not the sum. Even ignoring the unbounded trip_id field alone, millions \u00d7 millions \u00d7 thousands \u00d7 hundreds is a number with more digits than any conventional in-memory series index was ever designed to hold. Include trip_id and the series count is effectively unbounded \u2014 a fresh, never-seen-before series on every single dispatch request."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "Concretely, what breaks first is whichever component is holding the full index of \"every series that exists\" in memory for fast lookup \u2014 ingestion slows as the index grows, queries that touch many series get proportionally slower, and eventually the process holding that index runs out of memory and falls over, taking monitoring down at exactly the moment (an incident) when you need it the most. The naive fix \u2014 \"just don't tag by trip_id\" \u2014 throws away the exact granularity that made the metric worth instrumenting in the first place. Uber needed both: high-cardinality tagging and a system that doesn't fall over because of it."
+  },
+  {
+    "id": "s4-co2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co2\"]",
+    "text": "This is precisely why Uber's engineering org has publicly described building M3: not as a marginally better dashboard tool, but as a metrics platform architected from the start around the assumption that cardinality would be enormous and would keep growing, rather than treating it as an edge case to guard against with tag-naming conventions alone."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "Step through how each half of the problem gets solved \u2014 metrics first, then tracing."
+  },
+  {
+    "id": "deck-deckEvo-0",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 0,
+    "text": "Where we started. One overloaded system tries to be both an aggregate-health dashboard and a per-request debugger, and the tagging that would make it good at the second job is exactly what breaks it at the first."
+  },
+  {
+    "id": "deck-deckEvo-1",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 1,
+    "text": "Step 1: build a metrics platform for bounded-cardinality aggregate health. This is M3's real, publicly-described design goal \u2014 a system built to keep bounded but still very large cardinality (city \u00d7 endpoint \u00d7 app_version, easily millions of series) tractable through aggregation before storage, not a system that tries to hold every possible per-request tag forever."
+  },
+  {
+    "id": "deck-deckEvo-2",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 2,
+    "text": "Step 2: build a tracing system for exactly the per-request causality metrics gave up. This is Jaeger's real, publicly-described purpose \u2014 carry the identity a metric would have exploded on (one id per request) through every hop as an explicit shared trace id, and manage its cost not by dropping the identifier but by choosing, deliberately, which requests to keep full detail for."
+  },
+  {
+    "id": "deck-deckEvo-3",
+    "kind": "deck",
+    "deckId": "deckEvo",
+    "step": 3,
+    "text": "The final shape. Two independent, purpose-built systems, sharing no storage and no schema, each solving exactly one of the two questions from \u00a71 \u2014 and each free to evolve its own cost model (aggregation for M3, sampling for Jaeger) without compromising the other."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "By the final step, the two questions from \u00a71 have two purpose-built answers: M3 for \"is the system healthy, sliced any way you need, without falling over from cardinality,\" and Jaeger for \"what exactly happened to this one request, across every service it touched.\""
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "High cardinality still costs storage and query time, even when the system is designed for it. M3 handling a metric gracefully instead of falling over doesn't mean that metric is free \u2014 every additional dimension still means more bytes stored and more work per query, which is why retention policies and rollup/downsampling tiers are a real, deliberate cost decision, not a formality. Tracing every request at full detail is not affordable at full volume. Storing a complete set of spans for every single request, forever, at Uber's real request volume would dwarf the cost of the requests themselves. Some form of sampling is unavoidable \u2014 which immediately raises an uncomfortable question: what happens when the exact request you need during an incident wasn't sampled? Running your own observability platform is itself a serious systems problem. M3's architecture (\u00a77) has multiple components \u2014 ingestion/aggregation, storage, and query \u2014 each of which needs its own capacity planning, on-call rotation, and failure handling. You've traded \"a vendor's dashboard fell over\" for \"we now operate a distributed system whose job is watching our other distributed systems.\" Sampling decisions made at request-start can be wrong in hindsight. A request that looked completely ordinary when it began (and so was sampled at the default low rate) can turn out, three hops later, to be the exact request that hit a rare bug \u2014 and by then the sampling decision has already been made."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Neither M3 nor Jaeger makes observability free \u2014 they make it survivable at scale, which is a different and more honest claim. The rest of this chapter is about the specific mechanisms that make that true: how M3 keeps a metrics platform from falling over under cardinality it can't predict in advance, and how sampling strategies try to keep the request you'll need during your next incident actually captured."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component. Note that metrics and traces are produced by the same instrumented service code but flow through entirely separate pipelines from there on \u2014 they answer different questions and have different cost profiles, so there is no reason to force them through one system."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Both pipelines separate ingestion from storage from query as independently scalable stages \u2014 the exact pattern the event backbone in chapter 10 also used to decouple producers from consumers. Observability data, at this scale, is itself a high-volume streaming problem, and it's built using the same architectural instincts this course has been deriving since chapter 8."
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "Three mechanisms: (a) the span data shape and how context propagates hop to hop, (b) how M3's cardinality-aware design keeps ingestion and storage decoupled from raw tag explosion, and (c) the sampling decision itself."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "A trace is nothing more than a set of spans that all share one trace_id, each pointing at its immediate parent:"
+  },
+  {
+    "id": "s8-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p3\"]",
+    "text": "Context has to survive a network hop, which is the actual mechanism worth understanding:"
+  },
+  {
+    "id": "s8-p4",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p4\"]",
+    "text": "Step through a request crossing four services, accumulating one span per hop:"
+  },
+  {
+    "id": "deck-deckSpans-0",
+    "kind": "deck",
+    "deckId": "deckSpans",
+    "step": 0,
+    "text": "Hop 1. The mobile gateway (chapter 13 covers this component in depth) starts the root span \u2014 no parent_span_id \u2014 and generates a fresh trace_id that will travel with every downstream call this request makes."
+  },
+  {
+    "id": "deck-deckSpans-1",
+    "kind": "deck",
+    "deckId": "deckSpans",
+    "step": 1,
+    "text": "Hop 2. The gateway calls dispatch, propagating trace_id + its own span_id as the new parent. Dispatch starts a child span for its own work \u2014 querying the H3 grid (chapter 2) for nearby drivers."
+  },
+  {
+    "id": "deck-deckSpans-2",
+    "kind": "deck",
+    "deckId": "deckSpans",
+    "step": 2,
+    "text": "Hop 3. Dispatch calls pricing to compute a surge multiplier (chapter 6) for the matched cell. Same propagation mechanism, one more child span, one more service that now agrees it's part of this one logical request."
+  },
+  {
+    "id": "deck-deckSpans-3",
+    "kind": "deck",
+    "deckId": "deckSpans",
+    "step": 3,
+    "text": "Hop 4. The trip service publishes a trip-assigned event onto the backbone from chapter 10. Four spans, four services, one trace_id \u2014 and a query for that trace_id now returns the complete, ordered causal picture, entirely reconstructed from parent pointers and start times, never from arrival order."
+  },
+  {
+    "id": "s8-p5",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p5\"]",
+    "text": "Two sliders below make both mechanisms concrete. The first shows how many distinct time series one metric actually produces as you add tag dimensions \u2014 genuinely computed as a product of cardinalities, not a canned number. The second shows the real tradeoff sampling makes between storage cost and the odds that any one specific request \u2014 including the rare bad one \u2014 was captured."
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "In practice all three are used together: metrics tell you that something is wrong and roughly where; a trace for a specific slow or failed request tells you exactly which hop and why; logs fill in arbitrary detail a fixed span schema didn't anticipate. None of the three substitutes for the other two."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "Uber's engineering team has publicly described M3 as built to handle hundreds of millions of distinct time series and to ingest very large volumes of data points per second \u2014 the precise current figures move over time and aren't the point of this chapter; the point is the shape of the cost curve as cardinality grows, which the chart below computes directly from the sliders rather than showing a canned animation."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "The chart multiplies illustrative per-tag cardinalities (city ~1,000, app_version ~500, endpoint ~2,000, driver_id ~2,000,000, trip_id effectively unbounded) to produce a series count as dimensions are added, on a log scale, against a horizontal line marking roughly where a single conventional in-memory series index starts to struggle. The exact crossover point for any real system depends on hardware and implementation; the shape \u2014 each additional high-cardinality dimension multiplies, not adds \u2014 is the durable lesson."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "This is a realistic, industry-standard incident pattern rather than a specific documented Uber postmortem, and it is arguably the single most common way metrics platforms fail everywhere they're run: a routine deploy adds one new tag to an existing, heavily-used metric \u2014 often something that looks perfectly innocuous, like a raw internal identifier or a session token \u2014 without anyone realizing that identifier is effectively unique per event. Ingestion volume for that one metric explodes overnight, the platform's own resource usage spikes, and if capacity isn't isolated per team or per metric, unrelated teams' dashboards and alerts start failing too. This pattern is precisely why a metrics platform built for Uber's real scale treats cardinality limits and per-team quotas as a first-class safety mechanism rather than an afterthought \u2014 the general lesson generalizes far beyond any one company: any tag whose cardinality you haven't explicitly bounded should be treated as a potential incident waiting to ship."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Also a general, honestly-framed industry pattern rather than a specific public Uber incident: a service runs a fixed low sampling rate \u2014 reasonable for its normal traffic and cost profile \u2014 and then, during an actual production incident, the engineer on call goes looking for a trace of one of the failing requests and finds that the specific request they need simply wasn't sampled. Fixed-percentage, decided-at-request-start sampling makes exactly this outcome possible, because the decision to keep or discard a trace is made before anything interesting about that request is known. This is the well-known, public critique of naive probabilistic sampling, and it's why more sophisticated strategies \u2014 sampling every erroring or slow request regardless of the base rate, for instance \u2014 are standard practice at this scale, even though they add complexity to the sampling decision itself."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "An observability platform is itself a system with its own capacity limits and its own failure modes \u2014 treating \"we have metrics and traces\" as a solved problem, rather than an ongoing capacity-planning and governance responsibility, is how both of these incidents happen in the first place."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "Neither M3's nor Jaeger's full internals are reproduced here verbatim; what follows is precise, representative pseudocode for how a system in this class is genuinely built, labeled illustrative rather than literal."
+  },
+  {
+    "id": "s13-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p2\"]",
+    "text": "The cardinality guard that keeps one bad tag from becoming an incident:"
+  },
+  {
+    "id": "s13-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p3\"]",
+    "text": "The trace query path \u2014 grouping stored spans by trace_id and rebuilding the parent/child tree:"
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "1. Aggregate before you store, not after. Rolling up at the aggregation tier \u2014 before data ever lands in long-term storage \u2014 is what lets M3 hold cardinality that would sink a system storing every raw point forever. 2. Reconstruction, not real-time ordering, is the tracing contract. Spans are allowed to arrive at the collector in any order, from any number of services, because reassembly happens at query time from each span's own start time and parent pointer \u2014 no service has to coordinate timing with any other. 3. Quotas are a governance mechanism, not just a technical one. A per-team series limit turns \"one team's tagging mistake\" into \"one team's rejected metric,\" instead of \"everyone's monitoring platform falls over\" \u2014 the same blast-radius instinct chapter 1's process model and chapter 9's circuit breakers both apply in their own domains."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Fire a request and watch spans arrive from six services in a realistically jumbled, out-of-order sequence \u2014 then watch them assemble into one coherent timeline by shared trace id, exactly as the query path in \u00a713 does it. Inject a failing hop and watch it highlight in the reconstructed trace."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Fire a request and watch the inbox fill in scrambled order while the timeline below reconstructs the true sequence from each span's start time and parent id. 2. Fire a failing request and find the exact hop that errored, highlighted in red, with everything downstream of it never starting. 3. Notice that the reconstruction never depends on arrival order \u2014 only on the parent/child pointers each span carries, exactly as \u00a713's reconstructTrace pseudocode does it."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "Formulate a full answer before revealing."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain why cardinality multiplies rather than adds, why Uber built M3 and Jaeger as two purpose-built systems rather than one general one, and how a trace reconstructs a request's true sequence from parent pointers regardless of arrival order. You've now seen how Uber deploys, connects, streams, and observes its backend. Chapter 12 asks the last infrastructure question this arc has left open: once you can observe exactly what a rollout is doing, how do you actually schedule and deploy thousands of stateless services alongside large batch and ML workloads on the same shared fleet \u2014 and how do you use those observability signals to decide, automatically, whether a rollout should finish or reverse itself?"
+  }
+]

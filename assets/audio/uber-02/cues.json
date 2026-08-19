@@ -1,0 +1,304 @@
+[
+  {
+    "id": "hero-lead",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-lead\"]",
+    "text": "Chapter 1 established that dispatch must answer \"which drivers are near this point\" without scanning the whole fleet \u2014 and that a naive square grid, while a real improvement, has boundary and load problems of its own. This chapter derives the real fix: why raw coordinates and even the well-known geohash scheme both break down, and how Uber's real, open-sourced H3 library \u2014 a hexagonal, hierarchical spatial index \u2014 solves the same problem with better geometry."
+  },
+  {
+    "id": "hero-obj",
+    "kind": "text",
+    "selector": "[data-cue=\"hero-obj\"]",
+    "text": "You will be able to Explain precisely why geohash's prefix encoding has a boundary discontinuity that hex grids don't. You will understand Why hexagons, not squares, give every neighboring cell the same distance and adjacency. You will predict Real cell area and edge length at any H3 resolution from Uber's published resolution table. You will simulate A hex-grid explorer that computes real k-ring neighbors and resolution math live."
+  },
+  {
+    "id": "s1-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p1\"]",
+    "text": "A latitude/longitude pair identifies one point. It does not, by itself, answer a proximity question. If drivers are stored as raw (lat, lng) rows, \"find everyone near point P\" has no efficient path other than computing the distance from P to every single row \u2014 exactly the O(N) collapse chapter 1 built up to and chapter 1's toy grid tried (and partly failed) to fix. What's actually needed is a way to turn \"nearby in the real world\" into \"nearby in a data structure\" \u2014 a mapping from continuous 2D (really, spherical) space onto discrete, indexable buckets, such that two points close together on Earth are, with very high probability, close together \u2014 or in the very same bucket \u2014 in the index."
+  },
+  {
+    "id": "s1-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-p2\"]",
+    "text": "That requirement sounds simple and is deceptively hard to get right, for three reasons this chapter derives in order:"
+  },
+  {
+    "id": "s1-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-list1\"]",
+    "text": "The Earth is a sphere (approximately), not a flat plane. Any scheme that treats latitude and longitude as if they were ordinary Cartesian x/y coordinates distorts distance and area \u2014 most severely near the poles, where lines of longitude converge. A useful index must support a \"neighbors\" query cheaply. Given a cell, you need to enumerate its immediate neighbors \u2014 and the neighbors of those \u2014 without doing a distance calculation against every other cell that exists. Real cities have wildly different densities. A single fixed cell size, as chapter 1 showed, is either too coarse for a dense downtown or too fine \u2014 and therefore wastefully numerous \u2014 for a sparse suburb. The index needs a resolution hierarchy, not one size."
+  },
+  {
+    "id": "s1-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s1-co1\"]",
+    "text": "Two encoding families have been used historically to solve this exact problem: geohashing (interleave latitude and longitude bits into one string) and hierarchical hexagonal or triangular grids, of which Uber's H3 is the most widely known production example. This chapter derives geohash first, shows precisely where it breaks, and then derives why H3's specific geometric choices \u2014 hexagons, and a fixed hierarchy of 16 resolutions \u2014 fix those specific breaks."
+  },
+  {
+    "id": "s2-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-p1\"]",
+    "text": "The idea of interleaving coordinate bits to create a locality-preserving 1D key is older than ride-hailing itself, and H3's specific design choices only make sense once you've seen what came before and why the field kept needing another iteration. Click through the timeline."
+  },
+  {
+    "id": "s2-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s2-co1\"]",
+    "text": "H3 is real, public, and widely adopted well beyond ride-hailing: it is used across the geospatial-analytics industry for exactly the property this chapter derives \u2014 uniform hexagonal adjacency at multiple resolutions \u2014 and public documentation (h3geo.org) publishes the full resolution table this chapter uses in \u00a78 and \u00a715. Where this chapter says \"Uber's real H3,\" that is a claim about a genuinely open-sourced, publicly documented library, not an inferred internal detail."
+  },
+  {
+    "id": "s3-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p1\"]",
+    "text": "The classic, genuinely clever first attempt: take a point's latitude and longitude, binary-search each into a fixed range repeatedly (each bit halves the remaining range), and interleave the resulting bits \u2014 longitude bit, latitude bit, longitude bit, latitude bit \u2014 into a single binary string, then base32-encode it into a short, human-shareable string. Two points with a shared prefix are, most of the time, geographically close."
+  },
+  {
+    "id": "s3-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s3-p2\"]",
+    "text": "This is a real, historically important, and genuinely useful encoding \u2014 geohash strings are still used throughout the industry as a compact, human-shareable location key, and \"drivers sharing my geohash prefix\" is a legitimate cheap proximity filter for many applications. It is worth taking seriously before dismissing it. But ride-hailing's dispatch problem exposes one specific, well-known flaw badly."
+  },
+  {
+    "id": "s4-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p1\"]",
+    "text": "Geohash's fatal flaw for a proximity index is a direct consequence of how it's built: it recursively bisects a fixed, global rectangle \u2014 first by longitude, then by latitude, alternating \u2014 into a quad-tree of cells. Two points can sit meters apart in physical space yet fall on opposite sides of one of those bisections at a very coarse (early) level of the recursion, which means they diverge in their very first bits and end up with completely different geohash strings, sharing no useful prefix at all despite being neighbors."
+  },
+  {
+    "id": "s4-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p2\"]",
+    "text": "Concretely: consider two points 10 meters apart that straddle the boundary lng = 0\u00b0 (the prime meridian) \u2014 one at lng = -0.0001\u00b0, one at lng = +0.0001\u00b0. The very first bit of the interleaved encoding, which bisects the whole world at lng = 0, differs between them. Every subsequent bit inherits that divergence structurally, because each level's bisection range depends on which side of the previous bisection you landed on. The two points end up in geohash cells that don't just have different strings \u2014 they can be geohash \"neighbors\" only via an explicit, separate neighbor-lookup table, because there is no arithmetic relationship between \"close in space\" and \"close in the encoded string\" at a cell boundary."
+  },
+  {
+    "id": "s4-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-co1\"]",
+    "text": "A proximity search built naively on \"match my geohash prefix, and maybe its 8 listed neighbor prefixes\" will silently miss real candidates near any of the recursive bisection boundaries \u2014 not just the prime meridian, but every boundary at every level of the recursion, which is to say: a meaningful fraction of all cell edges, at every resolution, everywhere on the map. For a proximity index whose entire job is \"never miss a genuinely nearby driver,\" an index with structural blind spots at every cell boundary, at every zoom level, is a correctness bug wearing a performance-optimization's clothing. This is qualitatively worse than chapter 1's fixed-square-grid boundary problem (\u00a76 there) \u2014 it's the same category of bug, but geohash's boundaries are denser and less predictable because they come from a recursive bisection, not a single flat lattice."
+  },
+  {
+    "id": "s4-p3",
+    "kind": "text",
+    "selector": "[data-cue=\"s4-p3\"]",
+    "text": "There is a second, related problem worth naming even though it is not the primary failure: non-uniform cell shape. Because geohash bisects a lat/lng rectangle directly, cells are not even close to square in most parts of the world \u2014 near the equator a geohash cell is noticeably wider than tall (or vice versa depending on the bit position), and the distortion gets worse toward the poles, where a fixed change in longitude covers much less real-world distance. A proximity index whose cell shape itself varies by latitude makes \"nearby in the index\" mean a different real-world distance depending on where on Earth you're standing."
+  },
+  {
+    "id": "s5-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p1\"]",
+    "text": "The real fix Uber's H3 makes is a deliberate geometric choice, not a bigger version of the same bisection trick. Step through the reasoning:"
+  },
+  {
+    "id": "deck-deckBetter-0",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 0,
+    "text": "Where geohash starts. A single global rectangle, split by straight vertical and horizontal lines. Every split line is a potential boundary discontinuity (\u00a74)."
+  },
+  {
+    "id": "deck-deckBetter-1",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 1,
+    "text": "A cleaner subdivision, same core problem. Squares subdivide perfectly (4 children per parent) \u2014 but a square still has 4 near neighbors and 4 farther (\u221a2\u00d7) diagonal neighbors. \"Ring 1\" is not one consistent distance."
+  },
+  {
+    "id": "deck-deckBetter-2",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 2,
+    "text": "Switch the cell shape. Every hexagon has exactly 6 neighbors, all sharing a full edge, all the same distance from the center. A \"ring\" at any radius is now a geometrically consistent shape in every direction."
+  },
+  {
+    "id": "deck-deckBetter-3",
+    "kind": "deck",
+    "deckId": "deckBetter",
+    "step": 3,
+    "text": "Fix the sphere problem too. Instead of bisecting a flat lat/lng rectangle (which distorts near the poles), project the sphere onto an icosahedron's 20 faces first, tile each face with hexagons, then map back onto the globe. This is H3's real, public design."
+  },
+  {
+    "id": "s5-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-p2\"]",
+    "text": "Two decisions carry the whole design, and both are worth stating precisely, because interview-level understanding of H3 lives here:"
+  },
+  {
+    "id": "s5-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-list1\"]",
+    "text": "Hexagonal cells, not square ones. A hexagon has exactly 6 neighbors, and \u2014 unlike a square, whose 4 edge-adjacent neighbors are one cell-width away while its 4 diagonal neighbors are \u221a2 times farther \u2014 every one of a hexagon's 6 neighbors shares a full edge and sits at the same distance from the center. \"Ring 1 around this cell\" means something geometrically consistent in every direction, which a square grid's ring never quite achieves. Project onto an icosahedron, not a flat lat/lng rectangle. Instead of bisecting a rectangle (which is what makes geohash's cells warp near the poles and break at arbitrary bisection lines), H3 projects the sphere onto the 20 faces of a regular icosahedron, tiles each face with hexagons, and then unprojects back onto the globe. This keeps cell size and shape far more uniform across the whole planet than any scheme built directly on lat/lng ever can be."
+  },
+  {
+    "id": "s5-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s5-co1\"]",
+    "text": "A hexagon cannot tile a sphere perfectly \u2014 this is a real, unavoidable fact of solid geometry (it's the same reason a soccer ball is stitched from hexagons and exactly 12 pentagons). H3's base grid at its coarsest resolution has 122 cells, of which 12 are pentagons, sitting at the icosahedron's 12 vertices. This is not a bug Uber failed to fix \u2014 it is a mathematical necessity of covering a sphere with hexagons, and H3's design places those 12 pentagons deliberately over ocean, away from major population centers, specifically to keep them out of the way of real-world queries as much as possible."
+  },
+  {
+    "id": "s6-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p1\"]",
+    "text": "The hexagonal-icosahedral design is a large, genuine improvement, but it is not free of cost, and being honest about the remaining friction is part of understanding why H3's real implementation is as involved as it is:"
+  },
+  {
+    "id": "s6-list1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-list1\"]",
+    "text": "Pentagon distortion is permanent, not eliminated. The 12 pentagon cells (\u00a75) and the cells immediately around them at every finer resolution have subtly different area and neighbor topology than an ordinary hexagon \u2014 code that assumes \"every cell has exactly 6 neighbors\" will be wrong at those specific locations, and a correct implementation has to special-case them. Hexagons don't subdivide as cleanly as squares. A square splits perfectly into 4 smaller squares. A hexagon does not split into a whole number of smaller hexagons that exactly tile it \u2014 H3 uses an aperture-7 scheme, where each cell's children only approximately nest inside the parent's boundary. A child cell can straddle two different parent cells at the coarser resolution \u2014 \"which resolution-8 cells make up this resolution-7 cell\" is not simply enumerable the way it would be for a quadtree. Indexing and geometry math are genuinely more complex than bit interleaving. Converting a raw lat/lng into an H3 cell ID requires projecting onto the correct icosahedron face, converting into that face's 2D coordinate system, and quantizing to the requested resolution \u2014 meaningfully more compute than geohash's simple bisection loop, and a real reason H3 ships as a maintained C library with bindings, not a one-line formula."
+  },
+  {
+    "id": "s6-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-p2\"]",
+    "text": "None of these costs undo the fix from \u00a75 \u2014 they are the honest price of buying uniform adjacency and sphere-wide consistency. The final architecture below shows where this index sits in the larger dispatch pipeline chapter 1 sketched, and \u00a78 gives the real, published numbers (resolution, area, edge length) that make the hierarchy concrete."
+  },
+  {
+    "id": "s6-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s6-co1\"]",
+    "text": "Uber's real H3 source is public (it is genuinely open source), but reproducing its exact bit-level index format and icosahedron-projection math faithfully is out of scope for a single chapter and not necessary to understand the design. Where this chapter's simulator (\u00a715) needs to compute something live, it uses a simplified, clearly labeled flat hexagonal grid that demonstrates the real, published aperture-7 hierarchy and k-ring neighbor search honestly \u2014 not a bit-exact reimplementation of H3's spherical indexing."
+  },
+  {
+    "id": "s7-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-p1\"]",
+    "text": "Click any component to see how it uses the H3-style index this chapter derives."
+  },
+  {
+    "id": "s7-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s7-co1\"]",
+    "text": "Notice the index itself is dumb and general-purpose: \"given a point, what cell; given a cell, what neighbors.\" It has no idea a driver is a driver or a rider is a rider. That generality is precisely why both dispatch (ch. 4) and surge pricing (ch. 6) can build on the exact same underlying index without duplicating any of this chapter's geometry \u2014 pricing just asks \"how much supply and demand is in this cell\" instead of \"which driver is nearest.\""
+  },
+  {
+    "id": "s8-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p1\"]",
+    "text": "H3 defines 16 resolutions, 0 (coarsest) through 15 (finest). Each step down the hierarchy multiplies cell count by roughly 7 (the aperture-7 scheme from \u00a76) and shrinks edge length by roughly \u221a7. The table below is H3's real, publicly published resolution table (h3geo.org) \u2014 these are documented facts, not illustrative estimates."
+  },
+  {
+    "id": "s8-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-p2\"]",
+    "text": "Dispatch typically operates at a mid-range resolution (roughly resolution 8\u20139, tens of meters to a few hundred meters of edge length) \u2014 fine enough that \"same cell\" is a meaningfully tight proximity signal, coarse enough that a k-ring search of a handful of rings covers a realistic dispatch radius without enumerating an unreasonable number of cells. Now walk through what a k-ring search actually does, step by step, on a real hex grid:"
+  },
+  {
+    "id": "deck-deckKring-0",
+    "kind": "deck",
+    "deckId": "deckKring",
+    "step": 0,
+    "text": "Start. A rider's point resolves to the green center cell. No ring has been searched yet \u2014 k=0 is just this one cell."
+  },
+  {
+    "id": "deck-deckKring-1",
+    "kind": "deck",
+    "deckId": "deckKring",
+    "step": 1,
+    "text": "k=1 \u2014 exactly 6 cells. Every one of them shares a full edge with the center and sits at the same real-world distance \u2014 the direct payoff of choosing hexagons in \u00a75."
+  },
+  {
+    "id": "deck-deckKring-2",
+    "kind": "deck",
+    "deckId": "deckKring",
+    "step": 2,
+    "text": "k=2 \u2014 exactly 12 cells (6\u00d72). The disk searched so far (k=0 through k=2) totals 1+3\u00b72\u00b73 = 19 cells \u2014 computed from the exact formula in \u00a78, not estimated."
+  },
+  {
+    "id": "deck-deckKring-3",
+    "kind": "deck",
+    "deckId": "deckKring",
+    "step": 3,
+    "text": "k=3 \u2014 exactly 18 cells (6\u00d73). Total disk searched: 1+3\u00b73\u00b74 = 37 cells. Compare this to chapter 1's square-grid ring search, whose ring shape and cell count are far less clean because square adjacency isn't uniform."
+  },
+  {
+    "id": "s8-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s8-co1\"]",
+    "text": "On a true hex grid, ring k contains exactly 6k cells (for k > 0), and the disk of all rings from 0 through k contains exactly 1 + 3k(k+1) cells. This is genuine, computable geometry \u2014 not an approximation \u2014 and it's the number that lets you predict, precisely, how many cells a \"search out to ring 3\" query touches (1 + 3\u00b73\u00b74 = 37 cells) before you write a single line of the real search."
+  },
+  {
+    "id": "s9-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s9-p1\"]",
+    "text": "Read this table as this chapter's real thesis: there is no cell shape that is simultaneously perfectly subdividable, perfectly uniform, and boundary-free \u2014 geohash gives up uniformity and boundary-safety for simplicity; square subdivision gives up neighbor-equidistance for clean subdivision; H3 gives up clean subdivision and a handful of special-cased pentagons in exchange for the two properties dispatch needs most: uniform adjacency and reasonably uniform area across the whole planet."
+  },
+  {
+    "id": "s10-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-p1\"]",
+    "text": "The real cost of a k-ring search is the number of cells it has to touch \u2014 and that number depends jointly on the search radius you need to cover and the resolution you've chosen. Drag both and watch the real disk-of-cells formula (\u00a78) compute the exact cell count, and the resolution table convert that into a real-world area covered."
+  },
+  {
+    "id": "s10-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s10-co1\"]",
+    "text": "For a chosen resolution, the widget takes H3's real published edge length at that resolution (\u00a78), computes how many rings are needed for the ring's radius (ring count \u00d7 edge length) to reach or exceed the requested search radius, then applies the exact disk formula 1 + 3k(k+1) from \u00a78 to get a real cell count \u2014 no fudge factor. The pattern this always produces: too coarse a resolution wastes area (each cell covers far more ground than needed, so you touch few cells but each one is mostly wasted search); too fine a resolution needs an enormous ring count (and cell count) to reach the same physical radius. There is a real sweet spot, and it moves with local density exactly the way chapter 1's \u00a78 predicted a fixed radius would need to."
+  },
+  {
+    "id": "s11-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p1\"]",
+    "text": "H3's own public documentation is upfront about the 12 pentagon cells introduced in \u00a75 \u2014 they are a genuine, disclosed mathematical consequence of tiling a sphere with hexagons (there is no way to avoid them; a sphere's Euler characteristic forces exactly 12 \"defect\" cells in any hexagon-dominant tiling), and H3's real design deliberately places them over remote ocean regions specifically to minimize how often real applications encounter them. Any application built on H3 that assumes \"every cell has exactly 6 neighbors\" without handling the pentagon case is carrying a latent, documented edge case \u2014 and H3's own API exposes a function specifically to check whether a given cell is a pentagon, which is the industry's standard tell that this is a known, designed-around wrinkle rather than an oversight."
+  },
+  {
+    "id": "s11-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-p2\"]",
+    "text": "Uber-specific incident reports around H3 resolution changes are not public, so this section states the general, well-understood industry pattern honestly rather than inventing a specific one: any system that chooses a fixed indexing resolution for a workload that later grows unevenly (a rural market whose central business district suddenly densifies, for instance) faces a real operational choice \u2014 either keep the coarser resolution and accept degraded search precision in the now-dense area, or re-key every stored record to a finer resolution, which for a live system touching millions of records is a genuine online-migration project, not a config flag flip. This is the same class of problem this site's database courses call a resharding or repartitioning migration, and it is the honest, general cost of any hierarchical spatial index whose resolution is chosen once at design time."
+  },
+  {
+    "id": "s11-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s11-co1\"]",
+    "text": "A resolution hierarchy (\u00a78) exists specifically so that resolution can, in principle, vary by area rather than being fixed globally \u2014 dispatch can query a finer resolution in a dense downtown and a coarser one in a sparse exurb without changing the underlying index technology. Whether a live storage layer built on top of that index makes changing resolution cheap or expensive is a separate, real engineering decision this chapter flags but does not resolve \u2014 it is exactly the kind of tradeoff a Staff-level design review is expected to surface before a resolution choice ships."
+  },
+  {
+    "id": "s12-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s12-p1\"]",
+    "text": "Think before you reveal \u2014 each answer is the level of detail a Senior\u2192Principal systems-design interview expects."
+  },
+  {
+    "id": "s13-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-p1\"]",
+    "text": "H3's real library is open source, but the following is illustrative reference pseudocode for how a service around it is typically built \u2014 structured the way an engineering team would genuinely wire H3 (or a library like it) into a dispatch pipeline, not a claim about Uber's exact internal service code."
+  },
+  {
+    "id": "s13-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s13-co1\"]",
+    "text": "1. Track each driver's current cell explicitly (byDriver). Without it, removing a driver from its old cell on every position update would itself require a search \u2014 the exact O(N) problem this whole chapter exists to avoid. 2. Skip re-indexing when the cell hasn't changed. Most GPS pings move a driver a few meters, not across a cell boundary; checking that first turns the overwhelmingly common case into a no-op, which matters enormously at the location-update volume chapter 3 describes."
+  },
+  {
+    "id": "s14-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s14-p1\"]",
+    "text": "Six questions, then a sequencing challenge. Wrong answers explain why they're wrong \u2014 read them, they encode the chapter."
+  },
+  {
+    "id": "s15-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-p1\"]",
+    "text": "Click anywhere on the hex grid below. It computes a real cell address, a real k-ring neighbor set (via the exact axial-coordinate algorithm from \u00a78), and real resolution-table numbers (\u00a78) \u2014 live, from your click, not scripted. This is a simplified flat hexagonal grid built to demonstrate H3's real aperture-7 hierarchy and k-ring math honestly, as \u00a76 disclosed; it does not reproduce H3's real spherical icosahedron projection."
+  },
+  {
+    "id": "s15-co1",
+    "kind": "text",
+    "selector": "[data-cue=\"s15-co1\"]",
+    "text": "1. Click a cell, then click through k=0 \u2192 k=3 \u2014 confirm the ring-cell count matches the exact 6k formula from \u00a78 every time (6, 12, 18 for k=1,2,3). 2. Confirm the cumulative disk count matches 1+3k(k+1) at every k. 3. Drag the edge-length slider and click the same screen position again \u2014 notice the cell you land in changes, exactly the resolution-changes-the-answer behavior \u00a78's resolution table describes for real H3. 4. Click a cell near the very edge of the canvas and notice the ring search still returns a geometrically consistent ring shape \u2014 unlike a square grid's diagonal-distortion problem from \u00a75."
+  },
+  {
+    "id": "s16-p1",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p1\"]",
+    "text": "These have no multiple choice. Formulate a full answer in your head (or out loud \u2014 it's better), then reveal. If any reveal surprises you, re-run the relevant widget above."
+  },
+  {
+    "id": "s16-p2",
+    "kind": "text",
+    "selector": "[data-cue=\"s16-p2\"]",
+    "text": "You can now explain precisely why geohash's recursive bisection creates boundary discontinuities, why hexagons fix neighbor-distance uniformity that squares can't, and you can compute real H3 resolution, area, and k-ring cell counts from first principles. Chapter 3 assumes this index exists and is queryable, and asks the next honest question: how do you keep a moving driver's position in that index accurate, given that GPS pings arrive late, out of order, duplicated, or not at all?"
+  }
+]
