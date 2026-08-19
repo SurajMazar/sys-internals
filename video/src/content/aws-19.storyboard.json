@@ -1,0 +1,278 @@
+{
+  "chapter": "aws-19",
+  "title": "Advanced Security: KMS, Secrets Manager, GuardDuty & Security Automation",
+  "voice": "af_heart",
+  "scenes": [
+    {
+      "id": "intro",
+      "type": "ChapterIntro",
+      "narration": "This chapter maps to two Professional exam domains: Design Solutions for Organizational Complexity, twenty six percent of the exam, and Continuous Improvement for Existing Solutions, twenty five percent — because key policies, cross-account encryption, and automated threat response are fundamentally multi-account problems. Four ideas carry almost all of that weight. K M S — we'll just say KMS from here — encrypts through a mechanism called envelope encryption: a small data key does the actual encrypting, and the KMS key's only job is to encrypt that data key. Every KMS key also enforces a second, mandatory gate — its own key policy — sitting alongside I A M, not replaced by it. Secrets Manager and Systems Manager Parameter Store both store secret values, but only one of them rotates credentials automatically. And GuardDuty turns from a dashboard into real automation only once a finding flows through EventBridge into a Lambda function that actually does something.",
+      "props": {
+        "kicker": "AWS CERTIFICATION PREP · CHAPTER 19 · PROFESSIONAL",
+        "title": "Advanced Security: KMS, Secrets Manager, GuardDuty & Security Automation",
+        "facts": [
+          { "label": "Where this sits", "value": "Organizational Complexity 26% + Continuous Improvement 25% of the Professional exam" },
+          { "label": "The core mechanism", "value": "Envelope encryption — a data key encrypts your data, a KMS key only ever encrypts that data key" }
+        ]
+      }
+    },
+    {
+      "id": "wrong-instinct",
+      "type": "ConceptScene",
+      "narration": "Here's the trap nearly everyone falls into on their first KMS scenario, and it's a genuinely reasonable instinct: for almost every AWS resource, IAM is the only access-control gate that matters. Attach an allow-decrypt statement to a role, and for most services that's the whole story. Candidates carry that instinct straight into KMS and get baffled by an access-denied error despite a seemingly correct IAM policy. There's a second, related trap: seeing that Parameter Store can also store a secret string, and picking it purely because it's cheaper — when the scenario's actual requirement is whether the value needs to rotate automatically, not what it costs per month.",
+      "props": {
+        "kicker": "THE INSTINCT TO AVOID",
+        "heading": "\"Full IAM access means full access\" — and \"cheaper always wins\"",
+        "tone": "warn",
+        "variant": "bullets",
+        "bullets": [
+          "Attaching an Allow: kms:Decrypt statement to a role and assuming that alone settles it, the way it would for almost any other AWS resource.",
+          "Treating Parameter Store as a drop-in cheaper substitute for Secrets Manager, because it can also store a secret string.",
+          "Missing that rotation support, not price, is the actual requirement a database-credential scenario is testing."
+        ]
+      }
+    },
+    {
+      "id": "dual-gate-mechanism",
+      "type": "ArchitectureDiagram",
+      "narration": "Walk through exactly why a permissive IAM policy alone doesn't decrypt anything. AWS evaluates the key's own resource policy — its key policy — and the caller's identity policy at the same time, for every single KMS call. Both allow it, you're through. The identity policy allows it, but the key policy never grants that principal permission and doesn't delegate to IAM at all — denied, and the key policy wins. The key policy allows it, but the identity policy never granted the action in the first place — still denied, because there's nothing to grant. And an explicit deny anywhere ends the conversation immediately, no matter what else says yes. This is why \"I attached administrator access and decryption still fails\" is a real, common incident, not a hypothetical.",
+      "props": {
+        "kicker": "WHY IT'S WRONG",
+        "heading": "Every KMS call needs both gates to say yes",
+        "variant": "table",
+        "table": {
+          "columns": ["", "Identity policy (IAM)", "Key policy (resource)", "Result"],
+          "rows": [
+            { "label": "Aligned allow", "cells": ["Allows it", "Allows it (or delegates to IAM)", "Permitted"] },
+            { "label": "Key policy silent", "cells": ["Allows it", "Doesn't name this principal", "Denied — key policy wins"] },
+            { "label": "No IAM grant", "cells": ["Never grants it", "Allows it", "Still denied — nothing to grant"] },
+            { "label": "Explicit deny", "cells": ["Deny anywhere", "Deny anywhere", "Denied — deny always wins"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "envelope-encryption",
+      "type": "ConceptScene",
+      "narration": "Every \"how does KMS encrypt my data\" question resolves to one mechanism: envelope encryption. Your application never asks KMS to encrypt the actual payload — it asks for a data key, a small, random symmetric key, and KMS hands back two things: a plaintext copy for immediate local use, and that same key encrypted under your KMS key, safe to store. That plaintext data key encrypts your real data locally, at memory speed, with no size limit, and then gets discarded — it never touches disk. What you keep is the ciphertext plus the small encrypted data key. Decryption just reverses it: KMS decrypts that small key, one operation safely under its four-kilobyte limit, and your application uses it locally to decrypt everything else. This is the exact mechanism behind S three, E B S, and R D S encryption — you've been using envelope encryption this whole time without ever calling the APIs yourself.",
+      "props": {
+        "kicker": "THE CORE MECHANISM",
+        "heading": "Envelope encryption, the way KMS actually does it",
+        "tone": "ok",
+        "variant": "steps",
+        "steps": [
+          "Ask KMS for a data key — it returns a plaintext copy and an encrypted copy",
+          "The plaintext data key encrypts your actual data locally, no size limit",
+          "The plaintext data key is discarded immediately — only ciphertext and the encrypted key get stored",
+          "Decrypting reverses it: KMS unlocks the small data key, your app does the rest locally"
+        ]
+      }
+    },
+    {
+      "id": "secrets-vs-parameter-store",
+      "type": "ArchitectureDiagram",
+      "narration": "Lay them side by side and the deciding factor stops being price. Secrets Manager rotates credentials natively — for RDS, Redshift, and DocumentDB it can generate the rotation Lambda for you — and holds values up to around sixty four kilobytes. Parameter Store has no built-in rotation at all; you'd have to build that yourself with a Lambda and an EventBridge schedule, and its standard tier caps out at four kilobytes, eight on the advanced tier. So when a scenario says \"credentials that must rotate automatically,\" Parameter Store's lower cost is irrelevant — it's disqualified by a missing capability, not a worse price.",
+      "props": {
+        "kicker": "THE ROTATION-DRIVEN DECISION",
+        "heading": "Secrets Manager vs. Parameter Store",
+        "variant": "table",
+        "table": {
+          "columns": ["", "Secrets Manager", "Parameter Store"],
+          "rows": [
+            { "label": "Automatic rotation", "cells": ["Native, managed rotation for RDS, Redshift, DocumentDB — AWS generates the Lambda", "None built in — you'd wire your own Lambda and EventBridge schedule"] },
+            { "label": "Max value size", "cells": ["≈64 KB", "4 KB standard tier, 8 KB advanced tier"] },
+            { "label": "Cost model", "cells": ["Per-secret monthly charge", "Standard tier free; Advanced tier a small per-parameter charge"] },
+            { "label": "Best fit", "cells": ["Credentials that must rotate on a provable schedule", "Config values and feature flags that never need to rotate"] }
+          ]
+        }
+      }
+    },
+    {
+      "id": "limits-and-numbers",
+      "type": "ConceptScene",
+      "narration": "A handful of numbers resolve a surprising number of exam questions on their own. KMS's direct encrypt and decrypt calls only accept up to four kilobytes of plaintext per call — the entire reason envelope encryption exists for anything larger. Symmetric KMS keys support automatic annual rotation of their underlying material while keeping the same key ID, but asymmetric keys and any key with imported material can't use it. GuardDuty is regional and opt-in — turning it on in one Region detects exactly nothing in another; multi-region coverage means enabling it everywhere, or centralizing it through a delegated administrator account. And deleting a KMS key is deliberately hard to do by accident: AWS enforces a mandatory waiting period, configurable from seven to thirty days, specifically so an accidental scheduled deletion can still be canceled before every ciphertext that key ever protected becomes permanently unrecoverable.",
+      "props": {
+        "kicker": "LIMITS & EDGE CASES",
+        "heading": "The numbers the exam turns into gotchas",
+        "tone": "neutral",
+        "variant": "bullets",
+        "bullets": [
+          "KMS's direct Encrypt/Decrypt calls cap at 4 KB of plaintext — exactly why envelope encryption exists for anything bigger.",
+          "Symmetric KMS keys can auto-rotate their key material yearly, keeping the same key ID; imported or asymmetric material can't.",
+          "GuardDuty is regional and opt-in per Region — enabling it in one Region detects nothing in another.",
+          "Scheduled key deletion enforces a mandatory 7-to-30-day waiting period, specifically so it can still be canceled."
+        ]
+      }
+    },
+    {
+      "id": "guardduty-remediation-flow",
+      "type": "ConceptScene",
+      "narration": "Whenever a scenario says \"respond automatically\" or \"without human intervention,\" it's describing this exact pipeline, not a dashboard someone checks. GuardDuty's threat-intelligence and anomaly models flag suspicious activity as a finding, and that finding publishes as a native EventBridge event. An EventBridge rule pattern-matches on the finding's severity and type, and when it matches, it invokes a Lambda function as its target — not a person. That Lambda is where \"automatic\" actually becomes concrete: it revokes the compromised session's credentials, or isolates the instance's security group, whatever the finding warrants. A Security Hub dashboard or an S N S notification gets you visibility, but visibility isn't remediation — without a wired Lambda action, \"automated response\" is really just \"automated notification,\" and that's exactly the trap this pattern is built to catch.",
+      "props": {
+        "kicker": "THE AUTOMATION PATTERN",
+        "heading": "\"Respond automatically\" means this exact pipeline",
+        "variant": "steps",
+        "steps": [
+          "GuardDuty's threat-intel and anomaly models flag an event as a finding",
+          "The finding publishes in GuardDuty's native EventBridge event format",
+          "An EventBridge rule pattern-matches on severity and finding type",
+          "The matched rule invokes a remediation Lambda function as its target",
+          "The Lambda takes the actual action — revoking a session, isolating a security group"
+        ]
+      }
+    },
+    {
+      "id": "cli-walkthrough",
+      "type": "TerminalDemo",
+      "narration": "Three commands map to the three moves this chapter is built around. Creating a KMS key with an explicit policy file is what actually decides who can use it — not the IAM permissions you attach afterward. Creating a secret in Secrets Manager encrypts it under that key by default. And calling rotate-secret with a ninety-day schedule and an AWS-generated RDS rotation Lambda is the managed capability Parameter Store simply doesn't have — you'd be hand-building all three of these steps yourself if you tried to replicate this with plain parameters.",
+      "props": {
+        "kicker": "TRY IT YOURSELF",
+        "heading": "Building the pieces: key, secret, rotation",
+        "prompt": "$",
+        "steps": [
+          {
+            "cmd": "aws kms create-key --description \"app-secrets-key\" --policy file://key-policy.json",
+            "output": [
+              "{ \"KeyMetadata\": { \"KeyId\": \"abc123-...\",",
+              "  \"Arn\": \"arn:aws:kms:us-east-1:222222222222:key/abc123\" } }",
+              "# the key policy file, not IAM alone, decides who can ever use this key"
+            ]
+          },
+          {
+            "cmd": "aws secretsmanager create-secret --name prod/app/db-credentials --secret-string '{\"username\":\"app\",\"password\":\"CHANGEME\"}' --kms-key-id alias/app-secrets-key",
+            "output": [
+              "{ \"ARN\": \"arn:aws:secretsmanager:us-east-1:222222222222:secret:prod/app/db-credentials-AbCdEf\",",
+              "  \"Name\": \"prod/app/db-credentials\" }"
+            ]
+          },
+          {
+            "cmd": "aws secretsmanager rotate-secret --secret-id prod/app/db-credentials --rotation-lambda-arn arn:aws:lambda:us-east-1:222222222222:function:SecretsManagerRDSRotation --rotation-rules AutomaticallyAfterDays=90",
+            "output": [
+              "{ \"ARN\": \"arn:aws:secretsmanager:us-east-1:222222222222:secret:prod/app/db-credentials-AbCdEf\",",
+              "  \"RotationEnabled\": true }",
+              "# AWS generated this rotation Lambda from its RDS template"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "key-policy-tree",
+      "type": "CodeScene",
+      "narration": "You'll never be asked to write these files from memory, but recognize the shape. key-policy dot json is the document that actually gates the key — a statement delegating to IAM within its own account, plus a separate statement naming any external account allowed to use it. secret-with-rotation is the two-call sequence you just saw: create the secret, then attach a rotation schedule. The EventBridge rule file is a plain pattern match on severity and finding type, and the Lambda is where the remediation actually happens. Being shown a snippet of one of these and asked \"why does this still fail\" is the actual skill being tested — not memorizing the syntax.",
+      "props": {
+        "kicker": "WHAT THE EXAM SHOWS YOU",
+        "heading": "security-automation/",
+        "variant": "tree",
+        "filename": "security-automation/",
+        "lines": [
+          "security-automation/",
+          "├── key-policy.json                  # KMS key policy — root delegation + cross-account grant",
+          "├── secret-with-rotation.sh          # create-secret + rotate-secret, 90-day schedule",
+          "├── guardduty-remediation-rule.json  # EventBridge pattern matching GuardDuty findings",
+          "└── remediation_lambda.py            # revokes a compromised session on a high-severity finding"
+        ],
+        "linesPerFrame": 22
+      }
+    },
+    {
+      "id": "case-study",
+      "type": "ConceptScene",
+      "narration": "Take a concrete case. Northbeam Media runs a transcoding pipeline in one account that reads encrypted S three objects owned by a separate Data account. The transcoding role's IAM policy grants decrypt permission directly on the key's A R N — and every read still fails with access denied. Run it through the framework: the fix isn't more IAM permissions, because IAM was never the missing half. The Data account's key policy never named the Workloads account's role or account at all. Cross-account KMS access always requires the key's own policy to explicitly grant the external principal — the convenient \"account root gets IAM delegation\" shortcut only applies within the key's own account, and that's exactly the detail this scenario is testing.",
+      "props": {
+        "kicker": "ONE FAILURE, WORKED THROUGH",
+        "heading": "Diagnosing a cross-account decryption failure",
+        "variant": "profile",
+        "profile": {
+          "name": "Northbeam Media",
+          "role": "Transcoding pipeline in a Workloads account · reads encrypted S3 objects owned by a separate Data account",
+          "detail": "The transcoding role's IAM policy grants kms:Decrypt on the key's ARN directly, yet every read fails with AccessDenied. The team's first move is adding more IAM permissions — and it doesn't help.",
+          "verdict": "The Data account's key policy never named the Workloads account's role. Cross-account KMS access always requires the key policy to explicitly grant the external principal — the account-root IAM shortcut only applies inside the key's own account."
+        }
+      }
+    },
+    {
+      "id": "knowledge-check",
+      "type": "KnowledgeCheck",
+      "narration": "Try these before we reveal the answers. First: a role has full K M S star permissions in its IAM policy, and a decrypt call still fails — what's actually going on? Second: leadership wants a class of high-confidence GuardDuty findings contained within minutes with absolutely no analyst review, across every account in the organization — which combination of services actually satisfies \"no analyst review,\" and which ones only look like they do?",
+      "props": {
+        "kicker": "KNOWLEDGE CHECK",
+        "heading": "Try these before the answer",
+        "questions": [
+          {
+            "level": "PROFESSIONAL",
+            "prompt": "A role has an IAM policy granting full kms:* permissions on a specific customer managed key. A call to kms:Decrypt using that key still fails. What's the most likely explanation?",
+            "options": [
+              "IAM policies never apply to KMS keys — only key policies matter",
+              "The key's own resource policy doesn't grant that principal permission, or never delegates to IAM",
+              "KMS requires MFA on every Decrypt call regardless of policy",
+              "The plaintext data key has expired and must be regenerated"
+            ]
+          },
+          {
+            "level": "PROFESSIONAL",
+            "prompt": "Security leadership wants a defined class of high-confidence GuardDuty findings contained within minutes, with no analyst review, across every account in the organization. Which combination actually satisfies \"no analyst review\"?",
+            "options": [
+              "A Security Hub dashboard the on-call engineer checks every few minutes",
+              "An SNS topic emailing the security team when a finding fires",
+              "An EventBridge rule matching the finding, invoking a Lambda that performs the remediation",
+              "A CloudWatch Logs entry reviewed during the weekly audit"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "answer-reveal",
+      "type": "AnswerReveal",
+      "narration": "Here's why. KMS checks both gates on every single call — the key's own policy and the caller's identity policy each have to independently say yes. Full IAM permissions satisfy only one half of that; if the key policy never grants it or never delegates to IAM, the call still fails, no matter how permissive the identity side looks. And for the remediation question: only the EventBridge rule wired to a Lambda actually takes action without anyone in the loop. A dashboard, a notification, or a log entry all still depend on a human noticing and acting — they give you visibility, not the automatic response leadership actually asked for.",
+      "props": {
+        "kicker": "ANSWERS",
+        "heading": "Here's why",
+        "answers": [
+          {
+            "prompt": "A role has full kms:* in IAM, yet Decrypt still fails.",
+            "correct": "The key's own resource policy doesn't grant that principal permission, or never delegates to IAM.",
+            "rationale": "KMS enforces both gates on every call: the key's policy and the caller's identity policy must each independently allow the action. A permissive IAM policy alone can never succeed if the key policy doesn't also grant it — this is the one AWS resource where IAM is necessary but never sufficient by itself."
+          },
+          {
+            "prompt": "Which architecture actually satisfies \"no analyst review\"?",
+            "correct": "An EventBridge rule matching the finding, invoking a Lambda that performs the remediation.",
+            "rationale": "Only the EventBridge-to-Lambda path takes an actual automated action. A dashboard, an SNS notification, or a log entry reviewed later all still require a human to notice and act — none of them satisfy \"no analyst review,\" which is exactly the trap this pattern is built to test."
+          }
+        ]
+      }
+    },
+    {
+      "id": "recap",
+      "type": "ChapterRecap",
+      "narration": "Five things to carry forward. KMS is a two-gate system: the key policy and the identity policy must both allow an action, which is unlike almost every other AWS resource you'll encounter. Envelope encryption is the real mechanism behind that encryption — a data key does the bulk work, and the KMS key only ever protects that one small data key. Secrets Manager's actual differentiator over Parameter Store is native, managed rotation, not its price. GuardDuty is regional and opt-in, and real multi-account visibility needs a delegated administrator, not forty separate logins. And whenever a scenario says \"automatically,\" it means an EventBridge rule invoking a Lambda function — not a dashboard somebody has to remember to check. Next: chapter twenty moves from securing what you deploy to how you deploy it — CodePipeline, blue-green, and canary strategies, and the alarm that triggers an automatic rollback.",
+      "props": {
+        "kicker": "RECAP",
+        "heading": "What to remember from this chapter",
+        "takeaways": [
+          "KMS is a two-gate system — the key policy and the identity policy must both allow an action, unlike almost every other AWS resource.",
+          "Envelope encryption is the real mechanism: a data key does the bulk encrypting, and the KMS key only ever protects that small data key.",
+          "Secrets Manager's real differentiator over Parameter Store is native automatic rotation, not price.",
+          "GuardDuty is regional and needs a delegated administrator for genuine multi-account, multi-region visibility.",
+          "\"Automatically\" in a scenario means an EventBridge rule invoking a Lambda — not a dashboard a human has to check."
+        ],
+        "next": {
+          "title": "Chapter 20 — Deployment & CI/CD at Scale: CodePipeline, Blue/Green & Canary Strategies",
+          "teaser": "From securing what you deploy to how you deploy it — in-place, blue/green, and canary strategies, and the alarm that triggers an automatic rollback."
+        }
+      }
+    },
+    {
+      "id": "challenge",
+      "type": "FinalChallenge",
+      "narration": "One more to work through yourself. A bank's compliance team requires that a specific KMS key's policy never be edited without two-person approval — even by that account's own administrators. An engineer proposes an IAM permission boundary on the admin role instead, as a cheaper fix. Using this chapter's dual-gate model, why does that substitution actually fail, and what would need to change to satisfy the real requirement?",
+      "props": {
+        "kicker": "THINK ABOUT IT",
+        "prompt": "A bank's compliance team requires that a specific KMS key's policy never be edited without two-person approval, even by that account's own administrators. An engineer proposes an IAM permission boundary on the admin role instead. Using this chapter's dual-gate model, why does that substitution fail?",
+        "hint": "Ask which layer a permission boundary actually restrains, and whether it can ever protect a policy document living in a completely different place.",
+        "nextChapterTitle": "Chapter 20 · Deployment & CI/CD at Scale: CodePipeline, Blue/Green & Canary Strategies"
+      }
+    }
+  ]
+}
